@@ -1,0 +1,146 @@
+#pragma once
+
+#include "buttons.h"
+#include "earcons.h"
+#include "library.h"
+#include "menu.h"
+#include "player.h"
+#include "settings.h"
+#include "tts.h"
+
+#include <array>
+#include <deque>
+#include <filesystem>
+#include <optional>
+#include <string>
+
+namespace oap {
+
+// The device's "brain": turns button gestures into navigation, playback and speech.
+// Platform independent; the simulator and the real device both drive it through
+// keyDown/keyUp/setHold/tick, all from one thread.
+class App {
+public:
+    using Clock = std::chrono::steady_clock;
+
+    enum class Mode { Menu, Player, Sleeping };
+
+    struct NowPlaying {
+        bool loaded = false;
+        bool playing = false;
+        std::string title;
+        std::string chapter;
+        int chapterIndex = 0;
+        int chapterCount = 0;
+        double position = 0;
+        double duration = 0;
+        std::optional<double> sleepTimerLeft;
+    };
+
+    App(Mixer& mixer, Tts& tts, Earcons& earcons, Settings& settings, std::filesystem::path libraryRoot);
+
+    void start();
+    void keyDown(Button button);
+    void keyUp(Button button);
+    void setHold(bool on);
+    void tick();
+    bool quitRequested() const { return quit_; }
+    void shutdown();
+
+    // Read-only state for the simulator's visualisation.
+    Mode mode() const { return mode_; }
+    const std::vector<MenuLevel>& menuStack() const { return menu_; }
+    NowPlaying nowPlaying() const;
+    const std::deque<std::string>& speechLog() const { return speechLog_; }
+    const std::array<std::array<int, 2>, kButtonCount>& buttonUsage() const { return usage_; }
+    void resetButtonUsage() { usage_ = {}; }
+    bool hold() const { return hold_; }
+    bool keyDescriber() const { return keyDescriber_; }
+
+private:
+    struct ChapterRef {
+        std::string title;
+        size_t file = 0;
+        double start = 0;
+    };
+
+    void onButton(ButtonEvent ev);
+    void handleMenu(ButtonEvent ev);
+    void handlePlayer(ButtonEvent ev);
+    void describeKey(ButtonEvent ev);
+
+    // Speech
+    void say(const std::string& text);
+    std::string itemSpeech(const MenuLevel& level) const;
+    void whereAmI();
+
+    // Menus
+    void openMenu(const std::string& title, std::vector<MenuItem> items, size_t index = 0);
+    void activate();
+    void back();
+    void goHome();
+    void enterPlayer();
+    std::vector<MenuItem> homeMenu();
+    std::vector<MenuItem> libraryMenu();
+    std::vector<MenuItem> sleepTimerMenu();
+    std::vector<MenuItem> settingsMenu();
+    std::vector<MenuItem> systemMenu();
+    std::vector<MenuItem> powerMenu();
+    std::vector<MenuItem> playerMenu();
+    std::vector<MenuItem> chaptersMenu();
+    MenuItem choice(const std::string& label, const std::string& key,
+                    std::vector<std::pair<int, std::string>> options, int fallback,
+                    std::function<void(int)> onChange = {});
+
+    // Playback
+    void openBook(const Book& book, bool autoplay);
+    bool loadFile(size_t file, double position, bool autoplay);
+    void togglePlay();
+    void play();
+    void pause(bool announce);
+    void skip(int direction);
+    void changeVolume(int delta);
+    std::vector<ChapterRef> chapters() const;
+    int currentChapter() const;
+    void gotoChapter(int index);
+    void stepChapter(int direction);
+    void onFileFinished();
+    void savePosition();
+    std::string playerStatus() const;
+
+    // Power
+    void setSleepTimer(int minutes, bool endOfChapter);
+    void sleep(const std::string& announcement);
+    void wake();
+    void powerOff();
+    void restart();
+    std::string statusReport() const;
+
+    Mixer& mixer_;
+    Tts& tts_;
+    Earcons& earcons_;
+    Settings& settings_;
+    std::filesystem::path libraryRoot_;
+    Player player_;
+    GestureDetector gestures_;
+
+    Mode mode_ = Mode::Menu;
+    Mode modeBeforeSleep_ = Mode::Menu;
+    std::vector<MenuLevel> menu_;
+    std::optional<Book> book_;
+    size_t fileIndex_ = 0;
+
+    bool hold_ = false;
+    bool keyDescriber_ = false;
+    bool quit_ = false;
+    std::optional<Clock::time_point> pausedAt_;
+    std::optional<Clock::time_point> sleepDeadline_;
+    int sleepAtChapterEnd_ = -1;
+    Clock::time_point lastActivity_ = Clock::now();
+    Clock::time_point lastSave_ = Clock::now();
+
+    std::deque<std::string> speechLog_;
+    std::array<std::array<int, 2>, kButtonCount> usage_{};
+};
+
+} // namespace oap
