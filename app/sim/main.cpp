@@ -299,6 +299,18 @@ void drawUi(App& app, const std::set<Button>& held) {
 
 int main(int argc, char** argv) {
     std::filesystem::path library = "library";
+void saveSnapshot(SDL_Renderer* renderer, const char* path) {
+    int w = 0, h = 0;
+    SDL_GetRendererOutputSize(renderer, &w, &h);
+    SDL_RenderSetScale(renderer, 1.0f, 1.0f);
+    SDL_RenderSetViewport(renderer, nullptr);
+    SDL_Surface* surface = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
+    if (!surface) return;
+    if (SDL_RenderReadPixels(renderer, nullptr, SDL_PIXELFORMAT_ARGB8888, surface->pixels, surface->pitch) == 0)
+        SDL_SaveBMP(surface, path);
+    SDL_FreeSurface(surface);
+}
+
     const char* home = std::getenv("HOME");
     std::filesystem::path config = std::filesystem::path(home ? home : ".") / ".config/oap-sim/settings.tsv";
     std::string script;
@@ -336,7 +348,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "SDL window: %s\n", SDL_GetError());
         return 1;
     }
-    // The ImGui renderer backend scales to pixels itself; we only rasterise the font at that density.
+    // Vertices are scaled to pixels via SDL_RenderSetScale each frame; rasterise the font at that density.
     int pw = 0, ww = 0, h = 0;
     SDL_GetRendererOutputSize(renderer, &pw, &h);
     SDL_GetWindowSize(window, &ww, &h);
@@ -363,6 +375,8 @@ int main(int argc, char** argv) {
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+    // Debug aid: OAP_SIM_SNAPSHOT=file.bmp saves the last rendered frame on exit.
+    const char* snapshot = std::getenv("OAP_SIM_SNAPSHOT");
             ImGui_ImplSDL2_ProcessEvent(&e);
             if (e.type == SDL_QUIT) running = false;
             if ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && !e.key.repeat) {
@@ -395,9 +409,12 @@ int main(int argc, char** argv) {
         SDL_RenderPresent(renderer);
     }
 
+        ImGuiIO& io = ImGui::GetIO();
+        SDL_RenderSetScale(renderer, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
     app.shutdown();
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
+        if (!running && snapshot) saveSnapshot(renderer, snapshot);
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
