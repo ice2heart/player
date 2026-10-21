@@ -42,7 +42,7 @@ bool Player::open(const std::string& path, double startAt) {
         return false;
     }
 
-    AVChannelLayout in, out;
+    AVChannelLayout in{}, out{}; // zeroed: av_channel_layout_copy frees dst first
     if (dec_->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC)
         av_channel_layout_default(&in, dec_->ch_layout.nb_channels);
     else

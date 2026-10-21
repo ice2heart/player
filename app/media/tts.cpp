@@ -43,7 +43,7 @@ bool Tts::start(const std::string& voice) {
     if (espeak_SetVoiceByName(voice.c_str()) != EE_OK)
         std::fprintf(stderr, "tts: voice '%s' not found, using default\n", voice.c_str());
 
-    AVChannelLayout mono, stereo;
+    AVChannelLayout mono{}, stereo{};
     av_channel_layout_default(&mono, 1);
     av_channel_layout_default(&stereo, 2);
     if (swr_alloc_set_opts2(&swr_, &stereo, AV_SAMPLE_FMT_FLT, Mixer::kSampleRate,
