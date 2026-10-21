@@ -58,6 +58,8 @@ bool Tts::start(const std::string& voice) {
 }
 
 void Tts::say(const std::string& text) {
+    std::printf("say: %s\n", text.c_str());
+    std::fflush(stdout);
     if (text.empty()) return;
     {
         std::lock_guard lock(mutex_);

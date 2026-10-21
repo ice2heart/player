@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio_stream.h"
+#include "services.h"
 
 #include <atomic>
 #include <vector>
@@ -10,7 +11,7 @@ namespace oap {
 // Mixes the three sources the device ever plays: content (book/podcast),
 // speech (TTS) and effects (earcons). Content is ducked while speech plays.
 // render() is called from the platform audio thread.
-class Mixer {
+class Mixer : public VolumeControl {
 public:
     static constexpr int kSampleRate = 48000;
 
@@ -22,7 +23,7 @@ public:
 
     void setContentPaused(bool paused) { contentPaused_ = paused; }
     // 0..1, mapped to a perceptual curve.
-    void setVolume(float volume) { volume_ = volume; }
+    void setVolume(float volume) override { volume_ = volume; }
 
     void render(float* out, size_t frames);
 

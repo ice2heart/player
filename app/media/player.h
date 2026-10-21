@@ -1,6 +1,7 @@
 #pragma once
 
-#include "mixer.h"
+#include "core/mixer.h"
+#include "core/services.h"
 
 #include <atomic>
 #include <string>
@@ -15,33 +16,28 @@ struct SwrContext;
 
 namespace oap {
 
-struct Chapter {
-    std::string title;
-    double start = 0;
-};
-
 // Decodes one audio file with FFmpeg into the mixer's content stream.
 // All public methods are called from the UI thread; decoding runs on its own thread.
-class Player {
+class Player : public MediaPlayer {
 public:
     explicit Player(Mixer& mixer);
-    ~Player();
+    ~Player() override;
 
-    bool open(const std::string& path, double startAt = 0);
-    void close();
-    bool isOpen() const { return fmt_ != nullptr; }
+    bool open(const std::string& path, double startAt = 0) override;
+    void close() override;
+    bool isOpen() const override { return fmt_ != nullptr; }
 
-    void play();
-    void pause();
-    bool playing() const { return playing_; }
+    void play() override;
+    void pause() override;
+    bool playing() const override { return playing_; }
 
-    void seek(double seconds);
-    double position() const;
-    double duration() const { return duration_; }
-    const std::vector<Chapter>& chapters() const { return chapters_; }
+    void seek(double seconds) override;
+    double position() const override;
+    double duration() const override { return duration_; }
+    const std::vector<Chapter>& chapters() const override { return chapters_; }
 
     // End of file reached while playing and everything has been heard.
-    bool finished() const;
+    bool finished() const override;
 
 private:
     void decodeLoop();

@@ -64,17 +64,18 @@ MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn) {
 }
 } // namespace
 
-App::App(Mixer& mixer, Tts& tts, Earcons& earcons, Settings& settings, std::filesystem::path libraryRoot)
-    : mixer_(mixer), tts_(tts), earcons_(earcons), settings_(settings),
-      libraryRoot_(std::move(libraryRoot)), player_(mixer) {}
+App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, Settings& settings,
+         Clock& clock, std::filesystem::path libraryRoot)
+    : tts_(speech), player_(player), earcons_(sounds), volume_(volume), settings_(settings), clock_(clock),
+      libraryRoot_(std::move(libraryRoot)), lastActivity_(clock.now()), lastSave_(clock.now()) {}
 
 // ---------------------------------------------------------------- lifecycle
 
 void App::start() {
     tts_.setRate(settings_.getInt(kSpeechRate, 220));
-    mixer_.setVolume(settings_.getInt(kVolume, 70) / 100.0f);
+    volume_.setVolume(settings_.getInt(kVolume, 70) / 100.0f);
     gestures_.setLongPress(std::chrono::milliseconds(settings_.getInt(kLongPress, 600)));
-    lastActivity_ = Clock::now();
+    lastActivity_ = clock_.now();
 
     earcons_.play(Earcon::Boot);
     say("Ready.");
@@ -103,11 +104,11 @@ void App::keyDown(Button button) {
         say("Locked.");
         return;
     }
-    gestures_.press(button, Clock::now());
+    gestures_.press(button, clock_.now());
 }
 
 void App::keyUp(Button button) {
-    if (auto ev = gestures_.release(button, Clock::now())) onButton(*ev);
+    if (auto ev = gestures_.release(button, clock_.now())) onButton(*ev);
 }
 
 void App::setHold(bool on) {
@@ -119,7 +120,7 @@ void App::setHold(bool on) {
 }
 
 void App::tick() {
-    auto now = Clock::now();
+    auto now = clock_.now();
     for (const ButtonEvent& ev : gestures_.poll(now)) onButton(ev);
 
     if (book_ && player_.finished()) onFileFinished();
@@ -145,7 +146,7 @@ void App::tick() {
 
 void App::onButton(ButtonEvent ev) {
     usage_[static_cast<size_t>(ev.button)][static_cast<size_t>(ev.gesture)]++;
-    lastActivity_ = Clock::now();
+    lastActivity_ = clock_.now();
 
     if (mode_ == Mode::Sleeping) {
         wake();
@@ -298,8 +299,6 @@ void App::describeKey(ButtonEvent ev) {
 // ---------------------------------------------------------------- speech
 
 void App::say(const std::string& text) {
-    std::printf("say: %s\n", text.c_str());
-    std::fflush(stdout);
     speechLog_.push_back(text);
     if (speechLog_.size() > kSpeechLogSize) speechLog_.pop_front();
     tts_.say(text);
@@ -433,7 +432,7 @@ std::vector<MenuItem> App::homeMenu() {
     }));
     MenuItem timer = submenu("Sleep timer", [this] { return sleepTimerMenu(); });
     timer.value = [this] {
-        if (sleepDeadline_) return spokenDuration(std::chrono::duration<double>(*sleepDeadline_ - Clock::now()).count()) + " left";
+        if (sleepDeadline_) return spokenDuration(std::chrono::duration<double>(*sleepDeadline_ - clock_.now()).count()) + " left";
         return std::string(sleepAtChapterEnd_ >= 0 ? "end of chapter" : "off");
     };
     items.push_back(timer);
@@ -479,7 +478,7 @@ std::vector<MenuItem> App::settingsMenu() {
     items.push_back(choice("Speech rate", kSpeechRate, range(100, 460, 30, " words per minute"), 220,
                            [this](int v) { tts_.setRate(v); }));
     items.push_back(choice("Volume", kVolume, range(0, 100, 5, " percent"), 70,
-                           [this](int v) { mixer_.setVolume(v / 100.0f); }));
+                           [this](int v) { volume_.setVolume(v / 100.0f); }));
     items.push_back(choice("Verbosity", kVerbosity, {{Beginner, "beginner"}, {Normal, "normal"}, {Expert, "expert"}}, Normal));
     items.push_back(choice("Skip back", kSkipBack, seconds({5, 10, 15, 30, 60}), 10));
     items.push_back(choice("Skip forward", kSkipForward, seconds({5, 10, 15, 30, 60, 120}), 30));
@@ -502,7 +501,7 @@ std::vector<MenuItem> App::systemMenu() {
     items.push_back(action("Status", [this] { say(statusReport()); }));
     items.push_back(action("Time and date", [this] {
         char buf[64];
-        std::time_t t = std::time(nullptr);
+        std::time_t t = clock_.wallTime();
         std::strftime(buf, sizeof buf, "It is %H:%M, %A %d %B.", std::localtime(&t));
         say(buf);
     }));
@@ -620,7 +619,7 @@ void App::play() {
         return;
     }
     int rewind = settings_.getInt(kRewindOnResume, 2);
-    if (rewind > 0 && pausedAt_ && Clock::now() - *pausedAt_ > std::chrono::seconds(10))
+    if (rewind > 0 && pausedAt_ && clock_.now() - *pausedAt_ > std::chrono::seconds(10))
         player_.seek(player_.position() - rewind);
     pausedAt_.reset();
     player_.play();
@@ -630,7 +629,7 @@ void App::play() {
 void App::pause(bool announce) {
     if (!player_.playing()) return;
     player_.pause();
-    pausedAt_ = Clock::now();
+    pausedAt_ = clock_.now();
     savePosition();
     if (announce) say("Paused.");
 }
@@ -657,7 +656,7 @@ void App::changeVolume(int delta) {
     int v = std::clamp(settings_.getInt(kVolume, 70) + delta, 0, 100);
     settings_.setInt(kVolume, v);
     settings_.save();
-    mixer_.setVolume(v / 100.0f);
+    volume_.setVolume(v / 100.0f);
     earcons_.play(Earcon::Volume);
     if (v == 100) say("Maximum volume.");
     else if (v == 0) say("Muted.");
@@ -730,7 +729,7 @@ void App::onFileFinished() {
 }
 
 void App::savePosition() {
-    lastSave_ = Clock::now();
+    lastSave_ = clock_.now();
     if (!book_ || !player_.isOpen()) return;
     char pos[32];
     std::snprintf(pos, sizeof pos, "%.1f", player_.position());
@@ -754,7 +753,7 @@ std::string App::playerStatus() const {
         text += spokenDuration(player_.duration() - pos) + " left in book. ";
     text += player_.playing() ? "Playing." : "Paused.";
     if (sleepDeadline_)
-        text += " Sleep timer, " + spokenDuration(std::chrono::duration<double>(*sleepDeadline_ - Clock::now()).count()) + " left.";
+        text += " Sleep timer, " + spokenDuration(std::chrono::duration<double>(*sleepDeadline_ - clock_.now()).count()) + " left.";
     return text;
 }
 
@@ -771,7 +770,7 @@ App::NowPlaying App::nowPlaying() const {
     np.chapterCount = int(list.size());
     np.position = player_.position();
     np.duration = player_.duration();
-    if (sleepDeadline_) np.sleepTimerLeft = std::chrono::duration<double>(*sleepDeadline_ - Clock::now()).count();
+    if (sleepDeadline_) np.sleepTimerLeft = std::chrono::duration<double>(*sleepDeadline_ - clock_.now()).count();
     return np;
 }
 
@@ -784,7 +783,7 @@ void App::setSleepTimer(int minutes, bool endOfChapter) {
         sleepAtChapterEnd_ = currentChapter();
         say("Sleep timer set to end of chapter.");
     } else if (minutes > 0) {
-        sleepDeadline_ = Clock::now() + std::chrono::minutes(minutes);
+        sleepDeadline_ = clock_.now() + std::chrono::minutes(minutes);
         say("Sleep timer set to " + spokenDuration(minutes * 60) + ".");
     } else {
         say("Sleep timer off.");
@@ -843,7 +842,7 @@ std::string App::statusReport() const {
     if (!ec) text += std::to_string(space.available / (1024 * 1024 * 1024)) + " gigabytes free. ";
     text += "Wi-Fi connected. ";
     char buf[32];
-    std::time_t t = std::time(nullptr);
+    std::time_t t = clock_.wallTime();
     std::strftime(buf, sizeof buf, "Time %H:%M.", std::localtime(&t));
     return text + buf;
 }

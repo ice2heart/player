@@ -13,15 +13,19 @@ The software is one C++20 program with three layers:
 │   app/sim/       desktop simulator: SDL2 window, Dear ImGui, keyboard │
 │   (later)        device: evdev buttons / power-MCU events, no screen  │
 ├───────────────────────────────────────────────────────────────────────┤
-│ Core  (app/core/, platform independent, library "oapcore")            │
+│ Core  (app/core/, plain C++, no dependencies, library "oapcore")      │
 │   App ── menus, player screen, power states, settings                 │
 │    ├── GestureDetector   press/release → short / long press           │
-│    ├── Player            FFmpeg decode → content stream               │
-│    ├── Tts               eSpeak NG    → speech stream                 │
-│    ├── Earcons           synthesized  → effects stream                │
-│    ├── Mixer             content + speech + effects → PCM, ducking    │
 │    ├── Library           scans folders into books                     │
-│    └── Settings          key/value file, also stores positions        │
+│    ├── Settings          key/value file, also stores positions        │
+│    └── services.h        Speech · MediaPlayer · SoundEffects ·        │
+│                          VolumeControl · Clock   (interfaces)         │
+│   Earcons                synthesized  → effects stream                │
+│   Mixer                  content + speech + effects → PCM, ducking    │
+├───────────────────────────────────────────────────────────────────────┤
+│ Media  (app/media/, library "oapmedia")                               │
+│   Player : MediaPlayer   FFmpeg decode → content stream               │
+│   Tts    : Speech        eSpeak NG    → speech stream                 │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Platform  (app/platform/, library "oapaudio")                         │
 │   AudioOutput            CoreAudio (macOS) · PulseAudio (Linux, TODO) │
@@ -32,16 +36,21 @@ Only `app/platform/` and `app/sim/` know which OS they run on. Porting to the
 device means writing a new `AudioOutput` backend and a new front end that feeds
 button presses into `App`. The core stays the same.
 
+`App` has no audio code. It only sees the interfaces in `services.h`, and the
+front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`,
+`SystemClock`). The unit tests wire in fakes instead (section 12).
+
 ## 2. Source layout
 
 | Path | Contents |
 |------|----------|
-| `CMakeLists.txt` | Builds `oapcore`, `oapaudio`, `imgui` (fetched at configure time) and `oap-sim`. |
+| `CMakeLists.txt` | Builds `oapcore`, `oapmedia`, `oapaudio`, `imgui` and `oap-sim` (`OAP_BUILD_SIM`), plus `oap-tests` (`OAP_BUILD_TESTS`). ImGui and GoogleTest are fetched at configure time. |
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
-| `app/core/player.{h,cpp}` | `Player`: one audio file, decoded on its own thread. |
-| `app/core/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. |
+| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`). |
+| `app/media/player.{h,cpp}` | `Player`: one audio file, decoded on its own thread (FFmpeg). |
+| `app/media/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. |
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
@@ -51,6 +60,7 @@ button presses into `App`. The core stays the same.
 | `app/platform/audio_output.h` | `AudioOutput` interface plus a `create()` factory. |
 | `app/platform/audio_coreaudio.cpp` | macOS backend (AudioUnit default output). |
 | `app/sim/main.cpp` | Simulator: window, key mapping, visualisation, script runner. |
+| `tests/` | GoogleTest unit tests for the core; `fakes.h` has the test doubles. |
 | `tools/make_sample_library.sh` | Builds a spoken test library with espeak-ng and ffmpeg. |
 
 ## 3. Threads
@@ -110,8 +120,8 @@ Rules:
 - **`App::onButton()` calls `tts.stop()` first on every key press**, so speech is
   always interruptible.
 - Rate is applied per utterance (`Settings → Speech rate`).
-- Every spoken string also goes to stdout (`say: …`) and to `App::speechLog()`,
-  which the simulator displays.
+- Every spoken string goes to `App::speechLog()`, which the simulator displays.
+  `Tts` also prints it to stdout (`say: …`).
 
 ## 6. Input: buttons and gestures
 
@@ -297,11 +307,30 @@ during playback. That interval is a trade-off against flash wear on the device.
 
 Nothing in `app/core/` uses macOS APIs.
 
-## 12. Known gaps / next steps
+## 12. Tests
+
+```sh
+ctest --test-dir build --output-on-failure    # or ./build/oap-tests
+```
+
+- `oap-tests` links only `oapcore`, so it builds without FFmpeg, eSpeak NG or SDL2
+  (`cmake -DOAP_BUILD_SIM=OFF`).
+- `tests/fakes.h` provides `FakeSpeech` (records what was said), `FakePlayer`
+  (position, end of file and chapters set by the test), `FakeSounds`, `FakeVolume`
+  and `FakeClock` (time only moves when the test advances it).
+- `test_app.cpp` drives `App` the way a user does, through `keyDown`/`keyUp`/`tick`
+  on a temporary library folder, and checks what is spoken, which file plays and
+  what is saved. Long presses, sleep timers and auto sleep are tested by advancing
+  the fake clock.
+- The other files test `GestureDetector`, `AudioStream`, `Mixer`/`Earcons`,
+  `Settings`, `scanLibrary` and `spokenDuration` directly.
+- Every test has been checked with a sabotage: break the code it guards and
+  watch it fail. See [CLAUDE.md](../CLAUDE.md).
+
+## 13. Known gaps / next steps
 
 - Speed control (libavfilter `atempo`, or Sonic), skip silence.
 - Bookmarks, podcasts (RSS), sync (Audiobookshelf).
 - STT (Talk button): push-to-talk capture plus sherpa-onnx, Vosk or whisper.cpp.
-- Unit tests for `App` driven by scripted input (the script runner is the first step).
 - Localisation of spoken strings; a choice of TTS voice.
 - The `AudioStream` mutex in the audio callback could become a lock-free ring.

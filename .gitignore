@@ -1,3 +1,3 @@
-build/
+build*/
 library/
 .DS_Store

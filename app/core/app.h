@@ -1,12 +1,10 @@
 #pragma once
 
 #include "buttons.h"
-#include "earcons.h"
 #include "library.h"
 #include "menu.h"
-#include "player.h"
+#include "services.h"
 #include "settings.h"
-#include "tts.h"
 
 #include <array>
 #include <deque>
@@ -17,12 +15,11 @@
 namespace oap {
 
 // The device's "brain": turns button gestures into navigation, playback and speech.
-// Platform independent; the simulator and the real device both drive it through
-// keyDown/keyUp/setHold/tick, all from one thread.
+// Platform independent and free of audio code: everything it talks to is an
+// interface from services.h, so tests can drive it with fakes. The simulator and
+// the real device both drive it through keyDown/keyUp/setHold/tick, all from one thread.
 class App {
 public:
-    using Clock = std::chrono::steady_clock;
-
     enum class Mode { Menu, Player, Sleeping };
 
     struct NowPlaying {
@@ -37,7 +34,8 @@ public:
         std::optional<double> sleepTimerLeft;
     };
 
-    App(Mixer& mixer, Tts& tts, Earcons& earcons, Settings& settings, std::filesystem::path libraryRoot);
+    App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, Settings& settings,
+        Clock& clock, std::filesystem::path libraryRoot);
 
     void start();
     void keyDown(Button button);
@@ -116,12 +114,15 @@ private:
     void restart();
     std::string statusReport() const;
 
-    Mixer& mixer_;
-    Tts& tts_;
-    Earcons& earcons_;
+    using TimePoint = Clock::TimePoint;
+
+    Speech& tts_;
+    MediaPlayer& player_;
+    SoundEffects& earcons_;
+    VolumeControl& volume_;
     Settings& settings_;
+    Clock& clock_;
     std::filesystem::path libraryRoot_;
-    Player player_;
     GestureDetector gestures_;
 
     Mode mode_ = Mode::Menu;
@@ -133,11 +134,11 @@ private:
     bool hold_ = false;
     bool keyDescriber_ = false;
     bool quit_ = false;
-    std::optional<Clock::time_point> pausedAt_;
-    std::optional<Clock::time_point> sleepDeadline_;
+    std::optional<TimePoint> pausedAt_;
+    std::optional<TimePoint> sleepDeadline_;
     int sleepAtChapterEnd_ = -1;
-    Clock::time_point lastActivity_ = Clock::now();
-    Clock::time_point lastSave_ = Clock::now();
+    TimePoint lastActivity_;
+    TimePoint lastSave_;
 
     std::deque<std::string> speechLog_;
     std::array<std::array<int, 2>, kButtonCount> usage_{};

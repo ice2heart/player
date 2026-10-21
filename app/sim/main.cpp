@@ -2,7 +2,11 @@
 // buttons, and the window visualises the menu stack, playback and speech.
 
 #include "core/app.h"
+#include "core/earcons.h"
+#include "core/mixer.h"
 #include "core/text.h"
+#include "media/player.h"
+#include "media/tts.h"
 #include "platform/audio_output.h"
 
 #include <SDL.h>
@@ -295,10 +299,6 @@ void drawUi(App& app, const std::set<Button>& held) {
     ImGui::End();
 }
 
-} // namespace
-
-int main(int argc, char** argv) {
-    std::filesystem::path library = "library";
 void saveSnapshot(SDL_Renderer* renderer, const char* path) {
     int w = 0, h = 0;
     SDL_GetRendererOutputSize(renderer, &w, &h);
@@ -311,6 +311,10 @@ void saveSnapshot(SDL_Renderer* renderer, const char* path) {
     SDL_FreeSurface(surface);
 }
 
+} // namespace
+
+int main(int argc, char** argv) {
+    std::filesystem::path library = "library";
     const char* home = std::getenv("HOME");
     std::filesystem::path config = std::filesystem::path(home ? home : ".") / ".config/oap-sim/settings.tsv";
     std::string script;
@@ -332,9 +336,11 @@ void saveSnapshot(SDL_Renderer* renderer, const char* path) {
     Tts tts(mixer);
     if (!tts.start("en")) return 1;
     Earcons earcons(mixer);
+    Player player(mixer);
+    SystemClock clock;
     Settings settings(config);
     settings.load();
-    App app(mixer, tts, earcons, settings, library);
+    App app(tts, player, earcons, mixer, settings, clock, library);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -369,14 +375,14 @@ void saveSnapshot(SDL_Renderer* renderer, const char* path) {
     std::printf("Library: %s\nSettings: %s\n\n", std::filesystem::absolute(library).c_str(), config.c_str());
     app.start();
 
+    // Debug aid: OAP_SIM_SNAPSHOT=file.bmp saves the last rendered frame on exit.
+    const char* snapshot = std::getenv("OAP_SIM_SNAPSHOT");
     std::set<Button> held;
     ScriptRunner scriptRunner(parseScript(script));
     bool running = true;
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-    // Debug aid: OAP_SIM_SNAPSHOT=file.bmp saves the last rendered frame on exit.
-    const char* snapshot = std::getenv("OAP_SIM_SNAPSHOT");
             ImGui_ImplSDL2_ProcessEvent(&e);
             if (e.type == SDL_QUIT) running = false;
             if ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && !e.key.repeat) {
@@ -403,18 +409,18 @@ void saveSnapshot(SDL_Renderer* renderer, const char* path) {
         ImGui::NewFrame();
         drawUi(app, held);
         ImGui::Render();
+        ImGuiIO& io = ImGui::GetIO();
+        SDL_RenderSetScale(renderer, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
         SDL_SetRenderDrawColor(renderer, 20, 20, 24, 255);
         SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer);
+        if (!running && snapshot) saveSnapshot(renderer, snapshot);
         SDL_RenderPresent(renderer);
     }
 
-        ImGuiIO& io = ImGui::GetIO();
-        SDL_RenderSetScale(renderer, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
     app.shutdown();
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
-        if (!running && snapshot) saveSnapshot(renderer, snapshot);
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);

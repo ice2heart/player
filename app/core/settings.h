@@ -6,7 +6,7 @@
 
 namespace oap {
 
-// Flat key/value store saved as "key<TAB>value" lines.
+// Flat key/value store saved as "key<TAB>value" lines. An empty path keeps it in memory only.
 class Settings {
 public:
     explicit Settings(std::filesystem::path file) : file_(std::move(file)) {}

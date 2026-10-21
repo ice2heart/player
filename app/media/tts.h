@@ -1,6 +1,7 @@
 #pragma once
 
-#include "mixer.h"
+#include "core/mixer.h"
+#include "core/services.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -15,16 +16,16 @@ namespace oap {
 
 // eSpeak NG on a worker thread. Speech goes into the mixer's speech stream;
 // stop() cancels both queued and currently playing speech immediately.
-class Tts {
+class Tts : public Speech {
 public:
     explicit Tts(Mixer& mixer);
-    ~Tts();
+    ~Tts() override;
 
     bool start(const std::string& voice);
-    void say(const std::string& text);
-    void stop();
-    bool speaking() const;
-    void setRate(int wordsPerMinute) { rate_ = wordsPerMinute; }
+    void say(const std::string& text) override;
+    void stop() override;
+    bool speaking() const override;
+    void setRate(int wordsPerMinute) override { rate_ = wordsPerMinute; }
 
 private:
     struct Utterance {

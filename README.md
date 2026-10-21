@@ -29,6 +29,15 @@ cmake --build build -j
 ./build/oap-sim library
 ```
 
+### Tests
+
+```sh
+ctest --test-dir build --output-on-failure
+```
+
+The core tests need no audio libraries: `cmake -S . -B build -DOAP_BUILD_SIM=OFF`
+builds just the core and `oap-tests`.
+
 ### Keys
 
 | Key | Device button |

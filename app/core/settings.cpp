@@ -5,6 +5,7 @@
 namespace oap {
 
 void Settings::load() {
+    if (file_.empty()) return;
     std::ifstream in(file_);
     std::string line;
     while (std::getline(in, line)) {
@@ -14,6 +15,7 @@ void Settings::load() {
 }
 
 void Settings::save() const {
+    if (file_.empty()) return;
     std::error_code ec;
     std::filesystem::create_directories(file_.parent_path(), ec);
     std::ofstream out(file_);
