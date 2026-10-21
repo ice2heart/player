@@ -44,6 +44,13 @@ const KeyBinding kKeys[] = {
     {SDLK_p, Button::Power, "P"},
 };
 
+// Shift+Left / Shift+Right press a two-stage key all the way: first stage, then deep stage.
+std::optional<Button> deepOf(Button b) {
+    if (b == Button::Back) return Button::BackDeep;
+    if (b == Button::Forward) return Button::ForwardDeep;
+    return std::nullopt;
+}
+
 std::optional<Button> mapKey(SDL_Keycode key) {
     for (const auto& k : kKeys)
         if (k.key == key) return k.button;
@@ -51,6 +58,8 @@ std::optional<Button> mapKey(SDL_Keycode key) {
 }
 
 const char* keyLabel(Button b) {
+    if (b == Button::BackDeep) return "Shift+Left";
+    if (b == Button::ForwardDeep) return "Shift+Right";
     for (const auto& k : kKeys)
         if (k.button == b) return k.label;
     return "";
@@ -63,11 +72,12 @@ std::string clock(double seconds) {
     return buf;
 }
 
-// --script "down ok wait:3000 right:long quit" presses buttons automatically,
+// --script "down ok wait:3000 right:long right:deep quit" presses buttons automatically,
 // for repeatable UI walkthroughs. Names: play left right up down ok home talk power.
 struct ScriptStep {
     std::optional<Button> button;
     bool longPress = false;
+    bool deep = false;
     int waitMs = 0;
     bool quit = false;
 };
@@ -97,6 +107,7 @@ std::vector<ScriptStep> parseScript(const std::string& text) {
                 continue;
             }
             step.longPress = arg == "long";
+            step.deep = arg == "deep" && deepOf(*step.button);
         }
         steps.push_back(step);
     }
@@ -117,13 +128,16 @@ public:
             next_ = now + std::chrono::milliseconds(step.waitMs);
             ++index_;
         } else if (!pressed_) {
-            std::printf("script: %s%s\n", buttonName(*step.button), step.longPress ? " (long)" : "");
+            std::printf("script: %s%s\n", buttonName(*step.button),
+                        step.longPress ? " (long)" : step.deep ? " (deep)" : "");
             held.insert(*step.button);
             app.keyDown(*step.button);
+            if (step.deep) app.keyDown(*deepOf(*step.button));
             pressed_ = true;
             next_ = now + std::chrono::milliseconds(step.longPress ? 1600 : 80);
         } else {
             held.erase(*step.button);
+            if (step.deep) app.keyUp(*deepOf(*step.button));
             app.keyUp(*step.button);
             pressed_ = false;
             ++index_;
@@ -143,7 +157,7 @@ void printKeys() {
     std::printf(
         "Keys:  Space play/pause   Left/Right back/forward   Up/Down\n"
         "       Enter OK   Esc/Backspace Home   T talk   P power   H hold switch\n"
-        "       Hold a key for a long press. Cmd+Q quits.\n\n");
+        "       Shift+Left/Right deep press. Hold a key for a long press. Cmd+Q quits.\n\n");
 }
 
 // ---------------------------------------------------------------- drawing
@@ -154,28 +168,26 @@ void drawMenu(const App& app) {
         ImGui::TextDisabled("(sleeping - any key wakes the device)");
         return;
     }
-    if (app.mode() == App::Mode::Player) {
-        ImGui::TextColored(kSelected, "PLAYER SCREEN");
-        ImGui::Separator();
-        ImGui::TextWrapped(
-            "Space: play / pause      hold Space: where am I\n"
-            "Left / Right: skip       hold Left / Right: previous / next chapter\n"
-            "Up / Down: volume\n"
-            "Enter: player menu       Esc: home menu");
-        return;
-    }
-    const auto& stack = app.menuStack();
+    const auto& stack = app.screens();
     for (size_t i = 0; i < stack.size(); ++i) {
-        const MenuLevel& level = stack[i];
+        const Screen& level = stack[i];
         ImGui::BeginChild(ImGui::GetID((void*)(intptr_t)(i + 1)), ImVec2(250, 0), ImGuiChildFlags_Borders);
         ImGui::TextColored(kSelected, "%s", level.title.c_str());
         ImGui::Separator();
+        if (level.kind == Screen::Kind::Player) {
+            ImGui::TextWrapped(
+                "PLAYER\n\n"
+                "Space: play / pause\nhold Space: where am I\n"
+                "Left / Right: skip\nhold or Shift: previous / next chapter\n"
+                "Up / Down: volume\n"
+                "Enter: player menu\nEsc: back   hold Esc: home");
+        }
         for (size_t j = 0; j < level.items.size(); ++j) {
             const MenuItem& item = level.items[j];
             std::string text = item.label;
             if (item.value) text += ": " + item.value();
-            if (item.submenu) text += "  >";
             if (item.adjust) text += "  <>";
+            if (item.submenu) text += "  >";
             bool selected = j == level.index;
             bool active = i + 1 == stack.size();
             if (selected && !active) ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.3f, 0.3f, 0.35f, 1));
@@ -216,6 +228,8 @@ void drawDevice(App& app, const std::set<Button>& held) {
     col(1); deviceButton(app, held, Button::Down, kSize);
     col(0); deviceButton(app, held, Button::Home, kSize);
     ImGui::SameLine(); col(2); deviceButton(app, held, Button::Ok, kSize);
+    col(0); deviceButton(app, held, Button::BackDeep, kSize);
+    ImGui::SameLine(); col(2); deviceButton(app, held, Button::ForwardDeep, kSize);
 
     bool hold = app.hold();
     if (ImGui::Checkbox("Hold switch (H)", &hold)) app.setHold(hold);
@@ -240,19 +254,21 @@ void drawNowPlaying(const App& app) {
 }
 
 void drawUsage(App& app) {
-    if (ImGui::BeginTable("usage", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+    if (ImGui::BeginTable("usage", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("Button");
         ImGui::TableSetupColumn("Short");
         ImGui::TableSetupColumn("Long");
+        ImGui::TableSetupColumn("Deep");
         ImGui::TableHeadersRow();
         const auto& usage = app.buttonUsage();
         for (size_t i = 0; i < kButtonCount; ++i) {
+            if (Button(i) == Button::BackDeep || Button(i) == Button::ForwardDeep) continue; // counted as Deep
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(buttonName(Button(i)));
-            for (int g = 0; g < 2; ++g) {
+            for (size_t g = 0; g < kGestureCount; ++g) {
                 ImGui::TableNextColumn();
-                if (usage[i][size_t(g)]) ImGui::Text("%d", usage[i][size_t(g)]);
+                if (usage[i][g]) ImGui::Text("%d", usage[i][g]);
                 else ImGui::TextDisabled("-");
             }
         }
@@ -393,10 +409,16 @@ int main(int argc, char** argv) {
                 if (e.key.keysym.sym == SDLK_h && down) {
                     app.setHold(!app.hold());
                 } else if (auto b = mapKey(e.key.keysym.sym)) {
+                    auto deep = deepOf(*b);
                     if (down) {
                         held.insert(*b);
                         app.keyDown(*b);
+                        if (deep && (e.key.keysym.mod & KMOD_SHIFT)) {
+                            held.insert(*deep);
+                            app.keyDown(*deep);
+                        }
                     } else {
+                        if (deep && held.erase(*deep)) app.keyUp(*deep);
                         held.erase(*b);
                         app.keyUp(*b);
                     }

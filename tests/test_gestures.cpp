@@ -54,3 +54,27 @@ TEST(GestureDetector, ButtonsAreIndependent) {
     ASSERT_TRUE(ev);
     EXPECT_EQ(ev->gesture, Gesture::Short);
 }
+
+TEST(GestureDetector, DeepStageFiresAtOnceAndSilencesTheFirstStage) {
+    GestureDetector g;
+    EXPECT_FALSE(g.press(Button::Back, t0));
+    auto deep = g.press(Button::BackDeep, t0 + 50ms);
+    ASSERT_TRUE(deep);
+    EXPECT_EQ(deep->button, Button::Back);
+    EXPECT_EQ(deep->gesture, Gesture::Deep);
+    EXPECT_TRUE(g.poll(t0 + 2s).empty()) << "no long press of either stage";
+    EXPECT_FALSE(g.release(Button::BackDeep, t0 + 2s));
+    EXPECT_FALSE(g.release(Button::Back, t0 + 2s));
+}
+
+TEST(GestureDetector, FirstStageAloneIsAnOrdinaryPress) {
+    GestureDetector g;
+    g.press(Button::Forward, t0);
+    g.press(Button::ForwardDeep, t0 + 50ms);
+    g.release(Button::ForwardDeep, t0 + 60ms);
+    g.release(Button::Forward, t0 + 70ms);
+    g.press(Button::Forward, t0 + 1s); // the next press is not silenced
+    auto ev = g.release(Button::Forward, t0 + 1100ms);
+    ASSERT_TRUE(ev);
+    EXPECT_EQ(ev->gesture, Gesture::Short);
+}

@@ -2,7 +2,7 @@
 
 Audiobook player for blind users: buttons and speech, no screen. Read
 [SPEC.md](SPEC.md) for the product and [docs/architecture.md](docs/architecture.md)
-for the code.
+for the code. Menus and keys follow [docs/navigation.md](docs/navigation.md).
 
 ## Build and test
 

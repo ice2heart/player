@@ -119,8 +119,8 @@ Proposed layout (v1):
 | Button          | Shape / position           | Short press        | Long press (≥ 600 ms)     | Double press |
 |-----------------|----------------------------|--------------------|---------------------------|--------------|
 | **Play/Pause**  | large round, center        | play / pause       | "Where am I?" (announce)  | —            |
-| **Back**        | left arrow                 | skip back N sec / menu: back or value − | previous chapter | —     |
-| **Forward**     | right arrow                | skip fwd N sec / menu: open or value +  | next chapter     | —     |
+| **Back**        | left arrow, two-stage      | skip back N sec / menu: value − | previous chapter (also deep press) | — |
+| **Forward**     | right arrow, two-stage     | skip fwd N sec / menu: value +  | next chapter (also deep press)     | — |
 | **Up**          | top, ridged                | volume up / menu ↑ | speech rate up (in menus) | —            |
 | **Down**        | bottom, ridged             | volume down / menu ↓ | speech rate down        | —            |
 | **Menu / OK**   | square                     | open menu / select | go back one level         | —            |
@@ -130,6 +130,10 @@ Proposed layout (v1):
 | **Hold**        | slide switch               | locks all buttons except Power (announces "locked") | | |
 
 Notes:
+- **Two-stage Left/Right** (like a camera shutter button): a light press skips, and pressing deeper jumps
+  a chapter at once, without waiting for a long press. The deep stage is a second contact, so a second
+  GPIO per key. **[OPEN]** Pick a two-step tact switch and check that the stages can be felt through
+  the case. On one-stage hardware the long press stays the fallback.
 - Debounce in MCU (or `gpio-keys` `debounce-interval`).
 - Linux side sees standard **evdev** key events (`KEY_PLAYPAUSE`, `KEY_NEXTSONG`, …) so the
   app can be developed on a desktop with a keyboard.
@@ -288,6 +292,9 @@ Design:
 Hierarchical list navigation, like a screen reader:
 - **Up/Down** move through items, each item is spoken: _"Podcasts, 3 of 6"_.
 - **OK** enters / activates. **Home short** goes up a level. **Home long** goes to root.
+- **OK goes in, Home goes out** of a stack of screens (menus and the player). **Left/Right only
+  change a value in place**. On other items they do nothing. A changed value is saved when the
+  user leaves the item. Full rules: [docs/navigation.md](docs/navigation.md).
 - Position info (`n of m`) is configurable.
 - Wrap-around at end of list with a distinct earcon (setting: wrap or stop).
 - **First-letter navigation** via voice: "go to D".

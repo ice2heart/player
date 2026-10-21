@@ -93,7 +93,7 @@ protected:
         return out;
     }
 
-    const MenuLevel& level() const { return app->menuStack().back(); }
+    const Screen& level() const { return app->screens().back(); }
 
     FakeSpeech speech;
     FakePlayer player;
@@ -112,7 +112,7 @@ protected:
 TEST_F(AppTest, StartsAtHomeWhenNoBookWasPlaying) {
     start();
     EXPECT_EQ(app->mode(), App::Mode::Menu);
-    ASSERT_EQ(app->menuStack().size(), 1u);
+    ASSERT_EQ(app->screens().size(), 1u);
     EXPECT_EQ(level().title, "Home");
     EXPECT_TRUE(speech.heard("Ready."));
     EXPECT_EQ(speech.last(), "Home. Library, 1 of 6");
@@ -205,31 +205,172 @@ TEST_F(AppTest, OkOpensSubmenuAndLongOkGoesBack) {
     EXPECT_EQ(level().title, "Library");
     EXPECT_EQ(speech.last(), "Library. Alpha, 2 parts, 1 of 2");
     hold(Button::Ok);
-    EXPECT_EQ(app->menuStack().size(), 1u);
+    EXPECT_EQ(app->screens().size(), 1u);
     EXPECT_EQ(sounds.last(), Earcon::Close);
 }
 
-TEST_F(AppTest, ChangingASettingSavesAndAppliesIt) {
+TEST_F(AppTest, ASettingOpensOnItsCurrentValue) {
     start();
-    open("Settings");     // Speech rate
-    press(Button::Forward);
+    open("Settings");
+    open("Volume");
+    EXPECT_EQ(level().title, "Volume");
+    EXPECT_EQ(speech.last(), "Volume. 70 percent, current, 15 of 21");
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "75 percent, 16 of 21");
+}
+
+TEST_F(AppTest, ChoosingAValueFromTheListSavesItAppliesItAndGoesBack) {
+    start();
+    open("Settings");
+    open("Speech rate");
+    press(Button::Down);
+    press(Button::Ok);
     EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
     EXPECT_EQ(speech.rate, 250);
+    EXPECT_EQ(level().title, "Settings");
+    EXPECT_EQ(speech.last(), "Speech rate, 250 words per minute, 1 of 10");
+}
+
+TEST_F(AppTest, LeavingAValueListChangesNothing) {
+    start();
+    open("Settings");
+    open("Volume");
+    press(Button::Down);
+    press(Button::Home);
+    EXPECT_EQ(level().title, "Settings");
+    EXPECT_EQ(settings.getInt("volume", 70), 70);
+    EXPECT_EQ(speech.last(), "Volume, 70 percent, 2 of 10");
+}
+
+TEST_F(AppTest, LeftAndRightChangeASettingInPlace) {
+    start();
+    open("Settings"); // Speech rate
+    press(Button::Forward);
+    EXPECT_EQ(level().title, "Settings");
+    EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
+    EXPECT_EQ(speech.rate, 250) << "applied at once, so the user hears the new rate";
     EXPECT_EQ(speech.last(), "250 words per minute");
-    press(Button::Down);  // Volume
+    EXPECT_EQ(sounds.last(), Earcon::Move);
+    press(Button::Down); // Volume
     press(Button::Back);
     EXPECT_EQ(settings.getInt("volume", 0), 65);
     EXPECT_FLOAT_EQ(volume.volume, 0.65f);
 }
 
-TEST_F(AppTest, SettingStopsAtTheEndOfItsRange) {
+TEST_F(AppTest, ASettingStopsAtTheEndOfItsRange) {
     settings.setInt("speech.rate", 460);
     start();
     open("Settings");
     press(Button::Forward);
     EXPECT_EQ(settings.getInt("speech.rate", 0), 460);
-    ASSERT_GE(sounds.played.size(), 2u);
-    EXPECT_EQ(sounds.played[sounds.played.size() - 2], Earcon::Edge);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "460 words per minute");
+}
+
+TEST_F(AppTest, AChangedSettingIsWrittenWhenLeavingTheItem) {
+    fs::path file = base / "settings.tsv";
+    settings = Settings(file);
+    start();
+    open("Settings"); // Speech rate
+    auto saved = [&] {
+        Settings onDisk(file);
+        onDisk.load();
+        return onDisk.getInt("speech.rate", 220);
+    };
+    press(Button::Forward);
+    press(Button::Forward);
+    EXPECT_EQ(saved(), 220) << "not written while still on the item";
+    press(Button::Down);
+    EXPECT_EQ(saved(), 280);
+}
+
+TEST_F(AppTest, AChangedSettingIsWrittenWhenTheDeviceSleeps) {
+    fs::path file = base / "settings.tsv";
+    settings = Settings(file);
+    start();
+    open("Settings");
+    press(Button::Forward);
+    idle(6min); // auto sleep, no key pressed
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    Settings onDisk(file);
+    onDisk.load();
+    EXPECT_EQ(onDisk.getInt("speech.rate", 220), 250);
+}
+
+TEST_F(AppTest, LeftAndRightDoNothingOnItemsWithoutAValue) {
+    start();
+    open("Settings");
+    hold(Button::Down); // Sleep timer: a value, but nothing to step
+    for (Button b : {Button::Back, Button::Forward}) {
+        size_t said = speech.said.size(), played = sounds.played.size();
+        press(b);
+        EXPECT_EQ(level().title, "Settings");
+        EXPECT_EQ(level().index, 9u);
+        EXPECT_EQ(speech.said.size(), said) << "silent";
+        EXPECT_EQ(sounds.played.size(), played) << "silent";
+    }
+    press(Button::Home);
+    press(Button::Forward); // Home > Settings: a submenu
+    EXPECT_EQ(level().title, "Home");
+}
+
+TEST_F(AppTest, HomeGoesBackToTheScreenYouCameFrom) {
+    playAlpha(); // Home > Library > player
+    press(Button::Home);
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(level().title, "Library");
+    EXPECT_EQ(speech.last(), "Alpha, 2 parts, 1 of 2");
+    EXPECT_TRUE(player.playing()) << "leaving the player does not stop it";
+    press(Button::Home);
+    EXPECT_EQ(labels().front(), "Now playing") << "Home is rebuilt when returned to";
+    EXPECT_EQ(speech.last(), "Library, 2 of 7") << "and stays on the same item";
+    press(Button::Home);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(app->screens().size(), 1u);
+}
+
+TEST_F(AppTest, HoldingOkGoesBackLikeHome) {
+    playAlpha();
+    hold(Button::Ok);
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(level().title, "Library");
+}
+
+TEST_F(AppTest, ReturningToAListWithRepeatedLabelsKeepsThePlace) {
+    touch(music / "Twins" / "01 - Song.mp3");
+    touch(music / "Twins" / "02 - Song.mp3");
+    start();
+    open("Music");
+    open("Twins");
+    press(Button::Down);
+    press(Button::Ok); // the second "Song"
+    ASSERT_EQ(player.file, (music / "Twins" / "02 - Song.mp3").string());
+    press(Button::Home);
+    EXPECT_EQ(level().index, 1u);
+    EXPECT_EQ(speech.last(), "Song, 2 of 2");
+}
+
+TEST_F(AppTest, AStoredValueBetweenOptionsStepsToTheNearestOne) {
+    settings.setInt("speech.rate", 225); // between 220 and 250
+    start();
+    open("Settings");
+    press(Button::Forward);
+    EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
+    settings.setInt("speech.rate", 225);
+    press(Button::Back);
+    EXPECT_EQ(settings.getInt("speech.rate", 0), 220);
+}
+
+TEST_F(AppTest, ThereIsOnlyOnePlayerScreen) {
+    playAlpha();
+    press(Button::Ok); // Player menu
+    open("Chapters");
+    open("Calm");
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(app->screens().size(), 3u) << "back to the player, not a second one on top";
+    hold(Button::Home);
+    open("Now playing");
+    EXPECT_EQ(app->screens().size(), 2u);
 }
 
 TEST_F(AppTest, KeyDescriberDescribesInsteadOfActing) {
@@ -268,7 +409,7 @@ TEST_F(AppTest, HelpButtonsDescribesEachButton) {
     EXPECT_EQ(labels(), (std::vector<std::string>{"Play pause", "Left", "Right", "Up", "Down", "OK", "Home", "Talk",
                                                   "Power"}));
     open("Right");
-    EXPECT_EQ(speech.last(), "Right. In player, skip forward. Hold for next chapter or track. In menus, open, or increase a value.");
+    EXPECT_EQ(speech.last(), "Right. In menus, raises a setting. In player, skip forward. Hold, or press deeper, for next chapter or track.");
     EXPECT_FALSE(app->keyDescriber());
 }
 
@@ -403,6 +544,52 @@ TEST_F(AppTest, EndOfBookGoesBackToStartPaused) {
     EXPECT_EQ(speech.last(), "End of book. Press play to start again.");
 }
 
+TEST_F(AppTest, DeepPressJumpsToTheNextChapterAtOnce) {
+    playAlpha();
+    player.pos = 42;
+    app->keyDown(Button::Forward); // first stage
+    app->keyDown(Button::ForwardDeep);
+    EXPECT_EQ(player.file, alphaFile(2)) << "no waiting for a long press";
+    EXPECT_EQ(speech.last(), "Calm");
+    clock.advance(700ms);
+    app->tick();
+    app->keyUp(Button::ForwardDeep);
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(speech.last(), "Calm") << "releasing must not also skip or jump again";
+    EXPECT_EQ(player.pos, 0);
+}
+
+TEST_F(AppTest, PushingDeeperAfterALongPressDoesNotStepAgain) {
+    start();
+    open("Settings");
+    app->keyDown(Button::Forward);
+    clock.advance(700ms);
+    app->tick(); // long press: one step
+    app->keyDown(Button::ForwardDeep);
+    app->keyUp(Button::ForwardDeep);
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
+}
+
+TEST_F(AppTest, DeepPressInAMenuStepsTheValueOnce) {
+    start();
+    open("Settings");
+    app->keyDown(Button::Forward);
+    app->keyDown(Button::ForwardDeep);
+    app->keyUp(Button::ForwardDeep);
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
+}
+
+TEST_F(AppTest, ChaptersListOpensOnTheCurrentChapter) {
+    playAlpha();
+    player.atEnd = true;
+    app->tick(); // now in file 2, "Calm"
+    press(Button::Ok); // Player menu
+    open("Chapters");
+    EXPECT_EQ(speech.last(), "Chapters. Calm, 2 of 2");
+}
+
 TEST_F(AppTest, PreviousChapterGoesToChapterStartFirst) {
     playAlpha();
     player.atEnd = true;
@@ -437,13 +624,13 @@ TEST_F(AppTest, EmbeddedChaptersInASingleFileBook) {
     EXPECT_EQ(app->nowPlaying().chapterCount, 3);
 }
 
-TEST_F(AppTest, HomeAtTopOfMenuReturnsToPlayer) {
+TEST_F(AppTest, HomeFromThePlayerMenuReturnsToThePlayer) {
     playAlpha();
     press(Button::Ok);
     EXPECT_EQ(level().title, "Player menu");
     press(Button::Home);
     EXPECT_EQ(app->mode(), App::Mode::Player);
-    EXPECT_TRUE(app->menuStack().empty());
+    EXPECT_EQ(speech.last(), "Now playing. Alpha.");
 }
 
 // ---------------------------------------------------------------- music

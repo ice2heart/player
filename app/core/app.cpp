@@ -57,12 +57,12 @@ struct ButtonHelp {
 
 const ButtonHelp kButtonHelp[] = {
     {Button::PlayPause, "Play pause", "Starts or pauses playback. Hold to hear where you are."},
-    {Button::Back, "Left", "In player, skip back. Hold for previous chapter or track. In menus, go back, or decrease a value."},
-    {Button::Forward, "Right", "In player, skip forward. Hold for next chapter or track. In menus, open, or increase a value."},
+    {Button::Back, "Left", "In menus, lowers a setting. In player, skip back. Hold, or press deeper, for previous chapter or track."},
+    {Button::Forward, "Right", "In menus, raises a setting. In player, skip forward. Hold, or press deeper, for next chapter or track."},
     {Button::Up, "Up", "In menus, previous item. Hold for first item. In player, volume up."},
     {Button::Down, "Down", "In menus, next item. Hold for last item. In player, volume down."},
-    {Button::Ok, "OK", "Opens the selected item. In player, opens the player menu. Hold to go back."},
-    {Button::Home, "Home", "Goes back one level. Hold for the home menu."},
+    {Button::Ok, "OK", "Opens the selected item. In player, opens the player menu. Hold to go back, like Home."},
+    {Button::Home, "Home", "Goes back to the previous screen. Hold for the home menu."},
     {Button::Talk, "Talk", "Hold and speak a command. Coming later."},
     {Button::Power, "Power", "Press to sleep. Hold for the power menu."},
 };
@@ -72,6 +72,13 @@ std::string keyHelp(Button button) {
         if (h.button == button) return std::string(h.name) + ". " + h.text;
     return "";
 }
+
+Screen menuScreen(std::string title, std::function<std::vector<MenuItem>()> build) {
+    std::vector<MenuItem> items = build();
+    return {Screen::Kind::Menu, std::move(title), std::move(items), std::move(build)};
+}
+
+Screen playerScreen() { return {Screen::Kind::Player, "Now playing", {}, {}}; }
 
 MenuItem action(std::string label, std::function<void()> fn) {
     MenuItem item;
@@ -108,7 +115,7 @@ void App::start() {
     for (const Book& b : scanLibrary(libraryRoot_)) {
         if (!last.empty() && b.path.string() == last) {
             openBook(b, false);
-            mode_ = Mode::Player;
+            screens_ = {menuScreen("Home", [this] { return homeMenu(); }), playerScreen()};
             say(b.title + ", paused. Press play to continue.");
             return;
         }
@@ -117,6 +124,7 @@ void App::start() {
 }
 
 void App::shutdown() {
+    saveChangedSettings();
     savePosition();
     player_.close();
 }
@@ -128,7 +136,7 @@ void App::keyDown(Button button) {
         say("Locked.");
         return;
     }
-    gestures_.press(button, clock_.now());
+    if (auto ev = gestures_.press(button, clock_.now())) onButton(*ev);
 }
 
 void App::keyUp(Button button) {
@@ -141,6 +149,11 @@ void App::setHold(bool on) {
     tts_.stop();
     earcons_.play(on ? Earcon::Close : Earcon::Open);
     say(on ? "Buttons locked." : "Buttons unlocked.");
+}
+
+App::Mode App::mode() const {
+    if (sleeping_) return Mode::Sleeping;
+    return !screens_.empty() && screens_.back().kind == Screen::Kind::Player ? Mode::Player : Mode::Menu;
 }
 
 void App::tick() {
@@ -161,7 +174,7 @@ void App::tick() {
     if (player_.playing() && now - lastSave_ > std::chrono::seconds(30)) savePosition();
 
     int autoSleep = settings_.getInt(kAutoSleep, 5);
-    if (mode_ != Mode::Sleeping && autoSleep > 0 && !player_.playing() && !tts_.speaking() &&
+    if (!sleeping_ && autoSleep > 0 && !player_.playing() && !tts_.speaking() &&
         now - lastActivity_ > std::chrono::minutes(autoSleep))
         sleep("Going to sleep.");
 }
@@ -172,7 +185,10 @@ void App::onButton(ButtonEvent ev) {
     usage_[static_cast<size_t>(ev.button)][static_cast<size_t>(ev.gesture)]++;
     lastActivity_ = clock_.now();
 
-    if (mode_ == Mode::Sleeping) {
+    // A value changed with Left / Right is written once the user moves on.
+    if (ev.button != Button::Back && ev.button != Button::Forward) saveChangedSettings();
+
+    if (sleeping_) {
         wake();
         return;
     }
@@ -186,7 +202,7 @@ void App::onButton(ButtonEvent ev) {
     switch (ev.button) {
     case Button::Power:
         if (ev.gesture == Gesture::Short) sleep("Going to sleep.");
-        else openMenu("Power", powerMenu());
+        else openMenu("Power", [this] { return powerMenu(); });
         return;
     case Button::Talk:
         earcons_.play(Earcon::Error);
@@ -200,36 +216,37 @@ void App::onButton(ButtonEvent ev) {
         break;
     }
 
-    if (mode_ == Mode::Menu) handleMenu(ev);
-    else handlePlayer(ev);
+    if (mode() == Mode::Player) handlePlayer(ev);
+    else handleMenu(ev);
 }
 
+// OK goes in, Home goes out, Left / Right change a value (docs/navigation.md).
 void App::handleMenu(ButtonEvent ev) {
-    if (menu_.empty()) {
+    if (screens_.empty()) {
         goHome();
         return;
     }
-    MenuLevel& level = menu_.back();
+    Screen& screen = screens_.back();
     bool longPress = ev.gesture == Gesture::Long;
 
     switch (ev.button) {
     case Button::Up:
     case Button::Down: {
-        if (level.items.empty()) {
+        if (screen.items.empty()) {
             earcons_.play(Earcon::Edge);
-            say(level.title + ", empty.");
+            say(screen.title + ", empty.");
             return;
         }
-        long count = long(level.items.size());
+        long count = long(screen.items.size());
         if (longPress) {
-            level.index = ev.button == Button::Up ? 0 : size_t(count - 1);
+            screen.index = ev.button == Button::Up ? 0 : size_t(count - 1);
             earcons_.play(Earcon::Move);
         } else {
-            long next = long(level.index) + (ev.button == Button::Up ? -1 : 1);
+            long next = long(screen.index) + (ev.button == Button::Up ? -1 : 1);
             if (next < 0 || next >= count) {
                 if (!settings_.getInt(kMenuWrap, 1)) {
                     earcons_.play(Earcon::Edge);
-                    say(itemSpeech(level));
+                    say(itemSpeech(screen));
                     return;
                 }
                 next = (next + count) % count;
@@ -237,28 +254,15 @@ void App::handleMenu(ButtonEvent ev) {
             } else {
                 earcons_.play(Earcon::Move);
             }
-            level.index = size_t(next);
+            screen.index = size_t(next);
         }
-        say(itemSpeech(level));
+        say(itemSpeech(screen));
         return;
     }
     case Button::Back:
-    case Button::Forward: {
-        int dir = ev.button == Button::Back ? -1 : 1;
-        const MenuItem* item = level.items.empty() ? nullptr : &level.items[level.index];
-        if (item && item->adjust) {
-            auto adjust = item->adjust;
-            auto value = item->value;
-            adjust(dir);
-            earcons_.play(Earcon::Move);
-            if (value) say(value());
-        } else if (dir < 0) {
-            back(); // Left = out, like a file browser
-        } else {
-            activate(); // Right = in
-        }
+    case Button::Forward: // short, long and deep all step the value once
+        adjust(ev.button == Button::Back ? -1 : 1);
         return;
-    }
     case Button::Ok:
         if (longPress) back();
         else activate();
@@ -273,13 +277,12 @@ void App::handleMenu(ButtonEvent ev) {
 }
 
 void App::handlePlayer(ButtonEvent ev) {
-    bool longPress = ev.gesture == Gesture::Long;
     switch (ev.button) {
     case Button::Back:
     case Button::Forward: {
         int dir = ev.button == Button::Back ? -1 : 1;
-        if (longPress) stepChapter(dir);
-        else skip(dir);
+        if (ev.gesture == Gesture::Short) skip(dir);
+        else stepChapter(dir); // long press, or the deep stage of a two-stage key
         return;
     }
     case Button::Up:
@@ -289,10 +292,12 @@ void App::handlePlayer(ButtonEvent ev) {
         changeVolume(-5);
         return;
     case Button::Ok:
-        openMenu("Player menu", playerMenu());
+        if (ev.gesture == Gesture::Long) back();
+        else openMenu("Player menu", [this] { return playerMenu(); });
         return;
     case Button::Home:
-        goHome();
+        if (ev.gesture == Gesture::Long) goHome();
+        else back();
         return;
     default:
         return;
@@ -317,120 +322,190 @@ void App::say(const std::string& text) {
     tts_.say(text);
 }
 
-std::string App::itemSpeech(const MenuLevel& level) const {
-    if (level.items.empty()) return level.title + ", empty.";
-    const MenuItem& item = level.items[level.index];
+std::string App::itemSpeech(const Screen& screen) const {
+    if (screen.items.empty()) return screen.title + ", empty.";
+    const MenuItem& item = screen.items[screen.index];
     int verbosity = settings_.getInt(kVerbosity, Normal);
     std::string text = item.label;
     if (item.value) text += ", " + item.value();
     if (verbosity <= Normal)
-        text += ", " + std::to_string(level.index + 1) + " of " + std::to_string(level.items.size());
+        text += ", " + std::to_string(screen.index + 1) + " of " + std::to_string(screen.items.size());
     if (verbosity == Beginner) {
-        if (item.submenu) text += ". Press OK to open.";
+        if (item.adjust && item.submenu) text += ". Use left and right to change, or press OK for the list.";
         else if (item.adjust) text += ". Use left and right to change.";
+        else if (item.submenu) text += ". Press OK to open.";
         else if (item.action) text += ". Press OK to select.";
     }
     return text;
 }
 
+std::string App::nowPlayingSpeech() const {
+    std::string text = "Now playing. " + book_->title;
+    std::string track = chapters()[size_t(currentChapter())].title;
+    if (music_ && track != book_->title) text += ", " + track; // a loose track is its own "album"
+    return text + (player_.playing() ? "." : ", paused.");
+}
+
 void App::whereAmI() {
-    if (mode_ == Mode::Player) {
+    if (mode() == Mode::Player) {
         say(playerStatus());
         return;
     }
     std::string path;
-    for (const MenuLevel& l : menu_) path += (path.empty() ? "" : ", ") + l.title;
-    say(path + ". " + (menu_.empty() ? "" : itemSpeech(menu_.back())) +
+    for (const Screen& s : screens_) path += (path.empty() ? "" : ", ") + s.title;
+    say(path + ". " + (screens_.empty() ? "" : itemSpeech(screens_.back())) +
         (book_ ? std::string(player_.playing() ? ". Playing " : ". Paused, ") + book_->title : ""));
 }
 
-// ---------------------------------------------------------------- menus
+// ---------------------------------------------------------------- screens
 
-void App::openMenu(const std::string& title, std::vector<MenuItem> items, size_t index) {
-    mode_ = Mode::Menu;
-    menu_.push_back({title, std::move(items), 0});
-    MenuLevel& level = menu_.back();
-    level.index = std::min(index, level.items.empty() ? 0 : level.items.size() - 1);
+void App::openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index) {
+    Screen screen = menuScreen(title, std::move(build));
+    screen.index = std::min(index, screen.items.empty() ? 0 : screen.items.size() - 1);
+    screens_.push_back(std::move(screen));
     earcons_.play(Earcon::Open);
-    say(title + ". " + itemSpeech(level));
+    say(title + ". " + itemSpeech(screens_.back()));
 }
 
 void App::activate() {
-    MenuLevel& level = menu_.back();
-    if (level.items.empty()) {
+    Screen& screen = screens_.back();
+    if (screen.items.empty()) {
         earcons_.play(Earcon::Edge);
         return;
     }
-    MenuItem item = level.items[level.index]; // copy: the action may change the menu stack
+    MenuItem item = screen.items[screen.index]; // copy: the action may change the screen stack
     if (item.submenu) {
-        openMenu(item.label, item.submenu());
+        openMenu(item.label, item.submenu, item.selected ? item.selected() : 0);
     } else if (item.action) {
         item.action();
-    } else if (item.adjust) {
-        say(item.label + ", " + item.value() + ". Use left and right to change.");
     } else {
         earcons_.play(Earcon::Edge);
     }
+}
+
+// Left / Right only ever change a value. On an item without one they do nothing
+// at all, so they can never be mistaken for "back" or "open".
+void App::adjust(int direction) {
+    const Screen& screen = screens_.back();
+    if (screen.items.empty() || !screen.items[screen.index].adjust) return;
+    MenuItem item = screen.items[screen.index];
+    earcons_.play(item.adjust(direction) ? Earcon::Move : Earcon::Edge);
+    if (item.value) say(item.value());
 }
 
 void App::back() {
-    if (menu_.size() > 1) {
-        menu_.pop_back();
-        earcons_.play(Earcon::Close);
-        say(itemSpeech(menu_.back()));
-    } else if (book_) {
-        enterPlayer();
-    } else if (menu_.empty() || menu_.front().title != "Home") {
-        goHome();
-    } else {
+    if (screens_.size() <= 1) {
         earcons_.play(Earcon::Edge);
-        say("Home. " + itemSpeech(menu_.back()));
+        if (!screens_.empty()) say(screens_.back().title + ". " + itemSpeech(screens_.back()));
+        return;
     }
+    screens_.pop_back();
+    earcons_.play(Earcon::Close);
+    Screen& screen = screens_.back();
+    if (screen.kind == Screen::Kind::Player) {
+        say(nowPlayingSpeech());
+        return;
+    }
+    // Rebuild, so a list shows what changed meanwhile (e.g. "Now playing" on Home), and stay on the same item.
+    std::string label = screen.items.empty() ? "" : screen.items[screen.index].label;
+    screen.items = screen.build();
+    // Same place if the label is still there (labels may repeat), else its first match, else the nearest index.
+    size_t index = std::min(screen.index, screen.items.empty() ? 0 : screen.items.size() - 1);
+    if (screen.items.empty() || screen.items[index].label != label) {
+        for (size_t i = 0; i < screen.items.size(); ++i) {
+            if (screen.items[i].label == label) {
+                index = i;
+                break;
+            }
+        }
+    }
+    screen.index = index;
+    say(itemSpeech(screen));
 }
 
 void App::goHome() {
-    menu_.clear();
-    openMenu("Home", homeMenu());
+    screens_.clear();
+    openMenu("Home", [this] { return homeMenu(); });
 }
 
+// There is only one player screen: return to it if it is on the stack, else push it.
 void App::enterPlayer() {
     if (!book_) {
         goHome();
         return;
     }
-    menu_.clear();
-    mode_ = Mode::Player;
-    earcons_.play(Earcon::Close);
-    std::string text = "Now playing. " + book_->title;
-    std::string track = chapters()[size_t(currentChapter())].title;
-    if (music_ && track != book_->title) text += ", " + track; // a loose track is its own "album"
-    say(text + (player_.playing() ? "." : ", paused."));
+    auto player = std::find_if(screens_.begin(), screens_.end(),
+                               [](const Screen& s) { return s.kind == Screen::Kind::Player; });
+    if (player != screens_.end()) {
+        screens_.erase(player + 1, screens_.end());
+        earcons_.play(Earcon::Close);
+    } else {
+        screens_.push_back(playerScreen());
+        earcons_.play(Earcon::Open);
+    }
+    say(nowPlayingSpeech());
+}
+
+void App::saveChangedSettings() {
+    if (!settingsChanged_) return;
+    settingsChanged_ = false;
+    settings_.save();
 }
 
 MenuItem App::choice(const std::string& label, const std::string& key,
                      std::vector<std::pair<int, std::string>> options, int fallback,
                      std::function<void(int)> onChange) {
+    // Left / Right step through the options and apply each at once, so the user
+    // hears the new speech rate or volume; the file is written when they move on.
+    // OK opens the whole list, starting on the current value; choosing one saves it and goes back.
+    auto current = [this, key, options, fallback]() -> std::optional<size_t> {
+        int v = settings_.getInt(key, fallback);
+        for (size_t i = 0; i < options.size(); ++i)
+            if (options[i].first == v) return i;
+        return std::nullopt;
+    };
     MenuItem item;
     item.label = label;
-    item.value = [this, key, options, fallback] {
-        int v = settings_.getInt(key, fallback);
-        for (const auto& [val, name] : options)
-            if (val == v) return name;
-        return std::to_string(v);
+    item.value = [this, key, options, fallback, current] {
+        auto i = current();
+        return i ? options[*i].second : std::to_string(settings_.getInt(key, fallback));
     };
-    item.adjust = [this, key, options, fallback, onChange](int dir) {
-        int v = settings_.getInt(key, fallback);
-        long idx = 0;
-        for (size_t i = 0; i < options.size(); ++i)
-            if (options[i].first == v) idx = long(i);
-        long next = idx + dir;
-        if (next < 0 || next >= long(options.size())) {
-            earcons_.play(Earcon::Edge);
-            return;
+    item.adjust = [this, key, options, fallback, onChange, current](int dir) {
+        long next = -1;
+        if (auto i = current()) {
+            next = long(*i) + dir;
+        } else { // a stored value that is not an option: step to the nearest option on that side
+            int v = settings_.getInt(key, fallback);
+            for (size_t i = 0; i < options.size(); ++i) {
+                int o = options[i].first;
+                bool onSide = dir > 0 ? o > v : o < v;
+                if (onSide && (next < 0 || (dir > 0 ? o < options[size_t(next)].first : o > options[size_t(next)].first)))
+                    next = long(i);
+            }
         }
-        settings_.setInt(key, options[size_t(next)].first);
-        settings_.save();
-        if (onChange) onChange(options[size_t(next)].first);
+        if (next < 0 || next >= long(options.size())) return false;
+        int v = options[size_t(next)].first;
+        settings_.setInt(key, v);
+        settingsChanged_ = true;
+        if (onChange) onChange(v);
+        return true;
+    };
+    item.selected = [current] { return current().value_or(0); };
+    item.submenu = [this, key, options, onChange, current] {
+        std::vector<MenuItem> items;
+        auto cur = current();
+        for (size_t i = 0; i < options.size(); ++i) {
+            int v = options[i].first;
+            MenuItem option = action(options[i].second, [this, key, v, onChange] {
+                settings_.setInt(key, v);
+                settings_.save();
+                if (onChange) onChange(v);
+                back();
+            });
+            if (cur == i) option.value = [] { return std::string("current"); };
+            items.push_back(option);
+        }
+        return items;
     };
     return item;
 }
@@ -596,9 +671,9 @@ std::vector<MenuItem> App::powerMenu() {
 std::vector<MenuItem> App::helpMenu() {
     std::vector<MenuItem> items;
     items.push_back(action("Getting started", [this] {
-        say("This player has no screen. Up and Down move through a menu. OK or Right opens the item. "
-            "Home or Left goes back, and holding Home goes to the home menu. Play pause starts and stops "
-            "playback, and holding it tells you where you are. Power puts the player to sleep.");
+        say("This player has no screen. Up and Down move through a menu. OK opens the item, Home goes back, "
+            "and holding Home goes to the home menu. Left and Right change a setting. Play pause starts and "
+            "stops playback, and holding it tells you where you are. Power puts the player to sleep.");
     }));
     items.push_back(submenu("Buttons", [this] {
         std::vector<MenuItem> buttons;
@@ -618,9 +693,9 @@ std::vector<MenuItem> App::helpMenu() {
 
 std::vector<MenuItem> App::playerMenu() {
     std::vector<MenuItem> items;
-    // An action rather than a submenu so the list opens on the current chapter.
-    std::string parts = music_ ? "Tracks" : "Chapters";
-    items.push_back(action(parts, [this, parts] { openMenu(parts, chaptersMenu(), size_t(currentChapter())); }));
+    MenuItem parts = submenu(music_ ? "Tracks" : "Chapters", [this] { return chaptersMenu(); });
+    parts.selected = [this] { return size_t(currentChapter()); };
+    items.push_back(parts);
     items.push_back(submenu("Sleep timer", [this] { return sleepTimerMenu(); }));
     items.push_back(action(music_ ? "Album info" : "Book info", [this] {
         if (!book_) return;
@@ -883,23 +958,23 @@ void App::setSleepTimer(int minutes, bool endOfChapter) {
 void App::sleep(const std::string& announcement) {
     pause(false);
     savePosition();
+    saveChangedSettings();
     sleepDeadline_.reset();
     sleepAtChapterEnd_ = -1;
-    modeBeforeSleep_ = mode_;
-    mode_ = Mode::Sleeping;
+    sleeping_ = true;
     earcons_.play(Earcon::Sleep);
     say(announcement);
 }
 
 void App::wake() {
     tts_.stop();
-    mode_ = modeBeforeSleep_;
+    sleeping_ = false;
     earcons_.play(Earcon::Wake);
-    if (mode_ == Mode::Player && book_) {
+    if (mode() == Mode::Player && book_) {
         auto list = chapters();
         say(book_->title + ", paused. " + list[size_t(currentChapter())].title + ".");
-    } else if (!menu_.empty()) {
-        say(menu_.back().title + ". " + itemSpeech(menu_.back()));
+    } else if (!screens_.empty()) {
+        say(screens_.back().title + ". " + itemSpeech(screens_.back()));
     } else {
         goHome();
     }
@@ -908,6 +983,7 @@ void App::wake() {
 void App::powerOff() {
     pause(false);
     savePosition();
+    saveChangedSettings();
     earcons_.play(Earcon::Sleep);
     say("Powering off. Goodbye.");
     quit_ = true;
@@ -918,7 +994,7 @@ void App::restart() {
     player_.close();
     book_.reset();
     music_ = false;
-    menu_.clear();
+    screens_.clear();
     sleepDeadline_.reset();
     sleepAtChapterEnd_ = -1;
     keyDescriber_ = false;

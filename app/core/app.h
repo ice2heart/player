@@ -46,11 +46,11 @@ public:
     void shutdown();
 
     // Read-only state for the simulator's visualisation.
-    Mode mode() const { return mode_; }
-    const std::vector<MenuLevel>& menuStack() const { return menu_; }
+    Mode mode() const;
+    const std::vector<Screen>& screens() const { return screens_; }
     NowPlaying nowPlaying() const;
     const std::deque<std::string>& speechLog() const { return speechLog_; }
-    const std::array<std::array<int, 2>, kButtonCount>& buttonUsage() const { return usage_; }
+    const std::array<std::array<int, kGestureCount>, kButtonCount>& buttonUsage() const { return usage_; }
     void resetButtonUsage() { usage_ = {}; }
     bool hold() const { return hold_; }
     bool keyDescriber() const { return keyDescriber_; }
@@ -69,15 +69,18 @@ private:
 
     // Speech
     void say(const std::string& text);
-    std::string itemSpeech(const MenuLevel& level) const;
+    std::string itemSpeech(const Screen& screen) const;
+    std::string nowPlayingSpeech() const;
     void whereAmI();
 
-    // Menus
-    void openMenu(const std::string& title, std::vector<MenuItem> items, size_t index = 0);
+    // Screens and menus
+    void openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index = 0);
     void activate();
+    void adjust(int direction);
     void back();
     void goHome();
     void enterPlayer();
+    void saveChangedSettings();
     std::vector<MenuItem> homeMenu();
     std::vector<MenuItem> libraryMenu();
     std::vector<MenuItem> musicMenu();
@@ -131,9 +134,9 @@ private:
     std::filesystem::path musicRoot_;
     GestureDetector gestures_;
 
-    Mode mode_ = Mode::Menu;
-    Mode modeBeforeSleep_ = Mode::Menu;
-    std::vector<MenuLevel> menu_;
+    std::vector<Screen> screens_;
+    bool sleeping_ = false;
+    bool settingsChanged_ = false; // changed with Left / Right, not yet written to disk
     std::optional<Book> book_; // the loaded book, or the album / playlist when music_
     bool music_ = false;
     size_t fileIndex_ = 0;
@@ -148,7 +151,7 @@ private:
     TimePoint lastSave_;
 
     std::deque<std::string> speechLog_;
-    std::array<std::array<int, 2>, kButtonCount> usage_{};
+    std::array<std::array<int, kGestureCount>, kButtonCount> usage_{};
 };
 
 } // namespace oap

@@ -126,19 +126,26 @@ Rules:
 ## 6. Input: buttons and gestures
 
 ```
-key / GPIO ─► App::keyDown(b) ─► GestureDetector.press
-          └─► App::keyUp(b)   ─► GestureDetector.release ─► Short ─┐
+key / GPIO ─► App::keyDown(b) ─► GestureDetector.press   ─► Deep ──┐
+          └─► App::keyUp(b)   ─► GestureDetector.release ─► Short ─┤
               App::tick()     ─► GestureDetector.poll    ─► Long ──┴► App::onButton()
 ```
 
 - **Long press** fires while the button is still held, after `Long press time`
   (default 600 ms). The release that follows is ignored.
+- **Deep press**: Left / Right may be two-stage keys. The second stage is a
+  raw input (`BackDeep`, `ForwardDeep`). It fires a `Deep` gesture on `Back` /
+  `Forward` as soon as it closes, and the first stage's release is then ignored.
 - **Hold switch** (`App::setHold`) blocks every button except Power and says "Locked".
-- **Buttons:** `PlayPause, Back (left), Forward (right), Up, Down, Ok, Home, Talk, Power`.
+- **Buttons:** `PlayPause, Back (left), Forward (right), Up, Down, Ok, Home, Talk, Power`,
+  plus the raw `BackDeep, ForwardDeep`.
 - `App` counts every gesture per button (`buttonUsage()`). The simulator shows
   the counts, so we can see which buttons are actually needed.
 
 ### Button behaviour
+
+The rules behind this table, and the checklist for new menus, are in
+[navigation.md](navigation.md).
 
 | Button | Anywhere | Menu | Player screen |
 |--------|----------|------|---------------|
@@ -146,11 +153,11 @@ key / GPIO ─► App::keyDown(b) ─► GestureDetector.press
 | Play/Pause long | "Where am I?" | menu path + item | book, chapter, time left |
 | Up / Down short | | previous / next item (wraps) | volume ± 5 % |
 | Up / Down long | | first / last item | volume ± 5 % |
-| Left / Right short | | adjust value, or Left = back, Right = open | skip back / forward |
-| Left / Right long | | same as short | previous / next chapter |
+| Left / Right short | | change the value; nothing on other items | skip back / forward |
+| Left / Right long or deep | | same as short | previous / next chapter |
 | OK short | | open / activate | player menu |
-| OK long | | back one level | player menu |
-| Home short | | back one level (from top → player) | home menu |
+| OK long | | previous screen | previous screen |
+| Home short | | previous screen | previous screen |
 | Home long | | home menu | home menu |
 | Talk | "not available yet" | | |
 | Power short | sleep | | |
@@ -164,29 +171,25 @@ does and does nothing else. Holding Home leaves the mode. The same texts
 ## 7. App state machine
 
 ```
-            start()
-              │
-              ▼   last book found?
-      ┌──── yes ───────────────┐ no
-      ▼                        ▼
- ┌─────────┐  Home / OK  ┌──────────┐
- │ Player  │────────────►│  Menu    │
- │ screen  │◄────────────│  (stack) │
- └────┬────┘ back at top └────┬─────┘
-      │  Power short / sleep timer / auto sleep
-      ▼                       ▼
-         ┌─────────────────┐
-         │    Sleeping     │── any key ──► previous mode
-         └─────────────────┘
+ start(): [Home]  or, with a last book, [Home, Player]
+
+ screens_:  Home ─► Library ─► Player ─► Player menu ─► Chapters
+            ◄────────── Home / hold OK pops one ─────────────
+            hold Home: back to [Home]
+
+ Power short / sleep timer / auto sleep ─► Sleeping ── any key ──► same screen
 ```
 
-- `Mode::Menu` has a **stack of `MenuLevel`s** (`title`, `items`, `index`).
-  Opening an item pushes a level and going back pops one. Popping the last
-  level returns to the player when a book is loaded, otherwise Home.
-- `Mode::Player` is the "now playing" screen. Playback continues in the
-  background while menus are open.
-- `Mode::Sleeping` simulates suspend: playback is paused and the position is
-  saved. Any key wakes the device and says where you are.
+- `App` keeps a **stack of `Screen`s**. A screen is a menu (`title`, `items`,
+  `index`, `build`) or a program (`Screen::Kind::Player`). OK pushes and Home
+  pops. Home is always at the bottom. Popping back to a menu rebuilds it with
+  `build`, keeping the selected label. There is at most one player screen:
+  `enterPlayer()` returns to it if it is on the stack.
+- `mode()` is derived from the stack: `Player` when the top screen is the
+  player, `Menu` otherwise, and `Sleeping` while asleep. Playback continues
+  in the background on any screen.
+- **Sleeping** simulates suspend: playback is paused, and the position and any
+  changed settings are saved. Any key wakes the device and says where you are.
 - **Power off** saves state, says goodbye and sets `quitRequested()`. The front
   end exits once speech has finished.
 
@@ -196,16 +199,20 @@ does and does nothing else. Holding Home leaves the mode. The same texts
 struct MenuItem {
     std::string label;                               // always spoken
     std::function<std::string()> value;              // spoken after label: "Volume, 70 percent"
-    std::function<void(int)> adjust;                 // Left/Right change the value
+    std::function<bool(int)> adjust;                 // Left / Right step the value in place
     std::function<std::vector<MenuItem>()> submenu;  // built when opened (fresh data)
+    std::function<size_t()> selected;                // submenu opens on this entry
     std::function<void()> action;                    // leaf
 };
 ```
 
 Menus are built by `App::*Menu()` functions and created lazily, so a list such
 as Library or Chapters always reflects the current state. `App::choice()`
-builds an adjustable item from a settings key and a list of `(value, spoken
-name)` options.
+builds a setting from a settings key and a list of `(value, spoken name)`
+options. Left / Right step the value and apply it at once. The settings file
+is written when the user leaves the item. OK opens the list of values on the
+current one, which is spoken as "current". Choosing a value there saves it,
+applies it and goes back. The item types are listed in [navigation.md](navigation.md).
 
 The spoken form of an item is `label[, value][, i of n][. hint]`. The position
 ("i of n") is left out at Expert verbosity, and the hint ("Press OK to open")
@@ -296,7 +303,7 @@ during playback. That interval is a trade-off against flash wear on the device.
 
 - **Window:** SDL2 plus Dear ImGui (v1.91.8, downloaded by CMake into `build/_deps`).
   - Left: the **menu stack as columns**. The selected item is highlighted, `>`
-    marks a submenu and `<>` an adjustable value. On the player screen it
+    marks a submenu and `<>` a value Left / Right can change. On the player screen it
     shows the player key help instead.
   - Right: clickable **device buttons** (press and hold work), the hold switch,
     **now playing** with a progress bar, a table of **button usage**, and the
