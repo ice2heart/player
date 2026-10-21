@@ -49,6 +49,30 @@ std::string chapterTitle(const std::filesystem::path& file) {
     return i < name.size() ? name.substr(i) : name;
 }
 
+struct ButtonHelp {
+    Button button;
+    const char* name;
+    const char* text;
+};
+
+const ButtonHelp kButtonHelp[] = {
+    {Button::PlayPause, "Play pause", "Starts or pauses playback. Hold to hear where you are."},
+    {Button::Back, "Left", "In player, skip back. Hold for previous chapter or track. In menus, go back, or decrease a value."},
+    {Button::Forward, "Right", "In player, skip forward. Hold for next chapter or track. In menus, open, or increase a value."},
+    {Button::Up, "Up", "In menus, previous item. Hold for first item. In player, volume up."},
+    {Button::Down, "Down", "In menus, next item. Hold for last item. In player, volume down."},
+    {Button::Ok, "OK", "Opens the selected item. In player, opens the player menu. Hold to go back."},
+    {Button::Home, "Home", "Goes back one level. Hold for the home menu."},
+    {Button::Talk, "Talk", "Hold and speak a command. Coming later."},
+    {Button::Power, "Power", "Press to sleep. Hold for the power menu."},
+};
+
+std::string keyHelp(Button button) {
+    for (const ButtonHelp& h : kButtonHelp)
+        if (h.button == button) return std::string(h.name) + ". " + h.text;
+    return "";
+}
+
 MenuItem action(std::string label, std::function<void()> fn) {
     MenuItem item;
     item.label = std::move(label);
@@ -65,9 +89,9 @@ MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn) {
 } // namespace
 
 App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, Settings& settings,
-         Clock& clock, std::filesystem::path libraryRoot)
+         Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot)
     : tts_(speech), player_(player), earcons_(sounds), volume_(volume), settings_(settings), clock_(clock),
-      libraryRoot_(std::move(libraryRoot)), lastActivity_(clock.now()), lastSave_(clock.now()) {}
+      libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), lastActivity_(clock.now()), lastSave_(clock.now()) {}
 
 // ---------------------------------------------------------------- lifecycle
 
@@ -131,7 +155,7 @@ void App::tick() {
     }
     if (sleepAtChapterEnd_ >= 0 && book_ && currentChapter() != sleepAtChapterEnd_) {
         sleepAtChapterEnd_ = -1;
-        sleep("End of chapter. Sleep timer ended.");
+        sleep("End of " + unit() + ". Sleep timer ended.");
     }
 
     if (player_.playing() && now - lastSave_ > std::chrono::seconds(30)) savePosition();
@@ -282,18 +306,7 @@ void App::describeKey(ButtonEvent ev) {
         say("Key describer off.");
         return;
     }
-    switch (ev.button) {
-    case Button::PlayPause: say("Play pause. Starts or pauses playback. Hold to hear where you are."); break;
-    case Button::Back: say("Left. In player, skip back. Hold for previous chapter. In menus, go back, or decrease a value."); break;
-    case Button::Forward: say("Right. In player, skip forward. Hold for next chapter. In menus, open, or increase a value."); break;
-    case Button::Up: say("Up. In menus, previous item. Hold for first item. In player, volume up."); break;
-    case Button::Down: say("Down. In menus, next item. Hold for last item. In player, volume down."); break;
-    case Button::Ok: say("OK. Opens the selected item. In player, opens the player menu. Hold to go back."); break;
-    case Button::Home: say("Home. Goes back one level. Hold for the home menu. Hold Home now to leave key describer."); break;
-    case Button::Talk: say("Talk. Hold and speak a command. Coming later."); break;
-    case Button::Power: say("Power. Press to sleep. Hold for the power menu."); break;
-    case Button::Count: break;
-    }
+    say(keyHelp(ev.button) + (ev.button == Button::Home ? " Hold Home now to leave key describer." : ""));
 }
 
 // ---------------------------------------------------------------- speech
@@ -388,7 +401,10 @@ void App::enterPlayer() {
     menu_.clear();
     mode_ = Mode::Player;
     earcons_.play(Earcon::Close);
-    say("Now playing. " + book_->title + (player_.playing() ? "." : ", paused."));
+    std::string text = "Now playing. " + book_->title;
+    std::string track = chapters()[size_t(currentChapter())].title;
+    if (music_ && track != book_->title) text += ", " + track; // a loose track is its own "album"
+    say(text + (player_.playing() ? "." : ", paused."));
 }
 
 MenuItem App::choice(const std::string& label, const std::string& key,
@@ -427,17 +443,13 @@ std::vector<MenuItem> App::homeMenu() {
         items.push_back(now);
     }
     items.push_back(submenu("Library", [this] { return libraryMenu(); }));
+    items.push_back(submenu("Music", [this] { return musicMenu(); }));
     items.push_back(submenu("Podcasts", [this] {
         return std::vector<MenuItem>{action("No podcasts yet", [this] { say("Podcast support is coming later."); })};
     }));
-    MenuItem timer = submenu("Sleep timer", [this] { return sleepTimerMenu(); });
-    timer.value = [this] {
-        if (sleepDeadline_) return spokenDuration(std::chrono::duration<double>(*sleepDeadline_ - clock_.now()).count()) + " left";
-        return std::string(sleepAtChapterEnd_ >= 0 ? "end of chapter" : "off");
-    };
-    items.push_back(timer);
     items.push_back(submenu("Settings", [this] { return settingsMenu(); }));
     items.push_back(submenu("System", [this] { return systemMenu(); }));
+    items.push_back(submenu("Help", [this] { return helpMenu(); }));
     return items;
 }
 
@@ -461,6 +473,47 @@ std::vector<MenuItem> App::libraryMenu() {
     return items;
 }
 
+std::vector<MenuItem> App::musicMenu() {
+    std::vector<Book> albums = scanLibrary(musicRoot_);
+    Book all{"All music", musicRoot_, {}};
+    for (const Book& a : albums) all.files.insert(all.files.end(), a.files.begin(), a.files.end());
+    if (all.files.empty())
+        return {action("No music", [this] { say("Copy music into " + musicRoot_.string() + ". One folder per album."); })};
+
+    auto tracks = [](size_t n) { return [n] { return std::to_string(n) + (n == 1 ? " track" : " tracks"); }; };
+    std::vector<MenuItem> items;
+    MenuItem playAll = action("Play all", [this, all] {
+        playMusic(all, 0);
+        enterPlayer();
+    });
+    playAll.value = tracks(all.files.size());
+    items.push_back(playAll);
+    for (const Book& a : albums) {
+        if (a.files.size() == 1 && a.files.front() == a.path) { // a loose track, not a folder
+            items.push_back(action(a.title, [this, a] {
+                playMusic(a, 0);
+                enterPlayer();
+            }));
+        } else {
+            MenuItem album = submenu(a.title, [this, a] { return albumMenu(a); });
+            album.value = tracks(a.files.size());
+            items.push_back(album);
+        }
+    }
+    return items;
+}
+
+std::vector<MenuItem> App::albumMenu(const Book& album) {
+    std::vector<MenuItem> items;
+    for (size_t i = 0; i < album.files.size(); ++i) {
+        items.push_back(action(chapterTitle(album.files[i]), [this, album, i] {
+            playMusic(album, i); // the rest of the album follows
+            enterPlayer();
+        }));
+    }
+    return items;
+}
+
 std::vector<MenuItem> App::sleepTimerMenu() {
     auto set = [this](std::string label, int minutes, bool endOfChapter) {
         return action(std::move(label), [this, minutes, endOfChapter] {
@@ -470,7 +523,7 @@ std::vector<MenuItem> App::sleepTimerMenu() {
     };
     return {set("Off", 0, false),          set("1 minute", 1, false),   set("15 minutes", 15, false),
             set("30 minutes", 30, false),  set("45 minutes", 45, false), set("1 hour", 60, false),
-            set("End of chapter", 0, true)};
+            set("End of " + unit(), 0, true)};
 }
 
 std::vector<MenuItem> App::settingsMenu() {
@@ -488,11 +541,12 @@ std::vector<MenuItem> App::settingsMenu() {
     items.push_back(choice("Menu wrap around", kMenuWrap, {{0, "off"}, {1, "on"}}, 1));
     items.push_back(choice("Auto sleep", kAutoSleep,
                            {{1, "1 minute"}, {2, "2 minutes"}, {5, "5 minutes"}, {10, "10 minutes"}, {30, "30 minutes"}, {0, "never"}}, 5));
-    items.push_back(action("Key describer", [this] {
-        keyDescriber_ = true;
-        earcons_.play(Earcon::Open);
-        say("Key describer on. Press any key to hear what it does. Hold Home to leave.");
-    }));
+    MenuItem timer = submenu("Sleep timer", [this] { return sleepTimerMenu(); });
+    timer.value = [this] {
+        if (sleepDeadline_) return spokenDuration(std::chrono::duration<double>(*sleepDeadline_ - clock_.now()).count()) + " left";
+        return sleepAtChapterEnd_ >= 0 ? "end of " + unit() : std::string("off");
+    };
+    items.push_back(timer);
     return items;
 }
 
@@ -539,17 +593,41 @@ std::vector<MenuItem> App::powerMenu() {
     };
 }
 
+std::vector<MenuItem> App::helpMenu() {
+    std::vector<MenuItem> items;
+    items.push_back(action("Getting started", [this] {
+        say("This player has no screen. Up and Down move through a menu. OK or Right opens the item. "
+            "Home or Left goes back, and holding Home goes to the home menu. Play pause starts and stops "
+            "playback, and holding it tells you where you are. Power puts the player to sleep.");
+    }));
+    items.push_back(submenu("Buttons", [this] {
+        std::vector<MenuItem> buttons;
+        for (const ButtonHelp& h : kButtonHelp) {
+            Button b = h.button;
+            buttons.push_back(action(h.name, [this, b] { say(keyHelp(b)); }));
+        }
+        return buttons;
+    }));
+    items.push_back(action("Key describer", [this] {
+        keyDescriber_ = true;
+        earcons_.play(Earcon::Open);
+        say("Key describer on. Press any key to hear what it does. Hold Home to leave.");
+    }));
+    return items;
+}
+
 std::vector<MenuItem> App::playerMenu() {
     std::vector<MenuItem> items;
     // An action rather than a submenu so the list opens on the current chapter.
-    items.push_back(action("Chapters", [this] { openMenu("Chapters", chaptersMenu(), size_t(currentChapter())); }));
+    std::string parts = music_ ? "Tracks" : "Chapters";
+    items.push_back(action(parts, [this, parts] { openMenu(parts, chaptersMenu(), size_t(currentChapter())); }));
     items.push_back(submenu("Sleep timer", [this] { return sleepTimerMenu(); }));
-    items.push_back(action("Book info", [this] {
+    items.push_back(action(music_ ? "Album info" : "Book info", [this] {
         if (!book_) return;
         auto ch = chapters();
-        say(book_->title + ". " + std::to_string(ch.size()) + " chapters. " + playerStatus());
+        say(book_->title + ". " + std::to_string(ch.size()) + " " + unit() + "s. " + playerStatus());
     }));
-    items.push_back(action("Go to start of book", [this] {
+    items.push_back(action(music_ ? "Go to first track" : "Go to start of book", [this] {
         bool wasPlaying = player_.playing();
         loadFile(0, 0, wasPlaying);
         enterPlayer();
@@ -589,10 +667,22 @@ void App::openBook(const Book& book, bool autoplay) {
         }
         if (file >= book.files.size()) file = 0, pos = 0;
     }
+    music_ = false;
     settings_.setString(kLastBook, book.path.string());
     settings_.save();
     sleepAtChapterEnd_ = -1;
     loadFile(file, pos, autoplay);
+}
+
+// Music plays from the chosen track and is never resumed later, so it neither
+// saves a position nor replaces the book that start() resumes.
+void App::playMusic(const Book& album, size_t track) {
+    if (book_) savePosition();
+    book_ = album;
+    music_ = true;
+    sleepAtChapterEnd_ = -1;
+    pausedAt_.reset();
+    loadFile(track, 0, true);
 }
 
 bool App::loadFile(size_t file, double position, bool autoplay) {
@@ -708,7 +798,7 @@ void App::stepChapter(int direction) {
     }
     if (target < 0 || target >= int(list.size())) {
         earcons_.play(Earcon::Edge);
-        say(target < 0 ? "First chapter." : "Last chapter.");
+        say(target < 0 ? "First " + unit() + "." : "Last " + unit() + ".");
         return;
     }
     gotoChapter(target);
@@ -725,12 +815,12 @@ void App::onFileFinished() {
     loadFile(0, 0, false); // next play starts the book again
     savePosition();
     earcons_.play(Earcon::Close);
-    say("End of book. Press play to start again.");
+    say(music_ ? "End of music. Press play to start again." : "End of book. Press play to start again.");
 }
 
 void App::savePosition() {
     lastSave_ = clock_.now();
-    if (!book_ || !player_.isOpen()) return;
+    if (!book_ || music_ || !player_.isOpen()) return;
     char pos[32];
     std::snprintf(pos, sizeof pos, "%.1f", player_.position());
     settings_.setString("pos:" + book_->path.string(), std::to_string(fileIndex_) + ":" + pos);
@@ -744,12 +834,12 @@ std::string App::playerStatus() const {
     double pos = player_.position();
     std::string text = book_->title + ". ";
     if (list.size() > 1)
-        text += "Chapter " + std::to_string(cur + 1) + " of " + std::to_string(list.size()) + ", " +
+        text += std::string(music_ ? "Track " : "Chapter ") + std::to_string(cur + 1) + " of " + std::to_string(list.size()) + ", " +
                 list[size_t(cur)].title + ". ";
     double chapterEnd = player_.duration();
     if (book_->files.size() == 1 && size_t(cur) + 1 < list.size()) chapterEnd = list[size_t(cur) + 1].start;
-    text += spokenDuration(chapterEnd - pos) + " left in chapter. ";
-    if (book_->files.size() == 1 && list.size() > 1)
+    text += spokenDuration(chapterEnd - pos) + " left in " + unit() + ". ";
+    if (!music_ && book_->files.size() == 1 && list.size() > 1)
         text += spokenDuration(player_.duration() - pos) + " left in book. ";
     text += player_.playing() ? "Playing." : "Paused.";
     if (sleepDeadline_)
@@ -781,7 +871,7 @@ void App::setSleepTimer(int minutes, bool endOfChapter) {
     sleepAtChapterEnd_ = -1;
     if (endOfChapter) {
         sleepAtChapterEnd_ = currentChapter();
-        say("Sleep timer set to end of chapter.");
+        say("Sleep timer set to end of " + unit() + ".");
     } else if (minutes > 0) {
         sleepDeadline_ = clock_.now() + std::chrono::minutes(minutes);
         say("Sleep timer set to " + spokenDuration(minutes * 60) + ".");
@@ -827,6 +917,7 @@ void App::restart() {
     savePosition();
     player_.close();
     book_.reset();
+    music_ = false;
     menu_.clear();
     sleepDeadline_.reset();
     sleepAtChapterEnd_ = -1;

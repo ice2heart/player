@@ -2,9 +2,13 @@
 # Generates a small spoken test library with espeak-ng + ffmpeg:
 #   library/Sample Book (folder)/01..03.mp3  -> one file per chapter
 #   library/Chaptered Story.m4b              -> one file with embedded chapters
+#   music/Tones/01..03.mp3                   -> an album
+#   music/Short Melody.mp3                   -> a loose track
+# Usage: make_sample_library.sh [LIBRARY_DIR] [MUSIC_DIR]
 set -e
 
 OUT="${1:-library}"
+MUSIC="${2:-music}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -43,4 +47,15 @@ done
 ffmpeg -loglevel error -y -f concat -safe 0 -i "$TMP/list.txt" -i "$TMP/meta.txt" \
     -map_metadata 1 -map_chapters 1 -c:a aac -b:a 64k "$OUT/Chaptered Story.m4b"
 
-echo "Sample library written to $OUT"
+# Music: sine tones stand in for songs.
+tone() { # frequency, seconds, output file
+    ffmpeg -loglevel error -y -f lavfi -i "sine=frequency=$1:duration=$2" -ac 2 -b:a 96k "$3"
+}
+mkdir -p "$MUSIC/Tones"
+tone 220 20 "$MUSIC/Tones/01 Low.mp3"
+tone 440 20 "$MUSIC/Tones/02 Middle.mp3"
+tone 880 20 "$MUSIC/Tones/03 High.mp3"
+ffmpeg -loglevel error -y -f lavfi -i "sine=frequency=330:duration=4" -f lavfi -i "sine=frequency=392:duration=4" \
+    -filter_complex "[0][1]concat=n=2:v=0:a=1" -ac 2 -b:a 96k "$MUSIC/Short Melody.mp3"
+
+echo "Sample library written to $OUT, music to $MUSIC"

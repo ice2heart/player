@@ -35,7 +35,7 @@ public:
     };
 
     App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, Settings& settings,
-        Clock& clock, std::filesystem::path libraryRoot);
+        Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot);
 
     void start();
     void keyDown(Button button);
@@ -80,10 +80,13 @@ private:
     void enterPlayer();
     std::vector<MenuItem> homeMenu();
     std::vector<MenuItem> libraryMenu();
+    std::vector<MenuItem> musicMenu();
+    std::vector<MenuItem> albumMenu(const Book& album);
     std::vector<MenuItem> sleepTimerMenu();
     std::vector<MenuItem> settingsMenu();
     std::vector<MenuItem> systemMenu();
     std::vector<MenuItem> powerMenu();
+    std::vector<MenuItem> helpMenu();
     std::vector<MenuItem> playerMenu();
     std::vector<MenuItem> chaptersMenu();
     MenuItem choice(const std::string& label, const std::string& key,
@@ -92,6 +95,8 @@ private:
 
     // Playback
     void openBook(const Book& book, bool autoplay);
+    void playMusic(const Book& album, size_t track);
+    std::string unit() const { return music_ ? "track" : "chapter"; } // what one part is called
     bool loadFile(size_t file, double position, bool autoplay);
     void togglePlay();
     void play();
@@ -123,12 +128,14 @@ private:
     Settings& settings_;
     Clock& clock_;
     std::filesystem::path libraryRoot_;
+    std::filesystem::path musicRoot_;
     GestureDetector gestures_;
 
     Mode mode_ = Mode::Menu;
     Mode modeBeforeSleep_ = Mode::Menu;
     std::vector<MenuLevel> menu_;
-    std::optional<Book> book_;
+    std::optional<Book> book_; // the loaded book, or the album / playlist when music_
+    bool music_ = false;
     size_t fileIndex_ = 0;
 
     bool hold_ = false;

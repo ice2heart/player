@@ -9,7 +9,7 @@ for the code.
 ```sh
 cmake -S . -B build && cmake --build build -j
 ctest --test-dir build --output-on-failure      # or ./build/oap-tests
-./build/oap-sim library                         # simulator (needs ./tools/make_sample_library.sh library)
+./build/oap-sim library                         # simulator (needs ./tools/make_sample_library.sh library music)
 ```
 
 `-DOAP_BUILD_SIM=OFF` builds only the core and the tests, without FFmpeg, eSpeak NG or SDL2.

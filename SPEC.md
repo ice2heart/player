@@ -313,9 +313,8 @@ Home
 │   ├── Subscriptions → <feed> → <episode>
 │   ├── Add podcast (search / URL by voice)
 │   └── Refresh now
-├── Music / Files              (optional)
+├── Music                      (albums = folders; Play all)
 ├── Bookmarks
-├── Sleep timer
 ├── Settings
 │   ├── Speech (voice, rate, pitch, verbosity)
 │   ├── Playback (skip intervals, speed, skip silence, ducking)
@@ -323,9 +322,11 @@ Home
 │   ├── Wi-Fi
 │   ├── Sync account
 │   ├── Power (auto-sleep time, deep sleep)
+│   ├── Sleep timer
 │   ├── Language
 │   └── About / Update / Reset
-└── Status (battery, time, Wi-Fi, storage)
+├── Status (battery, time, Wi-Fi, storage)
+└── Help (getting started, buttons, key describer)
 ```
 
 ### 5.4 Player screen ("Now playing" context)
@@ -419,7 +420,8 @@ States:
   window visualises the menu stack, playback state, speech log and **per-button usage
   counts** (to decide how many buttons the hardware really needs). A `--script` mode
   replays button sequences. Most work happens here; then port to Linux.
-- Hardware-abstraction layer for: input source, power/MCU, battery, Wi-Fi.
+- Hardware-abstraction layer for: input source, power/MCU, battery, Wi-Fi, Bluetooth,
+  audio routing. Plan: [docs/hal.md](docs/hal.md).
 - CI: unit tests for ui-core state machine (scripted key sequences → expected speech output
   as text), cross-compile for target, build Buildroot image.
 - **Testing with blind users** from the earliest prototype — mandatory, not optional.

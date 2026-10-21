@@ -157,8 +157,9 @@ key / GPIO ─► App::keyDown(b) ─► GestureDetector.press
 | Power long | power menu | | |
 | *any key while sleeping* | wake and announce context | | |
 
-In **key describer** mode (Settings → Key describer), every key says what it
-does and does nothing else. Holding Home leaves the mode.
+In **key describer** mode (Help → Key describer), every key says what it
+does and does nothing else. Holding Home leaves the mode. The same texts
+(`kButtonHelp` in `app.cpp`) are read out by Help → Buttons.
 
 ## 7. App state machine
 
@@ -214,10 +215,13 @@ is added only at Beginner.
 
 ```
 Home
-├── Now playing: <book>            (only when a book is loaded)
+├── Now playing: <book or album>   (only when something is loaded)
 ├── Library → <books>              (OK plays/resumes)
+├── Music
+│   ├── Play all                   (every track, albums in order)
+│   ├── <loose track>              (OK plays it)
+│   └── <album> → <tracks>         (OK plays from that track to the end of the album)
 ├── Podcasts                       (placeholder)
-├── Sleep timer → Off · 1 · 15 · 30 · 45 min · 1 hour · End of chapter
 ├── Settings
 │   ├── Speech rate      100–460 wpm
 │   ├── Volume           0–100 %
@@ -228,18 +232,22 @@ Home
 │   ├── Long press time  300–1500 ms
 │   ├── Menu wrap around on / off
 │   ├── Auto sleep       1–30 min / never
-│   └── Key describer
-└── System
-    ├── Status           battery (simulated), free space, Wi-Fi, time
-    ├── Time and date
-    ├── Wi-Fi →          Status · Scan for networks · Turn off   (simulated)
-    ├── Sync             (not configured)
-    ├── Software update
-    ├── About
-    ├── Factory reset →  Cancel · Erase all settings
-    └── Power →          Sleep · Power off · Restart · Cancel
+│   └── Sleep timer →    Off · 1 · 15 · 30 · 45 min · 1 hour · End of chapter/track
+├── System
+│   ├── Status           battery (simulated), free space, Wi-Fi, time
+│   ├── Time and date
+│   ├── Wi-Fi →          Status · Scan for networks · Turn off   (simulated)
+│   ├── Sync             (not configured)
+│   ├── Software update
+│   ├── About
+│   ├── Factory reset →  Cancel · Erase all settings
+│   └── Power →          Sleep · Power off · Restart · Cancel
+└── Help
+    ├── Getting started  spoken introduction to the buttons and menus
+    ├── Buttons →        one item per button; OK describes it
+    └── Key describer
 
-Player menu (OK on player screen)
+Player menu (OK on player screen; music: Tracks / Album info / Go to first track)
 ├── Chapters → <chapters>          (opens on the current chapter)
 ├── Sleep timer → …
 ├── Book info
@@ -259,6 +267,12 @@ Power menu (hold Power): Sleep · Power off · Restart · Cancel
   numbers removed from the title ("01 - Storm" becomes "Storm"). A single-file
   book uses the **embedded chapters** (M4B, MP3 CHAP via FFmpeg). With neither,
   the whole book is one chapter.
+- **Music** lives in its own folder (`App`'s `musicRoot`, simulator `--music DIR`,
+  default `./music`) and is scanned the same way: a sub-folder is an album, a top-level
+  file is a loose track. Music reuses the book playback code (`book_` holds the album or the
+  "Play all" list, `music_` is set), but it says "track" instead of "chapter", ends with
+  "End of music", and **saves no position and does not change `last_book`**. Playing music
+  never makes you lose your place in a book.
 - Previous chapter: if more than 3 s into the chapter, the first press goes to
   its start, like a CD player.
 - At the end of a file the next file starts automatically. At the end of the
@@ -272,7 +286,7 @@ or `--config FILE`).
 | Key | Meaning |
 |-----|---------|
 | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min` | user settings |
-| `last_book` | absolute path of the book to resume on start |
+| `last_book` | absolute path of the book to resume on start (never music) |
 | `pos:<book path>` | `"<file index>:<seconds>"` resume position |
 
 The position is saved on pause, sleep, power off, book change, and every 30 s
@@ -289,6 +303,8 @@ during playback. That interval is a trade-off against flash wear on the device.
     **speech log**.
 - **Keyboard:** Space = Play/Pause, arrows = Back/Forward/Up/Down, Enter = OK,
   Esc/Backspace = Home, T = Talk, P = Power, H = hold switch. Holding a key gives a long press.
+- **Arguments:** `oap-sim [--config FILE] [--music DIR] [--script STEPS] [LIBRARY_DIR]`.
+  `tools/make_sample_library.sh [LIBRARY_DIR] [MUSIC_DIR]` makes a spoken sample library and some tone "music".
 - **Script mode:** `--script "ok down ok wait:3000 right:long play:long quit"`
   presses buttons automatically, for repeatable walkthroughs and future UI tests.
   Steps: `play left right up down ok home talk power`, with `:long` for a long
@@ -302,7 +318,7 @@ during playback. That interval is a trade-off against flash wear on the device.
 | Input | A device front end reading **evdev** (`gpio-keys`) or power-MCU events and calling `keyDown`/`keyUp`/`setHold`. No ImGui. |
 | Main loop | Same shape as the simulator: poll input, call `tick()` about every 10 ms, exit on `quitRequested()`. |
 | Power | Replace simulated sleep with real suspend (`/sys/power/state` or a request to the MCU). |
-| Status | Battery from the fuel gauge (sysfs `power_supply`), Wi-Fi from wpa_supplicant/iwd. |
+| Status | Battery from the fuel gauge (sysfs `power_supply`), Wi-Fi from iwd. See the HAL plan in [hal.md](hal.md). |
 | Paths | Library under `/data/library`, settings under `/data/config`. |
 
 Nothing in `app/core/` uses macOS APIs.
@@ -333,4 +349,6 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 - Bookmarks, podcasts (RSS), sync (Audiobookshelf).
 - STT (Talk button): push-to-talk capture plus sherpa-onnx, Vosk or whisper.cpp.
 - Localisation of spoken strings; a choice of TTS voice.
+- Hardware abstraction (battery, headphone jack, Wi-Fi, Bluetooth, suspend): planned in [hal.md](hal.md).
+- Music: shuffle and repeat.
 - The `AudioStream` mutex in the audio callback could become a lock-free ring.
