@@ -55,3 +55,7 @@ Practical notes:
   a rebuild after a quick edit and make a sabotage look "missed".
 - Run one test with `build-sabotage/oap-tests --gtest_filter=Suite.Name`.
 - A sabotage that hangs a test counts as caught. ctest stops each test after 10 s.
+
+## Git
+
+Commit straight to `main`. Do not create feature branches.
