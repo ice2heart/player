@@ -5,9 +5,8 @@
 #   *-out   - just the binaries, for `docker build --output`
 # See README.md ("Docker") for the commands.
 
+# Raspberry Pi OS (64-bit) is trixie too: the Pi binaries need its glibc and FFmpeg.
 ARG DEBIAN=debian:trixie-slim
-# Raspberry Pi OS (64-bit) is bookworm; build against its glibc so the binaries run there.
-ARG PI_DEBIAN=debian:bookworm-slim
 
 # ---- native toolchain and libraries
 FROM ${DEBIAN} AS native-deps
@@ -28,13 +27,9 @@ FROM scratch AS native-out
 COPY --from=native /build/oap-sim /build/oap-headless /build/oap-tests /
 
 # ---- Pi Zero 2 W: arm64 cross toolchain, :arm64 libraries and qemu to run the tests
-FROM ${PI_DEBIAN} AS pi-deps
-# bookworm's CMake 3.25 mishandles FetchContent_Declare(... SYSTEM); take the backport.
-RUN echo 'deb http://deb.debian.org/debian bookworm-backports main' > /etc/apt/sources.list.d/backports.list \
-    && dpkg --add-architecture arm64 && apt-get update && apt-get install -y --no-install-recommends \
-        -t bookworm-backports cmake \
-    && apt-get install -y --no-install-recommends \
-        build-essential ninja-build pkgconf ca-certificates git \
+FROM ${DEBIAN} AS pi-deps
+RUN dpkg --add-architecture arm64 && apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build pkgconf ca-certificates git \
         crossbuild-essential-arm64 qemu-user-static \
         libavformat-dev:arm64 libavcodec-dev:arm64 libswresample-dev:arm64 libavutil-dev:arm64 \
         libespeak-ng-dev:arm64 libpulse-dev:arm64 libasound2-dev:arm64 \
@@ -52,7 +47,7 @@ RUN cmake -S . -B /build -G Ninja \
 RUN for lib in $(aarch64-linux-gnu-objdump -p /build/oap-headless | awk '/NEEDED/ {print $2}'); do \
         dpkg -S "/usr/lib/aarch64-linux-gnu/$lib" "/lib/aarch64-linux-gnu/$lib" 2>/dev/null | head -1 | cut -d: -f1; \
     done | sort -u > /build/pkgs \
-    && { echo "# Runtime packages for oap-headless on Raspberry Pi OS (64-bit, bookworm):"; \
+    && { echo "# Runtime packages for oap-headless on Raspberry Pi OS (64-bit, trixie):"; \
          echo "sudo apt install $(tr '\n' ' ' < /build/pkgs)espeak-ng-data"; } > /build/DEPENDENCIES.txt \
     && cat /build/DEPENDENCIES.txt
 

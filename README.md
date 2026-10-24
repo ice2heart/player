@@ -42,12 +42,13 @@ sudo apt install build-essential cmake ninja-build pkgconf \
 Only the core and tests (`-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`) need just
 `build-essential cmake ninja-build`.
 
-On the Raspberry Pi (Raspberry Pi OS 64-bit, bookworm), a cross-built
-`oap-headless` needs only the runtime libraries:
+On the Raspberry Pi (Raspberry Pi OS 64-bit, trixie), a cross-built
+`oap-headless` needs only the runtime libraries (the Docker `pi-out` build writes
+this line to `DEPENDENCIES.txt`):
 
 ```sh
-sudo apt install libavformat59 libavcodec59 libswresample4 libavutil57 \
-    libespeak-ng1 espeak-ng-data libpulse0 libasound2
+sudo apt install libasound2t64 libavcodec61 libavformat61 libavutil59 libc6 \
+    libespeak-ng1 libgcc-s1 libpulse0 libstdc++6 libswresample5 espeak-ng-data
 ```
 
 Dear ImGui and GoogleTest are downloaded by CMake into the build folder.
@@ -81,7 +82,7 @@ so the build fails if a test fails. Run from the repository root:
 
 ```sh
 docker build -f docker/Dockerfile --target native .   # Debian trixie, x86-64: sim, headless, tests
-docker build -f docker/Dockerfile --target pi .       # cross build for the Pi Zero 2 W, tests under qemu
+docker build -f docker/Dockerfile --target pi .       # Debian trixie, Pi Zero 2 W cross build, tests under qemu
 ```
 
 To get the binaries, build the matching `-out` target into a folder. The `pi-out`
@@ -94,10 +95,10 @@ scp build-pi/oap-headless pi@raspberrypi.local:
 ```
 
 The `pi` target builds `oap-headless` and `oap-tests` for arm64 tuned for the
-Cortex-A53 (`-mcpu=cortex-a53`), on Debian bookworm so the binaries match the glibc
-and FFmpeg of Raspberry Pi OS. It uses
+Cortex-A53 (`-mcpu=cortex-a53`), on Debian trixie so the binaries match the glibc
+and FFmpeg of Raspberry Pi OS (trixie). They do not run on the older bookworm release. It uses
 [cmake/toolchains/pi-zero-2w.cmake](cmake/toolchains/pi-zero-2w.cmake), which also
-works outside Docker on a Debian bookworm host with these packages:
+works outside Docker on a Debian trixie host with these packages:
 
 ```sh
 sudo dpkg --add-architecture arm64 && sudo apt update
@@ -107,9 +108,6 @@ sudo apt install crossbuild-essential-arm64 qemu-user-static cmake ninja-build p
 cmake -S . -B build-pi -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/pi-zero-2w.cmake -DOAP_BUILD_SIM=OFF
 cmake --build build-pi && ctest --test-dir build-pi --output-on-failure
 ```
-
-Bookworm's own CMake (3.25) fails on the GoogleTest download, so install `cmake` from
-`bookworm-backports` (the Dockerfile does this).
 
 ### Releases
 
