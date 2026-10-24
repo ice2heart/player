@@ -710,6 +710,9 @@ TEST_F(AppTest, SleepTimerAtEndOfTrack) {
     open("Sleep timer");
     open("End of track");
     EXPECT_TRUE(speech.heard("Sleep timer set to end of track."));
+    player.pos = 599;
+    idle(1s);
+    EXPECT_NE(app->mode(), App::Mode::Sleeping) << "waits for the end of the track";
     player.atEnd = true;
     app->tick();          // Highway starts
     app->tick();
@@ -781,7 +784,9 @@ TEST_F(AppTest, SleepTimerIsInSettings) {
     open("15 minutes");
     EXPECT_EQ(level().title, "Settings") << "choosing a time goes back";
     EXPECT_EQ(speech.last(), "Sleep timer, 15 minutes left, 10 of 10");
-    idle(15min);
+    idle(14min);
+    EXPECT_NE(app->mode(), App::Mode::Sleeping) << "still awake at 14 minutes";
+    idle(1min);
     EXPECT_EQ(app->mode(), App::Mode::Sleeping);
     EXPECT_TRUE(speech.heard("Sleep timer ended."));
 }
