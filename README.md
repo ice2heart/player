@@ -81,7 +81,8 @@ For the device, build only the headless front end, for example with ALSA only:
 ### Docker
 
 [docker/Dockerfile](docker/Dockerfile) builds in a clean Debian and runs the tests,
-so the build fails if a test fails. Run from the repository root:
+so the build fails if a test fails. **Do not run these builds on macOS**; run them on
+a Linux host. Run from the repository root:
 
 ```sh
 docker build -f docker/Dockerfile --target native .   # Debian trixie, x86-64: sim, headless, tests
