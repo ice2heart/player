@@ -720,6 +720,26 @@ TEST_F(AppTest, SleepTimerAtEndOfTrack) {
     EXPECT_TRUE(speech.heard("End of track. Sleep timer ended."));
 }
 
+TEST_F(AppTest, SleepTimerAtEndOfALooseTrack) {
+    start();
+    open("Music");
+    open("Lullaby"); // one file, no chapters: the next "track" is the same one again
+    press(Button::Ok); // Player menu
+    open("Sleep timer");
+    open("End of track");
+    idle(1s);
+    EXPECT_NE(app->mode(), App::Mode::Sleeping);
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_TRUE(speech.heard("End of track. Sleep timer ended."));
+    press(Button::Ok); // wake
+    hold(Button::Home);
+    open("Settings");
+    hold(Button::Down);
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 10 of 10");
+}
+
 TEST_F(AppTest, MusicDoesNotTakeOverTheBookToResume) {
     playAlpha();
     player.pos = 20;

@@ -160,13 +160,16 @@ void App::tick() {
     auto now = clock_.now();
     for (const ButtonEvent& ev : gestures_.poll(now)) onButton(ev);
 
-    if (book_ && player_.finished()) onFileFinished();
+    // The end of a file is always the end of a chapter, even when the next
+    // chapter has the same number (a one-file book or a loose track starts again).
+    bool fileFinished = book_ && player_.finished();
+    if (fileFinished) onFileFinished();
 
     if (sleepDeadline_ && now >= *sleepDeadline_) {
         sleepDeadline_.reset();
         sleep("Sleep timer ended.");
     }
-    if (sleepAtChapterEnd_ >= 0 && book_ && currentChapter() != sleepAtChapterEnd_) {
+    if (sleepAtChapterEnd_ >= 0 && book_ && (fileFinished || currentChapter() != sleepAtChapterEnd_)) {
         sleepAtChapterEnd_ = -1;
         sleep("End of " + unit() + ". Sleep timer ended.");
     }
