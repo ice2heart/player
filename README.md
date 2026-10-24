@@ -26,14 +26,15 @@ brew install cmake pkgconf ffmpeg espeak-ng sdl2
 Debian / Ubuntu, everything (simulator, headless, tests):
 
 ```sh
-sudo apt install build-essential cmake ninja-build pkgconf \
+sudo apt install build-essential cmake ninja-build pkgconf ca-certificates git \
     libavformat-dev libavcodec-dev libswresample-dev libavutil-dev \
     libespeak-ng-dev espeak-ng libsdl2-dev libpulse-dev libasound2-dev
 ```
 
 | Package | Needed for |
 |---------|------------|
-| `build-essential cmake ninja-build pkgconf` | the build (CMake 3.20+, a C++20 compiler) |
+| `build-essential cmake ninja-build pkgconf` | the build (CMake 3.25+, a C++20 compiler) |
+| `ca-certificates git` | CMake downloading Dear ImGui and GoogleTest over HTTPS |
 | `libavformat-dev libavcodec-dev libswresample-dev libavutil-dev` | FFmpeg decoding (`oap-sim`, `oap-headless`) |
 | `libespeak-ng-dev espeak-ng` | speech (`oap-sim`, `oap-headless`); `espeak-ng` brings the voice data |
 | `libsdl2-dev` | `oap-sim` only |
@@ -102,7 +103,7 @@ works outside Docker on a Debian trixie host with these packages:
 
 ```sh
 sudo dpkg --add-architecture arm64 && sudo apt update
-sudo apt install crossbuild-essential-arm64 qemu-user-static cmake ninja-build pkgconf \
+sudo apt install crossbuild-essential-arm64 qemu-user cmake ninja-build pkgconf ca-certificates git \
     libavformat-dev:arm64 libavcodec-dev:arm64 libswresample-dev:arm64 libavutil-dev:arm64 \
     libespeak-ng-dev:arm64 libpulse-dev:arm64 libasound2-dev:arm64
 cmake -S . -B build-pi -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/pi-zero-2w.cmake -DOAP_BUILD_SIM=OFF
@@ -113,8 +114,9 @@ cmake --build build-pi && ctest --test-dir build-pi --output-on-failure
 
 Pushing a tag like `v0.1.0` runs [.github/workflows/release.yml](.github/workflows/release.yml):
 it builds and tests on x86-64 and for the Pi (under qemu), and publishes a GitHub
-release with `oap-headless` for the Pi Zero 2 W and `DEPENDENCIES.txt`, the
-`apt install` line for its runtime packages on Raspberry Pi OS.
+release with `oap-headless-<tag>-pi-zero-2w-arm64.tar.gz` (the Pi Zero 2 W
+`oap-headless` plus `DEPENDENCIES.txt`) and `DEPENDENCIES.txt` on its own, the
+`apt install` line for the runtime packages on Raspberry Pi OS.
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
@@ -135,8 +137,9 @@ Both front ends take `--audio NAME`:
 **DualSense audio.** Over USB the PS5 controller is also a sound card with 4 channels
 (1–2 audio, 3–4 the haptic motors). Use `--audio alsa:plughw:CARD=Controller`: ALSA's
 plug layer sends our stereo to channels 1–2 and leaves the motors silent. Check the
-card name with `aplay -l`. With PipeWire or PulseAudio, make the controller the
-default sink and use `--audio pulse`. Bluetooth carries no audio to the controller on Linux.
+card name with `aplay -l`. Do not route it through PipeWire or PulseAudio: they see
+the controller as a 4.0 sink, and channel remixing or upmixing can copy the stereo into
+channels 3–4 and drive the motors. Bluetooth carries no audio to the controller on Linux.
 
 ### Tests
 

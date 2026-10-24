@@ -7,12 +7,17 @@ on:
     tags: ['v*.*.*']
   workflow_dispatch:
 
+# One run per ref at a time; a second push of the same tag waits rather than racing the upload.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   native:
     name: Build and test (x86-64)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build and run tests
         run: docker build -f docker/Dockerfile --target native-out --output out .
 
@@ -20,14 +25,18 @@ jobs:
     name: Build and test (Pi Zero 2 W, qemu)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Cross build and run tests
         run: docker build -f docker/Dockerfile --target pi-out --output out .
       - name: Package
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          tar -C out -czf oap-headless-${{ github.ref_name }}-pi-zero-2w-arm64.tar.gz oap-headless DEPENDENCIES.txt
+          # A branch name like feature/x (workflow_dispatch) would put a / in the file name.
+          version=$(printf '%s' "$REF_NAME" | tr -c 'A-Za-z0-9._-' '-')
+          tar -C out -czf "oap-headless-$version-pi-zero-2w-arm64.tar.gz" oap-headless DEPENDENCIES.txt
           cp out/DEPENDENCIES.txt .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: pi-binaries
           path: |
@@ -42,13 +51,19 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           merge-multiple: true
-      - name: Create release
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
-          gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" \
-            --title "${{ github.ref_name }}" --generate-notes \
-            oap-headless-*.tar.gz DEPENDENCIES.txt
+          # A re-run finds the release already there: replace its files instead of failing.
+          if gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$REPO" --clobber oap-headless-*.tar.gz DEPENDENCIES.txt
+          else
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes \
+              oap-headless-*.tar.gz DEPENDENCIES.txt
+          fi

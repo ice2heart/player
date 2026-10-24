@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.25) # FetchContent_Declare(... SYSTEM)
 project(oap VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -73,7 +73,9 @@ if(OAP_BUILD_SIM OR OAP_BUILD_HEADLESS)
     find_package(Threads REQUIRED)
     target_link_libraries(oapaudio PUBLIC Threads::Threads)
     foreach(backend IN LISTS OAP_AUDIO_BACKENDS)
-        if(backend STREQUAL "coreaudio")
+        if(backend STREQUAL "null")
+            continue() # always built
+        elseif(backend STREQUAL "coreaudio")
             target_sources(oapaudio PRIVATE app/platform/audio_coreaudio.cpp)
             target_link_libraries(oapaudio PUBLIC "-framework AudioToolbox" "-framework CoreAudio")
         elseif(backend STREQUAL "pulse")
@@ -156,5 +158,11 @@ if(OAP_BUILD_TESTS)
     target_link_libraries(oap-tests PRIVATE oapcore oapfrontend GTest::gtest_main)
     target_compile_options(oap-tests PRIVATE -Wall -Wextra)
     include(GoogleTest)
-    gtest_discover_tests(oap-tests PROPERTIES TIMEOUT 10) # a sabotaged writer can block forever
+    # A sabotaged writer can block forever, hence the timeout. Under qemu
+    # (cross builds) everything runs several times slower, so allow more.
+    if(CMAKE_CROSSCOMPILING)
+        gtest_discover_tests(oap-tests DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 60)
+    else()
+        gtest_discover_tests(oap-tests DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 10)
+    endif()
 endif()
