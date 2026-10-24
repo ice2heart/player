@@ -769,6 +769,35 @@ TEST_F(AppTest, HoldSwitchBlocksEverythingButPower) {
     EXPECT_EQ(app->mode(), App::Mode::Sleeping);
 }
 
+TEST_F(AppTest, HoldSwitchLocksAKeyThatIsAlreadyDown) {
+    playAlpha();
+    player.pos = 100;
+    app->keyDown(Button::Forward);
+    app->setHold(true);
+    app->keyUp(Button::Forward);
+    EXPECT_DOUBLE_EQ(player.pos, 100) << "no skip on release";
+    app->keyDown(Button::Forward); // locked: "Locked."
+    app->keyUp(Button::Forward);
+    app->setHold(false);
+    app->keyDown(Button::Forward);
+    app->setHold(true);
+    clock.advance(700ms);
+    app->tick();
+    EXPECT_EQ(player.file, alphaFile(1)) << "no long press while held";
+    app->keyUp(Button::Forward);
+    app->setHold(false);
+    press(Button::Forward);
+    EXPECT_DOUBLE_EQ(player.pos, 130) << "works again once let go";
+}
+
+TEST_F(AppTest, HoldSwitchDoesNotLockPowerAlreadyDown) {
+    start();
+    app->keyDown(Button::Power);
+    app->setHold(true);
+    app->keyUp(Button::Power);
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+}
+
 TEST_F(AppTest, PowerSleepsAndAnyKeyWakes) {
     playAlpha();
     press(Button::Power);

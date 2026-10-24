@@ -148,6 +148,8 @@ key / GPIO ─► App::keyDown(b) ─► GestureDetector.press   ─► Deep ─
   raw input (`BackDeep`, `ForwardDeep`). It fires a `Deep` gesture on `Back` /
   `Forward` as soon as it closes, and the first stage's release is then ignored.
 - **Hold switch** (`App::setHold`) blocks every button except Power and says "Locked".
+  A key that is already down when Hold goes on is ignored until it is let go:
+  no long press while held, no short press on release.
 - **Buttons:** `PlayPause, Back (left), Forward (right), Up, Down, Ok, Home, Talk, Power`,
   plus the raw `BackDeep, ForwardDeep`.
 - `App` counts every gesture per button (`buttonUsage()`). The simulator shows

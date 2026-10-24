@@ -62,6 +62,7 @@ private:
         double start = 0;
     };
 
+    void onGesture(ButtonEvent ev); // drops gestures of keys locked by the hold switch
     void onButton(ButtonEvent ev);
     void handleMenu(ButtonEvent ev);
     void handlePlayer(ButtonEvent ev);
@@ -143,6 +144,8 @@ private:
     size_t fileIndex_ = 0;
 
     bool hold_ = false;
+    std::array<bool, kButtonCount> held_{};   // raw keys down now
+    std::array<bool, kButtonCount> locked_{}; // down when Hold went on: ignored until released
     bool keyDescriber_ = false;
     bool quit_ = false;
     std::optional<TimePoint> pausedAt_;

@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdio>
 #include <ctime>
+#include <utility>
 
 namespace oap {
 
@@ -130,22 +131,35 @@ void App::shutdown() {
 }
 
 void App::keyDown(Button button) {
+    held_[static_cast<size_t>(button)] = true;
     if (hold_ && button != Button::Power) {
         tts_.stop();
         earcons_.play(Earcon::Error);
         say("Locked.");
         return;
     }
-    if (auto ev = gestures_.press(button, clock_.now())) onButton(*ev);
+    if (auto ev = gestures_.press(button, clock_.now())) onGesture(*ev);
 }
 
 void App::keyUp(Button button) {
-    if (auto ev = gestures_.release(button, clock_.now())) onButton(*ev);
+    held_[static_cast<size_t>(button)] = false;
+    auto ev = gestures_.release(button, clock_.now());
+    if (std::exchange(locked_[static_cast<size_t>(button)], false)) return; // held down when Hold was switched on
+    if (ev) onGesture(*ev);
+}
+
+void App::onGesture(ButtonEvent ev) {
+    if (!locked_[static_cast<size_t>(ev.button)]) onButton(ev);
 }
 
 void App::setHold(bool on) {
     if (hold_ == on) return;
     hold_ = on;
+    // A key already down when Hold is switched on does nothing more: no long
+    // press while it is held, no short press when it is let go. Power still works.
+    if (on)
+        for (size_t i = 0; i < kButtonCount; ++i)
+            if (held_[i] && static_cast<Button>(i) != Button::Power) locked_[i] = true;
     tts_.stop();
     earcons_.play(on ? Earcon::Close : Earcon::Open);
     say(on ? "Buttons locked." : "Buttons unlocked.");
@@ -158,7 +172,7 @@ App::Mode App::mode() const {
 
 void App::tick() {
     auto now = clock_.now();
-    for (const ButtonEvent& ev : gestures_.poll(now)) onButton(ev);
+    for (const ButtonEvent& ev : gestures_.poll(now)) onGesture(ev);
 
     // The end of a file is always the end of a chapter, even when the next
     // chapter has the same number (a one-file book or a loose track starts again).
