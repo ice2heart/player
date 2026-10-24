@@ -9,6 +9,7 @@ for the code. Menus and keys follow [docs/navigation.md](docs/navigation.md).
 ```sh
 cmake -S . -B build && cmake --build build -j
 ctest --test-dir build --output-on-failure      # or ./build/oap-tests
+./build/oap-net-tests                           # Subsonic client (built when libcurl is found; no internet)
 ./build/oap-sim library                         # simulator (needs ./tools/make_sample_library.sh library music)
 ./build/oap-headless library                    # device front end, Linux (--audio null without a sound card)
 docker build -f docker/Dockerfile --target native .   # clean Debian build + tests
@@ -26,6 +27,8 @@ comes from the system, or CMake downloads it like GoogleTest.
   interfaces in `app/core/services.h` (`Speech`, `MediaPlayer`, `SoundEffects`,
   `VolumeControl`, `Clock`). Do not include `media/` or `platform/` headers from core.
 - `app/media/` holds the FFmpeg `Player` and eSpeak NG `Tts` that implement those interfaces.
+- `app/net/` holds `HttpClient` (libcurl) and `Subsonic : MusicServer`. A stream
+  URL holds the user name and a token that never expires: never speak, log or print it.
 - `app/frontend/` is code shared by the front ends with no dependencies (tested);
   `app/sim/` (SDL) and `app/headless/` (evdev, terminal) are the front ends.
 - `App` never reads the real time. Use `clock_.now()` / `clock_.wallTime()` so tests can control time.

@@ -29,6 +29,10 @@ The software is one C++20 program with three layers:
 │   YamlStore : SettingsStore   config.yaml (settings, server)          │
 │   TsvStore  : SettingsStore   state.tsv (positions, book to resume)   │
 ├───────────────────────────────────────────────────────────────────────┤
+│ Net  (app/net/, library "oapnet", libcurl + yaml-cpp)                 │
+│   Subsonic : MusicServer   URLs with token auth, JSON answers         │
+│   HttpClient               libcurl on one worker thread, timeouts     │
+├───────────────────────────────────────────────────────────────────────┤
 │ Media  (app/media/, library "oapmedia")                               │
 │   Player : MediaPlayer   FFmpeg decode → content stream               │
 │   Tts    : Speech        eSpeak NG    → speech stream                 │
@@ -50,11 +54,15 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 
 | Path | Contents |
 |------|----------|
-| `CMakeLists.txt` | Builds `oapcore`, `oapconfig`, `oapfrontend`, `oapmedia`, `oapaudio` (backends from `OAP_AUDIO_BACKENDS`), `imgui` and `oap-sim` (`OAP_BUILD_SIM`), `oap-headless` (`OAP_BUILD_HEADLESS`, Linux), plus `oap-tests` (`OAP_BUILD_TESTS`). ImGui and GoogleTest are fetched at configure time, and yaml-cpp too when the system has none. |
+| `CMakeLists.txt` | Builds `oapcore`, `oapconfig`, `oapfrontend`, `oapnet` (when pkg-config finds libcurl), `oapmedia`, `oapaudio` (backends from `OAP_AUDIO_BACKENDS`), `imgui` and `oap-sim` (`OAP_BUILD_SIM`), `oap-headless` (`OAP_BUILD_HEADLESS`, Linux), plus `oap-tests` and `oap-net-tests` (`OAP_BUILD_TESTS`). ImGui and GoogleTest are fetched at configure time, and yaml-cpp too when the system has none. |
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
 | `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `MusicServer` with its `RemoteTrack` / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it; not used by `App` yet). |
+| `app/net/http_client.{h,cpp}` | `Http`: asynchronous GET whose handler runs on the client's thread (tests use a fake). `HttpClient`: libcurl multi on one worker thread; 10 s connect timeout, 10 s without data or 60 s in all ends a request, answers over 16 MB fail; cancellable; the destructor aborts transfers and never waits on a socket. |
+| `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `streamUrl()`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
+| `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists and getPlaylist answers (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
+| `app/net/md5.{h,cpp}` | `md5Hex()` for the auth token. |
 | `app/media/player.{h,cpp}` | `Player`: one audio file, decoded on its own thread (FFmpeg). |
 | `app/media/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. |
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
@@ -90,6 +98,7 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 | **Decoder** | `Player` | Reads, decodes and resamples into the content stream. Blocks while the stream is full. |
 | **TTS worker** | `Tts` | Runs `espeak_Synth()` synchronously and resamples into the speech stream. |
 | **Audio callback** | `AudioOutput` | Calls `Mixer::render()` to pull PCM for the device. CoreAudio calls back; Pulse, ALSA and null run their own writer thread. |
+| **HTTP worker** | `HttpClient` | Runs every libcurl transfer and parses the answers (`Subsonic`). Finished results go into a mutex-protected inbox that `Subsonic::poll()` empties on the UI thread. Not wired into a front end yet. |
 
 Rules:
 - `App` is single-threaded. Front ends must not call it from other threads.
@@ -432,6 +441,11 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 - `test_terminal_keys.cpp` tests the headless terminal key decoding, including sequences split across reads.
 - `test_presses.cpp` tests `parseScript` and `PressSequencer` timing; `test_held_buttons.cpp` tests `HeldButtons`.
 - `test_gamepad.cpp` tests the gamepad map, including the order of light and deep stages.
+- `oap-net-tests` (built when libcurl is found) tests `Subsonic` URL building, auth
+  and error mapping over a fake `Http`, the parsers on saved answers in
+  `tests/data/subsonic/` (non-ASCII and emoji titles, `\uXXXX` surrogate pairs, `\/`,
+  an 80 kB single-line page), and `HttpClient` against sockets on 127.0.0.1 (refused,
+  stalled, trickling, too large, cancelled, destroyed while stuck). No internet.
 - `oap-media-tests` (built with the simulator or headless front end, as it needs FFmpeg) tests
   `Player` on WAV files it writes itself; the format-change tests make MP3s with the `ffmpeg`
   command and are skipped without it.

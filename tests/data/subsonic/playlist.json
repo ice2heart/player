@@ -1,0 +1,1 @@
+{"subsonic-response":{"status":"ok","version":"1.16.1","type":"navidrome","serverVersion":"0.64.2 (a1b2c3d4)","openSubsonic":true,"playlist":{"id":"p1","name":"Morning","songCount":2,"entry":[{"id":"s2","title":"Dancing Queen","album":"Arrival","artist":"ABBA","track":2,"duration":230},{"id":"s9","title":"Jóga","album":"Homogenic","artist":"Björk","track":3,"duration":305}]}}}

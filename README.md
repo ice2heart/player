@@ -28,7 +28,8 @@ Debian / Ubuntu, everything (simulator, headless, tests):
 ```sh
 sudo apt install build-essential cmake ninja-build pkgconf ca-certificates git \
     libavformat-dev libavcodec-dev libswresample-dev libavutil-dev \
-    libespeak-ng-dev espeak-ng libsdl2-dev libpulse-dev libasound2-dev libyaml-cpp-dev
+    libespeak-ng-dev espeak-ng libsdl2-dev libpulse-dev libasound2-dev libyaml-cpp-dev \
+    libcurl4-openssl-dev
 ```
 
 | Package | Needed for |
@@ -40,6 +41,7 @@ sudo apt install build-essential cmake ninja-build pkgconf ca-certificates git \
 | `libsdl2-dev` | `oap-sim` only |
 | `libpulse-dev` / `libasound2-dev` | the `pulse` / `alsa` outputs; drop one by leaving it out of `OAP_AUDIO_BACKENDS` |
 | `libyaml-cpp-dev` | reading `config.yaml`; optional, CMake downloads yaml-cpp without it |
+| `libcurl4-openssl-dev` | talking to a Subsonic server (`oapnet`, `oap-net-tests`); without it they are not built |
 
 Only the core and tests (`-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`) need just
 `build-essential cmake ninja-build`.
@@ -73,7 +75,7 @@ Build switches:
 | `OAP_BUILD_SIM` | `ON` | `oap-sim` (needs SDL2) |
 | `OAP_BUILD_HEADLESS` | `ON` on Linux | `oap-headless` |
 | `OAP_AUDIO_BACKENDS` | `coreaudio` (macOS), `pulse;alsa` (Linux) | audio outputs to build in |
-| `OAP_BUILD_TESTS` | `ON` | `oap-tests` |
+| `OAP_BUILD_TESTS` | `ON` | `oap-tests`, and `oap-net-tests` when libcurl is found |
 
 For the device, build only the headless front end, for example with ALSA only:
 `cmake -S . -B build -DOAP_BUILD_SIM=OFF -DOAP_AUDIO_BACKENDS=alsa`.
@@ -108,7 +110,8 @@ works outside Docker on a Debian trixie host with these packages:
 sudo dpkg --add-architecture arm64 && sudo apt update
 sudo apt install crossbuild-essential-arm64 qemu-user cmake ninja-build pkgconf ca-certificates git \
     libavformat-dev:arm64 libavcodec-dev:arm64 libswresample-dev:arm64 libavutil-dev:arm64 \
-    libespeak-ng-dev:arm64 libpulse-dev:arm64 libasound2-dev:arm64 libyaml-cpp-dev:arm64
+    libespeak-ng-dev:arm64 libpulse-dev:arm64 libasound2-dev:arm64 libyaml-cpp-dev:arm64 \
+    libcurl4-openssl-dev:arm64
 cmake -S . -B build-pi -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/pi-zero-2w.cmake -DOAP_BUILD_SIM=OFF
 cmake --build build-pi && ctest --test-dir build-pi --output-on-failure
 ```
@@ -152,7 +155,8 @@ ctest --test-dir build --output-on-failure
 
 The core tests need no audio libraries:
 `cmake -S . -B build -DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF` builds just the
-core and `oap-tests`.
+core and `oap-tests` (and, when libcurl is installed, `oapnet` and `oap-net-tests`,
+which test the Subsonic client on saved answers and local sockets, with no internet).
 
 ### Simulator keys
 

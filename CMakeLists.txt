@@ -26,6 +26,7 @@ set(OAP_AUDIO_BACKENDS "${OAP_AUDIO_DEFAULT}" CACHE STRING
     "Audio outputs to build in, tried in this order by --audio auto: coreaudio pulse alsa (null is always built)")
 
 include(FetchContent)
+find_package(Threads REQUIRED)
 
 # ---- core: UI logic, mixer and earcons. Plain C++, no third-party dependencies.
 add_library(oapcore STATIC
@@ -71,6 +72,26 @@ add_library(oapconfig STATIC
 target_link_libraries(oapconfig PUBLIC oapcore PRIVATE ${OAP_YAML_CPP})
 target_compile_options(oapconfig PRIVATE -Wall -Wextra)
 
+# ---- net: HttpClient (libcurl, one worker thread) and Subsonic : MusicServer
+# (answers read with yaml-cpp). No front end uses it yet, so it is built only
+# when pkg-config finds libcurl.
+find_package(PkgConfig)
+if(PKG_CONFIG_FOUND)
+    pkg_check_modules(LIBCURL IMPORTED_TARGET libcurl)
+endif()
+if(TARGET PkgConfig::LIBCURL)
+    add_library(oapnet STATIC
+        app/net/http_client.cpp
+        app/net/md5.cpp
+        app/net/subsonic.cpp
+        app/net/subsonic_json.cpp
+    )
+    target_link_libraries(oapnet PUBLIC oapcore Threads::Threads PRIVATE PkgConfig::LIBCURL ${OAP_YAML_CPP})
+    target_compile_options(oapnet PRIVATE -Wall -Wextra)
+else()
+    message(STATUS "libcurl not found: oapnet and oap-net-tests are not built")
+endif()
+
 # ---- frontend: code shared by the front ends (scripted presses, terminal keys, gamepad map, held buttons). No dependencies.
 add_library(oapfrontend STATIC
     app/frontend/gamepad.cpp
@@ -83,7 +104,6 @@ target_compile_options(oapfrontend PRIVATE -Wall -Wextra)
 
 # ---- platform audio output: null always, device backends (below) only with a front end.
 # No third-party dependencies of its own, so the tests can link it.
-find_package(Threads REQUIRED)
 add_library(oapaudio STATIC
     app/platform/audio_output.cpp
     app/platform/audio_null.cpp
@@ -206,6 +226,21 @@ if(OAP_BUILD_TESTS)
         set(OAP_MEDIA_TEST_TIMEOUTS DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 20)
     endif()
     gtest_discover_tests(oap-tests ${OAP_TEST_TIMEOUTS})
+
+    # ---- net tests: Subsonic URL building, auth and parsing on saved answers in
+    # tests/data/subsonic/, and HttpClient against local sockets. No internet.
+    if(TARGET oapnet)
+        add_executable(oap-net-tests
+            tests/test_http_client.cpp
+            tests/test_md5.cpp
+            tests/test_subsonic.cpp
+            tests/test_subsonic_json.cpp
+        )
+        target_link_libraries(oap-net-tests PRIVATE oapnet GTest::gtest_main)
+        target_compile_definitions(oap-net-tests PRIVATE OAP_SUBSONIC_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/subsonic")
+        target_compile_options(oap-net-tests PRIVATE -Wall -Wextra)
+        gtest_discover_tests(oap-net-tests ${OAP_TEST_TIMEOUTS})
+    endif()
 
     # ---- media tests: the FFmpeg Player on files written by the tests
     if(TARGET oapmedia)
