@@ -195,7 +195,11 @@ void App::onButton(ButtonEvent ev) {
         wake();
         return;
     }
-    tts_.stop(); // any key interrupts speech
+    // Left / Right on an item without a value do nothing at all, not even stop speech.
+    bool idle = !keyDescriber_ && mode() == Mode::Menu && !screens_.empty() &&
+                (ev.button == Button::Back || ev.button == Button::Forward) && !canAdjust();
+    if (idle) return;
+    tts_.stop(); // any other key interrupts speech
 
     if (keyDescriber_) {
         describeKey(ev);
@@ -388,10 +392,14 @@ void App::activate() {
 
 // Left / Right only ever change a value. On an item without one they do nothing
 // at all, so they can never be mistaken for "back" or "open".
-void App::adjust(int direction) {
+bool App::canAdjust() const {
     const Screen& screen = screens_.back();
-    if (screen.items.empty() || !screen.items[screen.index].adjust) return;
-    MenuItem item = screen.items[screen.index];
+    return !screen.items.empty() && screen.items[screen.index].adjust;
+}
+
+void App::adjust(int direction) {
+    if (!canAdjust()) return;
+    MenuItem item = screens_.back().items[screens_.back().index];
     earcons_.play(item.adjust(direction) ? Earcon::Move : Earcon::Edge);
     if (item.value) say(item.value());
 }

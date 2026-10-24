@@ -76,6 +76,7 @@ private:
     // Screens and menus
     void openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index = 0);
     void activate();
+    bool canAdjust() const; // the selected item has a value that Left / Right step
     void adjust(int direction);
     void back();
     void goHome();

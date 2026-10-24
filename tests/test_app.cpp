@@ -303,11 +303,13 @@ TEST_F(AppTest, LeftAndRightDoNothingOnItemsWithoutAValue) {
     hold(Button::Down); // Sleep timer: a value, but nothing to step
     for (Button b : {Button::Back, Button::Forward}) {
         size_t said = speech.said.size(), played = sounds.played.size();
+        int stops = speech.stops;
         press(b);
         EXPECT_EQ(level().title, "Settings");
         EXPECT_EQ(level().index, 9u);
         EXPECT_EQ(speech.said.size(), said) << "silent";
         EXPECT_EQ(sounds.played.size(), played) << "silent";
+        EXPECT_EQ(speech.stops, stops) << "speech goes on";
     }
     press(Button::Home);
     press(Button::Forward); // Home > Settings: a submenu
