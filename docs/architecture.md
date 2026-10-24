@@ -116,7 +116,15 @@ Rules:
   instant and race-free: anything written after the flush belongs to the new epoch.
 - **Seeking:** `Player::seek()` stores a request. The decoder thread seeks
   backwards to a keyframe, flushes the stream, and then drops decoded samples
-  until it reaches the exact target time.
+  until it reaches the exact target time. If FFmpeg cannot seek, playback goes
+  on and the position is that of the audio actually queued. A start position
+  past the end is clamped to the duration.
+- **Format changes:** a file may change sample rate, sample format or channels
+  mid-stream (concatenated MP3s). Each frame is checked against the format the
+  resampler was built for, and the resampler is rebuilt when it differs.
+- **Read errors:** only `AVERROR_EOF` ends a file. Other `av_read_frame` errors
+  are retried every 10 ms; after 50 in a row the file is treated as ended.
+  (FFmpeg's Ogg demuxer rejects chained streams that change format this way.)
 - **Position:** `end time of queued audio − buffered frames / 48000`, which is
   what the listener hears right now.
 - **Volume:** stored as 0–100 %, applied as `(v/100)²` for a perceptual curve.
@@ -392,6 +400,9 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 - `test_terminal_keys.cpp` tests the headless terminal key decoding, including sequences split across reads.
 - `test_presses.cpp` tests `parseScript` and `PressSequencer` timing; `test_held_buttons.cpp` tests `HeldButtons`.
 - `test_gamepad.cpp` tests the gamepad map, including the order of light and deep stages.
+- `oap-media-tests` (built with the simulator or headless front end, as it needs FFmpeg) tests
+  `Player` on WAV files it writes itself; the format-change tests make MP3s with the `ffmpeg`
+  command and are skipped without it.
 - `test_audio_output.cpp` tests `AudioOutput::open()` with the null backend, and
   `ThreadedAudioOutput` with a fake device that is lost and comes back.
 - The other files test `GestureDetector`, `AudioStream`, `Mixer`/`Earcons`,

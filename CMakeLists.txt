@@ -167,8 +167,19 @@ if(OAP_BUILD_TESTS)
     # A sabotaged writer can block forever, hence the timeout. Under qemu
     # (cross builds) everything runs several times slower, so allow more.
     if(CMAKE_CROSSCOMPILING)
-        gtest_discover_tests(oap-tests DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 60)
+        set(OAP_TEST_TIMEOUTS DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 60)
+        set(OAP_MEDIA_TEST_TIMEOUTS DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 120)
     else()
-        gtest_discover_tests(oap-tests DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 10)
+        set(OAP_TEST_TIMEOUTS DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 10)
+        set(OAP_MEDIA_TEST_TIMEOUTS DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 20)
+    endif()
+    gtest_discover_tests(oap-tests ${OAP_TEST_TIMEOUTS})
+
+    # ---- media tests: the FFmpeg Player on files written by the tests
+    if(TARGET oapmedia)
+        add_executable(oap-media-tests tests/test_player.cpp)
+        target_link_libraries(oap-media-tests PRIVATE oapmedia GTest::gtest_main)
+        target_compile_options(oap-media-tests PRIVATE -Wall -Wextra)
+        gtest_discover_tests(oap-media-tests ${OAP_MEDIA_TEST_TIMEOUTS})
     endif()
 endif()

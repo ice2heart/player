@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build pkgconf ca-certificates git \
         libavformat-dev libavcodec-dev libswresample-dev libavutil-dev \
         libespeak-ng-dev espeak-ng libsdl2-dev libpulse-dev libasound2-dev \
+        ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 

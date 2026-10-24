@@ -13,6 +13,26 @@ extern "C" {
 
 namespace oap {
 
+struct Player::ResamplerInput {
+    int sampleRate = 0;
+    int sampleFormat = -1;
+    AVChannelLayout layout{};
+    ~ResamplerInput() { av_channel_layout_uninit(&layout); }
+};
+
+namespace {
+std::string errorText(int error) {
+    char text[AV_ERROR_MAX_STRING_SIZE] = {};
+    av_strerror(error, text, sizeof text);
+    return text;
+}
+} // namespace
+
+ReadErrorAction onReadError(int error, bool atEndOfFile, int& consecutive) {
+    if (error == AVERROR_EOF || atEndOfFile) return ReadErrorAction::End;
+    return ++consecutive > kMaxReadErrors ? ReadErrorAction::End : ReadErrorAction::Retry;
+}
+
 Player::Player(Mixer& mixer) : mixer_(mixer) { av_log_set_level(AV_LOG_ERROR); }
 
 Player::~Player() { close(); }
@@ -42,16 +62,7 @@ bool Player::open(const std::string& path, double startAt) {
         return false;
     }
 
-    AVChannelLayout in{}, out{}; // zeroed: av_channel_layout_copy frees dst first
-    if (dec_->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC)
-        av_channel_layout_default(&in, dec_->ch_layout.nb_channels);
-    else
-        av_channel_layout_copy(&in, &dec_->ch_layout);
-    av_channel_layout_default(&out, 2);
-    int r = swr_alloc_set_opts2(&swr_, &out, AV_SAMPLE_FMT_FLT, Mixer::kSampleRate, &in,
-                                dec_->sample_fmt, dec_->sample_rate, 0, nullptr);
-    av_channel_layout_uninit(&in);
-    if (r < 0 || swr_init(swr_) < 0) {
+    if (!setupResampler(dec_->sample_rate, dec_->sample_fmt, dec_->ch_layout)) {
         close();
         return false;
     }
@@ -67,6 +78,7 @@ bool Player::open(const std::string& path, double startAt) {
     mixer_.content().flush();
     endPts_ = 0;
     skipUntil_ = 0;
+    if (duration_ > 0) startAt = std::min(startAt, duration_);
     if (startAt > 0) seekRequest_ = startAt;
     stop_ = false;
     eof_ = false;
@@ -81,6 +93,7 @@ void Player::close() {
     mixer_.content().flush();
     playing_ = false;
     swr_free(&swr_);
+    swrIn_.reset();
     avcodec_free_context(&dec_);
     if (fmt_) avformat_close_input(&fmt_);
     stream_ = nullptr;
@@ -104,8 +117,7 @@ void Player::seek(double seconds) {
     if (!isOpen()) return;
     seconds = std::max(0.0, seconds);
     if (duration_ > 0) seconds = std::min(seconds, duration_);
-    seekRequest_ = seconds;
-    endPts_ = seconds; // so position() is right immediately
+    seekRequest_ = seconds; // position() reports it until the decoder has seeked
 }
 
 double Player::position() const {
@@ -123,24 +135,47 @@ void Player::decodeLoop() {
     AVPacket* packet = av_packet_alloc();
     AVFrame* frame = av_frame_alloc();
     uint64_t epoch = mixer_.content().epoch();
+    int readErrors = 0; // in a row
 
     while (!stop_) {
-        double target = seekRequest_.exchange(-1);
+        double target = seekRequest_;
         if (target >= 0) {
-            av_seek_frame(fmt_, -1, int64_t(target * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD);
-            avcodec_flush_buffers(dec_);
-            swr_init(swr_);
-            epoch = mixer_.content().flush();
-            endPts_ = target;
-            skipUntil_ = target;
-            eof_ = false;
+            if (av_seek_frame(fmt_, -1, int64_t(target * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD) >= 0) {
+                avcodec_flush_buffers(dec_);
+                swr_init(swr_);
+                epoch = mixer_.content().flush();
+                endPts_ = target;
+                skipUntil_ = target;
+                eof_ = false;
+                readErrors = 0;
+            } else {
+                // Keep the queued audio and position. FFmpeg drops its read buffers even when the
+                // seek fails, so the decoder starts afresh on whatever comes next.
+                std::fprintf(stderr, "player: cannot seek to %.1f s\n", target);
+                avcodec_flush_buffers(dec_);
+            }
+            // Cleared after endPts_ is set, so position() never shows the old one.
+            // A newer request stays pending for the next round.
+            seekRequest_.compare_exchange_strong(target, -1);
         }
         if (eof_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
         }
 
-        bool flushing = av_read_frame(fmt_, packet) < 0;
+        int err = av_read_frame(fmt_, packet);
+        if (err >= 0) {
+            readErrors = 0;
+        } else if (onReadError(err, fmt_->pb && avio_feof(fmt_->pb), readErrors) == ReadErrorAction::Retry) {
+            if (readErrors == 1)
+                std::fprintf(stderr, "player: read error: %s, retrying\n", errorText(err).c_str());
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        } else if (readErrors > kMaxReadErrors) {
+            std::fprintf(stderr, "player: read error: %s, treating it as the end of the file\n",
+                         errorText(err).c_str());
+        }
+        bool flushing = err < 0;
         if (!flushing && packet->stream_index != stream_->index) {
             av_packet_unref(packet);
             continue;
@@ -168,6 +203,14 @@ bool Player::emit(AVFrame* frame, uint64_t epoch) {
     if (frame->best_effort_timestamp != AV_NOPTS_VALUE)
         t = double(frame->best_effort_timestamp) * av_q2d(stream_->time_base);
 
+    if (frame->sample_rate != swrIn_->sampleRate || frame->format != swrIn_->sampleFormat ||
+        av_channel_layout_compare(&frame->ch_layout, &swrIn_->layout) != 0) {
+        if (!setupResampler(frame->sample_rate, frame->format, frame->ch_layout)) {
+            std::fprintf(stderr, "player: cannot convert audio format, skipping it\n");
+            return true;
+        }
+    }
+
     int maxOut = swr_get_out_samples(swr_, frame->nb_samples);
     if (maxOut <= 0) return true;
     converted_.resize(size_t(maxOut) * AudioStream::kChannels);
@@ -194,6 +237,26 @@ bool Player::emit(AVFrame* frame, uint64_t epoch) {
         if (left > 0) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     return true;
+}
+
+bool Player::setupResampler(int sampleRate, int sampleFormat, const AVChannelLayout& layout) {
+    if (!swrIn_) swrIn_ = std::make_unique<ResamplerInput>();
+    swrIn_->sampleRate = sampleRate;
+    swrIn_->sampleFormat = sampleFormat;
+    av_channel_layout_uninit(&swrIn_->layout);
+    av_channel_layout_copy(&swrIn_->layout, &layout);
+
+    AVChannelLayout in{}, out{}; // zeroed: av_channel_layout_copy frees dst first
+    if (layout.order == AV_CHANNEL_ORDER_UNSPEC)
+        av_channel_layout_default(&in, layout.nb_channels);
+    else
+        av_channel_layout_copy(&in, &layout);
+    av_channel_layout_default(&out, 2);
+    swr_free(&swr_);
+    int r = swr_alloc_set_opts2(&swr_, &out, AV_SAMPLE_FMT_FLT, Mixer::kSampleRate, &in,
+                                AVSampleFormat(sampleFormat), sampleRate, 0, nullptr);
+    av_channel_layout_uninit(&in);
+    return r >= 0 && swr_init(swr_) >= 0;
 }
 
 } // namespace oap
