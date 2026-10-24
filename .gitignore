@@ -3,3 +3,4 @@ library/
 .DS_Store
 music/
 .env
+.claude/worktrees/
