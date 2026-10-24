@@ -18,11 +18,15 @@ The software is one C++20 program with three layers:
 │   App ── menus, player screen, power states, settings                 │
 │    ├── GestureDetector   press/release → short / long press           │
 │    ├── Library           scans folders into books                     │
-│    ├── Settings          key/value file, also stores positions        │
+│    ├── Settings          dotted keys in memory, SettingsStore for I/O │
 │    └── services.h        Speech · MediaPlayer · SoundEffects ·        │
 │                          VolumeControl · Clock   (interfaces)         │
 │   Earcons                synthesized  → effects stream                │
 │   Mixer                  content + speech + effects → PCM, ducking    │
+├───────────────────────────────────────────────────────────────────────┤
+│ Config  (app/config/, library "oapconfig", yaml-cpp)                  │
+│   YamlStore : SettingsStore   config.yaml (settings, server)          │
+│   TsvStore  : SettingsStore   state.tsv (positions, book to resume)   │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Media  (app/media/, library "oapmedia")                               │
 │   Player : MediaPlayer   FFmpeg decode → content stream               │
@@ -45,7 +49,7 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 
 | Path | Contents |
 |------|----------|
-| `CMakeLists.txt` | Builds `oapcore`, `oapfrontend`, `oapmedia`, `oapaudio` (backends from `OAP_AUDIO_BACKENDS`), `imgui` and `oap-sim` (`OAP_BUILD_SIM`), `oap-headless` (`OAP_BUILD_HEADLESS`, Linux), plus `oap-tests` (`OAP_BUILD_TESTS`). ImGui and GoogleTest are fetched at configure time. |
+| `CMakeLists.txt` | Builds `oapcore`, `oapconfig`, `oapfrontend`, `oapmedia`, `oapaudio` (backends from `OAP_AUDIO_BACKENDS`), `imgui` and `oap-sim` (`OAP_BUILD_SIM`), `oap-headless` (`OAP_BUILD_HEADLESS`, Linux), plus `oap-tests` (`OAP_BUILD_TESTS`). ImGui and GoogleTest are fetched at configure time, and yaml-cpp too when the system has none. |
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
@@ -56,7 +60,10 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
 | `app/core/library.{h,cpp}` | `Book`, `scanLibrary()`. |
-| `app/core/settings.{h,cpp}` | `Settings`: persistent key/value store. |
+| `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `serverConfigured()`. |
+| `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys) and `TsvStore` (`state.tsv`). |
+| `app/config/atomic_file.{h,cpp}` | `writeFileAtomically()`: temp file with mode 0600, `fsync`, `rename`. |
+| `app/config/settings_files.{h,cpp}` | `SettingsFiles`: what a front end hands to `App` (both files, loaded). |
 | `app/core/text.{h,cpp}` | Text for speech, such as `spokenDuration()`. |
 | `app/platform/audio_output.{h,cpp}` | `AudioOutput` interface and `open(name)`, which picks a built-in backend at run time (`--audio`). |
 | `app/platform/audio_thread.h` | Base for blocking-write backends: a thread renders 10 ms blocks and writes them. When a write fails it closes the device, keeps discarding the mix in real time (so speech and playback still finish) and reopens the device with a growing delay (250 ms up to 4 s). |
@@ -312,17 +319,35 @@ Power menu (hold Power): Sleep · Power off · Restart · Cancel
 
 ## 9. Persistence
 
-`Settings` is a flat `key<TAB>value` file (simulator: `~/.config/oap-sim/settings.tsv`,
-or `--config FILE`).
+`App` takes two `Settings`: `config` and `state`. Each is a flat map of dotted
+keys in memory. Core never sees a file: `load()` and `save()` go through a
+`SettingsStore`, which the front end gives it (`SettingsFiles`), and the tests use
+`FakeStore` or no store at all.
 
-| Key | Meaning |
-|-----|---------|
-| `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min` | user settings |
-| `last_book` | absolute path of the book to resume on start (never music) |
-| `pos:<book path>` | `"<file index>:<seconds>"` resume position |
+| File | Store | Keys |
+|------|-------|------|
+| `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, and `server.*` (see [streaming.md](streaming.md)) |
+| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_book`: the book to resume on start (never music); `pos:<book path>`: `"<file index>:<seconds>"` |
 
-The position is saved on pause, sleep, power off, book change, and every 30 s
-during playback. That interval is a trade-off against flash wear on the device.
+- `config.yaml` is nested YAML (`speech: {rate: 220}` is `speech.rate`). It is
+  written only when a setting changes in the Settings menu (on leaving the item,
+  or at once when chosen from the list), and on exit if the player volume changed.
+  Writing drops comments; the file gets a header naming the keys, and keys in a
+  fixed order. Numbers are written plain and everything else quoted, the password
+  always. A file that does not parse is reported on stderr, the defaults are used,
+  and it is never overwritten.
+- **State is written only on exit and on sleep**, to spare the flash: Power off,
+  Restart, Sleep and `App::shutdown()` (the front ends call it on SIGTERM / SIGINT /
+  SIGHUP and when the window closes). Pause and a book change only update the map
+  in memory, so switching back to a book still resumes it. The file is written
+  only when the map differs from what was last loaded or written. A crash or
+  power loss loses the place since the last exit.
+- Up / Down in the player change the volume in memory; it is written on exit.
+- **Factory reset** clears both, but keeps the `server.*` keys, and restarts
+  without saving the position first, so it does not come back.
+- Every write is atomic (`writeFileAtomically`): `FILE.tmp` created with mode 0600,
+  `fsync`, `rename`, then `fsync` of the folder. A power cut leaves the old file.
+- The old single `settings.tsv` is not read any more; settings start from the defaults.
 
 ## 10. Simulator (`app/sim/main.cpp`)
 
@@ -338,7 +363,7 @@ during playback. That interval is a trade-off against flash wear on the device.
 - **Game controller:** SDL game controllers (DualSense, Xbox, ...) go through `GamepadMapper`,
   the same map as `oap-headless`: D-pad = arrows, Square = Play/Pause, Cross = OK,
   Circle = Home, L1 + Left/Right = deep press. Pads can be plugged in while it runs.
-- **Arguments:** `oap-sim [--config FILE] [--music DIR] [--audio NAME] [--script STEPS] [LIBRARY_DIR]`.
+- **Arguments:** `oap-sim [--config FILE] [--state FILE] [--music DIR] [--audio NAME] [--script STEPS] [LIBRARY_DIR]`.
   `--audio` is `auto` (default), `coreaudio`, `pulse`, `alsa[:DEVICE]` or `null`, among those built in.
   `tools/make_sample_library.sh [LIBRARY_DIR] [MUSIC_DIR]` makes a spoken sample library and some tone "music".
 - **Script mode:** `--script "ok down ok wait:3000 right:long play:long quit"`
@@ -350,9 +375,9 @@ during playback. That interval is a trade-off against flash wear on the device.
 
 ## 11. Headless front end (`app/headless/`) and the Linux device
 
-- **Arguments:** `oap-headless [--config FILE] [--music DIR] [--audio NAME] [--input LIST]
-  [--evdev-device PATH] [--script STEPS] [LIBRARY_DIR]`. Settings default to
-  `~/.config/oap/settings.tsv`.
+- **Arguments:** `oap-headless [--config FILE] [--state FILE] [--music DIR] [--audio NAME] [--input LIST]
+  [--evdev-device PATH] [--script STEPS] [LIBRARY_DIR]`. The config defaults to
+  `~/.config/oap/config.yaml`, the state to `state.tsv` next to it (section 9).
 - **Inputs** (`--input evdev,terminal,none`; default `terminal` on a tty, else `evdev`):
   - `EvdevInput` opens every `/dev/input/event*` with a mapped key (or just `--evdev-device`),
     reads `input_event`s non-blocking, ignores autorepeat, and rescans every 3 s for hot-plugged
@@ -377,7 +402,7 @@ Still to do for the device:
 | Input | Key map from `hal.toml` instead of the built-in table; MCU serial events. |
 | Power | Replace simulated sleep with real suspend (`/sys/power/state` or a request to the MCU). |
 | Status | Battery from the fuel gauge (sysfs `power_supply`), Wi-Fi from iwd. See the HAL plan in [hal.md](hal.md). |
-| Paths | Library under `/data/library`, settings under `/data/config`. |
+| Paths | Library under `/data/library`, `config.yaml` and `state.tsv` under `/data/config` (`--config /data/config/config.yaml`). |
 
 Nothing in `app/core/` uses macOS APIs.
 
@@ -387,12 +412,15 @@ Nothing in `app/core/` uses macOS APIs.
 ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 ```
 
-- `oap-tests` links only `oapcore`, `oapfrontend` and `oapaudio`, so it builds without FFmpeg, eSpeak NG,
-  SDL2 or audio libraries (`cmake -DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`). Without a front end
+- `oap-tests` links only `oapcore`, `oapconfig`, `oapfrontend` and `oapaudio`, so it builds without FFmpeg, eSpeak NG,
+  SDL2 or audio libraries (`cmake -DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`); yaml-cpp is downloaded if missing. Without a front end
   `oapaudio` holds only the null output; the device backends are added with the sim or headless build.
 - `tests/fakes.h` provides `FakeSpeech` (records what was said), `FakePlayer`
-  (position, end of file and chapters set by the test), `FakeSounds`, `FakeVolume`
-  and `FakeClock` (time only moves when the test advances it).
+  (position, end of file and chapters set by the test), `FakeSounds`, `FakeVolume`,
+  `FakeClock` (time only moves when the test advances it) and `FakeStore` (what was
+  last saved to a settings file, and how often).
+- `test_config.cpp` tests YAML ⇄ dotted keys, `YamlStore` / `TsvStore` on real files
+  (mode 0600, atomic replace, a broken file left alone) and `SettingsFiles`.
 - `test_app.cpp` drives `App` the way a user does, through `keyDown`/`keyUp`/`tick`
   on a temporary library folder, and checks what is spoken, which file plays and
   what is saved. Long presses, sleep timers and auto sleep are tested by advancing

@@ -104,23 +104,23 @@ MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn) {
 }
 } // namespace
 
-App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, Settings& settings,
-         Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot)
-    : tts_(speech), player_(player), earcons_(sounds), volume_(volume), settings_(settings), clock_(clock),
-      libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), lastActivity_(clock.now()), lastSave_(clock.now()) {}
+App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, Settings& config,
+         Settings& state, Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot)
+    : tts_(speech), player_(player), earcons_(sounds), volume_(volume), config_(config), state_(state),
+      savedState_(state.values()), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), lastActivity_(clock.now()) {}
 
 // ---------------------------------------------------------------- lifecycle
 
 void App::start() {
-    tts_.setRate(settings_.getInt(kSpeechRate, 220));
-    volume_.setVolume(settings_.getInt(kVolume, 70) / 100.0f);
-    gestures_.setLongPress(std::chrono::milliseconds(settings_.getInt(kLongPress, 600)));
+    tts_.setRate(config_.getInt(kSpeechRate, 220));
+    volume_.setVolume(config_.getInt(kVolume, 70) / 100.0f);
+    gestures_.setLongPress(std::chrono::milliseconds(config_.getInt(kLongPress, 600)));
     lastActivity_ = clock_.now();
 
     earcons_.play(Earcon::Boot);
     say("Ready.");
 
-    std::string last = settings_.getString(kLastBook);
+    std::string last = state_.getString(kLastBook);
     for (const Book& b : scanLibrary(libraryRoot_)) {
         if (!last.empty() && b.path.string() == last && openBook(b, false)) {
             screens_ = {menuScreen("Home", [this] { return homeMenu(); }), playerScreen()};
@@ -132,8 +132,7 @@ void App::start() {
 }
 
 void App::shutdown() {
-    saveChangedSettings();
-    savePosition();
+    saveOnExit();
     player_.close();
 }
 
@@ -195,9 +194,7 @@ void App::tick() {
         sleep("End of " + unit() + ". Sleep timer ended.");
     }
 
-    if (player_.playing() && now - lastSave_ > std::chrono::seconds(30)) savePosition();
-
-    int autoSleep = settings_.getInt(kAutoSleep, 5);
+    int autoSleep = config_.getInt(kAutoSleep, 5);
     if (!sleeping_ && autoSleep > 0 && !player_.playing() && !tts_.speaking() &&
         now - lastActivity_ > std::chrono::minutes(autoSleep))
         sleep("Going to sleep.");
@@ -272,7 +269,7 @@ void App::handleMenu(ButtonEvent ev) {
         } else {
             long next = long(screen.index) + (ev.button == Button::Up ? -1 : 1);
             if (next < 0 || next >= count) {
-                if (!settings_.getInt(kMenuWrap, 1)) {
+                if (!config_.getInt(kMenuWrap, 1)) {
                     earcons_.play(Earcon::Edge);
                     say(itemSpeech(screen));
                     return;
@@ -353,7 +350,7 @@ void App::say(const std::string& text) {
 std::string App::itemSpeech(const Screen& screen) const {
     if (screen.items.empty()) return screen.title + ", empty.";
     const MenuItem& item = screen.items[screen.index];
-    int verbosity = settings_.getInt(kVerbosity, Normal);
+    int verbosity = config_.getInt(kVerbosity, Normal);
     std::string text = item.label;
     if (item.value) text += ", " + item.value();
     if (verbosity <= Normal)
@@ -496,9 +493,28 @@ void App::openPowerMenu() {
 }
 
 void App::saveChangedSettings() {
-    if (!settingsChanged_) return;
+    if (settingsChanged_) saveConfig();
+}
+
+void App::saveConfig() {
     settingsChanged_ = false;
-    settings_.save();
+    volumeChanged_ = false;
+    config_.save();
+}
+
+// Written once here instead of on every pause, book change and 30 s of playback,
+// to spare the flash. A crash or power loss loses the place since the last exit.
+void App::saveOnExit() {
+    rememberPosition();
+    if (settingsChanged_ || volumeChanged_) saveConfig();
+    saveState();
+}
+
+// Power off writes, and then the front end's shutdown() would write the same again.
+void App::saveState() {
+    if (state_.values() == savedState_) return;
+    state_.save();
+    savedState_ = state_.values();
 }
 
 MenuItem App::choice(const std::string& label, const std::string& key,
@@ -508,7 +524,7 @@ MenuItem App::choice(const std::string& label, const std::string& key,
     // hears the new speech rate or volume; the file is written when they move on.
     // OK opens the whole list, starting on the current value; choosing one saves it and goes back.
     auto current = [this, key, options, fallback]() -> std::optional<size_t> {
-        int v = settings_.getInt(key, fallback);
+        int v = config_.getInt(key, fallback);
         for (size_t i = 0; i < options.size(); ++i)
             if (options[i].first == v) return i;
         return std::nullopt;
@@ -517,14 +533,14 @@ MenuItem App::choice(const std::string& label, const std::string& key,
     item.label = label;
     item.value = [this, key, options, fallback, current] {
         auto i = current();
-        return i ? options[*i].second : std::to_string(settings_.getInt(key, fallback));
+        return i ? options[*i].second : std::to_string(config_.getInt(key, fallback));
     };
     item.adjust = [this, key, options, fallback, onChange, current](int dir) {
         long next = -1;
         if (auto i = current()) {
             next = long(*i) + dir;
         } else { // a stored value that is not an option: step to the nearest option on that side
-            int v = settings_.getInt(key, fallback);
+            int v = config_.getInt(key, fallback);
             for (size_t i = 0; i < options.size(); ++i) {
                 int o = options[i].first;
                 bool onSide = dir > 0 ? o > v : o < v;
@@ -534,7 +550,7 @@ MenuItem App::choice(const std::string& label, const std::string& key,
         }
         if (next < 0 || next >= long(options.size())) return false;
         int v = options[size_t(next)].first;
-        settings_.setInt(key, v);
+        config_.setInt(key, v);
         settingsChanged_ = true;
         if (onChange) onChange(v);
         return true;
@@ -546,8 +562,8 @@ MenuItem App::choice(const std::string& label, const std::string& key,
         for (size_t i = 0; i < options.size(); ++i) {
             int v = options[i].first;
             MenuItem option = action(options[i].second, [this, key, v, onChange] {
-                settings_.setInt(key, v);
-                settings_.save();
+                config_.setInt(key, v);
+                saveConfig();
                 if (onChange) onChange(v);
                 back();
             });
@@ -705,12 +721,7 @@ std::vector<MenuItem> App::systemMenu() {
     items.push_back(submenu("Factory reset", [this] {
         return std::vector<MenuItem>{
             action("Cancel", [this] { back(); }),
-            action("Erase all settings", [this] {
-                settings_.clear();
-                settings_.save();
-                say("Settings erased.");
-                restart();
-            }),
+            action("Erase all settings", [this] { factoryReset(); }),
         };
     }));
     items.push_back(submenu("Power", [this] { return powerMenu(); }));
@@ -790,10 +801,10 @@ std::vector<MenuItem> App::chaptersMenu() {
 // ---------------------------------------------------------------- playback
 
 bool App::openBook(const Book& book, bool autoplay) {
-    if (book_) savePosition();
+    if (book_) rememberPosition();
     size_t file = 0;
     double pos = 0;
-    std::string saved = settings_.getString("pos:" + book.path.string());
+    std::string saved = state_.getString("pos:" + book.path.string());
     if (auto colon = saved.find(':'); colon != std::string::npos) {
         try {
             file = std::stoul(saved.substr(0, colon));
@@ -805,8 +816,7 @@ bool App::openBook(const Book& book, bool autoplay) {
         if (file >= book.files.size()) file = 0, pos = 0;
     }
     if (!switchTo(book, false, file, pos, autoplay)) return false;
-    settings_.setString(kLastBook, book.path.string());
-    settings_.save();
+    state_.setString(kLastBook, book.path.string());
     sleepAtChapterEnd_ = -1;
     return true;
 }
@@ -814,7 +824,7 @@ bool App::openBook(const Book& book, bool autoplay) {
 // Music plays from the chosen track and is never resumed later, so it neither
 // saves a position nor replaces the book that start() resumes.
 bool App::playMusic(const Book& album, size_t track) {
-    if (book_) savePosition();
+    if (book_) rememberPosition();
     if (!switchTo(album, true, track, 0, true)) return false;
     sleepAtChapterEnd_ = -1;
     pausedAt_.reset();
@@ -868,7 +878,7 @@ void App::play() {
         say("Nothing to play. Choose a book in the library.");
         return;
     }
-    int rewind = settings_.getInt(kRewindOnResume, 2);
+    int rewind = config_.getInt(kRewindOnResume, 2);
     if (rewind > 0 && pausedAt_ && clock_.now() - *pausedAt_ > std::chrono::seconds(10))
         player_.seek(player_.position() - rewind);
     pausedAt_.reset();
@@ -880,7 +890,7 @@ void App::pause(bool announce) {
     if (!player_.playing()) return;
     player_.pause();
     pausedAt_ = clock_.now();
-    savePosition();
+    rememberPosition();
     if (announce) say("Paused.");
 }
 
@@ -889,7 +899,7 @@ void App::skip(int direction) {
         earcons_.play(Earcon::Edge);
         return;
     }
-    int amount = direction < 0 ? settings_.getInt(kSkipBack, 10) : settings_.getInt(kSkipForward, 30);
+    int amount = direction < 0 ? config_.getInt(kSkipBack, 10) : config_.getInt(kSkipForward, 30);
     double target = player_.position() + direction * amount;
     if (target < 0 || (player_.duration() > 0 && target >= player_.duration())) {
         earcons_.play(Earcon::Edge);
@@ -903,9 +913,9 @@ void App::skip(int direction) {
 }
 
 void App::changeVolume(int delta) {
-    int v = std::clamp(settings_.getInt(kVolume, 70) + delta, 0, 100);
-    settings_.setInt(kVolume, v);
-    settings_.save();
+    int v = std::clamp(config_.getInt(kVolume, 70) + delta, 0, 100);
+    config_.setInt(kVolume, v);
+    volumeChanged_ = true; // a config.yaml write per press would wear the flash
     volume_.setVolume(v / 100.0f);
     earcons_.play(Earcon::Volume);
     if (v == 100) say("Maximum volume.");
@@ -970,18 +980,16 @@ void App::onFileFinished() {
     if (fileIndex_ + 1 < book_->files.size() && loadFile(fileIndex_ + 1, 0, true)) return;
     player_.pause();
     loadFile(0, 0, false); // next play starts the book again
-    savePosition();
+    rememberPosition();
     earcons_.play(Earcon::Close);
     say(music_ ? "End of music. Press play to start again." : "End of book. Press play to start again.");
 }
 
-void App::savePosition() {
-    lastSave_ = clock_.now();
+void App::rememberPosition() {
     if (!book_ || music_ || !player_.isOpen()) return;
     char pos[32];
     std::snprintf(pos, sizeof pos, "%.1f", player_.position());
-    settings_.setString("pos:" + book_->path.string(), std::to_string(fileIndex_) + ":" + pos);
-    settings_.save();
+    state_.setString("pos:" + book_->path.string(), std::to_string(fileIndex_) + ":" + pos);
 }
 
 std::string App::playerStatus() const {
@@ -1040,8 +1048,7 @@ void App::setSleepTimer(int minutes, bool endOfChapter) {
 
 void App::sleep(const std::string& announcement) {
     pause(false);
-    savePosition();
-    saveChangedSettings();
+    saveOnExit(); // sleep on the device may end in the power being cut
     sleepDeadline_.reset();
     sleepAtChapterEnd_ = -1;
     sleeping_ = true;
@@ -1065,15 +1072,14 @@ void App::wake() {
 
 void App::powerOff() {
     pause(false);
-    savePosition();
-    saveChangedSettings();
+    saveOnExit();
     earcons_.play(Earcon::Sleep);
     say("Powering off. Goodbye.");
     quit_ = true;
 }
 
-void App::restart() {
-    savePosition();
+void App::restart(bool saveFirst) {
+    if (saveFirst) saveOnExit();
     player_.close();
     book_.reset();
     music_ = false;
@@ -1083,6 +1089,17 @@ void App::restart() {
     keyDescriber_ = false;
     say("Restarting.");
     start();
+}
+
+// Clears what the user set and the state, but keeps the server: a blind user
+// must not lose a server someone else set up for them.
+void App::factoryReset() {
+    config_.clearExcept(kServerPrefix);
+    state_.clear();
+    saveConfig();
+    saveState();
+    say("Settings erased.");
+    restart(false); // saving first would put the position straight back
 }
 
 std::string App::statusReport() const {

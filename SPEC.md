@@ -274,8 +274,10 @@ Design:
   /data/library/music/   (optional)
   ```
 - **USB mass-storage mode** (or MTP) when connected to a PC to copy files directly.
-- Position saving: on pause, on chapter change, and every 30 s while playing
-  (rate-limited to protect flash); always on suspend/power-off.
+- Position saving: kept in memory on pause and book change, and written to
+  flash only on suspend, power-off and restart, to spare the flash. A crash or
+  sudden power loss loses the place since then, so the power MCU must shut down
+  cleanly at low battery (see [docs/streaming.md](docs/streaming.md#configuration-one-yaml-file)).
 
 ---
 

@@ -35,7 +35,7 @@ Sleep in it closes the menu first, so the device wakes where you were.
 6. **A changed value works at once, and is saved when you leave the item.**
    You hear the new speech rate straight away. Steps are not written one by
    one: the file is written when another key is pressed or the device sleeps
-   or powers off (or earlier, if something else saves, such as the playback position).
+   or powers off.
 7. **In a program, Left / Right are that program's own keys.** In the player
    they skip back and forward, and holding them or pressing them deeper
    moves to the previous or next chapter or track.

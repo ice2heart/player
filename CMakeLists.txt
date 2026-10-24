@@ -41,6 +41,36 @@ add_library(oapcore STATIC
 target_include_directories(oapcore PUBLIC app)
 target_compile_options(oapcore PRIVATE -Wall -Wextra)
 
+# ---- config: config.yaml (yaml-cpp) and state.tsv files behind core's SettingsStore.
+# yaml-cpp comes from the system if found, else it is fetched and built like GoogleTest.
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(yaml-cpp
+    URL https://github.com/jbeder/yaml-cpp/archive/refs/tags/0.8.0.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SYSTEM
+    FIND_PACKAGE_ARGS 0.7 CONFIG)
+block()
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.10) # yaml-cpp 0.8.0 asks for CMake 3.4, which CMake 4 refuses
+    set(BUILD_SHARED_LIBS OFF)
+    FetchContent_MakeAvailable(yaml-cpp)
+endblock()
+if(TARGET yaml-cpp::yaml-cpp)
+    set(OAP_YAML_CPP yaml-cpp::yaml-cpp)
+else()
+    set(OAP_YAML_CPP yaml-cpp) # 0.7 names its target without a namespace
+endif()
+
+add_library(oapconfig STATIC
+    app/config/atomic_file.cpp
+    app/config/settings_files.cpp
+    app/config/stores.cpp
+)
+target_link_libraries(oapconfig PUBLIC oapcore PRIVATE ${OAP_YAML_CPP})
+target_compile_options(oapconfig PRIVATE -Wall -Wextra)
+
 # ---- frontend: code shared by the front ends (scripted presses, terminal keys, gamepad map, held buttons). No dependencies.
 add_library(oapfrontend STATIC
     app/frontend/gamepad.cpp
@@ -118,7 +148,7 @@ if(OAP_BUILD_SIM)
     target_link_libraries(imgui PUBLIC PkgConfig::SDL2)
 
     add_executable(oap-sim app/sim/main.cpp)
-    target_link_libraries(oap-sim PRIVATE oapfrontend oapmedia oapaudio imgui)
+    target_link_libraries(oap-sim PRIVATE oapfrontend oapconfig oapmedia oapaudio imgui)
     target_compile_options(oap-sim PRIVATE -Wall -Wextra)
 endif()
 
@@ -132,11 +162,11 @@ if(OAP_BUILD_HEADLESS)
         app/headless/main.cpp
         app/headless/evdev_input.cpp
     )
-    target_link_libraries(oap-headless PRIVATE oapfrontend oapmedia oapaudio)
+    target_link_libraries(oap-headless PRIVATE oapfrontend oapconfig oapmedia oapaudio)
     target_compile_options(oap-headless PRIVATE -Wall -Wextra)
 endif()
 
-# ---- tests: core, frontend and the null audio output, with fakes for speech, playback, sounds and time
+# ---- tests: core, config, frontend and the null audio output, with fakes for speech, playback, sounds and time
 if(OAP_BUILD_TESTS)
     FetchContent_Declare(googletest
         URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
@@ -151,6 +181,7 @@ if(OAP_BUILD_TESTS)
         tests/test_app.cpp
         tests/test_audio_output.cpp
         tests/test_audio_stream.cpp
+        tests/test_config.cpp
         tests/test_gamepad.cpp
         tests/test_gestures.cpp
         tests/test_held_buttons.cpp
@@ -161,7 +192,7 @@ if(OAP_BUILD_TESTS)
         tests/test_terminal_keys.cpp
         tests/test_text.cpp
     )
-    target_link_libraries(oap-tests PRIVATE oapcore oapfrontend oapaudio GTest::gtest_main)
+    target_link_libraries(oap-tests PRIVATE oapcore oapconfig oapfrontend oapaudio GTest::gtest_main)
     target_compile_options(oap-tests PRIVATE -Wall -Wextra)
     include(GoogleTest)
     # A sabotaged writer can block forever, hence the timeout. Under qemu

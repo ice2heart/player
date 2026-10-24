@@ -4,6 +4,7 @@
 // for and let the test set what App will observe (time, playback position, ...).
 
 #include "core/services.h"
+#include "core/settings.h"
 
 #include <algorithm>
 #include <optional>
@@ -89,6 +90,23 @@ class FakeVolume : public VolumeControl {
 public:
     void setVolume(float v) override { volume = v; }
     float volume = -1;
+};
+
+// A settings file in memory: what was last saved, and how often.
+class FakeStore : public SettingsStore {
+public:
+    SettingsMap load() override { return file; }
+    void save(const SettingsMap& values) override {
+        file = values;
+        ++saves;
+    }
+    std::string onDisk(const std::string& key) const {
+        auto it = file.find(key);
+        return it == file.end() ? std::string() : it->second;
+    }
+
+    SettingsMap file;
+    int saves = 0;
 };
 
 } // namespace oap::test

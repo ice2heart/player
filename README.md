@@ -28,7 +28,7 @@ Debian / Ubuntu, everything (simulator, headless, tests):
 ```sh
 sudo apt install build-essential cmake ninja-build pkgconf ca-certificates git \
     libavformat-dev libavcodec-dev libswresample-dev libavutil-dev \
-    libespeak-ng-dev espeak-ng libsdl2-dev libpulse-dev libasound2-dev
+    libespeak-ng-dev espeak-ng libsdl2-dev libpulse-dev libasound2-dev libyaml-cpp-dev
 ```
 
 | Package | Needed for |
@@ -39,6 +39,7 @@ sudo apt install build-essential cmake ninja-build pkgconf ca-certificates git \
 | `libespeak-ng-dev espeak-ng` | speech (`oap-sim`, `oap-headless`); `espeak-ng` brings the voice data |
 | `libsdl2-dev` | `oap-sim` only |
 | `libpulse-dev` / `libasound2-dev` | the `pulse` / `alsa` outputs; drop one by leaving it out of `OAP_AUDIO_BACKENDS` |
+| `libyaml-cpp-dev` | reading `config.yaml`; optional, CMake downloads yaml-cpp without it |
 
 Only the core and tests (`-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`) need just
 `build-essential cmake ninja-build`.
@@ -52,7 +53,8 @@ sudo apt install libasound2t64 libavcodec61 libavformat61 libavutil59 libc6 \
     libespeak-ng1 libgcc-s1 libpulse0 libstdc++6 libswresample5 espeak-ng-data
 ```
 
-Dear ImGui and GoogleTest are downloaded by CMake into the build folder.
+Dear ImGui and GoogleTest are downloaded by CMake into the build folder, and
+yaml-cpp too when it is not installed (`brew install yaml-cpp` or `libyaml-cpp-dev`).
 
 ### Build and run
 
@@ -105,7 +107,7 @@ works outside Docker on a Debian trixie host with these packages:
 sudo dpkg --add-architecture arm64 && sudo apt update
 sudo apt install crossbuild-essential-arm64 qemu-user cmake ninja-build pkgconf ca-certificates git \
     libavformat-dev:arm64 libavcodec-dev:arm64 libswresample-dev:arm64 libavutil-dev:arm64 \
-    libespeak-ng-dev:arm64 libpulse-dev:arm64 libasound2-dev:arm64
+    libespeak-ng-dev:arm64 libpulse-dev:arm64 libasound2-dev:arm64 libyaml-cpp-dev:arm64
 cmake -S . -B build-pi -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/pi-zero-2w.cmake -DOAP_BUILD_SIM=OFF
 cmake --build build-pi && ctest --test-dir build-pi --output-on-failure
 ```
@@ -186,11 +188,14 @@ Hold a control for a long press. To remap, edit `defaultGamepadLayout()` in
 ### Headless
 
 ```sh
-oap-headless [--config FILE] [--music DIR] [--audio NAME] [--input LIST]
+oap-headless [--config FILE] [--state FILE] [--music DIR] [--audio NAME] [--input LIST]
              [--evdev-device PATH] [--script STEPS] [LIBRARY_DIR]
 ```
 
-- Settings default to `~/.config/oap/settings.tsv` (or `$XDG_CONFIG_HOME/oap/`).
+- Settings and the server are in `~/.config/oap/config.yaml` (or `$XDG_CONFIG_HOME/oap/`),
+  positions in `state.tsv` next to it (`--state` to move it). An old `settings.tsv`
+  is not read.
+  `config.yaml` can be edited by hand; see [docs/streaming.md](docs/streaming.md#configuration-one-yaml-file).
 - `--input` is a comma-separated list of `evdev`, `terminal` and `none`. The default is
   `terminal` when stdin is a terminal, and `evdev` otherwise (for example under systemd).
   Use `--input evdev,terminal` to have both.
@@ -211,9 +216,9 @@ oap-headless [--config FILE] [--music DIR] [--audio NAME] [--input LIST]
 Both front ends run scripts:
 
 ```sh
-./build/oap-sim --config /tmp/test.tsv \
+./build/oap-sim --config /tmp/oap-test/config.yaml \
     --script "wait:1500 ok ok wait:3000 play:long right:long wait:1500 quit" library
-./build/oap-headless --audio null --input none --config /tmp/test.tsv \
+./build/oap-headless --audio null --input none --config /tmp/oap-test/config.yaml \
     --script "wait:1500 ok ok wait:3000 play:long right:long wait:1500 quit" library
 ```
 

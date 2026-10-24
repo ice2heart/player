@@ -1,6 +1,7 @@
 // Desktop simulator: keyboard, a game controller or the on-screen buttons stand
 // in for the device buttons, and the window visualises the menu stack, playback and speech.
 
+#include "config/settings_files.h"
 #include "core/app.h"
 #include "core/earcons.h"
 #include "core/mixer.h"
@@ -295,18 +296,23 @@ int main(int argc, char** argv) {
     std::filesystem::path library = "library";
     std::filesystem::path music = "music";
     const char* home = std::getenv("HOME");
-    std::filesystem::path config = std::filesystem::path(home ? home : ".") / ".config/oap-sim/settings.tsv";
+    std::filesystem::path config = std::filesystem::path(home ? home : ".") / ".config/oap-sim/config.yaml";
+    std::filesystem::path state;
     std::string script, audio = "auto";
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--script" && i + 1 < argc) script = argv[++i];
         else if (arg == "--config" && i + 1 < argc) config = argv[++i];
+        else if (arg == "--state" && i + 1 < argc) state = argv[++i];
         else if (arg == "--music" && i + 1 < argc) music = argv[++i];
         else if (arg == "--audio" && i + 1 < argc) audio = argv[++i];
         else if (arg == "--help" || arg == "-h") {
             std::string names;
             for (const auto& name : AudioOutput::backends()) names += (names.empty() ? "" : "|") + name;
-            std::printf("usage: oap-sim [--config FILE] [--music DIR] [--audio %s] [--script STEPS] [LIBRARY_DIR]\n",
+            std::printf("usage: oap-sim [--config FILE] [--state FILE] [--music DIR] [--audio %s] [--script STEPS] "
+                        "[LIBRARY_DIR]\n"
+                        "  --config FILE  settings and server (default ~/.config/oap-sim/config.yaml)\n"
+                        "  --state FILE   positions and the book to resume (default state.tsv next to the config)\n",
                         names.c_str());
             return 0;
         } else library = arg;
@@ -314,6 +320,7 @@ int main(int argc, char** argv) {
 
     library = std::filesystem::absolute(library).lexically_normal();
     music = std::filesystem::absolute(music).lexically_normal();
+    if (state.empty()) state = defaultStateFile(config);
 
     Mixer mixer;
     auto output = AudioOutput::open(audio, mixer);
@@ -323,9 +330,8 @@ int main(int argc, char** argv) {
     Earcons earcons(mixer);
     Player player(mixer);
     SystemClock clock;
-    Settings settings(config);
-    settings.load();
-    App app(tts, player, earcons, mixer, settings, clock, library, music);
+    SettingsFiles settings(config, state);
+    App app(tts, player, earcons, mixer, settings.config(), settings.state(), clock, library, music);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -357,7 +363,8 @@ int main(int argc, char** argv) {
     ImGui_ImplSDLRenderer2_Init(renderer);
 
     printKeys();
-    std::printf("Library: %s\nMusic: %s\nSettings: %s\n\n", library.c_str(), music.c_str(), config.c_str());
+    std::printf("Library: %s\nMusic: %s\nConfig: %s\nState: %s\n\n", library.c_str(), music.c_str(), config.c_str(),
+                state.c_str());
     app.start();
 
     // Debug aid: OAP_SIM_SNAPSHOT=file.bmp saves the last rendered frame on exit.

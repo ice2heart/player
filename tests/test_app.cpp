@@ -49,7 +49,7 @@ protected:
     }
 
     void start() {
-        app = std::make_unique<App>(speech, player, sounds, volume, settings, clock, root, music);
+        app = std::make_unique<App>(speech, player, sounds, volume, settings, state, clock, root, music);
         app->start();
     }
 
@@ -100,7 +100,10 @@ protected:
     FakeSounds sounds;
     FakeVolume volume;
     FakeClock clock;
-    Settings settings{fs::path()};
+    FakeStore configFile; // config.yaml
+    FakeStore stateFile;  // state.tsv
+    Settings settings{&configFile};
+    Settings state{&stateFile};
     fs::path base;
     fs::path root;
     fs::path music;
@@ -128,8 +131,8 @@ TEST_F(AppTest, StartAppliesStoredSettings) {
 }
 
 TEST_F(AppTest, ResumesLastBookAtSavedPosition) {
-    settings.setString("last_book", alpha().string());
-    settings.setString("pos:" + alpha().string(), "1:42.5");
+    state.setString("last_book", alpha().string());
+    state.setString("pos:" + alpha().string(), "1:42.5");
     start();
     EXPECT_EQ(app->mode(), App::Mode::Player);
     EXPECT_EQ(player.file, alphaFile(2));
@@ -139,7 +142,7 @@ TEST_F(AppTest, ResumesLastBookAtSavedPosition) {
 }
 
 TEST_F(AppTest, StartsAtHomeWhenTheLastBookCannotBeOpened) {
-    settings.setString("last_book", alpha().string());
+    state.setString("last_book", alpha().string());
     player.openSucceeds = false;
     start();
     EXPECT_TRUE(speech.heard("Cannot open 01 - Storm.mp3"));
@@ -148,8 +151,8 @@ TEST_F(AppTest, StartsAtHomeWhenTheLastBookCannotBeOpened) {
 }
 
 TEST_F(AppTest, InvalidSavedPositionStartsFromTheBeginning) {
-    settings.setString("last_book", alpha().string());
-    settings.setString("pos:" + alpha().string(), "7:99.0"); // the book has only two files
+    state.setString("last_book", alpha().string());
+    state.setString("pos:" + alpha().string(), "7:99.0"); // the book has only two files
     start();
     EXPECT_EQ(player.file, alphaFile(1));
     EXPECT_DOUBLE_EQ(player.pos, 0);
@@ -235,6 +238,7 @@ TEST_F(AppTest, ChoosingAValueFromTheListSavesItAppliesItAndGoesBack) {
     press(Button::Down);
     press(Button::Ok);
     EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
+    EXPECT_EQ(configFile.onDisk("speech.rate"), "250") << "written at once";
     EXPECT_EQ(speech.rate, 250);
     EXPECT_EQ(level().title, "Settings");
     EXPECT_EQ(speech.last(), "Speech rate, 250 words per minute, 1 of 10");
@@ -277,33 +281,24 @@ TEST_F(AppTest, ASettingStopsAtTheEndOfItsRange) {
 }
 
 TEST_F(AppTest, AChangedSettingIsWrittenWhenLeavingTheItem) {
-    fs::path file = base / "settings.tsv";
-    settings = Settings(file);
     start();
     open("Settings"); // Speech rate
-    auto saved = [&] {
-        Settings onDisk(file);
-        onDisk.load();
-        return onDisk.getInt("speech.rate", 220);
-    };
     press(Button::Forward);
     press(Button::Forward);
-    EXPECT_EQ(saved(), 220) << "not written while still on the item";
+    EXPECT_EQ(configFile.saves, 0) << "not written while still on the item";
     press(Button::Down);
-    EXPECT_EQ(saved(), 280);
+    EXPECT_EQ(configFile.saves, 1);
+    EXPECT_EQ(configFile.onDisk("speech.rate"), "280");
+    EXPECT_EQ(stateFile.saves, 0) << "a setting is not state";
 }
 
 TEST_F(AppTest, AChangedSettingIsWrittenWhenTheDeviceSleeps) {
-    fs::path file = base / "settings.tsv";
-    settings = Settings(file);
     start();
     open("Settings");
     press(Button::Forward);
     idle(6min); // auto sleep, no key pressed
     ASSERT_EQ(app->mode(), App::Mode::Sleeping);
-    Settings onDisk(file);
-    onDisk.load();
-    EXPECT_EQ(onDisk.getInt("speech.rate", 220), 250);
+    EXPECT_EQ(configFile.onDisk("speech.rate"), "250");
 }
 
 TEST_F(AppTest, LeftAndRightDoNothingOnItemsWithoutAValue) {
@@ -438,7 +433,7 @@ TEST_F(AppTest, PlayingABookFromTheLibrary) {
     EXPECT_EQ(app->mode(), App::Mode::Player);
     EXPECT_EQ(player.file, alphaFile(1));
     EXPECT_TRUE(player.playing());
-    EXPECT_EQ(settings.getString("last_book"), alpha().string());
+    EXPECT_EQ(state.getString("last_book"), alpha().string());
     EXPECT_EQ(speech.last(), "Now playing. Alpha.");
 }
 
@@ -458,7 +453,7 @@ TEST_F(AppTest, ABookThatCannotBeOpenedIsReportedAndYouStayInTheLibrary) {
     EXPECT_FALSE(player.playing());
     EXPECT_EQ(app->mode(), App::Mode::Menu);
     EXPECT_EQ(level().title, "Library");
-    EXPECT_EQ(settings.getString("last_book"), "") << "not resumed at the next start";
+    EXPECT_EQ(state.getString("last_book"), "") << "not resumed at the next start";
     press(Button::Home);
     EXPECT_EQ(labels().front(), "Library") << "nothing loaded";
 }
@@ -544,6 +539,18 @@ TEST_F(AppTest, UpAndDownChangeVolumeInPlayer) {
     EXPECT_EQ(settings.getInt("volume", 0), 65);
 }
 
+TEST_F(AppTest, PlayerVolumeIsWrittenOnlyOnExit) {
+    playAlpha();
+    press(Button::Up);
+    press(Button::Up);
+    press(Button::PlayPause);
+    press(Button::Down);
+    EXPECT_EQ(configFile.saves, 0) << "no config.yaml write per press";
+    app->shutdown();
+    EXPECT_EQ(configFile.saves, 1);
+    EXPECT_EQ(configFile.onDisk("volume"), "75");
+}
+
 TEST_F(AppTest, VolumeStopsAtMaximum) {
     settings.setInt("volume", 100);
     playAlpha();
@@ -552,12 +559,14 @@ TEST_F(AppTest, VolumeStopsAtMaximum) {
     EXPECT_EQ(speech.last(), "Maximum volume.");
 }
 
-TEST_F(AppTest, PauseSavesPosition) {
+TEST_F(AppTest, PauseRemembersThePositionWithoutWritingIt) {
     playAlpha();
     player.pos = 77.3;
     press(Button::PlayPause);
     EXPECT_FALSE(player.playing());
-    EXPECT_EQ(settings.getString("pos:" + alpha().string()), "0:77.3");
+    EXPECT_EQ(state.getString("pos:" + alpha().string()), "0:77.3");
+    EXPECT_EQ(stateFile.saves, 0);
+    EXPECT_EQ(configFile.saves, 0);
 }
 
 TEST_F(AppTest, ResumeAfterLongPauseRewinds) {
@@ -579,14 +588,50 @@ TEST_F(AppTest, ResumeAfterShortPauseDoesNotRewind) {
     EXPECT_DOUBLE_EQ(player.pos, 50);
 }
 
-TEST_F(AppTest, PositionIsSavedEvery30SecondsWhilePlaying) {
+TEST_F(AppTest, MinutesOfPlaybackWriteNothing) {
     playAlpha();
-    player.pos = 12;
-    std::string key = "pos:" + alpha().string();
-    idle(20s);
-    EXPECT_EQ(settings.getString(key), "");
-    idle(11s);
-    EXPECT_EQ(settings.getString(key), "0:12.0");
+    for (int i = 0; i < 10; ++i) {
+        player.pos += 30;
+        idle(31s);
+    }
+    EXPECT_EQ(stateFile.saves, 0);
+    EXPECT_EQ(configFile.saves, 0);
+}
+
+TEST_F(AppTest, ChangingBooksWritesNothingYetSwitchingBackResumes) {
+    playAlpha();
+    player.pos = 20;
+    hold(Button::Home);
+    open("Library");
+    open("Beta");
+    EXPECT_EQ(player.file, beta().string());
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_DOUBLE_EQ(player.pos, 20) << "the place was kept in memory";
+    EXPECT_EQ(stateFile.saves, 0);
+    EXPECT_EQ(configFile.saves, 0);
+}
+
+TEST_F(AppTest, ShutdownWritesThePositionToTheStateOnly) {
+    playAlpha();
+    player.pos = 33;
+    app->shutdown();
+    EXPECT_EQ(stateFile.saves, 1);
+    EXPECT_EQ(stateFile.onDisk("pos:" + alpha().string()), "0:33.0");
+    EXPECT_EQ(stateFile.onDisk("last_book"), alpha().string());
+    EXPECT_EQ(configFile.saves, 0) << "config.yaml is not touched";
+}
+
+TEST_F(AppTest, SleepWritesThePositionToTheStateOnly) {
+    playAlpha();
+    player.pos = 44;
+    press(Button::Power);
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_EQ(stateFile.saves, 1);
+    EXPECT_EQ(stateFile.onDisk("pos:" + alpha().string()), "0:44.0");
+    EXPECT_EQ(configFile.saves, 0);
 }
 
 TEST_F(AppTest, NextFileStartsWhenAFileFinishes) {
@@ -813,10 +858,10 @@ TEST_F(AppTest, MusicDoesNotTakeOverTheBookToResume) {
     open("Music");
     open("Road Trip");
     open("Sunrise");
-    EXPECT_EQ(settings.getString("pos:" + alpha().string()), "0:20.0") << "the book's place is kept";
+    EXPECT_EQ(state.getString("pos:" + alpha().string()), "0:20.0") << "the book's place is kept";
     press(Button::PlayPause);
-    EXPECT_EQ(settings.getString("pos:" + roadTrip().string()), "");
-    EXPECT_EQ(settings.getString("last_book"), alpha().string());
+    EXPECT_EQ(state.getString("pos:" + roadTrip().string()), "");
+    EXPECT_EQ(state.getString("last_book"), alpha().string());
 }
 
 TEST_F(AppTest, RestartAfterMusicResumesTheBook) {
@@ -1006,6 +1051,52 @@ TEST_F(AppTest, PowerOffFromPowerMenu) {
     press(Button::Ok);
     EXPECT_TRUE(app->quitRequested());
     EXPECT_FALSE(player.playing());
-    EXPECT_EQ(settings.getString("pos:" + alpha().string()), "0:33.0");
+    EXPECT_EQ(stateFile.saves, 1);
+    EXPECT_EQ(stateFile.onDisk("pos:" + alpha().string()), "0:33.0");
+    EXPECT_EQ(configFile.saves, 0) << "config.yaml is not touched";
     EXPECT_EQ(speech.last(), "Powering off. Goodbye.");
+}
+
+TEST_F(AppTest, ShutdownAfterPowerOffDoesNotWriteTheSameStateAgain) {
+    playAlpha();
+    player.pos = 33;
+    hold(Button::Power);
+    open("Power off");
+    app->shutdown(); // what the front end does once the goodbye is heard
+    EXPECT_EQ(stateFile.saves, 1);
+    EXPECT_EQ(stateFile.onDisk("pos:" + alpha().string()), "0:33.0");
+}
+
+TEST_F(AppTest, RestartWritesTheState) {
+    playAlpha();
+    player.pos = 12;
+    hold(Button::Power);
+    open("Restart");
+    EXPECT_EQ(stateFile.onDisk("pos:" + alpha().string()), "0:12.0");
+    EXPECT_EQ(configFile.saves, 0);
+}
+
+TEST_F(AppTest, FactoryResetKeepsTheServerAndForgetsThePlace) {
+    settings.setString("server.url", "https://music.example");
+    settings.setString("server.password", "1234");
+    settings.setInt("speech.rate", 310);
+    playAlpha();
+    player.pos = 99;
+    press(Button::Power); // sleep writes the place
+    press(Button::Ok);    // wake
+    ASSERT_EQ(stateFile.onDisk("pos:" + alpha().string()), "0:99.0");
+    hold(Button::Home);
+    open("System");
+    open("Factory reset");
+    open("Erase all settings");
+    EXPECT_TRUE(speech.heard("Settings erased."));
+    EXPECT_EQ(configFile.onDisk("server.url"), "https://music.example");
+    EXPECT_EQ(configFile.onDisk("server.password"), "1234");
+    EXPECT_EQ(configFile.onDisk("speech.rate"), "") << "user settings go";
+    EXPECT_EQ(speech.rate, 220) << "the default applies at once";
+    for (const auto& [key, value] : stateFile.file) EXPECT_NE(key.rfind("pos:", 0), 0u) << key;
+    EXPECT_EQ(stateFile.onDisk("last_book"), "");
+    EXPECT_EQ(app->mode(), App::Mode::Menu) << "nothing to resume";
+    app->shutdown();
+    for (const auto& [key, value] : stateFile.file) EXPECT_NE(key.rfind("pos:", 0), 0u) << key;
 }

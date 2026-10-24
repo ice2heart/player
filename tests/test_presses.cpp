@@ -49,8 +49,7 @@ protected:
     void SetUp() override {
         dir = testTempDir();
         fs::remove_all(dir);
-        settings = std::make_unique<Settings>(dir / "settings.tsv");
-        app = std::make_unique<App>(speech, player, sounds, volume, *settings, clock, dir / "books", dir / "music");
+        app = std::make_unique<App>(speech, player, sounds, volume, config, state, clock, dir / "books", dir / "music");
         app->start();
         t0 = clock.now();
     }
@@ -90,7 +89,8 @@ protected:
     FakeSounds sounds;
     FakeVolume volume;
     FakeClock clock;
-    std::unique_ptr<Settings> settings;
+    Settings config;
+    Settings state;
     std::unique_ptr<App> app;
     HeldButtons held;
     FakeClock::TimePoint t0;

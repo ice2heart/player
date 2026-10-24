@@ -2,6 +2,7 @@
 // with no window. Buttons come from evdev input devices, from the terminal
 // (handy over SSH) or from --script; everything spoken is also printed to stdout.
 
+#include "config/settings_files.h"
 #include "core/app.h"
 #include "core/earcons.h"
 #include "core/mixer.h"
@@ -56,9 +57,9 @@ private:
 
 std::filesystem::path defaultConfig() {
     if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg)
-        return std::filesystem::path(xdg) / "oap/settings.tsv";
+        return std::filesystem::path(xdg) / "oap/config.yaml";
     const char* home = std::getenv("HOME");
-    return std::filesystem::path(home ? home : ".") / ".config/oap/settings.tsv";
+    return std::filesystem::path(home ? home : ".") / ".config/oap/config.yaml";
 }
 
 void usage() {
@@ -66,7 +67,8 @@ void usage() {
     for (const auto& name : AudioOutput::backends()) audio += (audio.empty() ? "" : "|") + name;
     std::printf(
         "usage: oap-headless [options] [LIBRARY_DIR]\n"
-        "  --config FILE        settings file (default ~/.config/oap/settings.tsv)\n"
+        "  --config FILE        settings and server (default ~/.config/oap/config.yaml)\n"
+        "  --state FILE         positions and the book to resume (default state.tsv next to the config)\n"
         "  --music DIR          music folder (default ./music)\n"
         "  --audio NAME         %s (default auto); alsa:DEVICE picks an ALSA PCM\n"
         "  --input LIST         comma-separated: evdev, terminal, none\n"
@@ -90,12 +92,14 @@ int main(int argc, char** argv) {
     std::filesystem::path library = "library";
     std::filesystem::path music = "music";
     std::filesystem::path config = defaultConfig();
+    std::filesystem::path state;
     std::string script, audio = "auto", inputs, evdevDevice;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         bool hasValue = i + 1 < argc;
         if (arg == "--script" && hasValue) script = argv[++i];
         else if (arg == "--config" && hasValue) config = argv[++i];
+        else if (arg == "--state" && hasValue) state = argv[++i];
         else if (arg == "--music" && hasValue) music = argv[++i];
         else if (arg == "--audio" && hasValue) audio = argv[++i];
         else if (arg == "--input" && hasValue) inputs = argv[++i];
@@ -126,6 +130,7 @@ int main(int argc, char** argv) {
 
     library = std::filesystem::absolute(library).lexically_normal();
     music = std::filesystem::absolute(music).lexically_normal();
+    if (state.empty()) state = defaultStateFile(config);
 
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
@@ -139,9 +144,8 @@ int main(int argc, char** argv) {
     Earcons earcons(mixer);
     Player player(mixer);
     SystemClock clock;
-    Settings settings(config);
-    settings.load();
-    App app(tts, player, earcons, mixer, settings, clock, library, music);
+    SettingsFiles settings(config, state);
+    App app(tts, player, earcons, mixer, settings.config(), settings.state(), clock, library, music);
 
     EvdevInput evdev;
     if (useEvdev && evdev.open(evdevDevice) == 0)
@@ -152,7 +156,8 @@ int main(int argc, char** argv) {
         printTerminalKeys();
     }
 
-    std::printf("Library: %s\nMusic: %s\nSettings: %s\n\n", library.c_str(), music.c_str(), config.c_str());
+    std::printf("Library: %s\nMusic: %s\nConfig: %s\nState: %s\n\n", library.c_str(), music.c_str(), config.c_str(),
+                state.c_str());
     std::fflush(stdout);
     app.start();
 

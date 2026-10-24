@@ -15,8 +15,9 @@ docker build -f docker/Dockerfile --target native .   # clean Debian build + tes
 docker build -f docker/Dockerfile --target pi .       # Pi Zero 2 W cross build + tests under qemu
 ```
 
-`-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF` builds only the core and the tests,
-without FFmpeg, eSpeak NG, SDL2 or audio libraries.
+`-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF` builds only the core, the config
+library and the tests, without FFmpeg, eSpeak NG, SDL2 or audio libraries. yaml-cpp
+comes from the system, or CMake downloads it like GoogleTest.
 
 ## Layering rules
 

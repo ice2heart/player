@@ -34,8 +34,10 @@ public:
         std::optional<double> sleepTimerLeft;
     };
 
-    App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, Settings& settings,
-        Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot);
+    // `config` holds what the user sets (config.yaml), `state` the positions and
+    // the book to resume (state.tsv). State is written only on exit and on sleep.
+    App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, Settings& config,
+        Settings& state, Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot);
 
     void start();
     void keyDown(Button button);
@@ -43,7 +45,7 @@ public:
     void setHold(bool on);
     void tick();
     bool quitRequested() const { return quit_; }
-    void shutdown();
+    void shutdown(); // writes the state and any changed setting
 
     // Read-only state for the simulator's visualisation.
     Mode mode() const;
@@ -84,7 +86,10 @@ private:
     void goHome();
     void enterPlayer();
     void openPowerMenu();
-    void saveChangedSettings();
+    void saveChangedSettings(); // a value stepped with Left / Right, once the user moves on
+    void saveConfig();
+    void saveOnExit(); // exit and sleep: the only times state.tsv is written
+    void saveState();  // only if it changed since it was loaded or last written
     std::vector<MenuItem> homeMenu();
     std::vector<MenuItem> libraryMenu();
     std::vector<MenuItem> musicMenu();
@@ -117,7 +122,7 @@ private:
     void gotoChapter(int index);
     void stepChapter(int direction);
     void onFileFinished();
-    void savePosition();
+    void rememberPosition(); // in the state map only, written by saveOnExit()
     std::string playerStatus() const;
 
     // Power
@@ -125,7 +130,8 @@ private:
     void sleep(const std::string& announcement);
     void wake();
     void powerOff();
-    void restart();
+    void restart(bool saveFirst = true);
+    void factoryReset();
     std::string statusReport() const;
 
     using TimePoint = Clock::TimePoint;
@@ -134,7 +140,9 @@ private:
     MediaPlayer& player_;
     SoundEffects& earcons_;
     VolumeControl& volume_;
-    Settings& settings_;
+    Settings& config_;
+    Settings& state_;
+    SettingsMap savedState_; // what state.tsv holds
     Clock& clock_;
     std::filesystem::path libraryRoot_;
     std::filesystem::path musicRoot_;
@@ -143,6 +151,7 @@ private:
     std::vector<Screen> screens_;
     bool sleeping_ = false;
     bool settingsChanged_ = false; // changed with Left / Right, not yet written to disk
+    bool volumeChanged_ = false;   // changed in the player, written on exit
     std::optional<Book> book_; // the loaded book, or the album / playlist when music_
     bool music_ = false;
     size_t fileIndex_ = 0;
@@ -157,7 +166,6 @@ private:
     int sleepMinutes_ = 0; // the time chosen for sleepDeadline_
     int sleepAtChapterEnd_ = -1;
     TimePoint lastActivity_;
-    TimePoint lastSave_;
 
     std::deque<std::string> speechLog_;
     std::array<std::array<int, kGestureCount>, kButtonCount> usage_{};
