@@ -11,6 +11,8 @@ cmake -S . -B build && cmake --build build -j
 ctest --test-dir build --output-on-failure      # or ./build/oap-tests
 ./build/oap-sim library                         # simulator (needs ./tools/make_sample_library.sh library music)
 ./build/oap-headless library                    # device front end, Linux (--audio null without a sound card)
+docker build -f docker/Dockerfile --target native .   # clean Debian build + tests
+docker build -f docker/Dockerfile --target pi .       # Pi Zero 2 W cross build + tests under qemu
 ```
 
 `-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF` builds only the core and the tests,

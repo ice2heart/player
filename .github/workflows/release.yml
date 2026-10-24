@@ -1,0 +1,54 @@
+# Build, test and publish a release when a version tag is pushed:
+#   git tag v0.1.0 && git push origin v0.1.0
+name: release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+jobs:
+  native:
+    name: Build and test (x86-64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run tests
+        run: docker build -f docker/Dockerfile --target native-out --output out .
+
+  pi:
+    name: Build and test (Pi Zero 2 W, qemu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cross build and run tests
+        run: docker build -f docker/Dockerfile --target pi-out --output out .
+      - name: Package
+        run: |
+          tar -C out -czf oap-headless-${{ github.ref_name }}-pi-zero-2w-arm64.tar.gz oap-headless DEPENDENCIES.txt
+          cp out/DEPENDENCIES.txt .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pi-binaries
+          path: |
+            oap-headless-*.tar.gz
+            DEPENDENCIES.txt
+
+  release:
+    name: Publish release
+    needs: [native, pi]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" --generate-notes \
+            oap-headless-*.tar.gz DEPENDENCIES.txt

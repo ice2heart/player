@@ -23,12 +23,31 @@ macOS (simulator only):
 brew install cmake pkgconf ffmpeg espeak-ng sdl2
 ```
 
-Debian / Ubuntu:
+Debian / Ubuntu, everything (simulator, headless, tests):
 
 ```sh
 sudo apt install build-essential cmake ninja-build pkgconf \
     libavformat-dev libavcodec-dev libswresample-dev libavutil-dev \
     libespeak-ng-dev espeak-ng libsdl2-dev libpulse-dev libasound2-dev
+```
+
+| Package | Needed for |
+|---------|------------|
+| `build-essential cmake ninja-build pkgconf` | the build (CMake 3.20+, a C++20 compiler) |
+| `libavformat-dev libavcodec-dev libswresample-dev libavutil-dev` | FFmpeg decoding (`oap-sim`, `oap-headless`) |
+| `libespeak-ng-dev espeak-ng` | speech (`oap-sim`, `oap-headless`); `espeak-ng` brings the voice data |
+| `libsdl2-dev` | `oap-sim` only |
+| `libpulse-dev` / `libasound2-dev` | the `pulse` / `alsa` outputs; drop one by leaving it out of `OAP_AUDIO_BACKENDS` |
+
+Only the core and tests (`-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`) need just
+`build-essential cmake ninja-build`.
+
+On the Raspberry Pi (Raspberry Pi OS 64-bit, bookworm), a cross-built
+`oap-headless` needs only the runtime libraries:
+
+```sh
+sudo apt install libavformat59 libavcodec59 libswresample4 libavutil57 \
+    libespeak-ng1 espeak-ng-data libpulse0 libasound2
 ```
 
 Dear ImGui and GoogleTest are downloaded by CMake into the build folder.
@@ -54,6 +73,54 @@ Build switches:
 
 For the device, build only the headless front end, for example with ALSA only:
 `cmake -S . -B build -DOAP_BUILD_SIM=OFF -DOAP_AUDIO_BACKENDS=alsa`.
+
+### Docker
+
+[docker/Dockerfile](docker/Dockerfile) builds in a clean Debian and runs the tests,
+so the build fails if a test fails. Run from the repository root:
+
+```sh
+docker build -f docker/Dockerfile --target native .   # Debian trixie, x86-64: sim, headless, tests
+docker build -f docker/Dockerfile --target pi .       # cross build for the Pi Zero 2 W, tests under qemu
+```
+
+To get the binaries, build the matching `-out` target into a folder. The `pi-out`
+folder also gets `DEPENDENCIES.txt`, the runtime packages read from the binary's
+linked libraries:
+
+```sh
+docker build -f docker/Dockerfile --target pi-out --output build-pi .
+scp build-pi/oap-headless pi@raspberrypi.local:
+```
+
+The `pi` target builds `oap-headless` and `oap-tests` for arm64 tuned for the
+Cortex-A53 (`-mcpu=cortex-a53`), on Debian bookworm so the binaries match the glibc
+and FFmpeg of Raspberry Pi OS. It uses
+[cmake/toolchains/pi-zero-2w.cmake](cmake/toolchains/pi-zero-2w.cmake), which also
+works outside Docker on a Debian bookworm host with these packages:
+
+```sh
+sudo dpkg --add-architecture arm64 && sudo apt update
+sudo apt install crossbuild-essential-arm64 qemu-user-static cmake ninja-build pkgconf \
+    libavformat-dev:arm64 libavcodec-dev:arm64 libswresample-dev:arm64 libavutil-dev:arm64 \
+    libespeak-ng-dev:arm64 libpulse-dev:arm64 libasound2-dev:arm64
+cmake -S . -B build-pi -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/pi-zero-2w.cmake -DOAP_BUILD_SIM=OFF
+cmake --build build-pi && ctest --test-dir build-pi --output-on-failure
+```
+
+Bookworm's own CMake (3.25) fails on the GoogleTest download, so install `cmake` from
+`bookworm-backports` (the Dockerfile does this).
+
+### Releases
+
+Pushing a tag like `v0.1.0` runs [.github/workflows/release.yml](.github/workflows/release.yml):
+it builds and tests on x86-64 and for the Pi (under qemu), and publishes a GitHub
+release with `oap-headless` for the Pi Zero 2 W and `DEPENDENCIES.txt`, the
+`apt install` line for its runtime packages on Raspberry Pi OS.
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
 
 ### Audio output
 
