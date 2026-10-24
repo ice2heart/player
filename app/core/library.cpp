@@ -130,12 +130,18 @@ std::vector<Book> scanLibrary(const fs::path& root) {
         if (isHidden(entry.path())) continue;
         std::error_code entryEc;
         if (entry.is_directory(entryEc)) {
-            Book book{entry.path().filename().string(), entry.path(), {}};
+            Book book;
+            book.title = entry.path().filename().string();
+            book.path = entry.path();
             collectAudio(entry.path(), book.files);
             std::sort(book.files.begin(), book.files.end(), pathLess);
             if (!book.files.empty()) books.push_back(std::move(book));
         } else if (entry.is_regular_file(entryEc) && isAudio(entry.path())) {
-            books.push_back({entry.path().stem().string(), entry.path(), {entry.path()}});
+            Book book;
+            book.title = entry.path().stem().string();
+            book.path = entry.path();
+            book.files = {entry.path()};
+            books.push_back(std::move(book));
         }
     }
     std::sort(books.begin(), books.end(),

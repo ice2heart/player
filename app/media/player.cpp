@@ -21,6 +21,10 @@ struct Player::ResamplerInput {
 };
 
 namespace {
+// A stream URL carries the server login, which must never reach a log
+// (docs/streaming.md), so only local paths are printed.
+std::string printable(const std::string& path) { return path.find("://") == std::string::npos ? path : "a stream"; }
+
 std::string errorText(int error) {
     char text[AV_ERROR_MAX_STRING_SIZE] = {};
     av_strerror(error, text, sizeof text);
@@ -41,7 +45,7 @@ bool Player::open(const std::string& path, double startAt) {
     close();
 
     if (avformat_open_input(&fmt_, path.c_str(), nullptr, nullptr) < 0) {
-        std::fprintf(stderr, "player: cannot open %s\n", path.c_str());
+        std::fprintf(stderr, "player: cannot open %s\n", printable(path).c_str());
         return false;
     }
     if (avformat_find_stream_info(fmt_, nullptr) < 0) {
@@ -51,7 +55,7 @@ bool Player::open(const std::string& path, double startAt) {
     const AVCodec* codec = nullptr;
     int index = av_find_best_stream(fmt_, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
     if (index < 0 || !codec) {
-        std::fprintf(stderr, "player: no audio stream in %s\n", path.c_str());
+        std::fprintf(stderr, "player: no audio stream in %s\n", printable(path).c_str());
         close();
         return false;
     }

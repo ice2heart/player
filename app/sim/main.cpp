@@ -8,6 +8,7 @@
 #include "core/text.h"
 #include "frontend/gamepad.h"
 #include "frontend/held_buttons.h"
+#include "frontend/no_music_server.h"
 #include "frontend/presses.h"
 #include "media/player.h"
 #include "media/tts.h"
@@ -331,7 +332,8 @@ int main(int argc, char** argv) {
     Player player(mixer);
     SystemClock clock;
     SettingsFiles settings(config, state);
-    App app(tts, player, earcons, mixer, settings.config(), settings.state(), clock, library, music);
+    NoMusicServer server; // the Streaming menu and a real server come later (docs/streaming.md)
+    App app(tts, player, earcons, mixer, server, settings.config(), settings.state(), clock, library, music);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());

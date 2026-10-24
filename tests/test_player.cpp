@@ -13,7 +13,11 @@ extern "C" {
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <functional>
+#include <sstream>
+#include <unistd.h>
 #include <fstream>
 #include <thread>
 #include <vector>
@@ -80,6 +84,26 @@ size_t consume(Player& player, Mixer& mixer, size_t limit = SIZE_MAX) {
         if (got == 0) std::this_thread::sleep_for(1ms);
     }
     return total;
+}
+
+// What `run` writes to stderr (FFmpeg's own messages included).
+std::string stderrOf(const fs::path& file, const std::function<void()>& run) {
+    FILE* out = std::fopen(file.c_str(), "w");
+    if (!out) {
+        ADD_FAILURE() << "cannot write " << file;
+        return {};
+    }
+    std::fflush(stderr);
+    int saved = dup(2);
+    dup2(fileno(out), 2);
+    run();
+    std::fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    std::fclose(out);
+    std::stringstream text;
+    text << std::ifstream(file).rdbuf();
+    return text.str();
 }
 
 double seconds(size_t frames) { return double(frames) / Mixer::kSampleRate; }
@@ -166,6 +190,24 @@ TEST_F(PlayerTest, FormatChangeToFewerChannels) {
     ASSERT_TRUE(player.open(file.string()));
     player.play();
     EXPECT_NEAR(seconds(consume(player, mixer_)), 2.07, 0.1);
+}
+
+// A stream URL holds the server login (docs/streaming.md): a failed open must not print it.
+TEST_F(PlayerTest, AUrlThatCannotBeOpenedIsNotPrinted) {
+    Player player(mixer_);
+    std::string url = "file://" + (dir_ / "missing-secret-token.mp3").string();
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(player.open(url)); });
+    EXPECT_NE(log.find("player: cannot open"), std::string::npos) << log;
+    EXPECT_EQ(log.find("secret-token"), std::string::npos) << log;
+}
+
+TEST_F(PlayerTest, AUrlWithoutAudioIsNotPrinted) {
+    std::ofstream(dir_ / "secret-token.srt") << "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n";
+    Player player(mixer_);
+    std::string url = "file://" + (dir_ / "secret-token.srt").string();
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(player.open(url)); });
+    EXPECT_NE(log.find("player: no audio stream"), std::string::npos) << log;
+    EXPECT_EQ(log.find("secret-token"), std::string::npos) << log;
 }
 
 TEST(PlayerReadError, EndOfFileEndsAtOnce) {

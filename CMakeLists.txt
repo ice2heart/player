@@ -96,6 +96,7 @@ endif()
 add_library(oapfrontend STATIC
     app/frontend/gamepad.cpp
     app/frontend/held_buttons.cpp
+    app/frontend/no_music_server.cpp
     app/frontend/presses.cpp
     app/frontend/terminal_keys.cpp
 )
@@ -208,6 +209,7 @@ if(OAP_BUILD_TESTS)
         tests/test_held_buttons.cpp
         tests/test_library.cpp
         tests/test_mixer.cpp
+        tests/test_no_music_server.cpp
         tests/test_presses.cpp
         tests/test_settings.cpp
         tests/test_terminal_keys.cpp

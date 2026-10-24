@@ -36,8 +36,11 @@ public:
 
     // `config` holds what the user sets (config.yaml), `state` the positions and
     // the book to resume (state.tsv). State is written only on exit and on sleep.
-    App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, Settings& config,
-        Settings& state, Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot);
+    // `server` gives the stream URLs of remote tracks; a front end without one
+    // passes a server that is not configured.
+    App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
+        Settings& config, Settings& state, Clock& clock, std::filesystem::path libraryRoot,
+        std::filesystem::path musicRoot);
 
     void start();
     void keyDown(Button button);
@@ -46,6 +49,13 @@ public:
     void tick();
     bool quitRequested() const { return quit_; }
     void shutdown(); // writes the state and any changed setting
+
+    // Plays `tracks` from the server like a local album, from `index` on, and
+    // opens the player. `title` is what the list is called (album or playlist
+    // name). Saves no position and leaves `last_book` alone. If the track cannot
+    // be opened it says "Server not reachable", tries no other track, keeps what
+    // was loaded before (paused) and returns false.
+    bool playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index);
 
     // Read-only state for the simulator's visualisation.
     Mode mode() const;
@@ -111,7 +121,8 @@ private:
     bool playMusic(const Book& album, size_t track);
     bool switchTo(const Book& book, bool music, size_t file, double position, bool autoplay);
     std::string unit() const { return music_ ? "track" : "chapter"; } // what one part is called
-    bool loadFile(size_t file, double position, bool autoplay);
+    bool loadFile(size_t file, double position, bool autoplay); // within the loaded book
+    bool openFile(size_t file, double position, bool autoplay);
     void togglePlay();
     void play();
     void pause(bool announce);
@@ -119,7 +130,7 @@ private:
     void changeVolume(int delta);
     std::vector<ChapterRef> chapters() const;
     int currentChapter() const;
-    void gotoChapter(int index);
+    bool gotoChapter(int index); // false if its file did not open
     void stepChapter(int direction);
     void onFileFinished();
     void rememberPosition(); // in the state map only, written by saveOnExit()
@@ -140,6 +151,7 @@ private:
     MediaPlayer& player_;
     SoundEffects& earcons_;
     VolumeControl& volume_;
+    MusicServer& server_;
     Settings& config_;
     Settings& state_;
     SettingsMap savedState_; // what state.tsv holds
@@ -155,6 +167,10 @@ private:
     std::optional<Book> book_; // the loaded book, or the album / playlist when music_
     bool music_ = false;
     size_t fileIndex_ = 0;
+    // Set while a remote track is loaded but closed: after a failed open (opening
+    // it again at once would wait on the same dead server) or at the end of the
+    // list. play() opens it at this position.
+    std::optional<double> reopenAt_;
 
     bool hold_ = false;
     std::array<bool, kButtonCount> held_{};   // raw keys down now

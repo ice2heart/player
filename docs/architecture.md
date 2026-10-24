@@ -48,7 +48,7 @@ only in where button presses come from and whether there is a window.
 
 `App` has no audio code. It only sees the interfaces in `services.h`, and the
 front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`,
-`SystemClock`). The unit tests wire in fakes instead (section 12).
+`SystemClock`, and for now `NoMusicServer`). The unit tests wire in fakes instead (section 12).
 
 ## 2. Source layout
 
@@ -58,17 +58,17 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
-| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `MusicServer` with its `RemoteTrack` / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it; not used by `App` yet). |
+| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `MusicServer` with its `RemoteTrack` / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&` and so far uses only `streamUrl()`, in `playRemote()`. |
 | `app/net/http_client.{h,cpp}` | `Http`: asynchronous GET whose handler runs on the client's thread (tests use a fake). `HttpClient`: libcurl multi on one worker thread; 10 s connect timeout, 10 s without data or 60 s in all ends a request, answers over 16 MB fail; cancellable; the destructor aborts transfers and never waits on a socket. |
 | `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `streamUrl()`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
 | `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists and getPlaylist answers (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
 | `app/net/md5.{h,cpp}` | `md5Hex()` for the auth token. |
-| `app/media/player.{h,cpp}` | `Player`: one audio file, decoded on its own thread (FFmpeg). |
+| `app/media/player.{h,cpp}` | `Player`: one audio file, decoded on its own thread (FFmpeg). Its error messages print a local path but never a URL (`://`), which would hold the server login. |
 | `app/media/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. |
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
-| `app/core/library.{h,cpp}` | `Book`, `scanLibrary()`. |
+| `app/core/library.{h,cpp}` | `Book` (also a remote list: stream URLs in `files`, server titles in `titles`, `remote` set), `scanLibrary()`. |
 | `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `serverConfigured()`. |
 | `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys) and `TsvStore` (`state.tsv`). |
 | `app/config/atomic_file.{h,cpp}` | `writeFileAtomically()`: temp file with mode 0600, `fsync`, `rename`. |
@@ -83,6 +83,7 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 | `app/frontend/presses.{h,cpp}` | `PressSequencer` (timed presses), `parseScript()`, `deepOf()`. |
 | `app/frontend/terminal_keys.{h,cpp}` | `TerminalKeyDecoder`: terminal bytes → presses. Keeps an escape sequence split across reads; a lone Esc is Home only after `kEscTimeout` (200 ms) without more bytes, checked by `poll(now)`. |
 | `app/frontend/held_buttons.{h,cpp}` | `HeldButtons`: counts the inputs holding each button, so App gets `keyUp` only when the last one lets go. |
+| `app/frontend/no_music_server.{h,cpp}` | `NoMusicServer`: the `MusicServer` both front ends give `App` until they build a real one from `config.yaml`; every request finishes with `NotConfigured` on the next `poll()`. |
 | `app/frontend/gamepad.{h,cpp}` | `GamepadMapper`: game controller buttons → device buttons, with the layout in `defaultGamepadLayout()`. Used by the simulator (SDL) and headless (evdev). |
 | `app/sim/main.cpp` | Simulator: window, key mapping, visualisation. |
 | `app/headless/main.cpp` | Headless front end: poll loop, terminal raw mode, signals. |
@@ -326,6 +327,17 @@ Power menu (hold Power): Sleep · Power off · Restart · Cancel
   skipped: the next file that opens plays instead. If no file from the chosen
   one on opens, the book or track is not loaded at all: whatever was loaded
   before stays loaded at the same place, and the user stays in the menu.
+- **Remote tracks** (see [streaming.md](streaming.md)): `App::playRemote(title, tracks, index)`
+  turns a list of `RemoteTrack`s into a `Book` with `remote` set, `files` = `server.streamUrl(id)`
+  and `titles` = the server titles, and plays it like music (`playMusic` → `switchTo(..., music=true)`),
+  so it saves no position and leaves `last_book` alone. Every spoken part name comes from
+  `partTitle()`: the server title, or "Track 3" if it has none, never the URL, which holds the login.
+- A remote track that cannot be opened says "Cannot play Rain. Server not reachable." and **no
+  other track is tried** (each try could block for the network timeout). What was current
+  before stays current and paused at the same place. If that is a remote track it is **not
+  opened again at once** (it would wait on the same dead server): `reopenAt_` holds its
+  position and Play opens it. At the end of a remote list the first track is likewise opened
+  only on Play.
 
 ## 9. Persistence
 
@@ -441,6 +453,7 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 - `test_terminal_keys.cpp` tests the headless terminal key decoding, including sequences split across reads.
 - `test_presses.cpp` tests `parseScript` and `PressSequencer` timing; `test_held_buttons.cpp` tests `HeldButtons`.
 - `test_gamepad.cpp` tests the gamepad map, including the order of light and deep stages.
+- `test_no_music_server.cpp` tests `NoMusicServer` (answers only from `poll()`, `cancel`, also from a callback).
 - `oap-net-tests` (built when libcurl is found) tests `Subsonic` URL building, auth
   and error mapping over a fake `Http`, the parsers on saved answers in
   `tests/data/subsonic/` (non-ASCII and emoji titles, `\uXXXX` surrogate pairs, `\/`,
@@ -448,7 +461,8 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   stalled, trickling, too large, cancelled, destroyed while stuck). No internet.
 - `oap-media-tests` (built with the simulator or headless front end, as it needs FFmpeg) tests
   `Player` on WAV files it writes itself; the format-change tests make MP3s with the `ffmpeg`
-  command and are skipped without it.
+  command and are skipped without it. Two tests capture stderr to check that a URL that fails
+  to open is not printed.
 - `test_audio_output.cpp` tests `AudioOutput::open()` with the null backend, and
   `ThreadedAudioOutput` with a fake device that is lost and comes back.
 - The other files test `GestureDetector`, `AudioStream`, `Mixer`/`Earcons`,

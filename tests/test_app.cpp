@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <fstream>
 #include <memory>
 
@@ -49,7 +50,7 @@ protected:
     }
 
     void start() {
-        app = std::make_unique<App>(speech, player, sounds, volume, settings, state, clock, root, music);
+        app = std::make_unique<App>(speech, player, sounds, volume, server, settings, state, clock, root, music);
         app->start();
     }
 
@@ -99,6 +100,7 @@ protected:
     FakePlayer player;
     FakeSounds sounds;
     FakeVolume volume;
+    FakeMusicServer server;
     FakeClock clock;
     FakeStore configFile; // config.yaml
     FakeStore stateFile;  // state.tsv
@@ -878,6 +880,256 @@ TEST_F(AppTest, RestartAfterMusicResumesTheBook) {
     EXPECT_DOUBLE_EQ(player.pos, 20);
     EXPECT_FALSE(player.playing());
     EXPECT_EQ(speech.last(), "Alpha, paused. Press play to continue.");
+}
+
+// ---------------------------------------------------------------- streaming
+
+// An album as the server lists it. The Streaming menu (a later step) passes
+// such a list to playRemote(); until then the tests call it directly.
+namespace {
+std::vector<RemoteTrack> weather() {
+    return {{"t1", "Storm Front", "Band", "Weather", 200, 1},
+            {"t2", "Rain", "Band", "Weather", 180, 2},
+            {"t3", "Sunshine", "Band", "Weather", 240, 3}};
+}
+
+// A stream URL holds the server login: it must never be spoken.
+void expectNoUrlSpoken(const FakeSpeech& speech) {
+    for (const std::string& text : speech.said) EXPECT_EQ(text.find("fake://"), std::string::npos) << text;
+}
+} // namespace
+
+TEST_F(AppTest, ChoosingARemoteTrackPlaysItsStreamAndSaysTheServerTitle) {
+    start();
+    EXPECT_TRUE(app->playRemote("Weather", weather(), 1));
+    EXPECT_EQ(server.requests.size(), 0u) << "the list is already there: no request";
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t2"}));
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(speech.last(), "Now playing. Weather, Rain.");
+    player.atEnd = true;
+    app->tick(); // the rest of the album follows
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    EXPECT_EQ(app->nowPlaying().chapter, "Sunshine");
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(AppTest, ASingleRemoteTrackIsCalledByItsServerTitle) {
+    start();
+    std::vector<RemoteTrack> one = {weather()[0]};
+    ASSERT_TRUE(app->playRemote("Weather", one, 0));
+    EXPECT_EQ(speech.last(), "Now playing. Weather, Storm Front.");
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
+}
+
+TEST_F(AppTest, ARemoteTrackWithoutATitleIsCalledByItsNumber) {
+    start();
+    auto album = weather();
+    album[1].title = "";
+    ASSERT_TRUE(app->playRemote("Weather", album, 1));
+    EXPECT_EQ(speech.last(), "Now playing. Weather, Track 2.");
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(AppTest, AnEmptyRemoteListSaysSo) {
+    start();
+    EXPECT_FALSE(app->playRemote("Weather", {}, 0));
+    EXPECT_EQ(speech.last(), "Nothing to play.");
+    speech.said.clear();
+    EXPECT_FALSE(app->playRemote("Weather", weather(), 3));
+    EXPECT_EQ(speech.last(), "Nothing to play.");
+    EXPECT_TRUE(player.opened.empty());
+}
+
+TEST_F(AppTest, RemoteTracksSaveNoPositionAndKeepTheBookToResume) {
+    playAlpha();
+    player.pos = 20;
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.pos = 50;
+    press(Button::PlayPause); // pause
+    press(Button::Power);     // sleep writes the state
+    press(Button::Ok);        // wake
+    app->shutdown();
+    EXPECT_EQ(stateFile.onDisk("last_book"), alpha().string());
+    for (const auto& [key, value] : stateFile.file) {
+        if (key.rfind("pos:", 0) == 0) EXPECT_EQ(key, "pos:" + alpha().string());
+        EXPECT_EQ(key.find("fake://"), std::string::npos) << key;
+        EXPECT_EQ(value.find("fake://"), std::string::npos) << value;
+    }
+    EXPECT_EQ(stateFile.onDisk("pos:" + alpha().string()), "0:20.0") << "the book's place is kept";
+}
+
+TEST_F(AppTest, RemoteTracksAloneWriteNoStateOnExit) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.pos = 50;
+    hold(Button::Power);
+    open("Power off");
+    app->shutdown();
+    EXPECT_EQ(stateFile.saves, 0) << "nothing to remember";
+}
+
+TEST_F(AppTest, ARemoteTrackThatFailsToOpenTriesNoOtherAndKeepsWhatWasLoaded) {
+    playAlpha();
+    player.pos = 20;
+    player.unopenable = {"fake://stream/t2"};
+    EXPECT_FALSE(app->playRemote("Weather", weather(), 1));
+    EXPECT_TRUE(speech.heard("Cannot play Rain. Server not reachable."));
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t3"), 0) << "no other track tried";
+    EXPECT_EQ(player.file, alphaFile(1)) << "the book stays loaded";
+    EXPECT_DOUBLE_EQ(player.pos, 20);
+    EXPECT_FALSE(player.playing()) << "paused";
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last().rfind("Alpha. Chapter 1 of 2, Storm.", 0), 0u) << speech.last();
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(AppTest, ARemoteTrackThatFailsWhenTheOneBeforeEndsStopsThere) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.unopenable = {"fake://stream/t2"};
+    player.pos = 200;
+    player.atEnd = true;
+    app->tick(); // Storm Front ends, Rain cannot be opened
+    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1", "fake://stream/t2"}))
+        << "no other track tried, and no second wait on the server";
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm Front") << "the finished track stays the current one";
+    player.unopenable.clear(); // the server is back
+    press(Button::PlayPause);
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 200);
+    EXPECT_TRUE(player.playing());
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(AppTest, NextAndPreviousRemoteTrackAndWhereAmIUseServerTitles) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Rain");
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    player.pos = 100;
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Weather. Track 2 of 3, Rain. 8 minutes 20 seconds left in track. Playing.");
+    player.pos = 1;
+    hold(Button::Back);
+    EXPECT_EQ(speech.last(), "Storm Front");
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    press(Button::Ok); // Player menu
+    open("Tracks");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Storm Front", "Rain", "Sunshine"}));
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(AppTest, SkippingToAnUnreachableRemoteTrackStaysOnThisOne) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.unopenable = {"fake://stream/t2"};
+    player.pos = 42;
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1", "fake://stream/t2"}));
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
+    press(Button::PlayPause); // Storm Front again, where it was
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(AppTest, ARemoteListThatFailsKeepsTheRemoteListBeforeItWithoutOpeningItAgain) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.pos = 42;
+    player.unopenable = {"fake://stream/x9"};
+    EXPECT_FALSE(app->playRemote("Gone", {{"x9", "Lost", "Band", "Gone", 100, 1}}, 0));
+    EXPECT_TRUE(speech.heard("Cannot play Lost. Server not reachable."));
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1", "fake://stream/x9"}))
+        << "no second wait on the server";
+    EXPECT_EQ(app->nowPlaying().title, "Weather");
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
+    press(Button::PlayPause);
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(AppTest, TheEndOfARemoteListOpensTheFirstTrackOnlyOnPlay) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 2));
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(speech.last(), "End of music. Press play to start again.");
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t3"})) << "no network until Play";
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
+    player.unopenable = {"fake://stream/t1"};
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Cannot play Storm Front. Server not reachable.");
+    player.unopenable.clear();
+    press(Button::PlayPause);
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(AppTest, GoToFirstRemoteTrackThatFailsStaysInThePlayerMenu) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 1));
+    player.unopenable = {"fake://stream/t1"};
+    press(Button::Ok); // Player menu
+    open("Go to first track");
+    EXPECT_EQ(speech.last(), "Cannot play Storm Front. Server not reachable.");
+    EXPECT_EQ(level().title, "Player menu");
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain");
+}
+
+TEST_F(AppTest, AFailedRemoteTrackIsForgottenOnceABookPlays) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.pos = 42;
+    player.unopenable = {"fake://stream/t2"};
+    hold(Button::Forward); // fails: Storm Front is to be opened again on Play
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    ASSERT_EQ(player.file, alphaFile(1));
+    player.unopenable = {alphaFile(2)};
+    hold(Button::Forward); // Calm cannot be opened: nothing is open now
+    ASSERT_EQ(speech.last(), "Cannot open 02 - Calm.mp3");
+    player.opened.clear();
+    press(Button::PlayPause);
+    EXPECT_TRUE(player.opened.empty()) << "no retry at the remote track's place";
+}
+
+TEST_F(AppTest, ChoosingTheCurrentRemoteTrackAfterAFailureOpensIt) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.unopenable = {"fake://stream/t2"};
+    hold(Button::Forward); // fails: Storm Front stays the current track, closed
+    press(Button::Ok);     // Player menu
+    open("Tracks");
+    open("Storm Front");
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_TRUE(player.isOpen());
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+}
+
+TEST_F(AppTest, ChoosingAnUnreachableTrackFromTheTracksListStaysInTheList) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.unopenable = {"fake://stream/t3"};
+    press(Button::Ok); // Player menu
+    open("Tracks");
+    open("Sunshine");
+    EXPECT_EQ(speech.last(), "Cannot play Sunshine. Server not reachable.");
+    EXPECT_EQ(level().title, "Tracks");
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
+    expectNoUrlSpoken(speech);
 }
 
 // ---------------------------------------------------------------- hold switch and power

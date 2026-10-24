@@ -50,6 +50,14 @@ std::string chapterTitle(const std::filesystem::path& file) {
     return i < name.size() ? name.substr(i) : name;
 }
 
+// The spoken name of part `i`. A remote part is never named after its file:
+// that is a stream URL with the server login in it.
+std::string partTitle(const Book& book, size_t i) {
+    if (i < book.titles.size() && !book.titles[i].empty()) return book.titles[i];
+    if (book.remote) return "Track " + std::to_string(i + 1);
+    return chapterTitle(book.files[i]);
+}
+
 struct ButtonHelp {
     Button button;
     const char* name;
@@ -104,9 +112,10 @@ MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn) {
 }
 } // namespace
 
-App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, Settings& config,
-         Settings& state, Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot)
-    : tts_(speech), player_(player), earcons_(sounds), volume_(volume), config_(config), state_(state),
+App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
+         Settings& config, Settings& state, Clock& clock, std::filesystem::path libraryRoot,
+         std::filesystem::path musicRoot)
+    : tts_(speech), player_(player), earcons_(sounds), volume_(volume), server_(server), config_(config), state_(state),
       savedState_(state.values()), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), lastActivity_(clock.now()) {}
 
 // ---------------------------------------------------------------- lifecycle
@@ -614,7 +623,9 @@ std::vector<MenuItem> App::libraryMenu() {
 
 std::vector<MenuItem> App::musicMenu() {
     std::vector<Book> albums = scanLibrary(musicRoot_);
-    Book all{"All music", musicRoot_, {}};
+    Book all;
+    all.title = "All music";
+    all.path = musicRoot_;
     for (const Book& a : albums) all.files.insert(all.files.end(), a.files.begin(), a.files.end());
     if (all.files.empty())
         return {action("No music", [this] { say("Copy music into " + musicRoot_.string() + ". One folder per album."); })};
@@ -643,7 +654,7 @@ std::vector<MenuItem> App::musicMenu() {
 std::vector<MenuItem> App::albumMenu(const Book& album) {
     std::vector<MenuItem> items;
     for (size_t i = 0; i < album.files.size(); ++i) {
-        items.push_back(action(chapterTitle(album.files[i]), [this, album, i] {
+        items.push_back(action(partTitle(album, i), [this, album, i] {
             if (playMusic(album, i)) enterPlayer(); // the rest of the album follows
         }));
     }
@@ -778,8 +789,7 @@ std::vector<MenuItem> App::playerMenu() {
     }));
     items.push_back(action(music_ ? "Go to first track" : "Go to start of book", [this] {
         bool wasPlaying = player_.playing();
-        loadFile(0, 0, wasPlaying);
-        enterPlayer();
+        if (loadFile(0, 0, wasPlaying)) enterPlayer(); // else the error was said: stay in the menu
     }));
     items.push_back(action("Speed", [this] { say("Speed control is coming later."); }));
     items.push_back(action("Add bookmark", [this] { say("Bookmarks are coming later."); }));
@@ -791,8 +801,7 @@ std::vector<MenuItem> App::chaptersMenu() {
     auto list = chapters();
     for (size_t i = 0; i < list.size(); ++i) {
         items.push_back(action(list[i].title, [this, i] {
-            gotoChapter(int(i));
-            enterPlayer();
+            if (gotoChapter(int(i))) enterPlayer(); // else the error was said: stay in the list
         }));
     }
     return items;
@@ -831,6 +840,24 @@ bool App::playMusic(const Book& album, size_t track) {
     return true;
 }
 
+bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index) {
+    if (index >= tracks.size()) {
+        earcons_.play(Earcon::Error);
+        say("Nothing to play.");
+        return false;
+    }
+    Book list;
+    list.title = title;
+    list.remote = true;
+    for (const RemoteTrack& t : tracks) {
+        list.files.emplace_back(server_.streamUrl(t.id));
+        list.titles.push_back(t.title);
+    }
+    if (!playMusic(list, index)) return false;
+    enterPlayer();
+    return true;
+}
+
 // Loads `book` from `file`. If none of its files from there on opens, what was
 // loaded before stays loaded, at the same place, so the user is where they were.
 bool App::switchTo(const Book& book, bool music, size_t file, double position, bool autoplay) {
@@ -839,29 +866,52 @@ bool App::switchTo(const Book& book, bool music, size_t file, double position, b
     size_t wasFile = fileIndex_;
     bool wasOpen = player_.isOpen(), wasPlaying = player_.playing();
     double wasAt = player_.position();
-    if (loadFile(file, position, autoplay)) return true;
+    if (openFile(file, position, autoplay)) return true;
 
     book_ = std::move(previous);
     music_ = wasMusic;
     fileIndex_ = wasFile;
-    if (book_ && wasOpen) {
+    if (book_ && wasOpen && book_->remote) {
+        reopenAt_ = wasAt; // its server is likely gone too: open it on Play, not now
+    } else if (book_ && wasOpen) {
         if (!player_.open(book_->files[wasFile].string(), wasAt)) book_.reset(), music_ = false;
-        else if (wasPlaying) player_.play();
+        else if (wasPlaying && !book.remote) player_.play(); // the server is gone: stay paused
+    }
+    return false;
+}
+
+// Moves to `file` of the loaded book. If a remote track does not open, the
+// track that was loaded stays the current one, paused at the same place.
+bool App::loadFile(size_t file, double position, bool autoplay) {
+    size_t wasFile = fileIndex_;
+    bool wasOpen = player_.isOpen();
+    double wasAt = player_.position();
+    if (openFile(file, position, autoplay)) return true;
+    if (book_ && book_->remote) {
+        fileIndex_ = wasFile;
+        if (wasOpen) reopenAt_ = wasAt; // opened on Play: not a second wait on the server now
     }
     return false;
 }
 
 // Opens `file`, or the next one that opens: a file that cannot be read is
-// reported and skipped, so one bad file does not stop a book or an album.
-bool App::loadFile(size_t file, double position, bool autoplay) {
+// reported and skipped, so one bad file does not stop a book or an album. A
+// remote track is tried once: when the server cannot be reached, every
+// following track would block the device too.
+bool App::openFile(size_t file, double position, bool autoplay) {
     if (!book_) return false;
     for (; file < book_->files.size(); ++file, position = 0) {
         fileIndex_ = file;
         if (player_.open(book_->files[file].string(), position)) {
+            reopenAt_.reset();
             if (autoplay) player_.play();
             return true;
         }
         earcons_.play(Earcon::Error);
+        if (book_->remote) { // never say the URL: it holds the login
+            say("Cannot play " + partTitle(*book_, file) + ". Server not reachable.");
+            return false;
+        }
         say("Cannot open " + book_->files[file].filename().string());
     }
     return false;
@@ -873,6 +923,8 @@ void App::togglePlay() {
 }
 
 void App::play() {
+    if (book_ && !player_.isOpen() && reopenAt_ && !openFile(fileIndex_, *reopenAt_, false))
+        return; // said "Server not reachable"
     if (!book_ || !player_.isOpen()) {
         earcons_.play(Earcon::Error);
         say("Nothing to play. Choose a book in the library.");
@@ -928,11 +980,11 @@ std::vector<App::ChapterRef> App::chapters() const {
     if (!book_) return out;
     if (book_->files.size() > 1) {
         for (size_t i = 0; i < book_->files.size(); ++i)
-            out.push_back({chapterTitle(book_->files[i]), i, 0});
+            out.push_back({partTitle(*book_, i), i, 0});
     } else if (!player_.chapters().empty()) {
         for (const Chapter& c : player_.chapters()) out.push_back({c.title, 0, c.start});
     } else {
-        out.push_back({book_->title, 0, 0});
+        out.push_back({book_->remote ? partTitle(*book_, 0) : book_->title, 0, 0});
     }
     return out;
 }
@@ -948,13 +1000,17 @@ int App::currentChapter() const {
     return cur;
 }
 
-void App::gotoChapter(int index) {
+bool App::gotoChapter(int index) {
     auto list = chapters();
-    if (index < 0 || index >= int(list.size())) return;
+    if (index < 0 || index >= int(list.size())) return false;
     const ChapterRef& ch = list[size_t(index)];
-    if (ch.file != fileIndex_) loadFile(ch.file, ch.start, player_.playing());
-    else player_.seek(ch.start);
+    if (ch.file != fileIndex_ || !player_.isOpen()) { // closed: a remote track that failed or ended the list
+        if (!loadFile(ch.file, ch.start, player_.playing())) return false;
+    } else {
+        player_.seek(ch.start);
+    }
     if (sleepAtChapterEnd_ >= 0) sleepAtChapterEnd_ = index;
+    return true;
 }
 
 void App::stepChapter(int direction) {
@@ -971,15 +1027,24 @@ void App::stepChapter(int direction) {
         say(target < 0 ? "First " + unit() + "." : "Last " + unit() + ".");
         return;
     }
-    gotoChapter(target);
+    if (!gotoChapter(target)) return; // the error was said
     earcons_.play(Earcon::Move);
     say(list[size_t(target)].title);
 }
 
 void App::onFileFinished() {
-    if (fileIndex_ + 1 < book_->files.size() && loadFile(fileIndex_ + 1, 0, true)) return;
+    if (fileIndex_ + 1 < book_->files.size()) {
+        if (loadFile(fileIndex_ + 1, 0, true)) return;
+        if (book_->remote) return; // "Server not reachable" was said: stop here
+    }
     player_.pause();
-    loadFile(0, 0, false); // next play starts the book again
+    if (book_->remote) { // next play starts the list again, opening it only then
+        player_.close();
+        fileIndex_ = 0;
+        reopenAt_ = 0.0;
+    } else {
+        loadFile(0, 0, false); // next play starts the book again
+    }
     rememberPosition();
     earcons_.play(Earcon::Close);
     say(music_ ? "End of music. Press play to start again." : "End of book. Press play to start again.");

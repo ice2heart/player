@@ -6,6 +6,7 @@
 #include "core/app.h"
 #include "core/earcons.h"
 #include "core/mixer.h"
+#include "frontend/no_music_server.h"
 #include "frontend/presses.h"
 #include "frontend/terminal_keys.h"
 #include "headless/evdev_input.h"
@@ -145,7 +146,8 @@ int main(int argc, char** argv) {
     Player player(mixer);
     SystemClock clock;
     SettingsFiles settings(config, state);
-    App app(tts, player, earcons, mixer, settings.config(), settings.state(), clock, library, music);
+    NoMusicServer server; // the Streaming menu and a real server come later (docs/streaming.md)
+    App app(tts, player, earcons, mixer, server, settings.config(), settings.state(), clock, library, music);
 
     EvdevInput evdev;
     if (useEvdev && evdev.open(evdevDevice) == 0)

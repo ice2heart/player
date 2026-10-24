@@ -49,7 +49,7 @@ protected:
     void SetUp() override {
         dir = testTempDir();
         fs::remove_all(dir);
-        app = std::make_unique<App>(speech, player, sounds, volume, config, state, clock, dir / "books", dir / "music");
+        app = std::make_unique<App>(speech, player, sounds, volume, server, config, state, clock, dir / "books", dir / "music");
         app->start();
         t0 = clock.now();
     }
@@ -88,6 +88,7 @@ protected:
     FakePlayer player;
     FakeSounds sounds;
     FakeVolume volume;
+    FakeMusicServer server;
     FakeClock clock;
     Settings config;
     Settings state;
