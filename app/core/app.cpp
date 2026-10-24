@@ -1203,11 +1203,11 @@ bool App::switchTo(const Book& book, bool music, size_t file, double position, b
 
 // Moves to `file` of the loaded book. If a remote track does not open, the
 // track that was loaded stays the current one, paused at the same place.
-bool App::loadFile(size_t file, double position, bool autoplay) {
+bool App::loadFile(size_t file, double position, bool autoplay, bool announce) {
     size_t wasFile = fileIndex_;
     bool wasOpen = player_.isOpen();
     double wasAt = player_.position();
-    if (openFile(file, position, autoplay)) return true;
+    if (openFile(file, position, autoplay, announce)) return true;
     if (book_ && book_->remote) {
         fileIndex_ = wasFile;
         if (wasOpen) reopenAt_ = wasAt; // opened on Play: not a second wait on the server now
@@ -1219,10 +1219,12 @@ bool App::loadFile(size_t file, double position, bool autoplay) {
 // reported and skipped, so one bad file does not stop a book or an album. A
 // remote track is tried once: when the server cannot be reached, every
 // following track would block the device too.
-bool App::openFile(size_t file, double position, bool autoplay) {
+bool App::openFile(size_t file, double position, bool autoplay, bool announce) {
     if (!book_) return false;
     for (; file < book_->files.size(); ++file, position = 0) {
         fileIndex_ = file;
+        // The open waits for the server on this thread (up to 10 s): say why nothing answers.
+        if (book_->remote && announce) say("Loading.");
         if (player_.open(book_->files[file].string(), position)) {
             reopenAt_.reset();
             if (autoplay) player_.play();
@@ -1355,7 +1357,8 @@ void App::stepChapter(int direction) {
 
 void App::onFileFinished() {
     if (fileIndex_ + 1 < book_->files.size()) {
-        if (loadFile(fileIndex_ + 1, 0, true)) return;
+        // Quietly: "Loading." between every two tracks of an album would be too much.
+        if (loadFile(fileIndex_ + 1, 0, true, false)) return;
         if (book_->remote) return; // "Server not reachable" was said: stop here
     }
     player_.pause();

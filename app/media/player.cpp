@@ -4,12 +4,17 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/dict.h>
+#include <libavutil/log.h>
 #include <libswresample/swresample.h>
 }
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstdarg>
 #include <cstdio>
+#include <mutex>
 
 namespace oap {
 
@@ -21,34 +26,137 @@ struct Player::ResamplerInput {
 };
 
 namespace {
+// Anything but a local path: it gets the network options and the open timeout,
+// and is never printed.
+bool isUrl(const std::string& path) { return path.find("://") != std::string::npos; }
+
 // A stream URL carries the server login, which must never reach a log
 // (docs/streaming.md), so only local paths are printed.
-std::string printable(const std::string& path) { return path.find("://") == std::string::npos ? path : "a stream"; }
+std::string printable(const std::string& path) { return isUrl(path) ? "a stream" : path; }
 
 std::string errorText(int error) {
     char text[AV_ERROR_MAX_STRING_SIZE] = {};
     av_strerror(error, text, sizeof text);
     return text;
 }
+
+int64_t steadyNanoseconds() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+template <class Duration> int64_t microseconds(Duration d) {
+    return std::chrono::duration_cast<std::chrono::microseconds>(d).count();
+}
+
+// One word of a log line (no spaces or quotes) with its URL or query cut out.
+std::string redactWord(const std::string& word) {
+    size_t scheme = word.find("://");
+    if (scheme == std::string::npos) {
+        size_t query = word.find('?');
+        bool cut = query != std::string::npos && word.find('=', query) != std::string::npos;
+        return cut ? word.substr(0, query) + "?..." : word;
+    }
+    size_t authority = scheme + 3;
+    size_t pathStart = word.find_first_of("/?#", authority);
+    size_t at = word.rfind('@');
+    if (at != std::string::npos && at >= authority) {
+        if (pathStart < at) return word.substr(0, authority) + "..."; // a user name or a path? Keep neither.
+        authority = at + 1;                                            // drop user:password@
+    }
+    std::string out = word.substr(0, scheme + 3) + word.substr(authority, pathStart - authority);
+    return pathStart == std::string::npos ? out : out + "/...";
+}
+
+// Replaces FFmpeg's default log callback, which prints the message as it is.
+// FFmpeg may log from any thread.
+void logRedacted(void* context, int level, const char* format, va_list args) {
+    if ((level & 0xff) > av_log_get_level()) return; // the bits above are colours
+    static std::mutex mutex;
+    static int printPrefix = 1; // FFmpeg's state between the parts of one line
+    std::lock_guard lock(mutex);
+    char line[2048];
+    int length = av_log_format_line2(context, level, format, args, line, sizeof line, &printPrefix);
+    std::string text = redactUrls(line);
+    if (length >= int(sizeof line) && printPrefix) text += '\n'; // cut short: keep the line break
+    std::fputs(text.c_str(), stderr);
+}
 } // namespace
+
+std::string redactUrls(const std::string& line) {
+    auto separates = [](char c) { return std::isspace(static_cast<unsigned char>(c)) || c == '\'' || c == '"'; };
+    std::string out;
+    for (size_t pos = 0; pos < line.size();) {
+        size_t end = pos;
+        while (end < line.size() && !separates(line[end])) ++end;
+        if (end == pos) {
+            out += line[pos++];
+            continue;
+        }
+        out += redactWord(line.substr(pos, end - pos));
+        pos = end;
+    }
+    return out;
+}
 
 ReadErrorAction onReadError(int error, bool atEndOfFile, int& consecutive) {
     if (error == AVERROR_EOF || atEndOfFile) return ReadErrorAction::End;
     return ++consecutive > kMaxReadErrors ? ReadErrorAction::End : ReadErrorAction::Retry;
 }
 
-Player::Player(Mixer& mixer) : mixer_(mixer) { av_log_set_level(AV_LOG_ERROR); }
+Player::Player(Mixer& mixer, std::chrono::milliseconds openTimeout) : mixer_(mixer), openTimeout_(openTimeout) {
+    av_log_set_level(AV_LOG_ERROR);
+    av_log_set_callback(logRedacted);
+}
 
 Player::~Player() { close(); }
 
+int Player::interrupted(void* opaque) {
+    auto* self = static_cast<Player*>(opaque);
+    if (self->stop_) return 1; // close() is waiting
+    int64_t deadline = self->openDeadline_;
+    if (deadline == 0 || steadyNanoseconds() < deadline) return 0;
+    self->openTimedOut_ = true;
+    return 1;
+}
+
+// avformat_open_input() and avformat_find_stream_info(), which read from the
+// file or the network. A stream is given up after openTimeout_ in all.
+bool Player::openInput(const std::string& path) {
+    fmt_ = avformat_alloc_context();
+    if (!fmt_) return false;
+    fmt_->interrupt_callback = {&Player::interrupted, this};
+    AVDictionary* options = nullptr;
+    openTimedOut_ = false;
+    if (isUrl(path)) {
+        // Options another protocol does not know are left unused.
+        av_dict_set_int(&options, "rw_timeout", microseconds(kStreamReadTimeout), 0); // no data: the read fails
+        av_dict_set_int(&options, "timeout", microseconds(kStreamReadTimeout), 0);    // TCP connect and I/O
+        // A dropped connection before the end is resumed at the same byte. Not on a
+        // network error while connecting (the server is gone: fail at once) and not
+        // for streams without a length (a transcode), which would start again from 0.
+        av_dict_set_int(&options, "reconnect", 1, 0);
+        av_dict_set_int(&options, "reconnect_delay_max", kStreamReconnectDelayMax, 0);
+        openDeadline_ = steadyNanoseconds() + std::chrono::nanoseconds(openTimeout_).count();
+    }
+    int err = avformat_open_input(&fmt_, path.c_str(), nullptr, &options); // frees fmt_ on failure
+    av_dict_free(&options);
+    if (err >= 0) err = avformat_find_stream_info(fmt_, nullptr);
+    openDeadline_ = 0;
+    // Cut off, avformat_find_stream_info() may still succeed with what it has, but
+    // the input is then at its end: no open.
+    bool timedOut = openTimedOut_;
+    if (err >= 0 && !timedOut) return true;
+    std::fprintf(stderr, "player: cannot open %s: %s\n", printable(path).c_str(),
+                 timedOut ? "no answer in time" : errorText(err).c_str());
+    return false;
+}
+
 bool Player::open(const std::string& path, double startAt) {
     close();
+    stop_ = false; // from here on, the interrupt callback lets FFmpeg wait
 
-    if (avformat_open_input(&fmt_, path.c_str(), nullptr, nullptr) < 0) {
-        std::fprintf(stderr, "player: cannot open %s\n", printable(path).c_str());
-        return false;
-    }
-    if (avformat_find_stream_info(fmt_, nullptr) < 0) {
+    if (!openInput(path)) {
         close();
         return false;
     }
@@ -84,14 +192,13 @@ bool Player::open(const std::string& path, double startAt) {
     skipUntil_ = 0;
     if (duration_ > 0) startAt = std::min(startAt, duration_);
     if (startAt > 0) seekRequest_ = startAt;
-    stop_ = false;
     eof_ = false;
     thread_ = std::thread(&Player::decodeLoop, this);
     return true;
 }
 
 void Player::close() {
-    stop_ = true;
+    stop_ = true; // also aborts a network wait of the decoder thread (interrupted())
     if (thread_.joinable()) thread_.join();
     mixer_.setContentPaused(true);
     mixer_.content().flush();

@@ -6,7 +6,13 @@
 
 extern "C" {
 #include <libavutil/error.h>
+#include <libavutil/log.h>
 }
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
 
 #include <gtest/gtest.h>
 
@@ -14,9 +20,11 @@ extern "C" {
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <atomic>
 #include <cstdlib>
 #include <functional>
 #include <sstream>
+#include <string>
 #include <unistd.h>
 #include <fstream>
 #include <thread>
@@ -107,6 +115,110 @@ std::string stderrOf(const fs::path& file, const std::function<void()>& run) {
 }
 
 double seconds(size_t frames) { return double(frames) / Mixer::kSampleRate; }
+
+// Time limits leave room for a slow machine (the Pi build runs the tests under
+// qemu), yet stay well below the 10 s that a missing timeout or interrupt takes.
+constexpr double kSlowMachine = 5.0;
+
+double secondsSince(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
+
+// A loopback socket bound to a free port.
+int boundSocket(int& port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t len = sizeof addr;
+    if (fd < 0 || bind(fd, reinterpret_cast<sockaddr*>(&addr), len) != 0 ||
+        getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+        ADD_FAILURE() << "cannot bind a loopback socket";
+        if (fd >= 0) ::close(fd);
+        port = 0;
+        return -1;
+    }
+    port = ntohs(addr.sin_port);
+    return fd;
+}
+
+// A port on this machine with nothing listening on it.
+int unusedPort() {
+    int port = 0;
+    int fd = boundSocket(port);
+    if (fd >= 0) ::close(fd); // (another program could take the port now, but hardly will)
+    return port;
+}
+
+// An HTTP server on the loopback interface, so the stream tests need no
+// internet. Each connection gets `reply` once its request has arrived and is
+// then held open without another byte until the server is destroyed: a server
+// that has stopped answering.
+class StalledServer {
+public:
+    explicit StalledServer(std::string reply = {}) : reply_(std::move(reply)) {
+        fd_ = boundSocket(port_);
+        if (fd_ >= 0 && listen(fd_, 4) == 0) thread_ = std::thread([this] { run(); });
+        else ADD_FAILURE() << "cannot listen on a loopback socket";
+    }
+    ~StalledServer() {
+        stop_ = true;
+        if (thread_.joinable()) thread_.join();
+        for (const Client& c : clients_)
+            if (c.fd >= 0) ::close(c.fd);
+        if (fd_ >= 0) ::close(fd_);
+    }
+    std::string url(const std::string& path) const { return "http://127.0.0.1:" + std::to_string(port_) + path; }
+    int requests() const { return requests_; }
+
+private:
+    struct Client {
+        int fd;
+        std::string request; // until its end has come
+    };
+
+    void run() {
+        while (!stop_) {
+            std::vector<pollfd> fds{{fd_, POLLIN, 0}};
+            for (const Client& c : clients_) fds.push_back({c.fd, POLLIN, 0}); // poll() skips fd -1
+            if (poll(fds.data(), nfds_t(fds.size()), 10) <= 0) continue;
+            if (fds[0].revents) {
+                int c = accept(fd_, nullptr, nullptr);
+                if (c >= 0) clients_.push_back({c, {}});
+            }
+            for (size_t i = 1; i < fds.size(); ++i) {
+                if (fds[i].revents) receive(clients_[i - 1]);
+            }
+        }
+    }
+
+    void receive(Client& client) {
+        char buf[4096];
+        ssize_t n = read(client.fd, buf, sizeof buf);
+        if (n <= 0) { // the player hung up
+            ::close(client.fd);
+            client.fd = -1;
+            return;
+        }
+        client.request.append(buf, size_t(n));
+        if (client.request.find("\r\n\r\n") == std::string::npos) return;
+        ++requests_;
+        client.request.clear();
+        for (size_t sent = 0; sent < reply_.size();) {
+            ssize_t k = send(client.fd, reply_.data() + sent, reply_.size() - sent, 0);
+            if (k <= 0) break;
+            sent += size_t(k);
+        }
+    }
+
+    std::string reply_;
+    int fd_ = -1;
+    int port_ = 0;
+    std::vector<Client> clients_; // the server thread's
+    std::atomic<int> requests_{0};
+    std::atomic<bool> stop_{false};
+    std::thread thread_;
+};
 
 class PlayerTest : public testing::Test {
 protected:
@@ -208,6 +320,120 @@ TEST_F(PlayerTest, AUrlWithoutAudioIsNotPrinted) {
     std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(player.open(url)); });
     EXPECT_NE(log.find("player: no audio stream"), std::string::npos) << log;
     EXPECT_EQ(log.find("secret-token"), std::string::npos) << log;
+}
+
+// ---------------------------------------------------------------- streams
+
+// The server is gone: the open fails at once, not after reconnect attempts.
+TEST_F(PlayerTest, AStreamOnAPortWithNothingListeningFailsAtOnce) {
+    Player player(mixer_);
+    std::string url = "http://127.0.0.1:" + std::to_string(unusedPort()) + "/rest/stream.view?u=me&t=secret-token";
+    auto start = std::chrono::steady_clock::now();
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(player.open(url)); });
+    EXPECT_LT(secondsSince(start), 2.0) << "even one retry would take 4 s";
+    EXPECT_FALSE(player.isOpen());
+    EXPECT_NE(log.find("player: cannot open a stream"), std::string::npos) << log;
+    EXPECT_EQ(log.find("secret-token"), std::string::npos) << log;
+}
+
+// The open runs on the UI thread: a server that takes the request and never
+// answers is given up at the open timeout (shortened here; it is 10 s).
+TEST_F(PlayerTest, AStreamThatNeverAnswersIsGivenUpAtTheOpenTimeout) {
+    StalledServer server;
+    Player player(mixer_, std::chrono::milliseconds(300));
+    auto start = std::chrono::steady_clock::now();
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] {
+        EXPECT_FALSE(player.open(server.url("/rest/stream.view?u=me&t=secret-token")));
+    });
+    double took = secondsSince(start);
+    EXPECT_EQ(server.requests(), 1) << "the request reached the server";
+    EXPECT_GE(took, 0.29);
+    EXPECT_LT(took, kSlowMachine) << "the open must give up at its timeout";
+    EXPECT_NE(log.find("no answer in time"), std::string::npos) << log;
+    EXPECT_EQ(log.find("secret-token"), std::string::npos) << log;
+}
+
+// A WAV reply with a header for `total` seconds of which only `sent` seconds come.
+std::string partialWavReply(double total, double sent) {
+    const int rate = 8000;
+    auto wav = wavBytes(rate, 1, total);
+    size_t bytes = 44 + size_t(rate * sent) * 2;
+    return "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: " + std::to_string(wav.size()) +
+           "\r\n\r\n" + std::string(wav.data(), bytes);
+}
+
+// FFmpeg reads 5 s of audio to learn the format. A stream that stops after 1 s
+// is cut off by the timeout, and what came in time is not enough: no open.
+TEST_F(PlayerTest, AStreamThatStopsWhileOpeningIsGivenUpAtTheOpenTimeout) {
+    StalledServer server(partialWavReply(20, 1));
+    Player player(mixer_, std::chrono::milliseconds(300));
+    auto start = std::chrono::steady_clock::now();
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(player.open(server.url("/tone.wav"))); });
+    EXPECT_LT(secondsSince(start), kSlowMachine);
+    EXPECT_FALSE(player.isOpen());
+    EXPECT_NE(log.find("no answer in time"), std::string::npos) << log;
+}
+
+// Not only http: any URL is given up at the open timeout (FFmpeg can also be
+// sent to another protocol), here a raw TCP stream that never sends a byte.
+TEST_F(PlayerTest, AnyUrlIsGivenUpAtTheOpenTimeout) {
+    StalledServer server;
+    Player player(mixer_, std::chrono::milliseconds(300));
+    std::string url = server.url("");
+    url.replace(0, 4, "tcp");
+    auto start = std::chrono::steady_clock::now();
+    stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(player.open(url)); });
+    EXPECT_LT(secondsSince(start), kSlowMachine);
+}
+
+// The decoder thread waits for data that never comes: close() (also run by the
+// destructor and by every open()) must not wait for the read timeout.
+TEST_F(PlayerTest, CloseDoesNotWaitForAStreamThatStoppedSending) {
+    StalledServer server(partialWavReply(20, 6));
+    Player player(mixer_);
+    ASSERT_TRUE(player.open(server.url("/tone.wav")));
+    player.play();
+    // Less than what came, so the player does not wait for more yet.
+    EXPECT_NEAR(seconds(consume(player, mixer_, 5 * Mixer::kSampleRate)), 5.0, 0.01);
+    std::this_thread::sleep_for(200ms); // the rest is queued: the decoder now waits on the socket
+    EXPECT_FALSE(player.finished());
+    auto start = std::chrono::steady_clock::now();
+    player.close();
+    EXPECT_LT(secondsSince(start), kSlowMachine);
+    EXPECT_FALSE(player.isOpen());
+}
+
+// FFmpeg prints some URLs in its own messages, such as HLS and redirect errors.
+TEST_F(PlayerTest, FfmpegMessagesShowNoStreamLogin) {
+    Player player(mixer_); // installs the log filter
+    std::string log = stderrOf(dir_ / "stderr.txt", [] {
+        av_log(nullptr, AV_LOG_ERROR, "Opening '%s' for reading\n",
+               "https://me:secret-password@music.home:4533/rest/stream.view?u=me&t=secret-token&s=salt");
+        av_log(nullptr, AV_LOG_ERROR | AV_LOG_C(134), "a coloured error\n"); // colour bits above the level
+        av_log(nullptr, AV_LOG_WARNING, "a warning\n");
+    });
+    EXPECT_NE(log.find("Opening 'https://music.home:4533/...' for reading"), std::string::npos) << log;
+    EXPECT_EQ(log.find("secret"), std::string::npos) << log;
+    EXPECT_NE(log.find("a coloured error"), std::string::npos) << log;
+    EXPECT_EQ(log.find("a warning"), std::string::npos) << "only errors, as before" << log;
+}
+
+TEST(RedactUrls, KeepsSchemeAndHostOnly) {
+    EXPECT_EQ(redactUrls("plain text, no link\n"), "plain text, no link\n");
+    EXPECT_EQ(redactUrls("Connection to tcp://10.0.0.2:4533 failed"), "Connection to tcp://10.0.0.2:4533 failed");
+    EXPECT_EQ(redactUrls("a http://h/x?t=1 b \"https://u:p@h2?t=2\" c"), "a http://h/... b \"https://h2/...\" c");
+    EXPECT_EQ(redactUrls("end http://h:1/rest?t=secret"), "end http://h:1/...");
+    // Where the host begins is unclear: nothing after the scheme is kept.
+    EXPECT_EQ(redactUrls("mail me@home, see http://h/a@b"), "mail me@home, see http://...");
+    EXPECT_EQ(redactUrls("'https://me:pa/ss@h/x?t=1'"), "'https://...'");
+    EXPECT_EQ(redactUrls("'https://me:pa?ss@h'"), "'https://...'");
+}
+
+// Request lines (FFmpeg logs them at debug level) have a query but no scheme.
+TEST(RedactUrls, CutsQueriesWithoutAScheme) {
+    EXPECT_EQ(redactUrls("request: GET /rest/stream.view?u=me&t=secret HTTP/1.1\n"),
+              "request: GET /rest/stream.view?... HTTP/1.1\n");
+    EXPECT_EQ(redactUrls("Continue? yes=no"), "Continue? yes=no");
 }
 
 TEST(PlayerReadError, EndOfFileEndsAtOnce) {

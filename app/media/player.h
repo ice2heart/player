@@ -4,6 +4,8 @@
 #include "core/services.h"
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
@@ -26,11 +28,27 @@ enum class ReadErrorAction { Retry, End };
 constexpr int kMaxReadErrors = 50;
 ReadErrorAction onReadError(int error, bool atEndOfFile, int& consecutive);
 
+// Opening a stream (any URL) runs on the UI thread, which waits for it, so it
+// gives up after this long (docs/streaming.md, step 1.6).
+constexpr std::chrono::milliseconds kStreamOpenTimeout = std::chrono::seconds(10);
+// A stream read that gets no data for this long fails, and FFmpeg reconnects.
+constexpr std::chrono::seconds kStreamReadTimeout{10};
+// FFmpeg waits 0, 1, 3, 7 ... s between reconnects and gives up past this delay.
+constexpr int kStreamReconnectDelayMax = 4;
+
+// `line` with every URL cut down to its scheme and host, and every other query
+// (`?a=b`) cut off: a stream URL carries the server login in its query, and
+// FFmpeg prints some URLs and request lines in its messages.
+std::string redactUrls(const std::string& line);
+
 // Decodes one audio file with FFmpeg into the mixer's content stream.
 // All public methods are called from the UI thread; decoding runs on its own thread.
+// A stream is opened on the calling thread and given up after `openTimeout`;
+// close() aborts any network wait at once (FFmpeg's interrupt callback).
+// FFmpeg's own messages go through redactUrls().
 class Player : public MediaPlayer {
 public:
-    explicit Player(Mixer& mixer);
+    explicit Player(Mixer& mixer, std::chrono::milliseconds openTimeout = kStreamOpenTimeout);
     ~Player() override;
 
     bool open(const std::string& path, double startAt = 0) override;
@@ -50,6 +68,9 @@ public:
     bool finished() const override;
 
 private:
+    // FFmpeg's interrupt callback, on whichever thread is waiting for I/O.
+    static int interrupted(void* player);
+    bool openInput(const std::string& path);
     void decodeLoop();
     bool emit(AVFrame* frame, uint64_t epoch);
     bool shouldAbortWrite() const { return stop_ || seekRequest_ >= 0; }
@@ -59,6 +80,10 @@ private:
     struct ResamplerInput; // the input format swr_ was built for
 
     Mixer& mixer_;
+    const std::chrono::milliseconds openTimeout_;
+    // steady_clock time (ns since its epoch) at which an open gives up; 0 when none runs.
+    std::atomic<int64_t> openDeadline_{0};
+    std::atomic<bool> openTimedOut_{false}; // set by interrupted() when it ends an open
     AVFormatContext* fmt_ = nullptr;
     AVCodecContext* dec_ = nullptr;
     AVStream* stream_ = nullptr;

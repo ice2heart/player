@@ -7,6 +7,7 @@
 #include "core/settings.h"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -46,6 +47,7 @@ public:
 class FakePlayer : public MediaPlayer {
 public:
     bool open(const std::string& path, double startAt) override {
+        if (beforeOpen) beforeOpen(path);
         opened.push_back(path);
         file = path;
         bool ok = openSucceeds && std::find(unopenable.begin(), unopenable.end(), path) == unopenable.end();
@@ -77,6 +79,7 @@ public:
     bool atEnd = false;
     bool openSucceeds = true;
     std::vector<std::string> unopenable; // paths that fail to open
+    std::function<void(const std::string& path)> beforeOpen; // e.g. to see what was said by then
 
 private:
     bool isOpen_ = false;

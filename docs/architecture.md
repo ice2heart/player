@@ -64,7 +64,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `streamUrl()`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
 | `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists and getPlaylist answers (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
 | `app/net/md5.{h,cpp}` | `md5Hex()` for the auth token. |
-| `app/media/player.{h,cpp}` | `Player`: one audio file, decoded on its own thread (FFmpeg). Its error messages print a local path but never a URL (`://`), which would hold the server login. |
+| `app/media/player.{h,cpp}` | `Player`: one audio file or stream URL, decoded on its own thread (FFmpeg). A URL is opened with a 10 s read timeout and HTTP reconnects, and the whole open gives up after 10 s (`kStreamOpenTimeout`). An interrupt callback lets `close()` abort any network wait at once. Its error messages print a local path but never a URL (`://`), which would hold the server login, and FFmpeg's own messages pass through `redactUrls()`. |
 | `app/media/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. |
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
@@ -97,7 +97,7 @@ The unit tests wire in fakes instead (section 12).
 | Thread | Owner | Does |
 |--------|-------|------|
 | **Main / UI** | front end | Input events, `App::tick()`, drawing (simulator). **All `App` calls happen here.** The headless loop `poll()`s input with a 10 ms timeout. |
-| **Decoder** | `Player` | Reads, decodes and resamples into the content stream. Blocks while the stream is full. |
+| **Decoder** | `Player` | Reads, decodes and resamples into the content stream. Blocks while the stream is full, or while a stream waits for data; `close()` aborts either at once. |
 | **TTS worker** | `Tts` | Runs `espeak_Synth()` synchronously and resamples into the speech stream. |
 | **Audio callback** | `AudioOutput` | Calls `Mixer::render()` to pull PCM for the device. CoreAudio calls back; Pulse, ALSA and null run their own writer thread. |
 | **HTTP worker** | `HttpClient` | Runs every libcurl transfer and parses the answers (`Subsonic`). Finished results go into a mutex-protected inbox that `Subsonic::poll()` empties on the UI thread. Not wired into a front end yet. |
@@ -144,6 +144,20 @@ Rules:
 - **Read errors:** only `AVERROR_EOF` ends a file. Other `av_read_frame` errors
   are retried every 10 ms; after 50 in a row the file is treated as ended.
   (FFmpeg's Ogg demuxer rejects chained streams that change format this way.)
+- **Streams:** any URL (`://`) is opened on the UI thread for now (asynchronous
+  in phase 2), so `Player::open()` gives up after `kStreamOpenTimeout` (10 s)
+  for `avformat_open_input` and `avformat_find_stream_info` together. FFmpeg's
+  interrupt callback checks that deadline and `stop_`, so `close()` and the
+  destructor never wait on a socket; the decoder thread notices within FFmpeg's
+  100 ms poll. Options: `rw_timeout` and `timeout` 10 s (a read or connect with no
+  data fails), `reconnect` with `reconnect_delay_max` 4 s (a dropped connection
+  resumes at the same byte). Not `reconnect_on_network_error`, so an unreachable
+  server fails at once, and not `reconnect_streamed`, which would restart a
+  stream without a length from the beginning. DNS lookups (`getaddrinfo`) are
+  not interruptible and are not covered by the cap.
+- **FFmpeg log:** `Player` installs an `av_log` callback that prints errors only
+  and cuts every URL to its scheme and host, and every other `?query`, since some
+  FFmpeg messages print URLs or request lines.
 - **Position:** `end time of queued audio − buffered frames / 48000`, which is
   what the listener hears right now.
 - **Volume:** stored as 0–100 %, applied as `(v/100)²` for a perceptual curve.
@@ -359,6 +373,9 @@ what has loaded.
   opened again at once** (it would wait on the same dead server): `reopenAt_` holds its
   position and Play opens it. At the end of a remote list the first track is likewise opened
   only on Play.
+- The open blocks the UI thread (up to 10 s, see Streams in §4), so `openFile()` says
+  "Loading." before every remote open the user asked for. The next track at the end
+  of one opens without it.
 
 ## 9. Persistence
 

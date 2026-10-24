@@ -156,8 +156,10 @@ private:
     bool playMusic(const Book& album, size_t track);
     bool switchTo(const Book& book, bool music, size_t file, double position, bool autoplay);
     std::string unit() const { return music_ ? "track" : "chapter"; } // what one part is called
-    bool loadFile(size_t file, double position, bool autoplay); // within the loaded book
-    bool openFile(size_t file, double position, bool autoplay);
+    // `announce`: say "Loading." before a remote track is opened, as the open
+    // holds up the UI thread. Off for the next track at the end of one.
+    bool loadFile(size_t file, double position, bool autoplay, bool announce = true); // within the loaded book
+    bool openFile(size_t file, double position, bool autoplay, bool announce = true);
     void togglePlay();
     void play();
     void pause(bool announce);

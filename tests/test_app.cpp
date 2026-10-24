@@ -914,6 +914,45 @@ TEST_F(AppTest, ChoosingARemoteTrackPlaysItsStreamAndSaysTheServerTitle) {
     expectNoUrlSpoken(speech);
 }
 
+// The open waits for the server on the UI thread (up to 10 s), so the user
+// hears why the device does not answer: before every open they asked for.
+TEST_F(AppTest, ARemoteTrackSaysLoadingBeforeItIsOpened) {
+    start();
+    std::vector<std::string> lastSaidAtOpen;
+    player.beforeOpen = [&](const std::string&) { lastSaidAtOpen.push_back(speech.last()); };
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    EXPECT_EQ(lastSaidAtOpen, (std::vector<std::string>{"Loading."}));
+    EXPECT_EQ(speech.last(), "Now playing. Weather, Storm Front.");
+    hold(Button::Forward); // next track
+    EXPECT_EQ(lastSaidAtOpen.back(), "Loading.");
+    EXPECT_EQ(speech.last(), "Rain");
+    player.unopenable = {"fake://stream/t3"};
+    hold(Button::Forward); // fails: Rain is opened again on Play
+    player.unopenable.clear();
+    lastSaidAtOpen.clear();
+    press(Button::PlayPause);
+    EXPECT_EQ(lastSaidAtOpen, (std::vector<std::string>{"Loading."}));
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(AppTest, TheNextRemoteTrackAtTheEndOfOneOpensWithoutLoading) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    speech.said.clear();
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_FALSE(speech.heard("Loading.")) << "not between every two tracks";
+}
+
+TEST_F(AppTest, ALocalBookOpensWithoutLoading) {
+    playAlpha();
+    hold(Button::Forward);
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_FALSE(speech.heard("Loading."));
+}
+
 TEST_F(AppTest, ASingleRemoteTrackIsCalledByItsServerTitle) {
     start();
     std::vector<RemoteTrack> one = {weather()[0]};
