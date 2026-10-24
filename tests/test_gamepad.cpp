@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <iterator>
 #include <string>
 
 using namespace oap;
@@ -119,4 +120,35 @@ TEST(Gamepad, ALayoutCanBeRemapped) {
     EXPECT_EQ(press(pad, PadControl::West), "");
     pad.set(PadControl::R1, true);
     EXPECT_EQ(press(pad, PadControl::DpadRight), "Forward down, Forward deep down");
+}
+
+TEST(Gamepad, DpadHatYAxisPressesAndReleasesUpAndDown) {
+    GamepadMapper pad;
+    auto hatY = [&](int value) { return describe(pad.setAxis(PadControl::DpadUp, PadControl::DpadDown, value)); };
+    EXPECT_EQ(hatY(-1), "Up down");
+    EXPECT_EQ(hatY(1), "Up up, Down down");
+    EXPECT_EQ(hatY(0), "Down up");
+    EXPECT_EQ(hatY(0), "");
+}
+
+TEST(Gamepad, BothHatAxesAtOnceHoldTwoButtons) {
+    GamepadMapper pad;
+    EXPECT_EQ(hatX(pad, 1), "Forward down");
+    EXPECT_EQ(describe(pad.setAxis(PadControl::DpadUp, PadControl::DpadDown, 1)), "Down down"); // diagonal
+    EXPECT_EQ(hatX(pad, 0), "Forward up");
+    EXPECT_EQ(describe(pad.releaseAll()), "Down up");
+}
+
+TEST(Gamepad, DefaultLayoutMapsOnlyTheDocumentedControls) {
+    const char* names[] = {"DpadUp", "DpadDown", "DpadLeft", "DpadRight", "South", "East", "West", "North",
+                           "L1", "R1", "L2", "R2", "Select", "Start", "Mode", "ThumbL", "ThumbR"};
+    static_assert(std::size(names) == kPadControlCount);
+    std::string mapped;
+    for (size_t c = 0; c < kPadControlCount; ++c) {
+        GamepadMapper pad;
+        std::string change = press(pad, PadControl(c));
+        if (!change.empty()) mapped += (mapped.empty() ? "" : ", ") + std::string(names[c]) + ": " + change;
+    }
+    EXPECT_EQ(mapped, "DpadUp: Up down, DpadDown: Down down, DpadLeft: Back down, DpadRight: Forward down, "
+                      "South: OK down, East: Home down, West: Play/Pause down");
 }

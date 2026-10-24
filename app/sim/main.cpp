@@ -6,6 +6,7 @@
 #include "core/mixer.h"
 #include "core/text.h"
 #include "frontend/gamepad.h"
+#include "frontend/held_buttons.h"
 #include "frontend/presses.h"
 #include "media/player.h"
 #include "media/tts.h"
@@ -95,15 +96,20 @@ struct Gamepad {
     GamepadMapper mapper;
 };
 
-void applyChanges(App& app, std::set<Button>& held, const std::vector<ButtonChange>& changes) {
+// Every input (keyboard, each pad, the on-screen buttons, --script) goes through
+// `held`, so a button held from two of them stays down until both let go.
+void press(App& app, HeldButtons& held, Button b) {
+    if (held.press(b)) app.keyDown(b);
+}
+
+void release(App& app, HeldButtons& held, Button b) {
+    if (held.release(b)) app.keyUp(b);
+}
+
+void applyChanges(App& app, HeldButtons& held, const std::vector<ButtonChange>& changes) {
     for (const auto& c : changes) {
-        if (c.down) {
-            held.insert(c.button);
-            app.keyDown(c.button);
-        } else {
-            held.erase(c.button);
-            app.keyUp(c.button);
-        }
+        if (c.down) press(app, held, c.button);
+        else release(app, held, c.button);
     }
 }
 
@@ -159,17 +165,17 @@ void drawMenu(const App& app) {
     if (!stack.empty()) ImGui::SetScrollHereX(1.0f);
 }
 
-void deviceButton(App& app, const std::set<Button>& held, Button b, ImVec2 size) {
-    bool isHeld = held.count(b) > 0;
+void deviceButton(App& app, HeldButtons& held, Button b, ImVec2 size) {
+    bool isHeld = held.held(b);
     if (isHeld) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
     std::string label = std::string(buttonName(b)) + "\n" + keyLabel(b);
     ImGui::Button(label.c_str(), size);
-    if (ImGui::IsItemActivated()) app.keyDown(b);
-    if (ImGui::IsItemDeactivated()) app.keyUp(b);
+    if (ImGui::IsItemActivated()) press(app, held, b);
+    if (ImGui::IsItemDeactivated()) release(app, held, b);
     if (isHeld) ImGui::PopStyleColor();
 }
 
-void drawDevice(App& app, const std::set<Button>& held) {
+void drawDevice(App& app, HeldButtons& held) {
     const ImVec2 kSize(84, 44);
     float x0 = ImGui::GetCursorPosX();
     float gap = ImGui::GetStyle().ItemSpacing.x;
@@ -241,7 +247,7 @@ void drawSpeechLog(const App& app) {
     }
 }
 
-void drawUi(App& app, const std::set<Button>& held) {
+void drawUi(App& app, HeldButtons& held) {
     ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(io.DisplaySize);
@@ -356,7 +362,8 @@ int main(int argc, char** argv) {
 
     // Debug aid: OAP_SIM_SNAPSHOT=file.bmp saves the last rendered frame on exit.
     const char* snapshot = std::getenv("OAP_SIM_SNAPSHOT");
-    std::set<Button> held;
+    HeldButtons held;
+    std::set<SDL_Keycode> shifted; // keys pressed with Shift, whose deep stage is down too
     std::map<SDL_JoystickID, Gamepad> gamepads;
     PressSequencer scriptPresses(std::chrono::milliseconds(700));
     scriptPresses.push(parseScript(script));
@@ -400,16 +407,14 @@ int main(int argc, char** argv) {
                 } else if (auto b = mapKey(e.key.keysym.sym)) {
                     auto deep = deepOf(*b);
                     if (down) {
-                        held.insert(*b);
-                        app.keyDown(*b);
+                        press(app, held, *b);
                         if (deep && (e.key.keysym.mod & KMOD_SHIFT)) {
-                            held.insert(*deep);
-                            app.keyDown(*deep);
+                            shifted.insert(e.key.keysym.sym);
+                            press(app, held, *deep);
                         }
                     } else {
-                        if (deep && held.erase(*deep)) app.keyUp(*deep);
-                        held.erase(*b);
-                        app.keyUp(*b);
+                        if (deep && shifted.erase(e.key.keysym.sym)) release(app, held, *deep);
+                        release(app, held, *b);
                     }
                 }
             }

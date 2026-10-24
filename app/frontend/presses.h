@@ -1,11 +1,11 @@
 #pragma once
 
 #include "core/app.h"
+#include "held_buttons.h"
 
 #include <chrono>
 #include <deque>
 #include <optional>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -24,6 +24,7 @@ struct PressStep {
 std::optional<Button> deepOf(Button b);
 
 // "down ok wait:3000 right:long right:deep quit". Names: play left right up down ok home talk power.
+// An unknown step, or a wait without a number of milliseconds, is printed and skipped.
 std::vector<PressStep> parseScript(const std::string& text);
 
 // Presses buttons one after another with realistic timing: a short press is held
@@ -37,8 +38,10 @@ public:
     void push(const std::vector<PressStep>& steps) { steps_.insert(steps_.end(), steps.begin(), steps.end()); }
 
     // Call every tick. Returns false once a quit step is reached.
-    // `held`, if given, tracks the buttons currently pressed (for drawing).
-    bool tick(App& app, std::set<Button>* held = nullptr);
+    // `held`, if given, is shared with the other inputs: a button they also hold
+    // stays down for App until all of them let go.
+    bool tick(App& app, HeldButtons* held = nullptr) { return tick(app, held, std::chrono::steady_clock::now()); }
+    bool tick(App& app, HeldButtons* held, std::chrono::steady_clock::time_point now);
 
 private:
     std::deque<PressStep> steps_;

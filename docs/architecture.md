@@ -65,7 +65,8 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 | `app/platform/audio_alsa.cpp` | ALSA PCM (`default` or `alsa:DEVICE`), 50 ms latency. |
 | `app/platform/audio_null.cpp` | No device: consumes audio in real time. |
 | `app/frontend/presses.{h,cpp}` | `PressSequencer` (timed presses), `parseScript()`, `deepOf()`. |
-| `app/frontend/terminal_keys.{h,cpp}` | `TerminalKeyDecoder`: terminal bytes → presses. |
+| `app/frontend/terminal_keys.{h,cpp}` | `TerminalKeyDecoder`: terminal bytes → presses. Keeps an escape sequence split across reads; a lone Esc is Home only after `kEscTimeout` (200 ms) without more bytes, checked by `poll(now)`. |
+| `app/frontend/held_buttons.{h,cpp}` | `HeldButtons`: counts the inputs holding each button, so App gets `keyUp` only when the last one lets go. |
 | `app/frontend/gamepad.{h,cpp}` | `GamepadMapper`: game controller buttons → device buttons, with the layout in `defaultGamepadLayout()`. Used by the simulator (SDL) and headless (evdev). |
 | `app/sim/main.cpp` | Simulator: window, key mapping, visualisation. |
 | `app/headless/main.cpp` | Headless front end: poll loop, terminal raw mode, signals. |
@@ -321,7 +322,7 @@ during playback. That interval is a trade-off against flash wear on the device.
 - **Keyboard:** Space = Play/Pause, arrows = Back/Forward/Up/Down, Enter = OK,
   Esc/Backspace = Home, T = Talk, P = Power, H = hold switch. Holding a key gives a long press.
 - **Game controller:** SDL game controllers (DualSense, Xbox, ...) go through `GamepadMapper`,
-  the same map as on the device: D-pad = arrows, Square = Play/Pause, Cross = OK,
+  the same map as `oap-headless`: D-pad = arrows, Square = Play/Pause, Cross = OK,
   Circle = Home, L1 + Left/Right = deep press. Pads can be plugged in while it runs.
 - **Arguments:** `oap-sim [--config FILE] [--music DIR] [--audio NAME] [--script STEPS] [LIBRARY_DIR]`.
   `--audio` is `auto` (default), `coreaudio`, `pulse`, `alsa[:DEVICE]` or `null`, among those built in.
@@ -329,7 +330,9 @@ during playback. That interval is a trade-off against flash wear on the device.
 - **Script mode:** `--script "ok down ok wait:3000 right:long play:long quit"`
   presses buttons automatically, for repeatable walkthroughs and future UI tests.
   Steps: `play left right up down ok home talk power`, with `:long` for a long
-  press, plus `wait:<ms>` and `quit`.
+  press, plus `wait:<ms>` and `quit`. An unknown step or a `wait` without a number is printed and skipped.
+- **Several inputs at once:** keyboard, pads, on-screen buttons and `--script` share one
+  `HeldButtons`, so a button held from two of them is released only when both let go.
 
 ## 11. Headless front end (`app/headless/`) and the Linux device
 
@@ -346,6 +349,8 @@ during playback. That interval is a trade-off against flash wear on the device.
   - The terminal is put in non-canonical, no-echo mode. Bytes go through `TerminalKeyDecoder`
     and the presses are played by a `PressSequencer` (80 ms short, 1600 ms long), since a
     terminal sends no releases. Alt / `l` prefix = long, Shift / `d` prefix = deep.
+    `main.cpp` still calls the untimed `decode(bytes)`, which takes each read as complete;
+    switching to `decode(bytes, now)` plus `poll(now)` every loop keeps sequences split over slow SSH.
   - `--script` uses a second `PressSequencer`, shared with the simulator.
 - **Main loop:** `poll()` stdin and the evdev fds for up to 10 ms, feed input, `tick()`, exit on
   `quitRequested()` once speech finished, or on SIGINT/SIGTERM/SIGHUP. Exit always calls
@@ -377,7 +382,8 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   on a temporary library folder, and checks what is spoken, which file plays and
   what is saved. Long presses, sleep timers and auto sleep are tested by advancing
   the fake clock.
-- `test_terminal_keys.cpp` tests the headless terminal key decoding.
+- `test_terminal_keys.cpp` tests the headless terminal key decoding, including sequences split across reads.
+- `test_presses.cpp` tests `parseScript` and `PressSequencer` timing; `test_held_buttons.cpp` tests `HeldButtons`.
 - `test_gamepad.cpp` tests the gamepad map, including the order of light and deep stages.
 - The other files test `GestureDetector`, `AudioStream`, `Mixer`/`Earcons`,
   `Settings`, `scanLibrary` and `spokenDuration` directly.

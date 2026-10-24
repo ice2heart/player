@@ -1,7 +1,7 @@
 #include "presses.h"
 
+#include <charconv>
 #include <cstdio>
-#include <cstdlib>
 #include <sstream>
 
 namespace oap {
@@ -27,8 +27,13 @@ std::vector<PressStep> parseScript(const std::string& text) {
             name = word.substr(0, colon);
             arg = word.substr(colon + 1);
         }
-        if (name == "wait") step.waitMs = std::atoi(arg.c_str());
-        else if (name == "quit") step.quit = true;
+        if (name == "wait") {
+            auto [end, error] = std::from_chars(arg.data(), arg.data() + arg.size(), step.waitMs);
+            if (error != std::errc() || end != arg.data() + arg.size() || step.waitMs < 0) {
+                std::fprintf(stderr, "script: '%s' needs a number of milliseconds\n", word.c_str());
+                continue;
+            }
+        } else if (name == "quit") step.quit = true;
         else {
             for (const auto& [n, b] : kNames)
                 if (name == n) step.button = b;
@@ -44,26 +49,29 @@ std::vector<PressStep> parseScript(const std::string& text) {
     return steps;
 }
 
-bool PressSequencer::tick(App& app, std::set<Button>* held) {
-    auto now = std::chrono::steady_clock::now();
+bool PressSequencer::tick(App& app, HeldButtons* held, std::chrono::steady_clock::time_point now) {
     if (now < next_ || steps_.empty()) return true;
     const PressStep& step = steps_.front();
     if (step.quit) return false;
-    if (step.waitMs) {
+    auto down = [&](Button b) {
+        if (!held || held->press(b)) app.keyDown(b);
+    };
+    auto up = [&](Button b) {
+        if (!held || held->release(b)) app.keyUp(b);
+    };
+    if (!step.button) { // a pause; a step with neither a button nor a wait does nothing
         next_ = now + std::chrono::milliseconds(step.waitMs);
         steps_.pop_front();
     } else if (!pressed_) {
         std::printf("press: %s%s\n", buttonName(*step.button),
                     step.longPress ? " (long)" : step.deep ? " (deep)" : "");
-        if (held) held->insert(*step.button);
-        app.keyDown(*step.button);
-        if (step.deep) app.keyDown(*deepOf(*step.button));
+        down(*step.button);
+        if (step.deep) down(*deepOf(*step.button));
         pressed_ = true;
         next_ = now + std::chrono::milliseconds(step.longPress ? 1600 : 80);
     } else {
-        if (held) held->erase(*step.button);
-        if (step.deep) app.keyUp(*deepOf(*step.button));
-        app.keyUp(*step.button);
+        if (step.deep) up(*deepOf(*step.button));
+        up(*step.button);
         pressed_ = false;
         steps_.pop_front();
         next_ = now + gap_;

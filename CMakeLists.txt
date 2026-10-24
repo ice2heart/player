@@ -41,9 +41,10 @@ add_library(oapcore STATIC
 target_include_directories(oapcore PUBLIC app)
 target_compile_options(oapcore PRIVATE -Wall -Wextra)
 
-# ---- frontend: code shared by the front ends (scripted presses, terminal keys, gamepad map). No dependencies.
+# ---- frontend: code shared by the front ends (scripted presses, terminal keys, gamepad map, held buttons). No dependencies.
 add_library(oapfrontend STATIC
     app/frontend/gamepad.cpp
+    app/frontend/held_buttons.cpp
     app/frontend/presses.cpp
     app/frontend/terminal_keys.cpp
 )
@@ -147,10 +148,12 @@ if(OAP_BUILD_TESTS)
     add_executable(oap-tests
         tests/test_app.cpp
         tests/test_audio_stream.cpp
-    tests/test_gamepad.cpp
+        tests/test_gamepad.cpp
         tests/test_gestures.cpp
+        tests/test_held_buttons.cpp
         tests/test_library.cpp
         tests/test_mixer.cpp
+        tests/test_presses.cpp
         tests/test_settings.cpp
         tests/test_terminal_keys.cpp
         tests/test_text.cpp

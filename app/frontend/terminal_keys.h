@@ -2,6 +2,8 @@
 
 #include "presses.h"
 
+#include <chrono>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -20,11 +22,30 @@ struct TerminalKey {
 
 class TerminalKeyDecoder {
 public:
-    // `bytes` is one read() from the terminal. An escape sequence arrives in one read,
-    // so a lone Esc at the end of the chunk is the Esc key itself.
+    using TimePoint = std::chrono::steady_clock::time_point;
+
+    // How long a lone Esc waits for the rest of an escape sequence before it
+    // counts as the Esc key. Over a slow link a sequence can arrive in pieces.
+    static constexpr std::chrono::milliseconds kEscTimeout{200};
+
+    // `bytes` is one read() from the terminal at time `now`. An escape sequence
+    // cut off at the end of the read is kept for the next read.
+    std::vector<TerminalKey> decode(std::string_view bytes, TimePoint now);
+    // Call every tick: once no bytes have come for kEscTimeout, a waiting lone
+    // Esc becomes Home and an unfinished sequence is dropped.
+    std::vector<TerminalKey> poll(TimePoint now);
+
+    // Older form without time: every read is taken as complete, so a lone Esc at
+    // its end is Home at once and a sequence split across reads is lost.
     std::vector<TerminalKey> decode(std::string_view bytes);
 
 private:
+    void parse(std::vector<TerminalKey>& keys, bool final);
+    size_t parseOne(std::string_view in, std::vector<TerminalKey>& keys, bool final);
+    void emit(std::vector<TerminalKey>& keys, Button b, bool longPress, bool deep);
+
+    std::string pending_;   // bytes not decoded yet: an unfinished escape sequence
+    TimePoint pendingSince_{};
     bool nextLong_ = false; // after 'l'
     bool nextDeep_ = false; // after 'd'
 };
