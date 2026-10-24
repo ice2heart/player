@@ -100,6 +100,7 @@ ignored. On one-stage hardware, holding the key does the same as a deep press.
   list when nothing is loaded.
 - **A menu is rebuilt when you come back to it**, so it shows what changed
   meanwhile ("Now playing" appears on Home). The same item stays selected.
+  Lists from the server are the exception (see below).
 - **A dangerous action is never the first item of its list.** It sits in a
   list that opens on something harmless: `Cancel` in Factory reset, `Sleep`
   in Power. Pressing OK twice by accident then does no harm.
@@ -110,21 +111,49 @@ ignored. On one-stage hardware, holding the key does the same as a deep press.
 
 ## Lists from the server
 
+The Streaming entry on Home is named after `server.name` in `config.yaml`
+("Server" when it is not set). Its lists come over the network, so they follow
+these rules too ([streaming.md](streaming.md) has the plan).
+
 - **A list that loads from the network opens at once with one item, "Loading".**
-  When the data arrives the list is filled in, and if the user is still on it
-  the first item is spoken. Keys work meanwhile: Home leaves, and the late
-  answer is dropped.
+  OK on it says "Still loading." Keys work meanwhile: Home leaves, and the late
+  answer is dropped, so it is never spoken.
+- **The answer fills the list where it is.** If the user is still on "Loading"
+  and the list is on top, they are moved to the first item that came and it is
+  spoken. If they have opened something else, gone to sleep, or moved to an item
+  that had already loaded, the list is filled silently.
 - **An error is a list too**: "Server not reachable" (or "Wrong user name or
   password", "Server error"), then "Try again". OK on the error says what to do.
+  Try again goes back to "Loading" and asks again. Items that had loaded stay.
+- **Without a server the list says why and what to do.** With no `server:`
+  section in `config.yaml` the Streaming menu has one item, "No server set up",
+  and OK says how to add one. A server of a type this player cannot use gives
+  "Server type not supported". An empty answer says so too ("No albums",
+  "No tracks", "No playlists").
 - **Long lists are paged by the server, not by the user.** Albums A to Z loads
   500 albums and fetches the next 500 in the background while the server has
-  more. Random albums is one page of 50. Holding Up or Down jumps to the first
-  or last item of what has loaded.
+  more. Recently added is one page of 500 and Random albums one page of 50.
+  Holding Up or Down jumps to the first or last item of what has loaded.
+- **A list from the server is not rebuilt when you come back to it.** It keeps
+  what has loaded and the selected item, so going back does not wait on the
+  network again. This is the one exception to "a menu is rebuilt".
+- **Server status reports and stays.** It says "Checking the server.", then
+  "Connected to Navidrome 0.64.2." (the server's name and full version) or the
+  error. Moving to another screen drops the answer.
+- **The player does not change.** A streamed track has the same keys, Player
+  menu and "where am I?" as a local music track. Because opening a stream can
+  take a few seconds, the device says "Loading." before it opens a track the
+  user chose. A track that does not open says "Cannot play Storm. Server not
+  reachable." and no other track is tried. What played before stays current and
+  paused. If that was a streamed track too, it is opened again only when the
+  user presses Play.
 
 ## Checklist for a new menu, item or program
 
 - [ ] It is one of the item types above. A setting uses `choice()`.
 - [ ] It adds no special cases for keys to `App::handleMenu`.
+- [ ] A list that comes from the server opens with `App::openRemoteList()`, so
+      it gets "Loading", the error with "Try again", and the empty text.
 - [ ] A new program is a `Screen::Kind` with its own key handler. Home and
       holding OK leave it, and holding Home still goes to the Home menu.
 - [ ] Anything destructive is behind a list whose first item is harmless.

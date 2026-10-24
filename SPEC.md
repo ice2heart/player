@@ -25,7 +25,10 @@ the audio user interface, features, and an implementation roadmap. Sections mark
 
 ### 1.2 Non-goals (for v1)
 - Screen or visual UI (an optional status LED is fine).
-- Streaming music services (Spotify etc.).
+- Streaming music services (Spotify etc.). A music server the user hosts
+  (Subsonic, such as Navidrome) is not one of these: it is private and needs no
+  account with a company. Streaming from it is built (Home → Streaming, see
+  [docs/streaming.md](docs/streaming.md)).
 - Phone calls, messaging, general-purpose assistant features.
 - Cloud STT/TTS (may be optional plugins later, never required).
 
@@ -205,7 +208,7 @@ v1 to minimize latency and boot time; split later if needed.
 | **library**      | Scans storage, parses metadata/chapters, SQLite DB, bookmarks, positions. |
 | **sync**         | Talks to sync server: download, progress upload/download, podcast feeds. |
 | **power**        | Talks to MCU, battery status, idle timers, suspend/resume, sleep timer. |
-| **settings**     | Persistent config (speech rate, voice, skip intervals, language…). |
+| **settings**     | Persistent config (speech rate, voice, skip intervals, language…) and the music server, in `config.yaml`; positions in `state.tsv`. |
 | **net**          | Wi-Fi management (wpa_supplicant / iwd), connection status announcements. |
 
 ### 4.3 Implementation language — **decided: C++20 + CMake**
@@ -323,6 +326,7 @@ Home
 │   ├── Add podcast (search / URL by voice)
 │   └── Refresh now
 ├── Music                      (albums = folders; Play all)
+├── Streaming                  (own music server; named after it; docs/streaming.md)
 ├── Bookmarks
 ├── Settings
 │   ├── Speech (voice, rate, pitch, verbosity)
@@ -396,7 +400,7 @@ Secondary / alternatives **[OPEN]**:
 Setup without a screen:
 - Dictate server URL + credentials using spelling mode, **or**
 - Device opens a temporary Wi-Fi AP + local web page (setup from phone with screen reader), **or**
-- Drop a `config.toml` onto the device in USB mass-storage mode.
+- Drop a `config.yaml` onto the device in USB mass-storage mode.
 
 ### 6.4 Power and deep sleep
 States:

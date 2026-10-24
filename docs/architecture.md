@@ -1,11 +1,13 @@
 # Software Architecture
 
-> Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end). Last updated: 2026-10-24.
+> Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end,
+> streaming from a Subsonic server: phase 1 of [streaming.md](streaming.md)). Last updated: 2026-10-24.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
 
-The software is one C++20 program with three layers:
+The software is one C++20 program in layers. A front end wires the others together;
+core depends on none of them:
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
@@ -13,6 +15,7 @@ The software is one C++20 program with three layers:
 │   app/sim/       desktop simulator: SDL2 window, Dear ImGui, keyboard │
 │   app/headless/  device: evdev buttons, terminal keys, no screen      │
 │   app/frontend/  shared: scripted presses, terminal keys, gamepad map │
+│                  makeMusicServer(): Subsonic, else NoMusicServer      │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Core  (app/core/, plain C++, no dependencies, library "oapcore")      │
 │   App ── menus, player screen, power states, settings                 │
@@ -43,8 +46,10 @@ The software is one C++20 program with three layers:
 ```
 
 Only `app/platform/`, `app/sim/` and `app/headless/` know which OS they run on.
-The two front ends wire the same core, media and audio code together; they differ
-only in where button presses come from and whether there is a window.
+The two front ends wire the same core, config, net, media and audio code together;
+they differ only in where button presses come from and whether there is a window.
+Config and net read YAML and JSON with yaml-cpp, and net uses libcurl; core sees
+neither, only `SettingsStore` and `MusicServer`.
 
 `App` has no audio code. It only sees the interfaces in `services.h`, and the
 front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`,
@@ -106,7 +111,15 @@ The unit tests wire in fakes instead (section 12).
 
 Rules:
 - `App` is single-threaded. Front ends must not call it from other threads.
-- Threads exchange data only through `AudioStream` (mutex-protected) and atomics.
+- `App` never waits on the network. A `MusicServer` request returns a
+  `RequestId` at once; `App::tick()` calls `server.poll()`, which runs the
+  callbacks of finished requests on the UI thread. Leaving a screen calls
+  `cancel(id)` on its request, so its callback never runs (section 7).
+  The one exception is opening a stream URL in `Player::open()`, which still
+  runs on the UI thread, capped at 10 s (section 4, Streams).
+- Threads exchange data only through `AudioStream` (mutex-protected), atomics,
+  and mutex-protected queues: the `Tts` text queue, the `HttpClient` job queue
+  and the `Subsonic` inbox of finished requests.
 - The audio callback only reads streams and atomics, and never blocks for long.
   It still takes the `AudioStream` mutex, which is acceptable for the simulator.
   A lock-free SPSC ring would be the upgrade if the device ever glitches.
@@ -290,9 +303,10 @@ Home
 │   ├── Artists → <artist> → <albums>
 │   ├── Playlists → <playlist> → Play playlist · <tracks>
 │   ├── Random albums → <albums>   (one page of 50)
-│   └── Server status              ("Connected to Navidrome 0.64.2." or the error)
+│   └── Server status              ("Checking the server.", then "Connected to Navidrome 0.64.2." or the error)
 │       <album> → Play album · <tracks>   (OK plays from that track to the end, via playRemote())
-│       No server: one item, "No server set up" (OK says how to add one)
+│       No server: one item, "No server set up" (OK says how to add one);
+│       a server type this build cannot use: "Server type not supported"
 ├── Podcasts                       (placeholder)
 ├── Settings
 │   ├── Speech rate      100–460 wpm
@@ -339,7 +353,10 @@ comes (from `server.poll()` in `tick()`), the items are filled in; if the user
 is still on "Loading" and the screen is on top, the first item is spoken,
 else the list is filled silently. An error becomes the error and "Try again";
 an empty answer says why. Such a screen has no `build`: returning to it keeps
-what has loaded.
+what has loaded. With a page size (Albums A to Z), `onPage()` asks for the next
+page after what came while the server says `more`. Server status is not a list:
+`checkServer()` keeps one ping, cancelled when another screen is pushed or its
+screen closes. The user-visible rules are in [navigation.md](navigation.md#lists-from-the-server).
 
 ## 8. Library and books
 
@@ -517,6 +534,8 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 
 - Speed control (libavfilter `atempo`, or Sonic), skip silence.
 - Bookmarks, podcasts (RSS), sync (Audiobookshelf).
+- Streaming phases 2 to 5 in [streaming.md](streaming.md): `Player::open()` off the UI
+  thread, buffering feedback, a local cache, one library with the server, and sync.
 - STT (Talk button): push-to-talk capture plus sherpa-onnx, Vosk or whisper.cpp.
 - Localisation of spoken strings; a choice of TTS voice.
 - Hardware abstraction (battery, headphone jack, Wi-Fi, Bluetooth, suspend): planned in [hal.md](hal.md).

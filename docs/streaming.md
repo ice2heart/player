@@ -1,6 +1,9 @@
 # Streaming from a Subsonic server: plan
 
-> Status: **plan**, nothing built yet. Last updated: 2026-10-24.
+> Status: **phase 1 built** (stream and play; see [What phase 1 built differently](#what-phase-1-built-differently)).
+> Phases 2 to 5 are a plan. The code is described in [architecture.md](architecture.md), and the
+> rules for lists from the server are in [navigation.md](navigation.md#lists-from-the-server).
+> Last updated: 2026-10-24.
 > Target server: Navidrome 0.64 (Subsonic API 1.16.1, OpenSubsonic). Test server:
 > `https://navidrome.microserver`. The credentials are kept in `.env` (git ignores it) only so
 > they are at hand during development; the program does not read it.
@@ -16,7 +19,7 @@ two-way sync.
 
 SPEC §1.2 lists "streaming music services (Spotify etc.)" as a non-goal. A server
 the user hosts is a different thing: it is private and needs no account with a
-company. SPEC should say this when phase 1 is merged.
+company. SPEC should say this when phase 1 is merged (it now does, in §1.2).
 
 **Subsonic is the first server type, not the only one.** Others come later, such as
 Audiobookshelf for books (SPEC §6.3). For that reason the core interface
@@ -272,7 +275,7 @@ must not hang the device.
 | ✅ 1.5 | Streaming menu with Loading, error and not-configured states. Server status item. | Loading, then filled, with the first item spoken. Home while loading: a late result does not speak. A result for Artists does not fill Playlists opened after it. Albums A to Z loads a second page when `more` is true. Error, then Try again. No config gives the help text. |
 | ✅ 1.6 | `Player` for URLs: `rw_timeout` / `timeout`, `reconnect` options and an interrupt callback, so `close()` never waits on a stuck socket. The open runs on the UI thread for now, so say "Loading" before it and cap it at 10 s. | Media test: an unreachable URL fails within the cap. (Use a local port with nothing listening; no internet needed.) |
 | ✅ 1.7 | Build: libcurl and yaml-cpp in `CMakeLists.txt` and both Docker targets. `-DOAP_BUILD_NET=OFF` keeps the core-only build working. | `docker build --target native` and `--target pi` pass. |
-| 1.8 | Docs: architecture.md (layers, threads, menu tree, persistence), navigation.md (network list rules), SPEC non-goal note. | – |
+| ✅ 1.8 | Docs: architecture.md (layers, threads, menu tree, persistence), navigation.md (network list rules), SPEC non-goal note. | – |
 
 **Device check (manual):** Wi-Fi on → album plays within 2 s on a fast network,
 FLAC original. Wi-Fi off during play → buffered audio runs out, then "Server not reachable"
@@ -281,6 +284,27 @@ and the device keeps answering keys. Wi-Fi off → the Streaming list says
 
 Known limits after phase 1: the UI pauses briefly while a stream opens, positions
 are not remembered, and nothing works offline.
+
+### What phase 1 built differently
+
+The plan above is kept as it was written. Where the code differs, the code is right:
+
+- **Paging.** Only Albums A to Z is paged (500 at a time, the next page fetched
+  while `more` is true). Recently added is one page of 500, and Random albums one
+  page of 50. Artists, an artist's albums, playlists and an album's tracks are one
+  request each.
+- **Server status** says "Checking the server." at once, then the server's type and
+  its full version string, such as "Connected to Navidrome 0.64.2.", or the error.
+- **Albums and playlists** open on "Play album" or "Play playlist", then the tracks.
+- **A server type the player cannot use** (or any server in a build without
+  `OAP_BUILD_NET`) gives one item, "Server type not supported", instead of "No server set up".
+- **Lists from the server are not rebuilt** when the user comes back to them: they
+  keep what has loaded.
+- **A remote track that fails** says "Cannot play Storm. Server not reachable." What
+  was current before stays current and paused. If that was a remote track too, it is
+  not opened again at once (it would wait on the same server): Play opens it.
+- **No migration from `settings.tsv`.** The old file is not read; settings start from
+  the defaults.
 
 ---
 
