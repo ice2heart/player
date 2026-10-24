@@ -88,6 +88,7 @@ private:
     std::vector<MenuItem> musicMenu();
     std::vector<MenuItem> albumMenu(const Book& album);
     std::vector<MenuItem> sleepTimerMenu();
+    size_t sleepTimerIndex() const;
     std::vector<MenuItem> settingsMenu();
     std::vector<MenuItem> systemMenu();
     std::vector<MenuItem> powerMenu();
@@ -150,6 +151,7 @@ private:
     bool quit_ = false;
     std::optional<TimePoint> pausedAt_;
     std::optional<TimePoint> sleepDeadline_;
+    int sleepMinutes_ = 0; // the time chosen for sleepDeadline_
     int sleepAtChapterEnd_ = -1;
     TimePoint lastActivity_;
     TimePoint lastSave_;

@@ -835,11 +835,43 @@ TEST_F(AppTest, SleepTimerIsInSettings) {
     open("15 minutes");
     EXPECT_EQ(level().title, "Settings") << "choosing a time goes back";
     EXPECT_EQ(speech.last(), "Sleep timer, 15 minutes left, 10 of 10");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Sleep timer. 15 minutes, current, 3 of 7") << "opens on the timer that is set";
+    press(Button::Home);
     idle(14min);
     EXPECT_NE(app->mode(), App::Mode::Sleeping) << "still awake at 14 minutes";
     idle(1min);
     EXPECT_EQ(app->mode(), App::Mode::Sleeping);
     EXPECT_TRUE(speech.heard("Sleep timer ended."));
+}
+
+TEST_F(AppTest, SleepTimerListOpensOnTheTimerThatIsSet) {
+    playAlpha();
+    press(Button::Ok); // Player menu
+    open("Sleep timer");
+    EXPECT_EQ(speech.last(), "Sleep timer. Off, current, 1 of 7");
+    open("30 minutes");
+    press(Button::Ok); // Sleep timer again
+    EXPECT_EQ(speech.last(), "Sleep timer. 30 minutes, current, 4 of 7");
+    open("End of chapter");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Sleep timer. End of chapter, current, 7 of 7");
+}
+
+TEST_F(AppTest, EndOfChapterIsOfferedOnlyWhenSomethingIsLoaded) {
+    start();
+    open("Settings");
+    hold(Button::Down);
+    press(Button::Ok); // Sleep timer
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Off", "1 minute", "15 minutes", "30 minutes", "45 minutes", "1 hour"}));
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    hold(Button::Home);
+    open("Settings");
+    hold(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(labels().back(), "End of chapter");
 }
 
 TEST_F(AppTest, AutoSleepWhenIdle) {

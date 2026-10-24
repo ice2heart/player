@@ -74,6 +74,14 @@ std::string keyHelp(Button button) {
     return "";
 }
 
+struct SleepTime {
+    const char* label;
+    int minutes;
+};
+
+const SleepTime kSleepTimes[] = {{"Off", 0},          {"1 minute", 1},     {"15 minutes", 15},
+                                 {"30 minutes", 30}, {"45 minutes", 45}, {"1 hour", 60}};
+
 Screen menuScreen(std::string title, std::function<std::vector<MenuItem>()> build) {
     std::vector<MenuItem> items = build();
     return {Screen::Kind::Menu, std::move(title), std::move(items), std::move(build)};
@@ -614,6 +622,14 @@ std::vector<MenuItem> App::albumMenu(const Book& album) {
     return items;
 }
 
+// The entry of sleepTimerMenu() that is set now.
+size_t App::sleepTimerIndex() const {
+    if (sleepAtChapterEnd_ >= 0) return std::size(kSleepTimes);
+    for (size_t i = 0; i < std::size(kSleepTimes); ++i)
+        if (kSleepTimes[i].minutes == (sleepDeadline_ ? sleepMinutes_ : 0)) return i;
+    return 0;
+}
+
 std::vector<MenuItem> App::sleepTimerMenu() {
     auto set = [this](std::string label, int minutes, bool endOfChapter) {
         return action(std::move(label), [this, minutes, endOfChapter] {
@@ -621,9 +637,13 @@ std::vector<MenuItem> App::sleepTimerMenu() {
             back();
         });
     };
-    return {set("Off", 0, false),          set("1 minute", 1, false),   set("15 minutes", 15, false),
-            set("30 minutes", 30, false),  set("45 minutes", 45, false), set("1 hour", 60, false),
-            set("End of " + unit(), 0, true)};
+    std::vector<MenuItem> items;
+    for (const SleepTime& t : kSleepTimes) items.push_back(set(t.label, t.minutes, false));
+    // With nothing loaded there is no chapter to wait for.
+    if (book_) items.push_back(set("End of " + unit(), 0, true));
+    if (size_t current = sleepTimerIndex(); current < items.size())
+        items[current].value = [] { return std::string("current"); };
+    return items;
 }
 
 std::vector<MenuItem> App::settingsMenu() {
@@ -642,6 +662,7 @@ std::vector<MenuItem> App::settingsMenu() {
     items.push_back(choice("Auto sleep", kAutoSleep,
                            {{1, "1 minute"}, {2, "2 minutes"}, {5, "5 minutes"}, {10, "10 minutes"}, {30, "30 minutes"}, {0, "never"}}, 5));
     MenuItem timer = submenu("Sleep timer", [this] { return sleepTimerMenu(); });
+    timer.selected = [this] { return sleepTimerIndex(); };
     timer.value = [this] {
         if (sleepDeadline_) return spokenDuration(std::chrono::duration<double>(*sleepDeadline_ - clock_.now()).count()) + " left";
         return sleepAtChapterEnd_ >= 0 ? "end of " + unit() : std::string("off");
@@ -721,7 +742,9 @@ std::vector<MenuItem> App::playerMenu() {
     MenuItem parts = submenu(music_ ? "Tracks" : "Chapters", [this] { return chaptersMenu(); });
     parts.selected = [this] { return size_t(currentChapter()); };
     items.push_back(parts);
-    items.push_back(submenu("Sleep timer", [this] { return sleepTimerMenu(); }));
+    MenuItem timer = submenu("Sleep timer", [this] { return sleepTimerMenu(); });
+    timer.selected = [this] { return sleepTimerIndex(); };
+    items.push_back(timer);
     items.push_back(action(music_ ? "Album info" : "Book info", [this] {
         if (!book_) return;
         auto ch = chapters();
@@ -973,6 +996,7 @@ void App::setSleepTimer(int minutes, bool endOfChapter) {
         sleepAtChapterEnd_ = currentChapter();
         say("Sleep timer set to end of " + unit() + ".");
     } else if (minutes > 0) {
+        sleepMinutes_ = minutes;
         sleepDeadline_ = clock_.now() + std::chrono::minutes(minutes);
         say("Sleep timer set to " + spokenDuration(minutes * 60) + ".");
     } else {

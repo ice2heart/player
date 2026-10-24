@@ -52,7 +52,7 @@ What an item does depends on which parts of `MenuItem` are set:
 | **Submenu** | (info) | – | `submenu` | Library, Road Trip (`2 tracks`) |
 | **Setting** | ✓ | ✓ | – | (none yet; use for on/off values) |
 | **Setting with list** | ✓ | ✓ | `submenu` of all values, on the current one | Speech rate, Volume |
-| **Status with list** | ✓ | – | `submenu` of choices | Sleep timer (`15 minutes left`) |
+| **Status with list** | ✓ | – | `submenu` of choices, on the current one | Sleep timer (`15 minutes left`) |
 | **Action** | (info) | – | runs `action` | Status, Time and date |
 | **Program** | (info) | – | `action` pushes the program's screen | a book, a track, Now playing |
 
@@ -92,7 +92,10 @@ ignored. On one-stage hardware, holding the key does the same as a deep press.
 ## Lists
 
 - **A list that shows a current state opens on that state**: a setting on its
-  current value, Chapters on the playing chapter. Use `MenuItem::selected`.
+  current value, Sleep timer on the timer that is set, Chapters on the playing
+  chapter. Use `MenuItem::selected`.
+- **Offer only what can work now.** "End of chapter" is not in the Sleep timer
+  list when nothing is loaded.
 - **A menu is rebuilt when you come back to it**, so it shows what changed
   meanwhile ("Now playing" appears on Home). The same item stays selected.
 - **A dangerous action is never the first item of its list.** It sits in a

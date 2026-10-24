@@ -252,7 +252,7 @@ Home
 │   ├── Long press time  300–1500 ms
 │   ├── Menu wrap around on / off
 │   ├── Auto sleep       1–30 min / never
-│   └── Sleep timer →    Off · 1 · 15 · 30 · 45 min · 1 hour · End of chapter/track
+│   └── Sleep timer →    Off · 1 · 15 · 30 · 45 min · 1 hour · End of chapter/track (only when something is loaded; opens on the timer that is set)
 ├── System
 │   ├── Status           battery (simulated), free space, Wi-Fi, time
 │   ├── Time and date
