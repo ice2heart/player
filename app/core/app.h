@@ -102,8 +102,9 @@ private:
                     std::function<void(int)> onChange = {});
 
     // Playback
-    void openBook(const Book& book, bool autoplay);
-    void playMusic(const Book& album, size_t track);
+    bool openBook(const Book& book, bool autoplay); // false if it cannot be opened
+    bool playMusic(const Book& album, size_t track);
+    bool switchTo(const Book& book, bool music, size_t file, double position, bool autoplay);
     std::string unit() const { return music_ ? "track" : "chapter"; } // what one part is called
     bool loadFile(size_t file, double position, bool autoplay);
     void togglePlay();

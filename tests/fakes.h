@@ -43,11 +43,12 @@ public:
     bool open(const std::string& path, double startAt) override {
         opened.push_back(path);
         file = path;
-        isOpen_ = openSucceeds;
+        bool ok = openSucceeds && std::find(unopenable.begin(), unopenable.end(), path) == unopenable.end();
+        isOpen_ = ok;
         playing_ = false;
         pos = startAt;
         atEnd = false;
-        return openSucceeds;
+        return ok;
     }
     void close() override {
         isOpen_ = false;
@@ -70,6 +71,7 @@ public:
     std::vector<Chapter> embedded;
     bool atEnd = false;
     bool openSucceeds = true;
+    std::vector<std::string> unopenable; // paths that fail to open
 
 private:
     bool isOpen_ = false;

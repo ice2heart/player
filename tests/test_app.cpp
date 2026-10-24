@@ -138,6 +138,15 @@ TEST_F(AppTest, ResumesLastBookAtSavedPosition) {
     EXPECT_EQ(speech.last(), "Alpha, paused. Press play to continue.");
 }
 
+TEST_F(AppTest, StartsAtHomeWhenTheLastBookCannotBeOpened) {
+    settings.setString("last_book", alpha().string());
+    player.openSucceeds = false;
+    start();
+    EXPECT_TRUE(speech.heard("Cannot open 01 - Storm.mp3"));
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(speech.last(), "Home. Library, 1 of 6");
+}
+
 TEST_F(AppTest, InvalidSavedPositionStartsFromTheBeginning) {
     settings.setString("last_book", alpha().string());
     settings.setString("pos:" + alpha().string(), "7:99.0"); // the book has only two files
@@ -440,11 +449,64 @@ TEST_F(AppTest, PlayWithNothingLoadedExplains) {
     EXPECT_EQ(sounds.last(), Earcon::Error);
 }
 
-TEST_F(AppTest, FileThatCannotBeOpenedIsReported) {
+TEST_F(AppTest, ABookThatCannotBeOpenedIsReportedAndYouStayInTheLibrary) {
     player.openSucceeds = false;
     playAlpha();
     EXPECT_TRUE(speech.heard("Cannot open 01 - Storm.mp3"));
+    EXPECT_EQ(speech.last(), "Cannot open 02 - Calm.mp3") << "no \"Now playing\" after it";
+    EXPECT_EQ(sounds.last(), Earcon::Error);
     EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(level().title, "Library");
+    EXPECT_EQ(settings.getString("last_book"), "") << "not resumed at the next start";
+    press(Button::Home);
+    EXPECT_EQ(labels().front(), "Library") << "nothing loaded";
+}
+
+TEST_F(AppTest, ATrackThatCannotBeOpenedLeavesWhatWasPlaying) {
+    playAlpha();
+    player.pos = 20;
+    hold(Button::Home);
+    open("Music");
+    player.unopenable = {(music / "Lullaby.mp3").string()};
+    open("Lullaby");
+    EXPECT_EQ(speech.last(), "Cannot open Lullaby.mp3");
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(level().title, "Music");
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_DOUBLE_EQ(player.pos, 20);
+    EXPECT_TRUE(player.playing());
+    hold(Button::Home);
+    open("Now playing");
+    EXPECT_EQ(speech.last(), "Now playing. Alpha.");
+}
+
+TEST_F(AppTest, ATrackThatCannotBeOpenedIsSkipped) {
+    player.unopenable = {(roadTrip() / "01 - Sunrise.mp3").string()};
+    start();
+    open("Music");
+    open("Play all");
+    player.atEnd = true;
+    app->tick(); // Lullaby ends, Sunrise cannot be opened
+    EXPECT_TRUE(speech.heard("Cannot open 01 - Sunrise.mp3"));
+    EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Highway");
+}
+
+TEST_F(AppTest, AnUnopenableLastTrackEndsTheAlbum) {
+    player.unopenable = {(roadTrip() / "02 - Highway.mp3").string()};
+    start();
+    open("Music");
+    open("Road Trip");
+    open("Sunrise");
+    player.atEnd = true;
+    app->tick();
+    EXPECT_TRUE(speech.heard("Cannot open 02 - Highway.mp3"));
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    EXPECT_TRUE(player.isOpen());
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(speech.last(), "End of music. Press play to start again.");
 }
 
 TEST_F(AppTest, SkipForwardAndBack) {

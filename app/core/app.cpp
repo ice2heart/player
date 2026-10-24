@@ -122,8 +122,7 @@ void App::start() {
 
     std::string last = settings_.getString(kLastBook);
     for (const Book& b : scanLibrary(libraryRoot_)) {
-        if (!last.empty() && b.path.string() == last) {
-            openBook(b, false);
+        if (!last.empty() && b.path.string() == last && openBook(b, false)) {
             screens_ = {menuScreen("Home", [this] { return homeMenu(); }), playerScreen()};
             say(b.title + ", paused. Press play to continue.");
             return;
@@ -582,8 +581,7 @@ std::vector<MenuItem> App::libraryMenu() {
     std::vector<MenuItem> items;
     for (const Book& b : scanLibrary(libraryRoot_)) {
         MenuItem item = action(b.title, [this, b] {
-            openBook(b, true);
-            enterPlayer();
+            if (openBook(b, true)) enterPlayer();
         });
         if (b.files.size() > 1) {
             size_t n = b.files.size();
@@ -608,16 +606,14 @@ std::vector<MenuItem> App::musicMenu() {
     auto tracks = [](size_t n) { return [n] { return std::to_string(n) + (n == 1 ? " track" : " tracks"); }; };
     std::vector<MenuItem> items;
     MenuItem playAll = action("Play all", [this, all] {
-        playMusic(all, 0);
-        enterPlayer();
+        if (playMusic(all, 0)) enterPlayer();
     });
     playAll.value = tracks(all.files.size());
     items.push_back(playAll);
     for (const Book& a : albums) {
         if (a.files.size() == 1 && a.files.front() == a.path) { // a loose track, not a folder
             items.push_back(action(a.title, [this, a] {
-                playMusic(a, 0);
-                enterPlayer();
+                if (playMusic(a, 0)) enterPlayer();
             }));
         } else {
             MenuItem album = submenu(a.title, [this, a] { return albumMenu(a); });
@@ -632,8 +628,7 @@ std::vector<MenuItem> App::albumMenu(const Book& album) {
     std::vector<MenuItem> items;
     for (size_t i = 0; i < album.files.size(); ++i) {
         items.push_back(action(chapterTitle(album.files[i]), [this, album, i] {
-            playMusic(album, i); // the rest of the album follows
-            enterPlayer();
+            if (playMusic(album, i)) enterPlayer(); // the rest of the album follows
         }));
     }
     return items;
@@ -794,9 +789,8 @@ std::vector<MenuItem> App::chaptersMenu() {
 
 // ---------------------------------------------------------------- playback
 
-void App::openBook(const Book& book, bool autoplay) {
+bool App::openBook(const Book& book, bool autoplay) {
     if (book_) savePosition();
-    book_ = book;
     size_t file = 0;
     double pos = 0;
     std::string saved = settings_.getString("pos:" + book.path.string());
@@ -810,34 +804,57 @@ void App::openBook(const Book& book, bool autoplay) {
         }
         if (file >= book.files.size()) file = 0, pos = 0;
     }
-    music_ = false;
+    if (!switchTo(book, false, file, pos, autoplay)) return false;
     settings_.setString(kLastBook, book.path.string());
     settings_.save();
     sleepAtChapterEnd_ = -1;
-    loadFile(file, pos, autoplay);
+    return true;
 }
 
 // Music plays from the chosen track and is never resumed later, so it neither
 // saves a position nor replaces the book that start() resumes.
-void App::playMusic(const Book& album, size_t track) {
+bool App::playMusic(const Book& album, size_t track) {
     if (book_) savePosition();
-    book_ = album;
-    music_ = true;
+    if (!switchTo(album, true, track, 0, true)) return false;
     sleepAtChapterEnd_ = -1;
     pausedAt_.reset();
-    loadFile(track, 0, true);
+    return true;
 }
 
+// Loads `book` from `file`. If none of its files from there on opens, what was
+// loaded before stays loaded, at the same place, so the user is where they were.
+bool App::switchTo(const Book& book, bool music, size_t file, double position, bool autoplay) {
+    std::optional<Book> previous = std::exchange(book_, book);
+    bool wasMusic = std::exchange(music_, music);
+    size_t wasFile = fileIndex_;
+    bool wasOpen = player_.isOpen(), wasPlaying = player_.playing();
+    double wasAt = player_.position();
+    if (loadFile(file, position, autoplay)) return true;
+
+    book_ = std::move(previous);
+    music_ = wasMusic;
+    fileIndex_ = wasFile;
+    if (book_ && wasOpen) {
+        if (!player_.open(book_->files[wasFile].string(), wasAt)) book_.reset(), music_ = false;
+        else if (wasPlaying) player_.play();
+    }
+    return false;
+}
+
+// Opens `file`, or the next one that opens: a file that cannot be read is
+// reported and skipped, so one bad file does not stop a book or an album.
 bool App::loadFile(size_t file, double position, bool autoplay) {
-    if (!book_ || file >= book_->files.size()) return false;
-    fileIndex_ = file;
-    if (!player_.open(book_->files[file].string(), position)) {
+    if (!book_) return false;
+    for (; file < book_->files.size(); ++file, position = 0) {
+        fileIndex_ = file;
+        if (player_.open(book_->files[file].string(), position)) {
+            if (autoplay) player_.play();
+            return true;
+        }
         earcons_.play(Earcon::Error);
         say("Cannot open " + book_->files[file].filename().string());
-        return false;
     }
-    if (autoplay) player_.play();
-    return true;
+    return false;
 }
 
 void App::togglePlay() {
@@ -950,10 +967,7 @@ void App::stepChapter(int direction) {
 }
 
 void App::onFileFinished() {
-    if (fileIndex_ + 1 < book_->files.size()) {
-        loadFile(fileIndex_ + 1, 0, true);
-        return;
-    }
+    if (fileIndex_ + 1 < book_->files.size() && loadFile(fileIndex_ + 1, 0, true)) return;
     player_.pause();
     loadFile(0, 0, false); // next play starts the book again
     savePosition();

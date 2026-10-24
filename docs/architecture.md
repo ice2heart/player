@@ -297,6 +297,10 @@ Power menu (hold Power): Sleep · Power off · Restart · Cancel
   its start, like a CD player.
 - At the end of a file the next file starts automatically. At the end of the
   book the device says "End of book" and goes back to the start, paused.
+- A file that cannot be opened is reported ("Cannot open 02 - Calm.mp3") and
+  skipped: the next file that opens plays instead. If no file from the chosen
+  one on opens, the book or track is not loaded at all: whatever was loaded
+  before stays loaded at the same place, and the user stays in the menu.
 
 ## 9. Persistence
 
