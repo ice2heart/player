@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/app.h"
+#include "frontend/gamepad.h"
 
 #include <chrono>
 #include <map>
@@ -14,8 +15,8 @@ struct pollfd;
 namespace oap {
 
 // Buttons from Linux input devices: gpio-keys, the MCU's USB HID interface,
-// media keys and ordinary keyboards. Devices are found under /dev/input and
-// rescanned every few seconds, so a keyboard can be plugged in later.
+// media keys, ordinary keyboards and game controllers. Devices are found under
+// /dev/input and rescanned every few seconds, so a keyboard can be plugged in later.
 //
 // Key map (until hal.toml exists, see docs/hal.md §3.3):
 //   PlayPause  KEY_PLAYPAUSE KEY_SPACE        Back/Forward  KEY_PREVIOUSSONG/NEXTSONG, Left/Right
@@ -24,6 +25,7 @@ namespace oap {
 //   Talk       KEY_T KEY_VOICECOMMAND         Power         KEY_P KEY_POWER
 //   BackDeep/ForwardDeep  KEY_F13/KEY_F14, or Shift+Left/Right on a keyboard
 //   Hold       switch SW_MUTE_DEVICE, or KEY_H toggles it
+//   Gamepads (DualSense etc.): see defaultGamepadLayout() in frontend/gamepad.h
 class EvdevInput {
 public:
     ~EvdevInput();
@@ -42,6 +44,7 @@ private:
         std::string path;
         bool shift = false;
         std::set<Button> deepHeld; // deep stages pressed via Shift+arrow
+        GamepadMapper pad;
     };
 
     bool openDevice(const std::string& path);

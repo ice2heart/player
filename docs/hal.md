@@ -317,6 +317,7 @@ Several input backends can be active at once, and their events are merged in the
 | Device buttons on our microcontroller | `evdev` (its USB HID interface) | `ButtonInput`, `HoldChanged` |
 | USB or Bluetooth keyboard | `evdev` / `android` / `sdl` | `KeyInput`, `TextInput`, `KeyboardChanged` |
 | Bluetooth headset buttons (AVRCP) | `evdev` / `android` (MediaSession) | `KeyInput` (media keys) |
+| Game controller (DualSense, Xbox; dev and testing) | `evdev` / `sdl` | `ButtonInput` through `GamepadMapper` (built, see architecture §11) |
 | Phone touch screen | `android` | `TouchInput` (§5.4) |
 
 The phone's volume keys are not input. Android changes the media volume itself, also with the

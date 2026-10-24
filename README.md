@@ -132,6 +132,12 @@ Both front ends take `--audio NAME`:
 | `coreaudio` | macOS default output |
 | `null` | no sound; audio is consumed in real time, so playback still advances (servers, CI) |
 
+**DualSense audio.** Over USB the PS5 controller is also a sound card with 4 channels
+(1–2 audio, 3–4 the haptic motors). Use `--audio alsa:plughw:CARD=Controller`: ALSA's
+plug layer sends our stereo to channels 1–2 and leaves the motors silent. Check the
+card name with `aplay -l`. With PipeWire or PulseAudio, make the controller the
+default sink and use `--audio pulse`. Bluetooth carries no audio to the controller on Linux.
+
 ### Tests
 
 ```sh
@@ -158,6 +164,22 @@ core and `oap-tests`.
 Hold any key for a long press, and use Shift+←/→ for a deep press. The
 on-screen buttons can also be clicked or held with the mouse.
 
+### Game controller
+
+Both front ends take a game controller (PS5 DualSense, Xbox and others): SDL
+game controllers in the simulator, evdev devices in `oap-headless`.
+
+| Control | Device button |
+|---------|---------------|
+| D-pad | Up / Down / Back / Forward |
+| Square (X on Xbox) | Play/Pause |
+| Cross (A) | OK |
+| Circle (B) | Home |
+| L1 + D-pad ←/→ | deep press (previous / next chapter) |
+
+Hold a control for a long press. To remap, edit `defaultGamepadLayout()` in
+[app/frontend/gamepad.cpp](app/frontend/gamepad.cpp).
+
 ### Headless
 
 ```sh
@@ -174,6 +196,8 @@ oap-headless [--config FILE] [--music DIR] [--audio NAME] [--input LIST]
   The key map is in [app/headless/evdev_input.h](app/headless/evdev_input.h): media keys,
   `KEY_POWER`, `KEY_F13`/`KEY_F14` for the deep stages, switch `SW_MUTE_DEVICE` for hold,
   plus the same keyboard keys as the simulator. Real key releases mean long presses work as on the device.
+- A **game controller** is picked up by evdev too (see [Game controller](#game-controller)).
+  A DualSense works over USB or Bluetooth.
 - **terminal** keys: Space, arrows, Enter, Esc/Backspace, `t` Talk, `p` Power, `h` hold.
   A terminal sends no key releases, so **Alt+key** (or `l` then the key) gives a long press,
   and **Shift+←/→** (or `d` then the arrow) a deep press. Ctrl+C quits and saves the position.

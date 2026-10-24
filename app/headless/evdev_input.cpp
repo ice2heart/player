@@ -1,6 +1,7 @@
 #include "evdev_input.h"
 
 #include "frontend/presses.h"
+#include "frontend/gamepad.h"
 
 #include <linux/input.h>
 
@@ -49,6 +50,38 @@ std::optional<Button> mapKey(unsigned code) {
     }
 }
 
+// Game controllers (hid-playstation, xpad, ...) use the BTN_* gamepad codes.
+// Which control does what is in defaultGamepadLayout() (frontend/gamepad.cpp).
+std::optional<PadControl> mapPad(unsigned code) {
+    switch (code) {
+    case BTN_DPAD_UP: return PadControl::DpadUp;
+    case BTN_DPAD_DOWN: return PadControl::DpadDown;
+    case BTN_DPAD_LEFT: return PadControl::DpadLeft;
+    case BTN_DPAD_RIGHT: return PadControl::DpadRight;
+    case BTN_SOUTH: return PadControl::South;
+    case BTN_EAST: return PadControl::East;
+    case BTN_WEST: return PadControl::West;
+    case BTN_NORTH: return PadControl::North;
+    case BTN_TL: return PadControl::L1;
+    case BTN_TR: return PadControl::R1;
+    case BTN_TL2: return PadControl::L2;
+    case BTN_TR2: return PadControl::R2;
+    case BTN_SELECT: return PadControl::Select;
+    case BTN_START: return PadControl::Start;
+    case BTN_MODE: return PadControl::Mode;
+    case BTN_THUMBL: return PadControl::ThumbL;
+    case BTN_THUMBR: return PadControl::ThumbR;
+    default: return std::nullopt;
+    }
+}
+
+void applyChanges(App& app, const std::vector<ButtonChange>& changes) {
+    for (const auto& c : changes) {
+        if (c.down) app.keyDown(c.button);
+        else app.keyUp(c.button);
+    }
+}
+
 bool testBit(const unsigned long* bits, unsigned bit) {
     constexpr unsigned kBits = sizeof(unsigned long) * 8;
     return (bits[bit / kBits] >> (bit % kBits)) & 1;
@@ -86,7 +119,7 @@ bool EvdevInput::openDevice(const std::string& path) {
     unsigned long switches[SW_CNT / (sizeof(unsigned long) * 8) + 1] = {};
     ioctl(fd, EVIOCGBIT(EV_KEY, sizeof keys), keys);
     ioctl(fd, EVIOCGBIT(EV_SW, sizeof switches), switches);
-    bool useful = testBit(switches, SW_MUTE_DEVICE) || testBit(keys, KEY_H);
+    bool useful = testBit(switches, SW_MUTE_DEVICE) || testBit(keys, KEY_H) || testBit(keys, BTN_GAMEPAD);
     for (unsigned code = 0; code < KEY_CNT && !useful; ++code)
         useful = testBit(keys, code) && mapKey(code);
     if (!useful) {
@@ -103,7 +136,7 @@ bool EvdevInput::openDevice(const std::string& path) {
     char name[256] = "?";
     ioctl(fd, EVIOCGNAME(sizeof name), name);
     std::printf("input: %s (%s)\n", path.c_str(), name);
-    devices_[path] = Device{fd, path};
+    devices_[path] = Device{.fd = fd, .path = path};
     return true;
 }
 
@@ -136,6 +169,7 @@ void EvdevInput::process(App& app) {
         }
         if (gone) {
             std::printf("input: %s removed\n", d.path.c_str());
+            applyChanges(app, d.pad.releaseAll()); // a controller that dropped off mid-press
             closeDevice(d);
             it = devices_.erase(it);
         } else {
@@ -151,8 +185,20 @@ void EvdevInput::handle(Device& d, App& app, unsigned type, unsigned code, int v
         app.setHold(value != 0);
         return;
     }
+    if (type == EV_ABS && code == ABS_HAT0X) { // D-pad as an axis (DualSense, Xbox pads)
+        applyChanges(app, d.pad.setAxis(PadControl::DpadLeft, PadControl::DpadRight, value));
+        return;
+    }
+    if (type == EV_ABS && code == ABS_HAT0Y) {
+        applyChanges(app, d.pad.setAxis(PadControl::DpadUp, PadControl::DpadDown, value));
+        return;
+    }
     if (type != EV_KEY || value == 2) return; // 2 = autorepeat
     bool down = value == 1;
+    if (auto control = mapPad(code)) {
+        applyChanges(app, d.pad.set(*control, down));
+        return;
+    }
     if (code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT) {
         d.shift = down;
         return;

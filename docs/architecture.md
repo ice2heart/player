@@ -12,7 +12,7 @@ The software is one C++20 program with three layers:
 │ Front end (per target)                                                │
 │   app/sim/       desktop simulator: SDL2 window, Dear ImGui, keyboard │
 │   app/headless/  device: evdev buttons, terminal keys, no screen      │
-│   app/frontend/  shared: scripted presses, terminal key decoding      │
+│   app/frontend/  shared: scripted presses, terminal keys, gamepad map │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Core  (app/core/, plain C++, no dependencies, library "oapcore")      │
 │   App ── menus, player screen, power states, settings                 │
@@ -66,6 +66,7 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 | `app/platform/audio_null.cpp` | No device: consumes audio in real time. |
 | `app/frontend/presses.{h,cpp}` | `PressSequencer` (timed presses), `parseScript()`, `deepOf()`. |
 | `app/frontend/terminal_keys.{h,cpp}` | `TerminalKeyDecoder`: terminal bytes → presses. |
+| `app/frontend/gamepad.{h,cpp}` | `GamepadMapper`: game controller buttons → device buttons, with the layout in `defaultGamepadLayout()`. Used by the simulator (SDL) and headless (evdev). |
 | `app/sim/main.cpp` | Simulator: window, key mapping, visualisation. |
 | `app/headless/main.cpp` | Headless front end: poll loop, terminal raw mode, signals. |
 | `app/headless/evdev_input.{h,cpp}` | `EvdevInput`: `/dev/input` devices → `keyDown`/`keyUp`/`setHold`, with hot-plug rescans. |
@@ -319,6 +320,9 @@ during playback. That interval is a trade-off against flash wear on the device.
     **speech log**.
 - **Keyboard:** Space = Play/Pause, arrows = Back/Forward/Up/Down, Enter = OK,
   Esc/Backspace = Home, T = Talk, P = Power, H = hold switch. Holding a key gives a long press.
+- **Game controller:** SDL game controllers (DualSense, Xbox, ...) go through `GamepadMapper`,
+  the same map as on the device: D-pad = arrows, Square = Play/Pause, Cross = OK,
+  Circle = Home, L1 + Left/Right = deep press. Pads can be plugged in while it runs.
 - **Arguments:** `oap-sim [--config FILE] [--music DIR] [--audio NAME] [--script STEPS] [LIBRARY_DIR]`.
   `--audio` is `auto` (default), `coreaudio`, `pulse`, `alsa[:DEVICE]` or `null`, among those built in.
   `tools/make_sample_library.sh [LIBRARY_DIR] [MUSIC_DIR]` makes a spoken sample library and some tone "music".
@@ -336,6 +340,8 @@ during playback. That interval is a trade-off against flash wear on the device.
   - `EvdevInput` opens every `/dev/input/event*` with a mapped key (or just `--evdev-device`),
     reads `input_event`s non-blocking, ignores autorepeat, and rescans every 3 s for hot-plugged
     devices. Shift+Left/Right on a keyboard presses the deep stage, as in the simulator.
+    Game controllers (any device with `BTN_GAMEPAD`) go through `GamepadMapper`; the D-pad
+    may arrive as `BTN_DPAD_*` keys or as the `ABS_HAT0X`/`ABS_HAT0Y` axes (DualSense).
     `SW_MUTE_DEVICE` is the hold switch; its state is read at startup.
   - The terminal is put in non-canonical, no-echo mode. Bytes go through `TerminalKeyDecoder`
     and the presses are played by a `PressSequencer` (80 ms short, 1600 ms long), since a
@@ -372,6 +378,7 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   what is saved. Long presses, sleep timers and auto sleep are tested by advancing
   the fake clock.
 - `test_terminal_keys.cpp` tests the headless terminal key decoding.
+- `test_gamepad.cpp` tests the gamepad map, including the order of light and deep stages.
 - The other files test `GestureDetector`, `AudioStream`, `Mixer`/`Earcons`,
   `Settings`, `scanLibrary` and `spokenDuration` directly.
 - Every test has been checked with a sabotage: break the code it guards and

@@ -1,10 +1,11 @@
-// Desktop simulator: keyboard (or on-screen buttons) stand in for the device
-// buttons, and the window visualises the menu stack, playback and speech.
+// Desktop simulator: keyboard, a game controller or the on-screen buttons stand
+// in for the device buttons, and the window visualises the menu stack, playback and speech.
 
 #include "core/app.h"
 #include "core/earcons.h"
 #include "core/mixer.h"
 #include "core/text.h"
+#include "frontend/gamepad.h"
 #include "frontend/presses.h"
 #include "media/player.h"
 #include "media/tts.h"
@@ -17,6 +18,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <optional>
 #include <set>
 
@@ -65,11 +67,52 @@ std::string clock(double seconds) {
     return buf;
 }
 
+// SDL names controller buttons by position (A = South), like Linux evdev.
+std::optional<PadControl> mapPad(Uint8 button) {
+    switch (button) {
+    case SDL_CONTROLLER_BUTTON_DPAD_UP: return PadControl::DpadUp;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return PadControl::DpadDown;
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return PadControl::DpadLeft;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return PadControl::DpadRight;
+    case SDL_CONTROLLER_BUTTON_A: return PadControl::South;
+    case SDL_CONTROLLER_BUTTON_B: return PadControl::East;
+    case SDL_CONTROLLER_BUTTON_X: return PadControl::West;
+    case SDL_CONTROLLER_BUTTON_Y: return PadControl::North;
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: return PadControl::L1;
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return PadControl::R1;
+    case SDL_CONTROLLER_BUTTON_BACK: return PadControl::Select;
+    case SDL_CONTROLLER_BUTTON_START: return PadControl::Start;
+    case SDL_CONTROLLER_BUTTON_GUIDE: return PadControl::Mode;
+    case SDL_CONTROLLER_BUTTON_LEFTSTICK: return PadControl::ThumbL;
+    case SDL_CONTROLLER_BUTTON_RIGHTSTICK: return PadControl::ThumbR;
+    default: return std::nullopt;
+    }
+}
+
+// Open game controllers by joystick instance id, each with its own mapper.
+struct Gamepad {
+    SDL_GameController* controller = nullptr;
+    GamepadMapper mapper;
+};
+
+void applyChanges(App& app, std::set<Button>& held, const std::vector<ButtonChange>& changes) {
+    for (const auto& c : changes) {
+        if (c.down) {
+            held.insert(c.button);
+            app.keyDown(c.button);
+        } else {
+            held.erase(c.button);
+            app.keyUp(c.button);
+        }
+    }
+}
+
 void printKeys() {
     std::printf(
         "Keys:  Space play/pause   Left/Right back/forward   Up/Down\n"
         "       Enter OK   Esc/Backspace Home   T talk   P power   H hold switch\n"
         "       Shift+Left/Right deep press. Hold a key for a long press.\n"
+        "Pad:   D-pad arrows   Square/X play/pause   Cross/A OK   Circle/B Home   L1+Left/Right deep press\n"
         "       Close the window (Cmd+Q on macOS) to quit.\n\n");
 }
 
@@ -278,7 +321,7 @@ int main(int argc, char** argv) {
     settings.load();
     App app(tts, player, earcons, mixer, settings, clock, library, music);
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
@@ -314,6 +357,7 @@ int main(int argc, char** argv) {
     // Debug aid: OAP_SIM_SNAPSHOT=file.bmp saves the last rendered frame on exit.
     const char* snapshot = std::getenv("OAP_SIM_SNAPSHOT");
     std::set<Button> held;
+    std::map<SDL_JoystickID, Gamepad> gamepads;
     PressSequencer scriptPresses(std::chrono::milliseconds(700));
     scriptPresses.push(parseScript(script));
     bool running = true;
@@ -322,6 +366,33 @@ int main(int argc, char** argv) {
         while (SDL_PollEvent(&e)) {
             ImGui_ImplSDL2_ProcessEvent(&e);
             if (e.type == SDL_QUIT) running = false;
+            if (e.type == SDL_CONTROLLERDEVICEADDED) { // also sent at startup for pads already plugged in
+                if (SDL_GameController* c = SDL_GameControllerOpen(e.cdevice.which)) {
+                    gamepads[SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(c))].controller = c;
+                    std::printf("gamepad: %s\n", SDL_GameControllerName(c));
+                }
+            }
+            if (e.type == SDL_CONTROLLERDEVICEREMOVED) {
+                if (auto it = gamepads.find(e.cdevice.which); it != gamepads.end()) {
+                    applyChanges(app, held, it->second.mapper.releaseAll());
+                    SDL_GameControllerClose(it->second.controller);
+                    gamepads.erase(it);
+                }
+            }
+            if (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP) {
+                auto it = gamepads.find(e.cbutton.which);
+                auto control = mapPad(e.cbutton.button);
+                if (it != gamepads.end() && control)
+                    applyChanges(app, held, it->second.mapper.set(*control, e.type == SDL_CONTROLLERBUTTONDOWN));
+            }
+            if (e.type == SDL_CONTROLLERAXISMOTION) { // L2 / R2 are axes; count them as pressed past half way
+                auto it = gamepads.find(e.caxis.which);
+                bool pressed = e.caxis.value > SDL_JOYSTICK_AXIS_MAX / 2;
+                if (it != gamepads.end() && e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT)
+                    applyChanges(app, held, it->second.mapper.set(PadControl::L2, pressed));
+                if (it != gamepads.end() && e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT)
+                    applyChanges(app, held, it->second.mapper.set(PadControl::R2, pressed));
+            }
             if ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && !e.key.repeat) {
                 bool down = e.type == SDL_KEYDOWN;
                 if (e.key.keysym.sym == SDLK_h && down) {
