@@ -23,6 +23,8 @@ macOS (simulator only):
 brew install cmake pkgconf ffmpeg espeak-ng sdl2
 ```
 
+macOS has libcurl, which streaming needs, built in; Homebrew's `pkgconf` finds it.
+
 Debian / Ubuntu, everything (simulator, headless, tests):
 
 ```sh
@@ -41,18 +43,19 @@ sudo apt install build-essential cmake ninja-build pkgconf ca-certificates git \
 | `libsdl2-dev` | `oap-sim` only |
 | `libpulse-dev` / `libasound2-dev` | the `pulse` / `alsa` outputs; drop one by leaving it out of `OAP_AUDIO_BACKENDS` |
 | `libyaml-cpp-dev` | reading `config.yaml`; optional, CMake downloads yaml-cpp without it |
-| `libcurl4-openssl-dev` | talking to a Subsonic server (`oapnet`, `oap-net-tests`); without it they are not built |
+| `libcurl4-openssl-dev` | streaming from a Subsonic server (`OAP_BUILD_NET`: `oapnet`, `oap-net-tests`); without it configure with `-DOAP_BUILD_NET=OFF` |
 
 Only the core and tests (`-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`) need just
-`build-essential cmake ninja-build`.
+`build-essential cmake ninja-build ca-certificates git`; add `pkgconf libcurl4-openssl-dev`
+to build the network code and its tests there too (`-DOAP_BUILD_NET=ON`).
 
 On the Raspberry Pi (Raspberry Pi OS 64-bit, trixie), a cross-built
 `oap-headless` needs only the runtime libraries (the Docker `pi-out` build writes
 this line to `DEPENDENCIES.txt`):
 
 ```sh
-sudo apt install libasound2t64 libavcodec61 libavformat61 libavutil59 libc6 \
-    libespeak-ng1 libgcc-s1 libpulse0 libstdc++6 libswresample5 espeak-ng-data
+sudo apt install libasound2t64 libavcodec61 libavformat61 libavutil59 libc6 libcurl4t64 \
+    libespeak-ng1 libgcc-s1 libpulse0 libstdc++6 libswresample5 libyaml-cpp0.8 espeak-ng-data
 ```
 
 Dear ImGui and GoogleTest are downloaded by CMake into the build folder, and
@@ -74,8 +77,9 @@ Build switches:
 |--------|---------|---------|
 | `OAP_BUILD_SIM` | `ON` | `oap-sim` (needs SDL2) |
 | `OAP_BUILD_HEADLESS` | `ON` on Linux | `oap-headless` |
+| `OAP_BUILD_NET` | `ON` when a front end is built, else `OFF` | `oapnet`, streaming from a Subsonic server (needs libcurl; configure fails without it). `OFF`: the front ends build without libcurl and cannot stream (they say so on stderr when `config.yaml` sets up a server) |
 | `OAP_AUDIO_BACKENDS` | `coreaudio` (macOS), `pulse;alsa` (Linux) | audio outputs to build in |
-| `OAP_BUILD_TESTS` | `ON` | `oap-tests`, and `oap-net-tests` when libcurl is found |
+| `OAP_BUILD_TESTS` | `ON` | `oap-tests`, `oap-net-tests` with `OAP_BUILD_NET`, `oap-media-tests` with a front end |
 
 For the device, build only the headless front end, for example with ALSA only:
 `cmake -S . -B build -DOAP_BUILD_SIM=OFF -DOAP_AUDIO_BACKENDS=alsa`.
@@ -155,8 +159,8 @@ ctest --test-dir build --output-on-failure
 
 The core tests need no audio libraries:
 `cmake -S . -B build -DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF` builds just the
-core and `oap-tests` (and, when libcurl is installed, `oapnet` and `oap-net-tests`,
-which test the Subsonic client on saved answers and local sockets, with no internet).
+core and `oap-tests`, without libcurl. Add `-DOAP_BUILD_NET=ON` for `oapnet` and
+`oap-net-tests`, which test the Subsonic client on saved answers and local sockets, with no internet.
 
 ### Simulator keys
 

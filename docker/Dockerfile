@@ -1,8 +1,10 @@
 # Build and test oap in a clean Debian. Targets:
-#   native  - x86-64/host build of everything (sim, headless, tests), runs ctest
-#   pi      - cross build of oap-headless and the tests for the Pi Zero 2 W (arm64),
-#             runs ctest under qemu
+#   native  - x86-64/host build of everything (sim, headless, streaming, tests), runs ctest
+#             (oap-tests, oap-net-tests, oap-media-tests)
+#   pi      - cross build of oap-headless (with streaming) and the tests for the Pi Zero 2 W
+#             (arm64), runs ctest under qemu
 #   *-out   - just the binaries, for `docker build --output`
+# OAP_BUILD_NET=ON is spelled out so a missing libcurl fails the build.
 # See README.md ("Docker") for the commands.
 
 # Raspberry Pi OS (64-bit) is trixie too: the Pi binaries need its glibc and FFmpeg.
@@ -20,7 +22,7 @@ WORKDIR /src
 
 FROM native-deps AS native
 COPY . .
-RUN cmake -S . -B /build -G Ninja \
+RUN cmake -S . -B /build -G Ninja -DOAP_BUILD_NET=ON \
     && cmake --build /build \
     && ctest --test-dir /build --output-on-failure
 
@@ -42,7 +44,7 @@ FROM pi-deps AS pi
 COPY . .
 RUN cmake -S . -B /build -G Ninja \
         -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/pi-zero-2w.cmake \
-        -DOAP_BUILD_SIM=OFF \
+        -DOAP_BUILD_SIM=OFF -DOAP_BUILD_NET=ON \
     && cmake --build /build \
     && ctest --test-dir /build --output-on-failure \
     && qemu-aarch64 -L /usr/aarch64-linux-gnu /build/oap-headless --help

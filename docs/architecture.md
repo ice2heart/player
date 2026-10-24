@@ -48,14 +48,15 @@ only in where button presses come from and whether there is a window.
 
 `App` has no audio code. It only sees the interfaces in `services.h`, and the
 front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`,
-`SystemClock`, and `Subsonic` from `config.yaml` when `oapnet` is built, else `NoMusicServer`).
+`SystemClock`, and from `makeMusicServer()` a `Subsonic` for the server in `config.yaml` when built with
+`OAP_BUILD_NET`, else a `NoMusicServer`).
 The unit tests wire in fakes instead (section 12).
 
 ## 2. Source layout
 
 | Path | Contents |
 |------|----------|
-| `CMakeLists.txt` | Builds `oapcore`, `oapconfig`, `oapfrontend`, `oapnet` (when pkg-config finds libcurl), `oapmedia`, `oapaudio` (backends from `OAP_AUDIO_BACKENDS`), `imgui` and `oap-sim` (`OAP_BUILD_SIM`), `oap-headless` (`OAP_BUILD_HEADLESS`, Linux), plus `oap-tests` and `oap-net-tests` (`OAP_BUILD_TESTS`). ImGui and GoogleTest are fetched at configure time, and yaml-cpp too when the system has none. |
+| `CMakeLists.txt` | Builds `oapcore`, `oapconfig`, `oapfrontend`, `oapnet` (`OAP_BUILD_NET`, libcurl via pkg-config; on by default when a front end is built), `oapmusicserver` (`makeMusicServer()`, linking `oapnet` when it is built), `oapmedia`, `oapaudio` (backends from `OAP_AUDIO_BACKENDS`), `imgui` and `oap-sim` (`OAP_BUILD_SIM`), `oap-headless` (`OAP_BUILD_HEADLESS`, Linux), plus `oap-tests`, `oap-net-tests` (with `OAP_BUILD_NET`) and `oap-media-tests` (with a front end) (`OAP_BUILD_TESTS`). ImGui and GoogleTest are fetched at configure time, and yaml-cpp too when the system has none. |
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
@@ -84,7 +85,8 @@ The unit tests wire in fakes instead (section 12).
 | `app/frontend/presses.{h,cpp}` | `PressSequencer` (timed presses), `parseScript()`, `deepOf()`. |
 | `app/frontend/terminal_keys.{h,cpp}` | `TerminalKeyDecoder`: terminal bytes → presses. Keeps an escape sequence split across reads; a lone Esc is Home only after `kEscTimeout` (200 ms) without more bytes, checked by `poll(now)`. |
 | `app/frontend/held_buttons.{h,cpp}` | `HeldButtons`: counts the inputs holding each button, so App gets `keyUp` only when the last one lets go. |
-| `app/frontend/no_music_server.{h,cpp}` | `NoMusicServer`: the `MusicServer` the front ends give `App` when `config.yaml` sets up no server they can use (no `server.url`, a `server.type` other than `subsonic`, or no `oapnet`); every request finishes with `NotConfigured` on the next `poll()`. |
+| `app/frontend/no_music_server.{h,cpp}` | `NoMusicServer`: the `MusicServer` the front ends give `App` when `config.yaml` sets up no server they can use (no `server.url`, a `server.type` other than `subsonic`, or a build without `OAP_BUILD_NET`); every request finishes with `NotConfigured` on the next `poll()`. |
+| `app/frontend/make_music_server.{h,cpp}` | `makeMusicServer()`: the `MusicServer` both front ends give `App`: `Subsonic::fromConfig()` when built with `OAP_BUILD_NET` (`OAP_HAVE_NET`), else `NoMusicServer`, with a line on stderr when `config.yaml` sets up a server it cannot use. Its own library, `oapmusicserver`, so `oapfrontend` keeps no dependencies. |
 | `app/frontend/gamepad.{h,cpp}` | `GamepadMapper`: game controller buttons → device buttons, with the layout in `defaultGamepadLayout()`. Used by the simulator (SDL) and headless (evdev). |
 | `app/sim/main.cpp` | Simulator: window, key mapping, visualisation. |
 | `app/headless/main.cpp` | Headless front end: poll loop, terminal raw mode, signals. |
@@ -100,7 +102,7 @@ The unit tests wire in fakes instead (section 12).
 | **Decoder** | `Player` | Reads, decodes and resamples into the content stream. Blocks while the stream is full, or while a stream waits for data; `close()` aborts either at once. |
 | **TTS worker** | `Tts` | Runs `espeak_Synth()` synchronously and resamples into the speech stream. |
 | **Audio callback** | `AudioOutput` | Calls `Mixer::render()` to pull PCM for the device. CoreAudio calls back; Pulse, ALSA and null run their own writer thread. |
-| **HTTP worker** | `HttpClient` | Runs every libcurl transfer and parses the answers (`Subsonic`). Finished results go into a mutex-protected inbox that `Subsonic::poll()` empties on the UI thread. Not wired into a front end yet. |
+| **HTTP worker** | `HttpClient` | Runs every libcurl transfer and parses the answers (`Subsonic`). Finished results go into a mutex-protected inbox that `Subsonic::poll()` empties on the UI thread. |
 
 Rules:
 - `App` is single-threaded. Front ends must not call it from other threads.
@@ -472,8 +474,9 @@ Nothing in `app/core/` uses macOS APIs.
 ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 ```
 
-- `oap-tests` links only `oapcore`, `oapconfig`, `oapfrontend` and `oapaudio`, so it builds without FFmpeg, eSpeak NG,
-  SDL2 or audio libraries (`cmake -DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`); yaml-cpp is downloaded if missing. Without a front end
+- `oap-tests` links only `oapcore`, `oapconfig`, `oapfrontend`, `oapmusicserver` and `oapaudio`, so it builds without FFmpeg, eSpeak NG,
+  SDL2, audio libraries or libcurl (`cmake -DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`, where `OAP_BUILD_NET` defaults to `OFF`);
+  yaml-cpp is downloaded if missing. With `OAP_BUILD_NET` it links `oapnet` and libcurl through `oapmusicserver`. Without a front end
   `oapaudio` holds only the null output; the device backends are added with the sim or headless build.
 - `tests/fakes.h` provides `FakeSpeech` (records what was said), `FakePlayer`
   (position, end of file and chapters set by the test), `FakeSounds`, `FakeVolume`,
@@ -492,7 +495,9 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 - `test_presses.cpp` tests `parseScript` and `PressSequencer` timing; `test_held_buttons.cpp` tests `HeldButtons`.
 - `test_gamepad.cpp` tests the gamepad map, including the order of light and deep stages.
 - `test_no_music_server.cpp` tests `NoMusicServer` (answers only from `poll()`, `cancel`, also from a callback).
-- `oap-net-tests` (built when libcurl is found) tests `Subsonic` URL building, auth
+- `test_make_music_server.cpp` tests `makeMusicServer()`: no server, another server type, and a Subsonic server,
+  which streams only in a build with `OAP_BUILD_NET` (CMake tells the test which build it is in).
+- `oap-net-tests` (built with `OAP_BUILD_NET`) tests `Subsonic` URL building, auth
   and error mapping over a fake `Http`, the parsers on saved answers in
   `tests/data/subsonic/` (non-ASCII and emoji titles, `\uXXXX` surrogate pairs, `\/`,
   an 80 kB single-line page), and `HttpClient` against sockets on 127.0.0.1 (refused,

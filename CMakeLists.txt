@@ -17,6 +17,14 @@ endif()
 option(OAP_BUILD_SIM "Build the desktop simulator oap-sim (needs FFmpeg, eSpeak NG, SDL2)" ON)
 option(OAP_BUILD_HEADLESS "Build oap-headless, the front end for the device (Linux; needs FFmpeg, eSpeak NG)" ${OAP_LINUX})
 option(OAP_BUILD_TESTS "Build the core unit tests" ON)
+# Streaming from a Subsonic server needs libcurl. On by default when a front end
+# is built, off for the core-only build (which then needs no libcurl).
+if(OAP_BUILD_SIM OR OAP_BUILD_HEADLESS)
+    set(OAP_NET_DEFAULT ON)
+else()
+    set(OAP_NET_DEFAULT OFF)
+endif()
+option(OAP_BUILD_NET "Build oapnet, the Subsonic client (needs libcurl); the front ends stream with it" ${OAP_NET_DEFAULT})
 if(APPLE)
     set(OAP_AUDIO_DEFAULT "coreaudio")
 else()
@@ -73,13 +81,17 @@ target_link_libraries(oapconfig PUBLIC oapcore PRIVATE ${OAP_YAML_CPP})
 target_compile_options(oapconfig PRIVATE -Wall -Wextra)
 
 # ---- net: HttpClient (libcurl, one worker thread) and Subsonic : MusicServer
-# (answers read with yaml-cpp). Built only when pkg-config finds libcurl; the
-# front ends then stream from the server in config.yaml (OAP_HAVE_NET).
-find_package(PkgConfig)
-if(PKG_CONFIG_FOUND)
-    pkg_check_modules(LIBCURL IMPORTED_TARGET libcurl)
-endif()
-if(TARGET PkgConfig::LIBCURL)
+# (answers read with yaml-cpp). Only with OAP_BUILD_NET.
+if(OAP_BUILD_NET)
+    find_package(PkgConfig)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(LIBCURL IMPORTED_TARGET libcurl)
+    endif()
+    if(NOT TARGET PkgConfig::LIBCURL)
+        message(FATAL_ERROR "OAP_BUILD_NET needs libcurl, found with pkg-config "
+            "(apt install pkgconf libcurl4-openssl-dev; brew install pkgconf curl). "
+            "Or configure with -DOAP_BUILD_NET=OFF to build without streaming.")
+    endif()
     add_library(oapnet STATIC
         app/net/http_client.cpp
         app/net/md5.cpp
@@ -88,8 +100,6 @@ if(TARGET PkgConfig::LIBCURL)
     )
     target_link_libraries(oapnet PUBLIC oapcore Threads::Threads PRIVATE PkgConfig::LIBCURL ${OAP_YAML_CPP})
     target_compile_options(oapnet PRIVATE -Wall -Wextra)
-else()
-    message(STATUS "libcurl not found: oapnet and oap-net-tests are not built")
 endif()
 
 # ---- frontend: code shared by the front ends (scripted presses, terminal keys, gamepad map, held buttons). No dependencies.
@@ -102,6 +112,17 @@ add_library(oapfrontend STATIC
 )
 target_link_libraries(oapfrontend PUBLIC oapcore)
 target_compile_options(oapfrontend PRIVATE -Wall -Wextra)
+
+# ---- music server: makeMusicServer(), the server a front end gives App. Subsonic
+# with OAP_BUILD_NET (OAP_HAVE_NET), else NoMusicServer. Kept out of oapfrontend,
+# which has no dependencies.
+add_library(oapmusicserver STATIC app/frontend/make_music_server.cpp)
+target_link_libraries(oapmusicserver PUBLIC oapfrontend)
+if(OAP_BUILD_NET)
+    target_link_libraries(oapmusicserver PRIVATE oapnet)
+    target_compile_definitions(oapmusicserver PRIVATE OAP_HAVE_NET)
+endif()
+target_compile_options(oapmusicserver PRIVATE -Wall -Wextra)
 
 # ---- platform audio output: null always, device backends (below) only with a front end.
 # No third-party dependencies of its own, so the tests can link it.
@@ -169,11 +190,7 @@ if(OAP_BUILD_SIM)
     target_link_libraries(imgui PUBLIC PkgConfig::SDL2)
 
     add_executable(oap-sim app/sim/main.cpp)
-    target_link_libraries(oap-sim PRIVATE oapfrontend oapconfig oapmedia oapaudio imgui)
-    if(TARGET oapnet)
-        target_link_libraries(oap-sim PRIVATE oapnet)
-        target_compile_definitions(oap-sim PRIVATE OAP_HAVE_NET)
-    endif()
+    target_link_libraries(oap-sim PRIVATE oapmusicserver oapconfig oapmedia oapaudio imgui)
     target_compile_options(oap-sim PRIVATE -Wall -Wextra)
 endif()
 
@@ -187,15 +204,12 @@ if(OAP_BUILD_HEADLESS)
         app/headless/main.cpp
         app/headless/evdev_input.cpp
     )
-    target_link_libraries(oap-headless PRIVATE oapfrontend oapconfig oapmedia oapaudio)
-    if(TARGET oapnet)
-        target_link_libraries(oap-headless PRIVATE oapnet)
-        target_compile_definitions(oap-headless PRIVATE OAP_HAVE_NET)
-    endif()
+    target_link_libraries(oap-headless PRIVATE oapmusicserver oapconfig oapmedia oapaudio)
     target_compile_options(oap-headless PRIVATE -Wall -Wextra)
 endif()
 
-# ---- tests: core, config, frontend and the null audio output, with fakes for speech, playback, sounds and time
+# ---- tests: core, config, frontend and the null audio output, with fakes for speech, playback, sounds and time.
+# They link oapmusicserver, so with OAP_BUILD_NET they link oapnet (and libcurl) too.
 if(OAP_BUILD_TESTS)
     FetchContent_Declare(googletest
         URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
@@ -216,6 +230,7 @@ if(OAP_BUILD_TESTS)
         tests/test_gestures.cpp
         tests/test_held_buttons.cpp
         tests/test_library.cpp
+        tests/test_make_music_server.cpp
         tests/test_mixer.cpp
         tests/test_no_music_server.cpp
         tests/test_presses.cpp
@@ -223,7 +238,11 @@ if(OAP_BUILD_TESTS)
         tests/test_terminal_keys.cpp
         tests/test_text.cpp
     )
-    target_link_libraries(oap-tests PRIVATE oapcore oapconfig oapfrontend oapaudio GTest::gtest_main)
+    target_link_libraries(oap-tests PRIVATE oapcore oapconfig oapmusicserver oapaudio GTest::gtest_main)
+    if(OAP_BUILD_NET)
+        # Set here, not taken from oapmusicserver, so a build that loses OAP_HAVE_NET fails a test.
+        target_compile_definitions(oap-tests PRIVATE OAP_TESTS_EXPECT_NET)
+    endif()
     target_compile_options(oap-tests PRIVATE -Wall -Wextra)
     include(GoogleTest)
     # A sabotaged writer can block forever, hence the timeout. Under qemu
@@ -239,7 +258,7 @@ if(OAP_BUILD_TESTS)
 
     # ---- net tests: Subsonic URL building, auth and parsing on saved answers in
     # tests/data/subsonic/, and HttpClient against local sockets. No internet.
-    if(TARGET oapnet)
+    if(OAP_BUILD_NET)
         add_executable(oap-net-tests
             tests/test_http_client.cpp
             tests/test_md5.cpp
