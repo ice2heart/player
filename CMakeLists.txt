@@ -182,6 +182,7 @@ if(OAP_BUILD_TESTS)
         tests/test_audio_output.cpp
         tests/test_audio_stream.cpp
         tests/test_config.cpp
+        tests/test_fake_music_server.cpp
         tests/test_gamepad.cpp
         tests/test_gestures.cpp
         tests/test_held_buttons.cpp

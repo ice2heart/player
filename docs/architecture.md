@@ -20,7 +20,8 @@ The software is one C++20 program with three layers:
 │    ├── Library           scans folders into books                     │
 │    ├── Settings          dotted keys in memory, SettingsStore for I/O │
 │    └── services.h        Speech · MediaPlayer · SoundEffects ·        │
-│                          VolumeControl · Clock   (interfaces)         │
+│                          VolumeControl · Clock · MusicServer          │
+│                          (interfaces)                                 │
 │   Earcons                synthesized  → effects stream                │
 │   Mixer                  content + speech + effects → PCM, ducking    │
 ├───────────────────────────────────────────────────────────────────────┤
@@ -53,7 +54,7 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
-| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`). |
+| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `MusicServer` with its `RemoteTrack` / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it; not used by `App` yet). |
 | `app/media/player.{h,cpp}` | `Player`: one audio file, decoded on its own thread (FFmpeg). |
 | `app/media/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. |
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
@@ -417,8 +418,11 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   `oapaudio` holds only the null output; the device backends are added with the sim or headless build.
 - `tests/fakes.h` provides `FakeSpeech` (records what was said), `FakePlayer`
   (position, end of file and chapters set by the test), `FakeSounds`, `FakeVolume`,
-  `FakeClock` (time only moves when the test advances it) and `FakeStore` (what was
-  last saved to a settings file, and how often).
+  `FakeClock` (time only moves when the test advances it), `FakeStore` (what was
+  last saved to a settings file, and how often) and `FakeMusicServer` (records each
+  request; answers only when the test calls `reply` / `replyPing` / `fail`, and then
+  only on the next `poll()`; honours `cancel`). `test_fake_music_server.cpp` checks
+  that contract.
 - `test_config.cpp` tests YAML ⇄ dotted keys, `YamlStore` / `TsvStore` on real files
   (mode 0600, atomic replace, a broken file left alone) and `SettingsFiles`.
 - `test_app.cpp` drives `App` the way a user does, through `keyDown`/`keyUp`/`tick`

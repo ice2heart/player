@@ -7,8 +7,12 @@
 #include "core/settings.h"
 
 #include <algorithm>
+#include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <utility>
+#include <variant>
 #include <vector>
 
 namespace oap::test {
@@ -107,6 +111,138 @@ public:
 
     SettingsMap file;
     int saves = 0;
+};
+
+// A music server that answers only when the test says so. Every request is
+// recorded and stays pending until the test calls reply() / replyPing() / fail().
+// Even then the callback runs only on the next poll(), as on the real server, so
+// a test can check the "Loading" state in between. cancel() drops a request
+// whether or not it has been answered. With isConfigured = false every request
+// is answered at once with NotConfigured (still delivered by poll()).
+//
+//   auto id = server.lastRequest().id;          // what App just asked for
+//   server.reply(id, {album1, album2}, /*more=*/false);
+//   app.tick();                                 // App calls poll(), callback runs
+class FakeMusicServer : public MusicServer {
+public:
+    enum class Kind { Ping, Albums, Artists, ArtistAlbums, AlbumTracks, Playlists, PlaylistTracks };
+    struct Request {
+        RequestId id = 0;
+        Kind kind = Kind::Ping;
+        std::string arg; // listType, artist, album or playlist id; empty otherwise
+        int offset = 0;  // Albums only
+        int size = 0;    // Albums only
+    };
+
+    bool configured() const override { return isConfigured; }
+    RequestId ping(std::function<void(Error, ServerInfo)> done) override { return add(std::move(done), Kind::Ping); }
+    RequestId albums(std::string listType, int offset, int size, Done<RemoteAlbum> done) override {
+        return add(std::move(done), Kind::Albums, std::move(listType), offset, size);
+    }
+    RequestId artists(Done<RemoteArtist> done) override { return add(std::move(done), Kind::Artists); }
+    RequestId artistAlbums(std::string artistId, Done<RemoteAlbum> done) override {
+        return add(std::move(done), Kind::ArtistAlbums, std::move(artistId));
+    }
+    RequestId albumTracks(std::string albumId, Done<RemoteTrack> done) override {
+        return add(std::move(done), Kind::AlbumTracks, std::move(albumId));
+    }
+    RequestId playlists(Done<RemotePlaylist> done) override { return add(std::move(done), Kind::Playlists); }
+    RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override {
+        return add(std::move(done), Kind::PlaylistTracks, std::move(playlistId));
+    }
+    void cancel(RequestId id) override {
+        cancelled.push_back(id); // poll() skips it, even if answered or polled right now
+        pending_.erase(id);
+    }
+    std::string streamUrl(const std::string& trackId) const override { return "fake://stream/" + trackId; }
+    void poll() override {
+        // Callbacks may make new requests or cancel others, so work on a copy.
+        auto batch = std::move(ready_);
+        ready_.clear();
+        for (auto& [id, run] : batch)
+            if (std::find(cancelled.begin(), cancelled.end(), id) == cancelled.end()) run();
+    }
+
+    // Answer a list request; the callback gets it on the next poll(). The item
+    // type must match the request (albums for Albums, ...). Returns false, and
+    // does nothing, when the request is not pending (cancelled, already
+    // answered, or never made): that is how a late answer is simulated.
+    bool reply(RequestId id, std::vector<RemoteAlbum> items, bool more = false) {
+        return deliver(id, std::move(items), more);
+    }
+    bool reply(RequestId id, std::vector<RemoteArtist> items, bool more = false) {
+        return deliver(id, std::move(items), more);
+    }
+    bool reply(RequestId id, std::vector<RemoteTrack> items, bool more = false) {
+        return deliver(id, std::move(items), more);
+    }
+    bool reply(RequestId id, std::vector<RemotePlaylist> items, bool more = false) {
+        return deliver(id, std::move(items), more);
+    }
+    bool replyPing(RequestId id, ServerInfo info) {
+        auto it = pending_.find(id);
+        if (it == pending_.end()) return false;
+        auto* done = std::get_if<PingDone>(&it->second);
+        if (!done) throw std::logic_error("FakeMusicServer::replyPing: not a ping");
+        ready_.emplace_back(id, [cb = std::move(*done), info = std::move(info)] { cb(Error::None, info); });
+        pending_.erase(it);
+        return true;
+    }
+    // Answer any request with an error (empty list, more = false).
+    bool fail(RequestId id, Error error) {
+        if (error == Error::None) throw std::logic_error("FakeMusicServer::fail: Error::None is not a failure");
+        auto it = pending_.find(id);
+        if (it == pending_.end()) return false;
+        std::visit([&](auto& cb) { ready_.emplace_back(id, failure(std::move(cb), error)); }, it->second);
+        pending_.erase(it);
+        return true;
+    }
+
+    const Request& lastRequest() const {
+        if (requests.empty()) throw std::logic_error("FakeMusicServer: no request made");
+        return requests.back();
+    }
+    std::size_t pendingCount() const { return pending_.size(); }
+
+    std::vector<Request> requests;    // every request, in order
+    std::vector<RequestId> cancelled; // every cancel() call, in order
+    bool isConfigured = true;
+
+private:
+    using PingDone = std::function<void(Error, ServerInfo)>;
+    using Callback =
+        std::variant<PingDone, Done<RemoteAlbum>, Done<RemoteArtist>, Done<RemoteTrack>, Done<RemotePlaylist>>;
+
+    template <class F> RequestId add(F done, Kind kind, std::string arg = {}, int offset = 0, int size = 0) {
+        RequestId id = ++lastId_;
+        requests.push_back({id, kind, std::move(arg), offset, size});
+        if (isConfigured)
+            pending_.emplace(id, Callback(std::in_place_type<F>, std::move(done)));
+        else
+            ready_.emplace_back(id, failure(std::move(done), Error::NotConfigured));
+        return id;
+    }
+    template <class T> bool deliver(RequestId id, std::vector<T> items, bool more) {
+        auto it = pending_.find(id);
+        if (it == pending_.end()) return false;
+        auto* done = std::get_if<Done<T>>(&it->second);
+        if (!done) throw std::logic_error("FakeMusicServer::reply: wrong item type for request");
+        ready_.emplace_back(id, [cb = std::move(*done), items = std::move(items), more]() mutable {
+            cb(Error::None, std::move(items), more);
+        });
+        pending_.erase(it);
+        return true;
+    }
+    static std::function<void()> failure(PingDone cb, Error error) {
+        return [cb = std::move(cb), error] { cb(error, {}); };
+    }
+    template <class T> static std::function<void()> failure(Done<T> cb, Error error) {
+        return [cb = std::move(cb), error] { cb(error, {}, false); };
+    }
+
+    RequestId lastId_ = 0;
+    std::map<RequestId, Callback> pending_;                          // asked, not answered yet
+    std::vector<std::pair<RequestId, std::function<void()>>> ready_; // answered, waiting for poll()
 };
 
 } // namespace oap::test
