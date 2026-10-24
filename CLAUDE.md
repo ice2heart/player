@@ -10,9 +10,11 @@ for the code. Menus and keys follow [docs/navigation.md](docs/navigation.md).
 cmake -S . -B build && cmake --build build -j
 ctest --test-dir build --output-on-failure      # or ./build/oap-tests
 ./build/oap-sim library                         # simulator (needs ./tools/make_sample_library.sh library music)
+./build/oap-headless library                    # device front end, Linux (--audio null without a sound card)
 ```
 
-`-DOAP_BUILD_SIM=OFF` builds only the core and the tests, without FFmpeg, eSpeak NG or SDL2.
+`-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF` builds only the core and the tests,
+without FFmpeg, eSpeak NG, SDL2 or audio libraries.
 
 ## Layering rules
 
@@ -21,6 +23,8 @@ ctest --test-dir build --output-on-failure      # or ./build/oap-tests
   interfaces in `app/core/services.h` (`Speech`, `MediaPlayer`, `SoundEffects`,
   `VolumeControl`, `Clock`). Do not include `media/` or `platform/` headers from core.
 - `app/media/` holds the FFmpeg `Player` and eSpeak NG `Tts` that implement those interfaces.
+- `app/frontend/` is code shared by the front ends with no dependencies (tested);
+  `app/sim/` (SDL) and `app/headless/` (evdev, terminal) are the front ends.
 - `App` never reads the real time. Use `clock_.now()` / `clock_.wallTime()` so tests can control time.
 - New core behaviour gets a test in `tests/`. Use the fakes in `tests/fakes.h`
   and drive `App` through `keyDown` / `keyUp` / `tick` as a user would. Test
@@ -44,7 +48,7 @@ that broke it.
 
 Practical notes:
 - Run sabotage loops in a separate **Ninja** build dir
-  (`cmake -S . -B build-sabotage -G Ninja -DOAP_BUILD_SIM=OFF`). macOS ships
+  (`cmake -S . -B build-sabotage -G Ninja -DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`). macOS ships
   GNU Make 3.81, which compares timestamps to the whole second, so it can skip
   a rebuild after a quick edit and make a sabotage look "missed".
 - Run one test with `build-sabotage/oap-tests --gtest_filter=Suite.Name`.

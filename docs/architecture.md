@@ -1,6 +1,6 @@
 # Software Architecture
 
-> Status: describes the code as of v0.1 (macOS simulator). Last updated: 2026-10-21.
+> Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end). Last updated: 2026-10-24.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -11,7 +11,8 @@ The software is one C++20 program with three layers:
 ┌───────────────────────────────────────────────────────────────────────┐
 │ Front end (per target)                                                │
 │   app/sim/       desktop simulator: SDL2 window, Dear ImGui, keyboard │
-│   (later)        device: evdev buttons / power-MCU events, no screen  │
+│   app/headless/  device: evdev buttons, terminal keys, no screen      │
+│   app/frontend/  shared: scripted presses, terminal key decoding      │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Core  (app/core/, plain C++, no dependencies, library "oapcore")      │
 │   App ── menus, player screen, power states, settings                 │
@@ -28,13 +29,13 @@ The software is one C++20 program with three layers:
 │   Tts    : Speech        eSpeak NG    → speech stream                 │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Platform  (app/platform/, library "oapaudio")                         │
-│   AudioOutput            CoreAudio (macOS) · PulseAudio (Linux, TODO) │
+│   AudioOutput            CoreAudio · PulseAudio · ALSA · null         │
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
-Only `app/platform/` and `app/sim/` know which OS they run on. Porting to the
-device means writing a new `AudioOutput` backend and a new front end that feeds
-button presses into `App`. The core stays the same.
+Only `app/platform/`, `app/sim/` and `app/headless/` know which OS they run on.
+The two front ends wire the same core, media and audio code together; they differ
+only in where button presses come from and whether there is a window.
 
 `App` has no audio code. It only sees the interfaces in `services.h`, and the
 front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`,
@@ -44,7 +45,7 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 
 | Path | Contents |
 |------|----------|
-| `CMakeLists.txt` | Builds `oapcore`, `oapmedia`, `oapaudio`, `imgui` and `oap-sim` (`OAP_BUILD_SIM`), plus `oap-tests` (`OAP_BUILD_TESTS`). ImGui and GoogleTest are fetched at configure time. |
+| `CMakeLists.txt` | Builds `oapcore`, `oapfrontend`, `oapmedia`, `oapaudio` (backends from `OAP_AUDIO_BACKENDS`), `imgui` and `oap-sim` (`OAP_BUILD_SIM`), `oap-headless` (`OAP_BUILD_HEADLESS`, Linux), plus `oap-tests` (`OAP_BUILD_TESTS`). ImGui and GoogleTest are fetched at configure time. |
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
@@ -57,9 +58,17 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 | `app/core/library.{h,cpp}` | `Book`, `scanLibrary()`. |
 | `app/core/settings.{h,cpp}` | `Settings`: persistent key/value store. |
 | `app/core/text.{h,cpp}` | Text for speech, such as `spokenDuration()`. |
-| `app/platform/audio_output.h` | `AudioOutput` interface plus a `create()` factory. |
+| `app/platform/audio_output.{h,cpp}` | `AudioOutput` interface and `open(name)`, which picks a built-in backend at run time (`--audio`). |
+| `app/platform/audio_thread.h` | Base for blocking-write backends: a thread renders 10 ms blocks and writes them. |
 | `app/platform/audio_coreaudio.cpp` | macOS backend (AudioUnit default output). |
-| `app/sim/main.cpp` | Simulator: window, key mapping, visualisation, script runner. |
+| `app/platform/audio_pulse.cpp` | PulseAudio simple API (also PipeWire via pipewire-pulse), about 50 ms buffer. |
+| `app/platform/audio_alsa.cpp` | ALSA PCM (`default` or `alsa:DEVICE`), 50 ms latency. |
+| `app/platform/audio_null.cpp` | No device: consumes audio in real time. |
+| `app/frontend/presses.{h,cpp}` | `PressSequencer` (timed presses), `parseScript()`, `deepOf()`. |
+| `app/frontend/terminal_keys.{h,cpp}` | `TerminalKeyDecoder`: terminal bytes → presses. |
+| `app/sim/main.cpp` | Simulator: window, key mapping, visualisation. |
+| `app/headless/main.cpp` | Headless front end: poll loop, terminal raw mode, signals. |
+| `app/headless/evdev_input.{h,cpp}` | `EvdevInput`: `/dev/input` devices → `keyDown`/`keyUp`/`setHold`, with hot-plug rescans. |
 | `tests/` | GoogleTest unit tests for the core; `fakes.h` has the test doubles. |
 | `tools/make_sample_library.sh` | Builds a spoken test library with espeak-ng and ffmpeg. |
 
@@ -67,10 +76,10 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 
 | Thread | Owner | Does |
 |--------|-------|------|
-| **Main / UI** | front end | Input events, `App::tick()`, drawing (simulator). **All `App` calls happen here.** |
+| **Main / UI** | front end | Input events, `App::tick()`, drawing (simulator). **All `App` calls happen here.** The headless loop `poll()`s input with a 10 ms timeout. |
 | **Decoder** | `Player` | Reads, decodes and resamples into the content stream. Blocks while the stream is full. |
 | **TTS worker** | `Tts` | Runs `espeak_Synth()` synchronously and resamples into the speech stream. |
-| **Audio callback** | `AudioOutput` | Calls `Mixer::render()` to pull PCM for the device. |
+| **Audio callback** | `AudioOutput` | Calls `Mixer::render()` to pull PCM for the device. CoreAudio calls back; Pulse, ALSA and null run their own writer thread. |
 
 Rules:
 - `App` is single-threaded. Front ends must not call it from other threads.
@@ -92,7 +101,7 @@ Rules:
                                             Mixer::render() ─► volume² ─► clamp
                                                                 │ (audio callback)
                                                                 ▼
-                                               AudioOutput (CoreAudio / Pulse)
+                                    AudioOutput (CoreAudio / Pulse / ALSA / null)
 ```
 
 - **Format everywhere:** 48 kHz, stereo, interleaved float32 (`Mixer::kSampleRate`).
@@ -310,20 +319,37 @@ during playback. That interval is a trade-off against flash wear on the device.
     **speech log**.
 - **Keyboard:** Space = Play/Pause, arrows = Back/Forward/Up/Down, Enter = OK,
   Esc/Backspace = Home, T = Talk, P = Power, H = hold switch. Holding a key gives a long press.
-- **Arguments:** `oap-sim [--config FILE] [--music DIR] [--script STEPS] [LIBRARY_DIR]`.
+- **Arguments:** `oap-sim [--config FILE] [--music DIR] [--audio NAME] [--script STEPS] [LIBRARY_DIR]`.
+  `--audio` is `auto` (default), `coreaudio`, `pulse`, `alsa[:DEVICE]` or `null`, among those built in.
   `tools/make_sample_library.sh [LIBRARY_DIR] [MUSIC_DIR]` makes a spoken sample library and some tone "music".
 - **Script mode:** `--script "ok down ok wait:3000 right:long play:long quit"`
   presses buttons automatically, for repeatable walkthroughs and future UI tests.
   Steps: `play left right up down ok home talk power`, with `:long` for a long
   press, plus `wait:<ms>` and `quit`.
 
-## 11. Porting to the Linux device
+## 11. Headless front end (`app/headless/`) and the Linux device
+
+- **Arguments:** `oap-headless [--config FILE] [--music DIR] [--audio NAME] [--input LIST]
+  [--evdev-device PATH] [--script STEPS] [LIBRARY_DIR]`. Settings default to
+  `~/.config/oap/settings.tsv`.
+- **Inputs** (`--input evdev,terminal,none`; default `terminal` on a tty, else `evdev`):
+  - `EvdevInput` opens every `/dev/input/event*` with a mapped key (or just `--evdev-device`),
+    reads `input_event`s non-blocking, ignores autorepeat, and rescans every 3 s for hot-plugged
+    devices. Shift+Left/Right on a keyboard presses the deep stage, as in the simulator.
+    `SW_MUTE_DEVICE` is the hold switch; its state is read at startup.
+  - The terminal is put in non-canonical, no-echo mode. Bytes go through `TerminalKeyDecoder`
+    and the presses are played by a `PressSequencer` (80 ms short, 1600 ms long), since a
+    terminal sends no releases. Alt / `l` prefix = long, Shift / `d` prefix = deep.
+  - `--script` uses a second `PressSequencer`, shared with the simulator.
+- **Main loop:** `poll()` stdin and the evdev fds for up to 10 ms, feed input, `tick()`, exit on
+  `quitRequested()` once speech finished, or on SIGINT/SIGTERM/SIGHUP. Exit always calls
+  `App::shutdown()`, so the position is saved when systemd stops the service.
+
+Still to do for the device:
 
 | Piece | Work needed |
 |-------|-------------|
-| `AudioOutput` | Add `audio_pulse.cpp` (libpulse; also works on PipeWire through pipewire-pulse). Possibly later an ALSA backend for the fastest boot. Choose the backend in CMake. |
-| Input | A device front end reading **evdev** (`gpio-keys`) or power-MCU events and calling `keyDown`/`keyUp`/`setHold`. No ImGui. |
-| Main loop | Same shape as the simulator: poll input, call `tick()` about every 10 ms, exit on `quitRequested()`. |
+| Input | Key map from `hal.toml` instead of the built-in table; MCU serial events. |
 | Power | Replace simulated sleep with real suspend (`/sys/power/state` or a request to the MCU). |
 | Status | Battery from the fuel gauge (sysfs `power_supply`), Wi-Fi from iwd. See the HAL plan in [hal.md](hal.md). |
 | Paths | Library under `/data/library`, settings under `/data/config`. |
@@ -336,8 +362,8 @@ Nothing in `app/core/` uses macOS APIs.
 ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 ```
 
-- `oap-tests` links only `oapcore`, so it builds without FFmpeg, eSpeak NG or SDL2
-  (`cmake -DOAP_BUILD_SIM=OFF`).
+- `oap-tests` links only `oapcore` and `oapfrontend`, so it builds without FFmpeg, eSpeak NG,
+  SDL2 or audio libraries (`cmake -DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`).
 - `tests/fakes.h` provides `FakeSpeech` (records what was said), `FakePlayer`
   (position, end of file and chapters set by the test), `FakeSounds`, `FakeVolume`
   and `FakeClock` (time only moves when the test advances it).
@@ -345,6 +371,7 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   on a temporary library folder, and checks what is spoken, which file plays and
   what is saved. Long presses, sleep timers and auto sleep are tested by advancing
   the fake clock.
+- `test_terminal_keys.cpp` tests the headless terminal key decoding.
 - The other files test `GestureDetector`, `AudioStream`, `Mixer`/`Earcons`,
   `Settings`, `scanLibrary` and `spokenDuration` directly.
 - Every test has been checked with a sabotage: break the code it guards and

@@ -5,6 +5,7 @@
 #include "core/earcons.h"
 #include "core/mixer.h"
 #include "core/text.h"
+#include "frontend/presses.h"
 #include "media/player.h"
 #include "media/tts.h"
 #include "platform/audio_output.h"
@@ -18,7 +19,6 @@
 #include <cstdlib>
 #include <optional>
 #include <set>
-#include <sstream>
 
 using namespace oap;
 
@@ -44,13 +44,6 @@ const KeyBinding kKeys[] = {
     {SDLK_p, Button::Power, "P"},
 };
 
-// Shift+Left / Shift+Right press a two-stage key all the way: first stage, then deep stage.
-std::optional<Button> deepOf(Button b) {
-    if (b == Button::Back) return Button::BackDeep;
-    if (b == Button::Forward) return Button::ForwardDeep;
-    return std::nullopt;
-}
-
 std::optional<Button> mapKey(SDL_Keycode key) {
     for (const auto& k : kKeys)
         if (k.key == key) return k.button;
@@ -72,92 +65,12 @@ std::string clock(double seconds) {
     return buf;
 }
 
-// --script "down ok wait:3000 right:long right:deep quit" presses buttons automatically,
-// for repeatable UI walkthroughs. Names: play left right up down ok home talk power.
-struct ScriptStep {
-    std::optional<Button> button;
-    bool longPress = false;
-    bool deep = false;
-    int waitMs = 0;
-    bool quit = false;
-};
-
-std::vector<ScriptStep> parseScript(const std::string& text) {
-    static const std::pair<const char*, Button> kNames[] = {
-        {"play", Button::PlayPause}, {"left", Button::Back}, {"right", Button::Forward},
-        {"up", Button::Up}, {"down", Button::Down}, {"ok", Button::Ok},
-        {"home", Button::Home}, {"talk", Button::Talk}, {"power", Button::Power}};
-    std::vector<ScriptStep> steps;
-    std::istringstream in(text);
-    std::string word;
-    while (in >> word) {
-        ScriptStep step;
-        std::string name = word, arg;
-        if (auto colon = word.find(':'); colon != std::string::npos) {
-            name = word.substr(0, colon);
-            arg = word.substr(colon + 1);
-        }
-        if (name == "wait") step.waitMs = std::atoi(arg.c_str());
-        else if (name == "quit") step.quit = true;
-        else {
-            for (const auto& [n, b] : kNames)
-                if (name == n) step.button = b;
-            if (!step.button) {
-                std::fprintf(stderr, "script: unknown step '%s'\n", word.c_str());
-                continue;
-            }
-            step.longPress = arg == "long";
-            step.deep = arg == "deep" && deepOf(*step.button);
-        }
-        steps.push_back(step);
-    }
-    return steps;
-}
-
-class ScriptRunner {
-public:
-    explicit ScriptRunner(std::vector<ScriptStep> steps) : steps_(std::move(steps)) {}
-
-    // Returns false once the script asks to quit.
-    bool tick(App& app, std::set<Button>& held) {
-        auto now = std::chrono::steady_clock::now();
-        if (now < next_ || index_ >= steps_.size()) return true;
-        const ScriptStep& step = steps_[index_];
-        if (step.quit) return false;
-        if (step.waitMs) {
-            next_ = now + std::chrono::milliseconds(step.waitMs);
-            ++index_;
-        } else if (!pressed_) {
-            std::printf("script: %s%s\n", buttonName(*step.button),
-                        step.longPress ? " (long)" : step.deep ? " (deep)" : "");
-            held.insert(*step.button);
-            app.keyDown(*step.button);
-            if (step.deep) app.keyDown(*deepOf(*step.button));
-            pressed_ = true;
-            next_ = now + std::chrono::milliseconds(step.longPress ? 1600 : 80);
-        } else {
-            held.erase(*step.button);
-            if (step.deep) app.keyUp(*deepOf(*step.button));
-            app.keyUp(*step.button);
-            pressed_ = false;
-            ++index_;
-            next_ = now + std::chrono::milliseconds(700);
-        }
-        return true;
-    }
-
-private:
-    std::vector<ScriptStep> steps_;
-    size_t index_ = 0;
-    bool pressed_ = false;
-    std::chrono::steady_clock::time_point next_{};
-};
-
 void printKeys() {
     std::printf(
         "Keys:  Space play/pause   Left/Right back/forward   Up/Down\n"
         "       Enter OK   Esc/Backspace Home   T talk   P power   H hold switch\n"
-        "       Shift+Left/Right deep press. Hold a key for a long press. Cmd+Q quits.\n\n");
+        "       Shift+Left/Right deep press. Hold a key for a long press.\n"
+        "       Close the window (Cmd+Q on macOS) to quit.\n\n");
 }
 
 // ---------------------------------------------------------------- drawing
@@ -334,14 +247,18 @@ int main(int argc, char** argv) {
     std::filesystem::path music = "music";
     const char* home = std::getenv("HOME");
     std::filesystem::path config = std::filesystem::path(home ? home : ".") / ".config/oap-sim/settings.tsv";
-    std::string script;
+    std::string script, audio = "auto";
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--script" && i + 1 < argc) script = argv[++i];
         else if (arg == "--config" && i + 1 < argc) config = argv[++i];
         else if (arg == "--music" && i + 1 < argc) music = argv[++i];
+        else if (arg == "--audio" && i + 1 < argc) audio = argv[++i];
         else if (arg == "--help" || arg == "-h") {
-            std::printf("usage: oap-sim [--config FILE] [--music DIR] [--script STEPS] [LIBRARY_DIR]\n");
+            std::string names;
+            for (const auto& name : AudioOutput::backends()) names += (names.empty() ? "" : "|") + name;
+            std::printf("usage: oap-sim [--config FILE] [--music DIR] [--audio %s] [--script STEPS] [LIBRARY_DIR]\n",
+                        names.c_str());
             return 0;
         } else library = arg;
     }
@@ -350,8 +267,8 @@ int main(int argc, char** argv) {
     music = std::filesystem::absolute(music).lexically_normal();
 
     Mixer mixer;
-    auto output = AudioOutput::create();
-    if (!output->start(mixer)) return 1;
+    auto output = AudioOutput::open(audio, mixer);
+    if (!output) return 1;
     Tts tts(mixer);
     if (!tts.start("en")) return 1;
     Earcons earcons(mixer);
@@ -397,7 +314,8 @@ int main(int argc, char** argv) {
     // Debug aid: OAP_SIM_SNAPSHOT=file.bmp saves the last rendered frame on exit.
     const char* snapshot = std::getenv("OAP_SIM_SNAPSHOT");
     std::set<Button> held;
-    ScriptRunner scriptRunner(parseScript(script));
+    PressSequencer scriptPresses(std::chrono::milliseconds(700));
+    scriptPresses.push(parseScript(script));
     bool running = true;
     while (running) {
         SDL_Event e;
@@ -425,7 +343,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        if (!scriptRunner.tick(app, held)) running = false;
+        if (!scriptPresses.tick(app, &held)) running = false;
         app.tick();
         if (app.quitRequested() && !tts.speaking()) running = false;
 

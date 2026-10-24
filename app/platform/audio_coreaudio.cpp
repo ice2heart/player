@@ -68,6 +68,6 @@ private:
 
 } // namespace
 
-std::unique_ptr<AudioOutput> AudioOutput::create() { return std::make_unique<CoreAudioOutput>(); }
+std::unique_ptr<AudioOutput> makeCoreAudioOutput() { return std::make_unique<CoreAudioOutput>(); }
 
 } // namespace oap
