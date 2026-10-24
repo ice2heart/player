@@ -745,6 +745,8 @@ TEST_F(AppTest, PlayAllPlaysEveryTrackInOrder) {
     EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
     player.atEnd = true;
     app->tick();
+    EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
+    EXPECT_TRUE(player.playing());
     player.atEnd = true;
     app->tick();
     EXPECT_FALSE(player.playing());
@@ -815,6 +817,22 @@ TEST_F(AppTest, MusicDoesNotTakeOverTheBookToResume) {
     press(Button::PlayPause);
     EXPECT_EQ(settings.getString("pos:" + roadTrip().string()), "");
     EXPECT_EQ(settings.getString("last_book"), alpha().string());
+}
+
+TEST_F(AppTest, RestartAfterMusicResumesTheBook) {
+    playAlpha();
+    player.pos = 20;
+    hold(Button::Home);
+    open("Music");
+    open("Road Trip");
+    open("Sunrise");
+    hold(Button::Power);
+    open("Restart");
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_DOUBLE_EQ(player.pos, 20);
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(speech.last(), "Alpha, paused. Press play to continue.");
 }
 
 // ---------------------------------------------------------------- hold switch and power
