@@ -2,3 +2,4 @@ build*/
 library/
 .DS_Store
 music/
+.env
