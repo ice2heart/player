@@ -59,7 +59,7 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 | `app/core/settings.{h,cpp}` | `Settings`: persistent key/value store. |
 | `app/core/text.{h,cpp}` | Text for speech, such as `spokenDuration()`. |
 | `app/platform/audio_output.{h,cpp}` | `AudioOutput` interface and `open(name)`, which picks a built-in backend at run time (`--audio`). |
-| `app/platform/audio_thread.h` | Base for blocking-write backends: a thread renders 10 ms blocks and writes them. |
+| `app/platform/audio_thread.h` | Base for blocking-write backends: a thread renders 10 ms blocks and writes them. When a write fails it closes the device, keeps discarding the mix in real time (so speech and playback still finish) and reopens the device with a growing delay (250 ms up to 4 s). |
 | `app/platform/audio_coreaudio.cpp` | macOS backend (AudioUnit default output). |
 | `app/platform/audio_pulse.cpp` | PulseAudio simple API (also PipeWire via pipewire-pulse), about 50 ms buffer. |
 | `app/platform/audio_alsa.cpp` | ALSA PCM (`default` or `alsa:DEVICE`), 50 ms latency. |
@@ -359,7 +359,7 @@ during playback. That interval is a trade-off against flash wear on the device.
     switching to `decode(bytes, now)` plus `poll(now)` every loop keeps sequences split over slow SSH.
   - `--script` uses a second `PressSequencer`, shared with the simulator.
 - **Main loop:** `poll()` stdin and the evdev fds for up to 10 ms, feed input, `tick()`, exit on
-  `quitRequested()` once speech finished, or on SIGINT/SIGTERM/SIGHUP. Exit always calls
+  `quitRequested()` once speech finished (at most 10 s later, in case the audio output hangs), or on SIGINT/SIGTERM/SIGHUP. Exit always calls
   `App::shutdown()`, so the position is saved when systemd stops the service.
 
 Still to do for the device:
@@ -379,8 +379,9 @@ Nothing in `app/core/` uses macOS APIs.
 ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 ```
 
-- `oap-tests` links only `oapcore` and `oapfrontend`, so it builds without FFmpeg, eSpeak NG,
-  SDL2 or audio libraries (`cmake -DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`).
+- `oap-tests` links only `oapcore`, `oapfrontend` and `oapaudio`, so it builds without FFmpeg, eSpeak NG,
+  SDL2 or audio libraries (`cmake -DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`). Without a front end
+  `oapaudio` holds only the null output; the device backends are added with the sim or headless build.
 - `tests/fakes.h` provides `FakeSpeech` (records what was said), `FakePlayer`
   (position, end of file and chapters set by the test), `FakeSounds`, `FakeVolume`
   and `FakeClock` (time only moves when the test advances it).
@@ -391,6 +392,8 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 - `test_terminal_keys.cpp` tests the headless terminal key decoding, including sequences split across reads.
 - `test_presses.cpp` tests `parseScript` and `PressSequencer` timing; `test_held_buttons.cpp` tests `HeldButtons`.
 - `test_gamepad.cpp` tests the gamepad map, including the order of light and deep stages.
+- `test_audio_output.cpp` tests `AudioOutput::open()` with the null backend, and
+  `ThreadedAudioOutput` with a fake device that is lost and comes back.
 - The other files test `GestureDetector`, `AudioStream`, `Mixer`/`Earcons`,
   `Settings`, `scanLibrary` and `spokenDuration` directly.
 - Every test has been checked with a sabotage: break the code it guards and

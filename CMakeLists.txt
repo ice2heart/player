@@ -51,6 +51,16 @@ add_library(oapfrontend STATIC
 target_link_libraries(oapfrontend PUBLIC oapcore)
 target_compile_options(oapfrontend PRIVATE -Wall -Wextra)
 
+# ---- platform audio output: null always, device backends (below) only with a front end.
+# No third-party dependencies of its own, so the tests can link it.
+find_package(Threads REQUIRED)
+add_library(oapaudio STATIC
+    app/platform/audio_output.cpp
+    app/platform/audio_null.cpp
+)
+target_link_libraries(oapaudio PUBLIC oapcore Threads::Threads)
+target_compile_options(oapaudio PRIVATE -Wall -Wextra)
+
 if(OAP_BUILD_SIM OR OAP_BUILD_HEADLESS)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libswresample libavutil)
@@ -64,15 +74,7 @@ if(OAP_BUILD_SIM OR OAP_BUILD_HEADLESS)
     target_link_libraries(oapmedia PUBLIC oapcore PkgConfig::FFMPEG PkgConfig::ESPEAK)
     target_compile_options(oapmedia PRIVATE -Wall -Wextra)
 
-    # ---- platform audio output: the chosen backends plus null
-    add_library(oapaudio STATIC
-        app/platform/audio_output.cpp
-        app/platform/audio_null.cpp
-    )
-    target_link_libraries(oapaudio PUBLIC oapcore)
-    target_compile_options(oapaudio PRIVATE -Wall -Wextra)
-    find_package(Threads REQUIRED)
-    target_link_libraries(oapaudio PUBLIC Threads::Threads)
+    # ---- device audio backends, in the order --audio auto tries them
     foreach(backend IN LISTS OAP_AUDIO_BACKENDS)
         if(backend STREQUAL "null")
             continue() # always built
@@ -134,7 +136,7 @@ if(OAP_BUILD_HEADLESS)
     target_compile_options(oap-headless PRIVATE -Wall -Wextra)
 endif()
 
-# ---- tests: core and frontend only, with fakes for speech, playback, sounds and time
+# ---- tests: core, frontend and the null audio output, with fakes for speech, playback, sounds and time
 if(OAP_BUILD_TESTS)
     FetchContent_Declare(googletest
         URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
@@ -147,6 +149,7 @@ if(OAP_BUILD_TESTS)
     enable_testing()
     add_executable(oap-tests
         tests/test_app.cpp
+        tests/test_audio_output.cpp
         tests/test_audio_stream.cpp
         tests/test_gamepad.cpp
         tests/test_gestures.cpp
@@ -158,7 +161,7 @@ if(OAP_BUILD_TESTS)
         tests/test_terminal_keys.cpp
         tests/test_text.cpp
     )
-    target_link_libraries(oap-tests PRIVATE oapcore oapfrontend GTest::gtest_main)
+    target_link_libraries(oap-tests PRIVATE oapcore oapfrontend oapaudio GTest::gtest_main)
     target_compile_options(oap-tests PRIVATE -Wall -Wextra)
     include(GoogleTest)
     # A sabotaged writer can block forever, hence the timeout. Under qemu

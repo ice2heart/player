@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -161,6 +162,8 @@ int main(int argc, char** argv) {
     TerminalKeyDecoder decoder;
 
     bool running = true;
+    // Power off waits for the goodbye to be heard, but not for ever if the audio output hangs.
+    std::optional<std::chrono::steady_clock::time_point> quitDeadline;
     while (running && !g_stop) {
         std::vector<pollfd> fds;
         if (useTerminal) fds.push_back({STDIN_FILENO, POLLIN, 0});
@@ -183,7 +186,11 @@ int main(int argc, char** argv) {
         if (!scriptPresses.tick(app)) running = false;
         terminalPresses.tick(app);
         app.tick();
-        if (app.quitRequested() && !tts.speaking()) running = false;
+        if (app.quitRequested()) {
+            auto now = std::chrono::steady_clock::now();
+            if (!quitDeadline) quitDeadline = now + std::chrono::seconds(10);
+            if (!tts.speaking() || now >= *quitDeadline) running = false;
+        }
         std::fflush(stdout);
     }
 
