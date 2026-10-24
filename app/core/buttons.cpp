@@ -26,19 +26,35 @@ std::optional<Button> shallowOf(Button deep) {
     if (deep == Button::ForwardDeep) return Button::Forward;
     return std::nullopt;
 }
+
+std::optional<Button> deepOf(Button shallow) {
+    if (shallow == Button::Back) return Button::BackDeep;
+    if (shallow == Button::Forward) return Button::ForwardDeep;
+    return std::nullopt;
+}
 } // namespace
 
 std::optional<ButtonEvent> GestureDetector::press(Button button, Clock::time_point now) {
     State& s = states_[static_cast<size_t>(button)];
     s.down = true;
     s.since = now;
+    s.longFired = false;
     auto shallow = shallowOf(button);
-    s.consumed = shallow.has_value(); // the deep stage never fires a short or long press of its own
-    if (!shallow) return std::nullopt;
+    if (!shallow) {
+        // A light press while its deep stage is down (stages out of order, or the
+        // first contact bouncing) belongs to the deep press that already fired.
+        auto deep = deepOf(button);
+        s.consumed = deep && states_[static_cast<size_t>(*deep)].down;
+        return std::nullopt;
+    }
+    s.consumed = true; // the deep stage never fires a short or long press of its own
     State& first = states_[static_cast<size_t>(*shallow)];
-    bool longFired = first.down && first.consumed; // pushed deeper only after the long press: one step is enough
+    if (!first.down) return ButtonEvent{*shallow, Gesture::Deep};
     first.consumed = true;
-    if (longFired) return std::nullopt;
+    if (first.longFired) { // pushed deeper only after the long press: one step is enough
+        first.longFired = false; // but pushing deeper again is a new step
+        return std::nullopt;
+    }
     return ButtonEvent{*shallow, Gesture::Deep};
 }
 
@@ -56,6 +72,7 @@ std::vector<ButtonEvent> GestureDetector::poll(Clock::time_point now) {
         State& s = states_[i];
         if (s.down && !s.consumed && now - s.since >= longPress_) {
             s.consumed = true;
+            s.longFired = true;
             events.push_back({static_cast<Button>(i), Gesture::Long});
         }
     }

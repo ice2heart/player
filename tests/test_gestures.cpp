@@ -67,7 +67,7 @@ TEST(GestureDetector, DeepStageFiresAtOnceAndSilencesTheFirstStage) {
     EXPECT_FALSE(g.release(Button::Back, t0 + 2s));
 }
 
-TEST(GestureDetector, FirstStageAloneIsAnOrdinaryPress) {
+TEST(GestureDetector, PressAfterADeepPressIsOrdinary) {
     GestureDetector g;
     g.press(Button::Forward, t0);
     g.press(Button::ForwardDeep, t0 + 50ms);
@@ -77,4 +77,54 @@ TEST(GestureDetector, FirstStageAloneIsAnOrdinaryPress) {
     auto ev = g.release(Button::Forward, t0 + 1100ms);
     ASSERT_TRUE(ev);
     EXPECT_EQ(ev->gesture, Gesture::Short);
+}
+
+TEST(GestureDetector, DeepStageBeforeTheLightStageFiresOneDeepPress) {
+    GestureDetector g;
+    auto deep = g.press(Button::ForwardDeep, t0);
+    ASSERT_TRUE(deep);
+    EXPECT_EQ(deep->button, Button::Forward);
+    EXPECT_EQ(deep->gesture, Gesture::Deep);
+    EXPECT_FALSE(g.press(Button::Forward, t0 + 10ms));
+    EXPECT_TRUE(g.poll(t0 + 2s).empty()) << "no long press of the light stage";
+    EXPECT_FALSE(g.release(Button::Forward, t0 + 2s)) << "no skip after the chapter jump";
+    EXPECT_FALSE(g.release(Button::ForwardDeep, t0 + 2s));
+}
+
+TEST(GestureDetector, LightStageBounceWhileDeepAddsNothing) {
+    GestureDetector g;
+    g.press(Button::Forward, t0);
+    ASSERT_TRUE(g.press(Button::ForwardDeep, t0 + 50ms));
+    EXPECT_FALSE(g.release(Button::Forward, t0 + 60ms));
+    EXPECT_FALSE(g.press(Button::Forward, t0 + 65ms));
+    EXPECT_TRUE(g.poll(t0 + 2s).empty()) << "no second chapter jump from a long press";
+    EXPECT_FALSE(g.release(Button::ForwardDeep, t0 + 2s));
+    EXPECT_FALSE(g.release(Button::Forward, t0 + 2s));
+}
+
+TEST(GestureDetector, EveryDeepPressDuringOneLightHoldIsHeard) {
+    GestureDetector g;
+    g.press(Button::Back, t0);
+    for (int i = 0; i < 3; ++i) {
+        auto deep = g.press(Button::BackDeep, t0 + 100ms * (2 * i + 1));
+        ASSERT_TRUE(deep) << "deep press " << i;
+        EXPECT_EQ(deep->button, Button::Back);
+        EXPECT_EQ(deep->gesture, Gesture::Deep);
+        EXPECT_TRUE(g.poll(t0 + 100ms * (2 * i + 2)).empty());
+        EXPECT_FALSE(g.release(Button::BackDeep, t0 + 100ms * (2 * i + 2)));
+    }
+    EXPECT_FALSE(g.release(Button::Back, t0 + 1s));
+}
+
+TEST(GestureDetector, DeepPressAfterALongPressIsOneStepThenEachIsHeard) {
+    GestureDetector g;
+    g.press(Button::Forward, t0);
+    ASSERT_EQ(g.poll(t0 + 600ms).size(), 1u);
+    EXPECT_FALSE(g.press(Button::ForwardDeep, t0 + 700ms)) << "the long press already took the step";
+    g.release(Button::ForwardDeep, t0 + 800ms);
+    auto deep = g.press(Button::ForwardDeep, t0 + 900ms);
+    ASSERT_TRUE(deep) << "pushing deeper again is a new step";
+    EXPECT_EQ(deep->gesture, Gesture::Deep);
+    EXPECT_FALSE(g.release(Button::ForwardDeep, t0 + 1s));
+    EXPECT_FALSE(g.release(Button::Forward, t0 + 1s));
 }

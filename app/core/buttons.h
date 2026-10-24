@@ -26,7 +26,8 @@ const char* buttonName(Button button);
 // Turns raw press/release into short, long and deep presses. A long press fires
 // while the button is still held, so the user gets feedback without letting go.
 // A deep press fires as soon as the second stage closes. The first stage's
-// release that follows is then ignored, as after a long press.
+// release that follows is then ignored, as after a long press, and so is a light
+// press while the deep stage is down (stages out of order, or contact bounce).
 class GestureDetector {
 public:
     using Clock = std::chrono::steady_clock;
@@ -40,6 +41,7 @@ private:
     struct State {
         bool down = false;
         bool consumed = false; // a long or deep press already fired: the release says nothing
+        bool longFired = false; // a long press fired during this hold
         Clock::time_point since;
     };
     std::array<State, kButtonCount> states_{};
