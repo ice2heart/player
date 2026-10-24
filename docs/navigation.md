@@ -56,6 +56,7 @@ What an item does depends on which parts of `MenuItem` are set:
 | **Status with list** | ✓ | – | `submenu` of choices, on the current one | Sleep timer (`15 minutes left`) |
 | **Action** | (info) | – | runs `action` | Status, Time and date |
 | **Program** | (info) | – | `action` pushes the program's screen | a book, a track, Now playing |
+| **List from the server** | (info) | – | `action` opens a list that loads from the server | Recently added, an album on the server |
 
 `choice()` in `app.cpp` builds a *setting with list* from a settings key and
 its options. In the list the current value is spoken as "current". Choosing a
@@ -104,7 +105,21 @@ ignored. On one-stage hardware, holding the key does the same as a deep press.
   in Power. Pressing OK twice by accident then does no harm.
 - **An action that finishes a task goes back by itself** (choosing a value or
   a sleep timer). An action that only reports something stays where it is.
-- **An empty list says why and what to do** ("Library is empty", "No music").
+- **An empty list says why and what to do** ("Library is empty", "No music",
+  "No server set up").
+
+## Lists from the server
+
+- **A list that loads from the network opens at once with one item, "Loading".**
+  When the data arrives the list is filled in, and if the user is still on it
+  the first item is spoken. Keys work meanwhile: Home leaves, and the late
+  answer is dropped.
+- **An error is a list too**: "Server not reachable" (or "Wrong user name or
+  password", "Server error"), then "Try again". OK on the error says what to do.
+- **Long lists are paged by the server, not by the user.** Albums A to Z loads
+  500 albums and fetches the next 500 in the background while the server has
+  more. Random albums is one page of 50. Holding Up or Down jumps to the first
+  or last item of what has loaded.
 
 ## Checklist for a new menu, item or program
 

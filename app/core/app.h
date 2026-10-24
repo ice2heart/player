@@ -9,6 +9,7 @@
 #include <array>
 #include <deque>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -88,6 +89,9 @@ private:
 
     // Screens and menus
     void openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index = 0);
+    void pushScreen(Screen screen);     // gives it an id
+    void closeScreens(size_t keep);     // all but the first `keep`, cancelling their requests
+    Screen* findScreen(std::uint64_t id); // nullptr once it has left the stack
     void activate();
     bool canAdjust() const; // the selected item has a value that Left / Right step
     void adjust(int direction);
@@ -104,6 +108,7 @@ private:
     std::vector<MenuItem> libraryMenu();
     std::vector<MenuItem> musicMenu();
     std::vector<MenuItem> albumMenu(const Book& album);
+    std::vector<MenuItem> streamingMenu();
     std::vector<MenuItem> sleepTimerMenu();
     size_t sleepTimerIndex() const;
     std::vector<MenuItem> settingsMenu();
@@ -115,6 +120,36 @@ private:
     MenuItem choice(const std::string& label, const std::string& key,
                     std::vector<std::pair<int, std::string>> options, int fallback,
                     std::function<void(int)> onChange = {});
+
+    // Lists loaded from the server (docs/streaming.md). A list opens at once with
+    // "Loading" and is filled when the answer comes. The answer finds its screen
+    // by id; leaving the screen cancels the request, so a late answer never runs.
+    using PageDone = std::function<void(MusicServer::Error, std::vector<MenuItem>, bool more)>;
+    using FetchPage = std::function<MusicServer::RequestId(int offset, PageDone done)>;
+    struct RemoteList {
+        FetchPage fetch;
+        int pageSize = 0;                  // > 0: fetch the next page while the server says there is more
+        std::string emptyLabel, emptyHelp; // what an empty list says, and what to do
+        size_t loaded = 0;                 // the first items of the screen; a status item may follow
+        MusicServer::RequestId request = 0; // the page being loaded, 0 when none
+        int offset = 0;                     // of that page, or of the page that failed
+        bool waiting = false;               // the user waits for it: a "Loading" item is shown
+        MusicServer::Error error = MusicServer::Error::None; // the last page failed
+    };
+    template <class T>
+    static FetchPage fetchPages(std::function<MusicServer::RequestId(int offset, MusicServer::Done<T>)> request,
+                                std::function<std::vector<MenuItem>(const std::vector<T>&)> toItems);
+    void openRemoteList(const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
+                        std::string emptyHelp);
+    void requestPage(std::uint64_t screenId, int offset, bool waiting);
+    void onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<MenuItem> items, bool more);
+    void showStatus(std::uint64_t screenId); // Loading, the error, or why it is empty, after the loaded items
+    void openAlbumList(const std::string& title, const std::string& listType, int pageSize, bool paged);
+    void openRemoteAlbum(const RemoteAlbum& album);
+    std::vector<MenuItem> albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist);
+    std::vector<MenuItem> trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
+                                     const std::string& playAll);
+    void checkServer(); // Server status
 
     // Playback
     bool openBook(const Book& book, bool autoplay); // false if it cannot be opened
@@ -161,6 +196,10 @@ private:
     GestureDetector gestures_;
 
     std::vector<Screen> screens_;
+    std::uint64_t lastScreenId_ = 0;
+    std::map<std::uint64_t, RemoteList> remoteLists_; // by Screen::id, while the screen is on the stack
+    MusicServer::RequestId ping_ = 0;                 // Server status, while it waits; cancelled when the user moves on
+    std::uint64_t pingScreen_ = 0;                    // the screen it was asked from
     bool sleeping_ = false;
     bool settingsChanged_ = false; // changed with Left / Right, not yet written to disk
     bool volumeChanged_ = false;   // changed in the player, written on exit

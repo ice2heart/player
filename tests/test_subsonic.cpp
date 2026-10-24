@@ -342,3 +342,18 @@ TEST(Subsonic, ConfigComesFromTheServerSettings) {
     EXPECT_EQ(server.subsonic->streamUrl("s1"), kBase + "stream" + kAuth + "&id=s1&format=opus&maxBitRate=128");
     EXPECT_FALSE(Server(Subsonic::configFrom(oap::Settings())).subsonic->configured());
 }
+
+TEST(Subsonic, IsMadeFromConfigOnlyForTypeSubsonicWithAUrl) {
+    oap::Settings settings;
+    settings.setString("server.url", "https://music.example");
+    EXPECT_NE(Subsonic::fromConfig(settings), nullptr) << "no type: subsonic";
+    settings.setString("server.type", "subsonic");
+    auto server = Subsonic::fromConfig(settings);
+    ASSERT_NE(server, nullptr);
+    EXPECT_TRUE(server->configured());
+    settings.setString("server.type", "Subsonic");
+    EXPECT_NE(Subsonic::fromConfig(settings), nullptr) << "a type is not case sensitive";
+    settings.setString("server.type", "audiobookshelf");
+    EXPECT_EQ(Subsonic::fromConfig(settings), nullptr) << "another type of server";
+    EXPECT_EQ(Subsonic::fromConfig(oap::Settings()), nullptr) << "no server section";
+}

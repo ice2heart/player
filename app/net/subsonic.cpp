@@ -14,6 +14,7 @@ namespace {
 
 constexpr const char* kApiVersion = "1.16.1";
 constexpr const char* kClientName = "oap";
+constexpr const char* kServerType = "subsonic"; // server.type in config.yaml
 constexpr int kSaltLength = 12; // hex digits
 constexpr int kHttpOkFirst = 200, kHttpOkLast = 299;
 
@@ -40,6 +41,13 @@ Subsonic::Config Subsonic::configFrom(const Settings& config) {
     c.format = config.getString("server.format");
     c.maxBitrate = config.getInt("server.max_bitrate", 0);
     return c;
+}
+
+std::unique_ptr<Subsonic> Subsonic::fromConfig(const Settings& config) {
+    std::string type = config.getString("server.type", kServerType);
+    std::transform(type.begin(), type.end(), type.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    if (type != kServerType || !serverConfigured(config)) return nullptr;
+    return std::make_unique<Subsonic>(configFrom(config));
 }
 
 std::string Subsonic::randomSalt() {

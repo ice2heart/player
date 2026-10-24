@@ -73,8 +73,8 @@ target_link_libraries(oapconfig PUBLIC oapcore PRIVATE ${OAP_YAML_CPP})
 target_compile_options(oapconfig PRIVATE -Wall -Wextra)
 
 # ---- net: HttpClient (libcurl, one worker thread) and Subsonic : MusicServer
-# (answers read with yaml-cpp). No front end uses it yet, so it is built only
-# when pkg-config finds libcurl.
+# (answers read with yaml-cpp). Built only when pkg-config finds libcurl; the
+# front ends then stream from the server in config.yaml (OAP_HAVE_NET).
 find_package(PkgConfig)
 if(PKG_CONFIG_FOUND)
     pkg_check_modules(LIBCURL IMPORTED_TARGET libcurl)
@@ -170,6 +170,10 @@ if(OAP_BUILD_SIM)
 
     add_executable(oap-sim app/sim/main.cpp)
     target_link_libraries(oap-sim PRIVATE oapfrontend oapconfig oapmedia oapaudio imgui)
+    if(TARGET oapnet)
+        target_link_libraries(oap-sim PRIVATE oapnet)
+        target_compile_definitions(oap-sim PRIVATE OAP_HAVE_NET)
+    endif()
     target_compile_options(oap-sim PRIVATE -Wall -Wextra)
 endif()
 
@@ -184,6 +188,10 @@ if(OAP_BUILD_HEADLESS)
         app/headless/evdev_input.cpp
     )
     target_link_libraries(oap-headless PRIVATE oapfrontend oapconfig oapmedia oapaudio)
+    if(TARGET oapnet)
+        target_link_libraries(oap-headless PRIVATE oapnet)
+        target_compile_definitions(oap-headless PRIVATE OAP_HAVE_NET)
+    endif()
     target_compile_options(oap-headless PRIVATE -Wall -Wextra)
 endif()
 

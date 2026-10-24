@@ -48,7 +48,8 @@ only in where button presses come from and whether there is a window.
 
 `App` has no audio code. It only sees the interfaces in `services.h`, and the
 front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`,
-`SystemClock`, and for now `NoMusicServer`). The unit tests wire in fakes instead (section 12).
+`SystemClock`, and `Subsonic` from `config.yaml` when `oapnet` is built, else `NoMusicServer`).
+The unit tests wire in fakes instead (section 12).
 
 ## 2. Source layout
 
@@ -58,7 +59,7 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
-| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `MusicServer` with its `RemoteTrack` / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&` and so far uses only `streamUrl()`, in `playRemote()`. |
+| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `MusicServer` with its `RemoteTrack` / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&`: the Streaming menu asks it for lists, `tick()` calls its `poll()`, and `playRemote()` uses `streamUrl()`. |
 | `app/net/http_client.{h,cpp}` | `Http`: asynchronous GET whose handler runs on the client's thread (tests use a fake). `HttpClient`: libcurl multi on one worker thread; 10 s connect timeout, 10 s without data or 60 s in all ends a request, answers over 16 MB fail; cancellable; the destructor aborts transfers and never waits on a socket. |
 | `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `streamUrl()`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
 | `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists and getPlaylist answers (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
@@ -83,7 +84,7 @@ front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`
 | `app/frontend/presses.{h,cpp}` | `PressSequencer` (timed presses), `parseScript()`, `deepOf()`. |
 | `app/frontend/terminal_keys.{h,cpp}` | `TerminalKeyDecoder`: terminal bytes → presses. Keeps an escape sequence split across reads; a lone Esc is Home only after `kEscTimeout` (200 ms) without more bytes, checked by `poll(now)`. |
 | `app/frontend/held_buttons.{h,cpp}` | `HeldButtons`: counts the inputs holding each button, so App gets `keyUp` only when the last one lets go. |
-| `app/frontend/no_music_server.{h,cpp}` | `NoMusicServer`: the `MusicServer` both front ends give `App` until they build a real one from `config.yaml`; every request finishes with `NotConfigured` on the next `poll()`. |
+| `app/frontend/no_music_server.{h,cpp}` | `NoMusicServer`: the `MusicServer` the front ends give `App` when `config.yaml` sets up no server they can use (no `server.url`, a `server.type` other than `subsonic`, or no `oapnet`); every request finishes with `NotConfigured` on the next `poll()`. |
 | `app/frontend/gamepad.{h,cpp}` | `GamepadMapper`: game controller buttons → device buttons, with the layout in `defaultGamepadLayout()`. Used by the simulator (SDL) and headless (evdev). |
 | `app/sim/main.cpp` | Simulator: window, key mapping, visualisation. |
 | `app/headless/main.cpp` | Headless front end: poll loop, terminal raw mode, signals. |
@@ -267,6 +268,15 @@ Home
 │   ├── Play all                   (every track, albums in order)
 │   ├── <loose track>              (OK plays it)
 │   └── <album> → <tracks>         (OK plays from that track to the end of the album)
+├── <server.name, default Server>  (Streaming: lists from the server, see below)
+│   ├── Recently added → <albums>  (one page of 500)
+│   ├── Albums A to Z → <albums>   (pages of 500, the next one fetched while the server has more)
+│   ├── Artists → <artist> → <albums>
+│   ├── Playlists → <playlist> → Play playlist · <tracks>
+│   ├── Random albums → <albums>   (one page of 50)
+│   └── Server status              ("Connected to Navidrome 0.64.2." or the error)
+│       <album> → Play album · <tracks>   (OK plays from that track to the end, via playRemote())
+│       No server: one item, "No server set up" (OK says how to add one)
 ├── Podcasts                       (placeholder)
 ├── Settings
 │   ├── Speech rate      100–460 wpm
@@ -303,6 +313,17 @@ Player menu (OK on player screen; music: Tracks / Album info / Go to first track
 
 Power menu (hold Power): Sleep · Power off · Restart · Cancel
 ```
+
+**Lists from the server** (`App::openRemoteList`) open at once with one item,
+"Loading", and the request goes out. Each screen has an `id`; the request's
+callback holds that id, never a `Screen` pointer, and finds its screen with
+`findScreen()`. Every way off the stack goes through `closeScreens()`, which
+cancels the screen's request, so a late answer never runs. When the answer
+comes (from `server.poll()` in `tick()`), the items are filled in; if the user
+is still on "Loading" and the screen is on top, the first item is spoken,
+else the list is filled silently. An error becomes the error and "Try again";
+an empty answer says why. Such a screen has no `build`: returning to it keeps
+what has loaded.
 
 ## 8. Library and books
 

@@ -12,6 +12,9 @@
 #include "frontend/presses.h"
 #include "media/player.h"
 #include "media/tts.h"
+#ifdef OAP_HAVE_NET
+#include "net/subsonic.h"
+#endif
 #include "platform/audio_output.h"
 
 #include <SDL.h>
@@ -22,12 +25,28 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 
 using namespace oap;
 
 namespace {
+
+// The server in config.yaml: a Subsonic one when oapnet is built in, else (or
+// for another server.type) one that is not configured, so the Streaming menu
+// says how to set one up.
+std::unique_ptr<MusicServer> makeMusicServer(const Settings& config) {
+    std::unique_ptr<MusicServer> server;
+#ifdef OAP_HAVE_NET
+    server = Subsonic::fromConfig(config);
+#endif
+    if (server) return server;
+    if (serverConfigured(config))
+        std::fprintf(stderr, "server: type '%s' is not supported (or this build has no network support); streaming is off\n",
+                     config.getString("server.type", "subsonic").c_str());
+    return std::make_unique<NoMusicServer>();
+}
 
 struct KeyBinding {
     SDL_Keycode key;
@@ -332,8 +351,8 @@ int main(int argc, char** argv) {
     Player player(mixer);
     SystemClock clock;
     SettingsFiles settings(config, state);
-    NoMusicServer server; // the Streaming menu and a real server come later (docs/streaming.md)
-    App app(tts, player, earcons, mixer, server, settings.config(), settings.state(), clock, library, music);
+    std::unique_ptr<MusicServer> server = makeMusicServer(settings.config());
+    App app(tts, player, earcons, mixer, *server, settings.config(), settings.state(), clock, library, music);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());

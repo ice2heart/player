@@ -6,6 +6,8 @@
 #include <cctype>
 #include <cstdio>
 #include <ctime>
+#include <iterator>
+#include <memory>
 #include <utility>
 
 namespace oap {
@@ -25,6 +27,19 @@ constexpr const char* kLongPress = "buttons.long_press_ms";
 constexpr const char* kMenuWrap = "menu.wrap";
 constexpr const char* kAutoSleep = "power.auto_sleep_min";
 constexpr const char* kLastBook = "last_book";
+constexpr const char* kServerName = "server.name"; // the Streaming entry on Home
+
+// Lists from the server (docs/streaming.md). Albums come in pages of the most
+// a Subsonic server sends at once; Random albums is one page, since each page
+// is a new random draw and would repeat albums.
+constexpr int kAlbumPageSize = 500;
+constexpr int kRandomAlbums = 50;
+constexpr const char* kNoServerHelp =
+    "To stream from your own music server, add a server section with its url, user and password to "
+    "config.yaml, then restart the player.";
+constexpr const char* kUnsupportedServerHelp =
+    "This player streams from Subsonic servers, such as Navidrome. Check the type in the server section of "
+    "config.yaml.";
 
 enum Verbosity { Beginner = 0, Normal = 1, Expert = 2 };
 
@@ -97,6 +112,40 @@ Screen menuScreen(std::string title, std::function<std::vector<MenuItem>()> buil
 
 Screen playerScreen() { return {Screen::Kind::Player, "Now playing", {}, {}}; }
 
+// "1 track", "3 tracks"
+std::string countValue(size_t n, const std::string& unit) { return std::to_string(n) + " " + unit + (n == 1 ? "" : "s"); }
+
+// What a failed request is called in a list, and what the user can do about it.
+std::string errorText(MusicServer::Error error) {
+    switch (error) {
+    case MusicServer::Error::NotConfigured: return "No server set up";
+    case MusicServer::Error::Unreachable: return "Server not reachable";
+    case MusicServer::Error::BadLogin: return "Wrong user name or password";
+    case MusicServer::Error::Server: return "Server error";
+    case MusicServer::Error::None: break;
+    }
+    return "";
+}
+
+std::string errorHelp(MusicServer::Error error) {
+    switch (error) {
+    case MusicServer::Error::NotConfigured: return kNoServerHelp;
+    case MusicServer::Error::Unreachable:
+        return "Check that Wi-Fi is on and the server is running, then choose Try again.";
+    case MusicServer::Error::BadLogin: return "Check the user and password in the server section of config.yaml.";
+    case MusicServer::Error::Server: return "The server could not answer. Choose Try again, or try later.";
+    case MusicServer::Error::None: break;
+    }
+    return "";
+}
+
+// "navidrome", "0.64.2" -> "Connected to Navidrome 0.64.2."
+std::string connectedText(const MusicServer::ServerInfo& info) {
+    std::string name = info.type.empty() ? "the server" : info.type;
+    if (!info.type.empty()) name[0] = char(std::toupper(static_cast<unsigned char>(name[0])));
+    return "Connected to " + name + (info.version.empty() ? "" : " " + info.version) + ".";
+}
+
 MenuItem action(std::string label, std::function<void()> fn) {
     MenuItem item;
     item.label = std::move(label);
@@ -132,7 +181,9 @@ void App::start() {
     std::string last = state_.getString(kLastBook);
     for (const Book& b : scanLibrary(libraryRoot_)) {
         if (!last.empty() && b.path.string() == last && openBook(b, false)) {
-            screens_ = {menuScreen("Home", [this] { return homeMenu(); }), playerScreen()};
+            closeScreens(0);
+            pushScreen(menuScreen("Home", [this] { return homeMenu(); }));
+            pushScreen(playerScreen());
             say(b.title + ", paused. Press play to continue.");
             return;
         }
@@ -188,6 +239,7 @@ App::Mode App::mode() const {
 void App::tick() {
     auto now = clock_.now();
     for (const ButtonEvent& ev : gestures_.poll(now)) onGesture(ev);
+    server_.poll(); // answers from the server fill their lists
 
     // The end of a file is always the end of a chapter, even when the next
     // chapter has the same number (a one-file book or a loose track starts again).
@@ -396,9 +448,34 @@ void App::whereAmI() {
 void App::openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index) {
     Screen screen = menuScreen(title, std::move(build));
     screen.index = std::min(index, screen.items.empty() ? 0 : screen.items.size() - 1);
-    screens_.push_back(std::move(screen));
+    pushScreen(std::move(screen));
     earcons_.play(Earcon::Open);
     say(title + ". " + itemSpeech(screens_.back()));
+}
+
+void App::pushScreen(Screen screen) {
+    if (ping_) server_.cancel(std::exchange(ping_, 0)); // the user moved on from Server status
+    screen.id = ++lastScreenId_;
+    screens_.push_back(std::move(screen));
+}
+
+// Every way off the stack comes here, so a screen's request never outlives it.
+void App::closeScreens(size_t keep) {
+    while (screens_.size() > keep) {
+        std::uint64_t id = screens_.back().id;
+        if (auto list = remoteLists_.find(id); list != remoteLists_.end()) {
+            if (list->second.request) server_.cancel(list->second.request);
+            remoteLists_.erase(list);
+        }
+        if (ping_ && pingScreen_ == id) server_.cancel(std::exchange(ping_, 0));
+        screens_.pop_back();
+    }
+}
+
+Screen* App::findScreen(std::uint64_t id) {
+    for (Screen& s : screens_)
+        if (s.id == id) return &s;
+    return nullptr;
 }
 
 void App::activate() {
@@ -445,9 +522,9 @@ void App::back() {
 
 void App::popScreen() {
     if (screens_.size() <= 1) return; // Home stays
-    screens_.pop_back();
+    closeScreens(screens_.size() - 1);
     Screen& screen = screens_.back();
-    if (screen.kind == Screen::Kind::Player) return;
+    if (screen.kind == Screen::Kind::Player || !screen.build) return; // a list from the server keeps what loaded
     // Rebuild, so a list shows what changed meanwhile (e.g. "Now playing" on Home), and stay on the same item.
     std::string label = screen.items.empty() ? "" : screen.items[screen.index].label;
     screen.items = screen.build();
@@ -465,7 +542,7 @@ void App::popScreen() {
 }
 
 void App::goHome() {
-    screens_.clear();
+    closeScreens(0);
     openMenu("Home", [this] { return homeMenu(); });
 }
 
@@ -478,10 +555,10 @@ void App::enterPlayer() {
     auto player = std::find_if(screens_.begin(), screens_.end(),
                                [](const Screen& s) { return s.kind == Screen::Kind::Player; });
     if (player != screens_.end()) {
-        screens_.erase(player + 1, screens_.end());
+        closeScreens(size_t(player - screens_.begin()) + 1);
         earcons_.play(Earcon::Close);
     } else {
-        screens_.push_back(playerScreen());
+        pushScreen(playerScreen());
         earcons_.play(Earcon::Open);
     }
     say(nowPlayingSpeech());
@@ -495,10 +572,11 @@ void App::openPowerMenu() {
         openMenu("Power", [this] { return powerMenu(); });
         return;
     }
-    screens_.erase(power + 1, screens_.end());
-    power->index = 0;
+    closeScreens(size_t(power - screens_.begin()) + 1);
+    Screen& menu = screens_.back();
+    menu.index = 0;
     earcons_.play(Earcon::Close);
-    say(power->title + ". " + itemSpeech(*power));
+    say(menu.title + ". " + itemSpeech(menu));
 }
 
 void App::saveChangedSettings() {
@@ -593,6 +671,8 @@ std::vector<MenuItem> App::homeMenu() {
     }
     items.push_back(submenu("Library", [this] { return libraryMenu(); }));
     items.push_back(submenu("Music", [this] { return musicMenu(); }));
+    std::string server = config_.getString(kServerName);
+    items.push_back(submenu(server.empty() ? "Server" : server, [this] { return streamingMenu(); }));
     items.push_back(submenu("Podcasts", [this] {
         return std::vector<MenuItem>{action("No podcasts yet", [this] { say("Podcast support is coming later."); })};
     }));
@@ -630,7 +710,7 @@ std::vector<MenuItem> App::musicMenu() {
     if (all.files.empty())
         return {action("No music", [this] { say("Copy music into " + musicRoot_.string() + ". One folder per album."); })};
 
-    auto tracks = [](size_t n) { return [n] { return std::to_string(n) + (n == 1 ? " track" : " tracks"); }; };
+    auto tracks = [](size_t n) { return [n] { return countValue(n, "track"); }; };
     std::vector<MenuItem> items;
     MenuItem playAll = action("Play all", [this, all] {
         if (playMusic(all, 0)) enterPlayer();
@@ -659,6 +739,247 @@ std::vector<MenuItem> App::albumMenu(const Book& album) {
         }));
     }
     return items;
+}
+
+// ---------------------------------------------------------------- streaming
+
+std::vector<MenuItem> App::streamingMenu() {
+    if (!server_.configured()) {
+        if (serverConfigured(config_)) // set up, but not as a server this player can use
+            return {action("Server type not supported", [this] { say(kUnsupportedServerHelp); })};
+        return {action("No server set up", [this] { say(kNoServerHelp); })};
+    }
+    std::vector<MenuItem> items;
+    items.push_back(action("Recently added", [this] {
+        openAlbumList("Recently added", "newest", kAlbumPageSize, false);
+    }));
+    items.push_back(action("Albums A to Z", [this] {
+        openAlbumList("Albums A to Z", "alphabeticalByName", kAlbumPageSize, true);
+    }));
+    items.push_back(action("Artists", [this] {
+        auto toItems = [this](const std::vector<RemoteArtist>& artists) {
+            std::vector<MenuItem> out;
+            for (const RemoteArtist& a : artists) {
+                MenuItem item = action(a.name, [this, a] {
+                    openRemoteList(a.name,
+                                   fetchPages<RemoteAlbum>(
+                                       [this, id = a.id](int, MusicServer::Done<RemoteAlbum> done) {
+                                           return server_.artistAlbums(id, std::move(done));
+                                       },
+                                       [this](const std::vector<RemoteAlbum>& albums) { return albumItems(albums, false); }),
+                                   0, "No albums", "The server has no albums by " + a.name + ".");
+                });
+                if (a.albumCount > 0) item.value = [n = size_t(a.albumCount)] { return countValue(n, "album"); };
+                out.push_back(item);
+            }
+            return out;
+        };
+        openRemoteList("Artists",
+                       fetchPages<RemoteArtist>(
+                           [this](int, MusicServer::Done<RemoteArtist> done) { return server_.artists(std::move(done)); },
+                           toItems),
+                       0, "No artists", "The server has no music yet. Add music to the server, then come back.");
+    }));
+    items.push_back(action("Playlists", [this] {
+        auto toItems = [this](const std::vector<RemotePlaylist>& playlists) {
+            std::vector<MenuItem> out;
+            for (const RemotePlaylist& p : playlists) {
+                MenuItem item = action(p.name, [this, p] {
+                    openRemoteList(p.name,
+                                   fetchPages<RemoteTrack>(
+                                       [this, id = p.id](int, MusicServer::Done<RemoteTrack> done) {
+                                           return server_.playlistTracks(id, std::move(done));
+                                       },
+                                       [this, name = p.name](const std::vector<RemoteTrack>& tracks) {
+                                           return trackItems(name, tracks, "Play playlist");
+                                       }),
+                                   0, "No tracks", "This playlist is empty. Add tracks to it on the server.");
+                });
+                if (p.songCount > 0) item.value = [n = size_t(p.songCount)] { return countValue(n, "track"); };
+                out.push_back(item);
+            }
+            return out;
+        };
+        openRemoteList("Playlists",
+                       fetchPages<RemotePlaylist>(
+                           [this](int, MusicServer::Done<RemotePlaylist> done) { return server_.playlists(std::move(done)); },
+                           toItems),
+                       0, "No playlists", "Make a playlist on the server, then come back.");
+    }));
+    items.push_back(action("Random albums", [this] {
+        openAlbumList("Random albums", "random", kRandomAlbums, false);
+    }));
+    items.push_back(action("Server status", [this] { checkServer(); }));
+    return items;
+}
+
+template <class T>
+App::FetchPage App::fetchPages(std::function<MusicServer::RequestId(int offset, MusicServer::Done<T>)> request,
+                               std::function<std::vector<MenuItem>(const std::vector<T>&)> toItems) {
+    return [request, toItems](int offset, PageDone done) {
+        return request(offset, [toItems, done](MusicServer::Error error, std::vector<T> list, bool more) {
+            done(error, error == MusicServer::Error::None ? toItems(list) : std::vector<MenuItem>{}, more);
+        });
+    };
+}
+
+// Opens at once with "Loading"; onPage() fills it in. With a page size, the
+// following pages are fetched in the background while the server has more.
+void App::openRemoteList(const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
+                         std::string emptyHelp) {
+    pushScreen({Screen::Kind::Menu, title, {}, {}}); // no build: popScreen() keeps what has loaded
+    std::uint64_t id = screens_.back().id;
+    RemoteList& list = remoteLists_[id];
+    list.fetch = std::move(fetch);
+    list.pageSize = pageSize;
+    list.emptyLabel = std::move(emptyLabel);
+    list.emptyHelp = std::move(emptyHelp);
+    requestPage(id, 0, true);
+    showStatus(id);
+    earcons_.play(Earcon::Open);
+    say(title + ". " + itemSpeech(screens_.back()));
+}
+
+// The callback holds only the screen's id: by the time it runs, the stack may
+// have changed. Leaving the screen cancels the request (closeScreens()).
+void App::requestPage(std::uint64_t screenId, int offset, bool waiting) {
+    auto it = remoteLists_.find(screenId);
+    if (it == remoteLists_.end()) return;
+    RemoteList& list = it->second;
+    list.error = MusicServer::Error::None;
+    list.offset = offset;
+    list.waiting = waiting;
+    list.request = list.fetch(offset, [this, screenId](MusicServer::Error error, std::vector<MenuItem> items, bool more) {
+        onPage(screenId, error, std::move(items), more);
+    });
+}
+
+void App::onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<MenuItem> items, bool more) {
+    auto it = remoteLists_.find(screenId);
+    Screen* screen = findScreen(screenId);
+    if (it == remoteLists_.end() || !screen) return; // its screen is gone (and the request was cancelled)
+    RemoteList& list = it->second;
+    list.request = 0;
+    size_t first = list.loaded;
+    // The user is on "Loading" (not on an item that has loaded): move them to what came.
+    bool onLoading = list.waiting && screen->index >= first;
+    list.waiting = false;
+    if (error != MusicServer::Error::None) {
+        list.error = error;
+    } else {
+        size_t count = items.size();
+        screen->items.insert(screen->items.begin() + std::ptrdiff_t(list.loaded), std::make_move_iterator(items.begin()),
+                             std::make_move_iterator(items.end()));
+        list.loaded += count;
+        // The next page starts after what came, whatever size the server sends.
+        if (list.pageSize > 0 && more && count > 0) requestPage(screenId, list.offset + int(count), false);
+    }
+    showStatus(screenId);
+    if (onLoading) screen->index = std::min(first, screen->items.size() - 1);
+    // Filled silently when the user has moved on to another screen, or sleeps.
+    if (!onLoading || &screens_.back() != screen || sleeping_) return;
+    tts_.stop();
+    if (error != MusicServer::Error::None) earcons_.play(Earcon::Error);
+    say(itemSpeech(*screen));
+}
+
+// After what has loaded comes one of: the error and "Try again", "Loading", or
+// why the list is empty. So the list is never empty.
+void App::showStatus(std::uint64_t screenId) {
+    auto it = remoteLists_.find(screenId);
+    Screen* screen = findScreen(screenId);
+    if (it == remoteLists_.end() || !screen) return;
+    const RemoteList& list = it->second;
+    std::vector<MenuItem>& items = screen->items;
+    items.erase(items.begin() + std::ptrdiff_t(list.loaded), items.end()); // the old status
+    if (list.error != MusicServer::Error::None) {
+        MusicServer::Error error = list.error;
+        items.push_back(action(errorText(error), [this, error] { say(errorHelp(error)); }));
+        items.push_back(action("Try again", [this, screenId] {
+            auto again = remoteLists_.find(screenId);
+            Screen* screen = findScreen(screenId);
+            if (again == remoteLists_.end() || !screen) return;
+            requestPage(screenId, again->second.offset, true);
+            showStatus(screenId);
+            screen->index = screen->items.size() - 1; // on "Loading"
+            say(itemSpeech(*screen));
+        }));
+    } else if (list.waiting) {
+        items.push_back(action("Loading", [this] { say("Still loading."); }));
+    } else if (list.loaded == 0) {
+        items.push_back(action(list.emptyLabel, [this, help = list.emptyHelp] { say(help); }));
+    }
+    screen->index = std::min(screen->index, items.size() - 1);
+}
+
+void App::openAlbumList(const std::string& title, const std::string& listType, int pageSize, bool paged) {
+    openRemoteList(title,
+                   fetchPages<RemoteAlbum>(
+                       [this, listType, pageSize](int offset, MusicServer::Done<RemoteAlbum> done) {
+                           return server_.albums(listType, offset, pageSize, std::move(done));
+                       },
+                       [this](const std::vector<RemoteAlbum>& albums) { return albumItems(albums, true); }),
+                   paged ? pageSize : 0, "No albums", "The server has no music yet. Add music to the server, then come back.");
+}
+
+void App::openRemoteAlbum(const RemoteAlbum& album) {
+    openRemoteList(album.name,
+                   fetchPages<RemoteTrack>(
+                       [this, id = album.id](int, MusicServer::Done<RemoteTrack> done) {
+                           return server_.albumTracks(id, std::move(done));
+                       },
+                       [this, name = album.name](const std::vector<RemoteTrack>& tracks) {
+                           return trackItems(name, tracks, "Play album");
+                       }),
+                   0, "No tracks", "This album has no tracks on the server.");
+}
+
+// `withArtist`: lists of many artists say whose album it is; one artist's list says how long.
+std::vector<MenuItem> App::albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist) {
+    std::vector<MenuItem> items;
+    for (const RemoteAlbum& a : albums) {
+        MenuItem item = action(a.name, [this, a] { openRemoteAlbum(a); });
+        if (withArtist && !a.artist.empty()) item.value = [artist = a.artist] { return artist; };
+        else if (!withArtist && a.songCount > 0) item.value = [n = size_t(a.songCount)] { return countValue(n, "track"); };
+        items.push_back(item);
+    }
+    return items;
+}
+
+// "Play album" first, then the tracks: OK on one plays from it to the end, like Music.
+std::vector<MenuItem> App::trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
+                                      const std::string& playAll) {
+    if (tracks.empty()) return {};
+    auto list = std::make_shared<const std::vector<RemoteTrack>>(tracks); // one copy for all the items
+    std::vector<MenuItem> items;
+    MenuItem all = action(playAll, [this, title, list] { playRemote(title, *list, 0); });
+    all.value = [n = tracks.size()] { return countValue(n, "track"); };
+    items.push_back(all);
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        std::string label = tracks[i].title.empty() ? "Track " + std::to_string(i + 1) : tracks[i].title;
+        items.push_back(action(label, [this, title, list, i] { playRemote(title, *list, i); }));
+    }
+    return items;
+}
+
+// Says "Checking" now and the answer when it comes, if the user is still on
+// this screen. Leaving the screen cancels it.
+void App::checkServer() {
+    if (ping_) server_.cancel(std::exchange(ping_, 0));
+    std::uint64_t screenId = screens_.back().id;
+    pingScreen_ = screenId;
+    say("Checking the server.");
+    ping_ = server_.ping([this, screenId](MusicServer::Error error, MusicServer::ServerInfo info) {
+        ping_ = 0;
+        if (sleeping_ || screens_.empty() || screens_.back().id != screenId) return; // the user has moved on
+        tts_.stop();
+        if (error != MusicServer::Error::None) {
+            earcons_.play(Earcon::Error);
+            say(errorText(error) + ".");
+            return;
+        }
+        say(connectedText(info));
+    });
 }
 
 // The entry of sleepTimerMenu() that is set now.
@@ -1148,7 +1469,7 @@ void App::restart(bool saveFirst) {
     player_.close();
     book_.reset();
     music_ = false;
-    screens_.clear();
+    closeScreens(0);
     sleepDeadline_.reset();
     sleepAtChapterEnd_ = -1;
     keyDescriber_ = false;

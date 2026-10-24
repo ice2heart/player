@@ -10,8 +10,8 @@ namespace oap {
 
 // The MusicServer of a front end that has no server set up: configured() is
 // false, and every request finishes with NotConfigured from the next poll(),
-// like a real server with no config. Until the front ends build a Subsonic
-// from config.yaml, this is what they give App.
+// like a real server with no config. The front ends give it to App when
+// config.yaml sets up no server they can use (or oapnet is not built).
 class NoMusicServer : public MusicServer {
 public:
     bool configured() const override { return false; }

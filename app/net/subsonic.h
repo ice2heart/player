@@ -30,6 +30,10 @@ public:
     };
     // The server.* keys of config.yaml.
     static Config configFrom(const Settings& config);
+    // The server config.yaml sets up, if it is a Subsonic one: `server.type` is
+    // "subsonic" (in any case) or left out, and there is a `server.url`. Else nullptr, and the
+    // front end uses a server that is not configured.
+    static std::unique_ptr<Subsonic> fromConfig(const Settings& config);
 
     using SaltSource = std::function<std::string()>;
     static std::string randomSalt();

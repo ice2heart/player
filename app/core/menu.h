@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -26,8 +27,9 @@ struct Screen {
     Kind kind = Kind::Menu;
     std::string title;
     std::vector<MenuItem> items;                  // Menu only
-    std::function<std::vector<MenuItem>()> build; // Menu only: rebuilds items when the screen is returned to
+    std::function<std::vector<MenuItem>()> build; // Menu only: rebuilds items when returned to; none for a list from the server
     size_t index = 0;
+    std::uint64_t id = 0; // unique per App: how an answer from the server finds its screen
 };
 
 } // namespace oap
