@@ -16,7 +16,8 @@ Everything the user is "in" is a **screen** on one stack (`App::screens()`):
 Home is always at the bottom of the stack. OK pushes a screen, and Home pops
 one, back to wherever you came from. If you open a book from Library, Home
 takes you back to Library. There is only one player screen: opening it again
-returns to the one already on the stack.
+returns to the one already on the stack. The Power menu works the same way, and
+Sleep in it closes the menu first, so the device wakes where you were.
 
 ## The rules
 

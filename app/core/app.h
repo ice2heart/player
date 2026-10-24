@@ -80,8 +80,10 @@ private:
     bool canAdjust() const; // the selected item has a value that Left / Right step
     void adjust(int direction);
     void back();
+    void popScreen(); // back() without a sound or speech
     void goHome();
     void enterPlayer();
+    void openPowerMenu();
     void saveChangedSettings();
     std::vector<MenuItem> homeMenu();
     std::vector<MenuItem> libraryMenu();

@@ -231,7 +231,7 @@ void App::onButton(ButtonEvent ev) {
     switch (ev.button) {
     case Button::Power:
         if (ev.gesture == Gesture::Short) sleep("Going to sleep.");
-        else openMenu("Power", [this] { return powerMenu(); });
+        else openPowerMenu();
         return;
     case Button::Talk:
         earcons_.play(Earcon::Error);
@@ -432,13 +432,17 @@ void App::back() {
         if (!screens_.empty()) say(screens_.back().title + ". " + itemSpeech(screens_.back()));
         return;
     }
-    screens_.pop_back();
+    popScreen();
     earcons_.play(Earcon::Close);
+    const Screen& screen = screens_.back();
+    say(screen.kind == Screen::Kind::Player ? nowPlayingSpeech() : itemSpeech(screen));
+}
+
+void App::popScreen() {
+    if (screens_.size() <= 1) return; // Home stays
+    screens_.pop_back();
     Screen& screen = screens_.back();
-    if (screen.kind == Screen::Kind::Player) {
-        say(nowPlayingSpeech());
-        return;
-    }
+    if (screen.kind == Screen::Kind::Player) return;
     // Rebuild, so a list shows what changed meanwhile (e.g. "Now playing" on Home), and stay on the same item.
     std::string label = screen.items.empty() ? "" : screen.items[screen.index].label;
     screen.items = screen.build();
@@ -453,7 +457,6 @@ void App::back() {
         }
     }
     screen.index = index;
-    say(itemSpeech(screen));
 }
 
 void App::goHome() {
@@ -477,6 +480,20 @@ void App::enterPlayer() {
         earcons_.play(Earcon::Open);
     }
     say(nowPlayingSpeech());
+}
+
+// Like the player, there is only one Power menu: holding Power again returns to it, on Sleep.
+void App::openPowerMenu() {
+    auto power = std::find_if(screens_.begin(), screens_.end(),
+                              [](const Screen& s) { return s.kind == Screen::Kind::Menu && s.title == "Power"; });
+    if (power == screens_.end()) {
+        openMenu("Power", [this] { return powerMenu(); });
+        return;
+    }
+    screens_.erase(power + 1, screens_.end());
+    power->index = 0;
+    earcons_.play(Earcon::Close);
+    say(power->title + ". " + itemSpeech(*power));
 }
 
 void App::saveChangedSettings() {
@@ -707,7 +724,10 @@ std::vector<MenuItem> App::systemMenu() {
 
 std::vector<MenuItem> App::powerMenu() {
     return {
-        action("Sleep", [this] { sleep("Going to sleep."); }),
+        action("Sleep", [this] {
+            popScreen(); // wake up where you were, not in the Power menu
+            sleep("Going to sleep.");
+        }),
         action("Power off", [this] { powerOff(); }),
         action("Restart", [this] { restart(); }),
         action("Cancel", [this] { back(); }),

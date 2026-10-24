@@ -895,6 +895,28 @@ TEST_F(AppTest, NoAutoSleepWhilePlayingOrSpeaking) {
     EXPECT_EQ(app->mode(), App::Mode::Sleeping);
 }
 
+TEST_F(AppTest, HoldingPowerAgainReturnsToThePowerMenu) {
+    start();
+    hold(Button::Power);
+    press(Button::Down); // Power off
+    hold(Button::Power);
+    EXPECT_EQ(app->screens().size(), 2u) << "not a second Power menu on top";
+    EXPECT_EQ(level().title, "Power");
+    EXPECT_EQ(speech.last(), "Power. Sleep, 1 of 4");
+    press(Button::Home);
+    EXPECT_EQ(level().title, "Home");
+}
+
+TEST_F(AppTest, SleepFromThePowerMenuWakesWhereYouWere) {
+    playAlpha();
+    hold(Button::Power);
+    press(Button::Ok); // Sleep
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+    press(Button::Ok); // wake
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(speech.last(), "Alpha, paused. Storm.");
+}
+
 TEST_F(AppTest, PowerOffFromPowerMenu) {
     playAlpha();
     player.pos = 33;
