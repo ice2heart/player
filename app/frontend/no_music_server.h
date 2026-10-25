@@ -23,7 +23,7 @@ public:
     RequestId playlists(Done<RemotePlaylist> done) override;
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override;
     void cancel(RequestId id) override;
-    std::string streamUrl(const std::string&) const override { return {}; }
+    Stream stream(const std::string&, int) override { return {}; }
     void poll() override;
 
 private:

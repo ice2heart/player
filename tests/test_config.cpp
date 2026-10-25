@@ -50,6 +50,7 @@ TEST_F(ConfigTest, DottedKeysBecomeNestedYamlInAFixedOrder) {
                                  {"volume", "70"},
                                  {"speech.rate", "250"},
                                  {"skip.back", "10"},
+                                 {"streaming.bitrate", "128"},
                                  {"skip.forward", "30"}});
     EXPECT_EQ(text.rfind("# ", 0), 0u) << "starts with the header comment";
     EXPECT_NE(text.find("speech.rate, volume"), std::string::npos) << "the header names the keys";
@@ -60,6 +61,8 @@ TEST_F(ConfigTest, DottedKeysBecomeNestedYamlInAFixedOrder) {
                     "skip:\n"
                     "  back: 10\n"
                     "  forward: 30\n"
+                    "streaming:\n"
+                    "  bitrate: 128\n"
                     "server:\n"
                     "  url: \"https://music.example\"\n"
                     "zz:\n"
@@ -68,7 +71,7 @@ TEST_F(ConfigTest, DottedKeysBecomeNestedYamlInAFixedOrder) {
 
 TEST_F(ConfigTest, KeysSurviveARoundTrip) {
     SettingsMap values{{"speech.rate", "250"},     {"menu.wrap", "0"},           {"server.name", "Home: server #1"},
-                       {"server.user", "ice"},     {"server.max_bitrate", "0"},  {"server.format", "raw"},
+                       {"server.user", "ice"},     {"streaming.bitrate", "0"},   {"server.type", "subsonic"},
                        {"server.password", "p@ss \"word\"\n"}, {"servers.0.url", "a"}, {"servers.1.url", "b"},
                        {"servers.10.url", "k"},   {"note", "true"},             {"empty", ""},
                        {"negative", "-5"},         {"leading", "007"}};

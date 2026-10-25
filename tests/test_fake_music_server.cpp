@@ -187,7 +187,13 @@ TEST(FakeMusicServer, ReplyWithTheWrongItemTypeIsATestBug) {
     EXPECT_TRUE(server.reply(id, std::vector<RemoteTrack>(1)));
 }
 
-TEST(FakeMusicServer, StreamUrlNamesTheTrack) {
+TEST(FakeMusicServer, StreamUrlNamesTheTrackAndATranscode) {
     FakeMusicServer server;
-    EXPECT_EQ(server.streamUrl("tr-42"), "fake://stream/tr-42");
+    auto original = server.stream("tr-42", 0);
+    EXPECT_EQ(original.url, "fake://stream/tr-42");
+    EXPECT_FALSE(original.transcoded);
+    auto transcode = server.stream("tr-42", 128);
+    EXPECT_EQ(transcode.url, "fake://stream/tr-42?maxBitRate=128");
+    ASSERT_TRUE(transcode.transcoded);
+    EXPECT_EQ(transcode.transcoded->offsetUrl, "fake://stream/tr-42?maxBitRate=128&timeOffset=");
 }

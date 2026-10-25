@@ -8,7 +8,8 @@ using Error = MusicServer::Error;
 TEST(NoMusicServer, IsNotConfiguredAndHasNoStreamUrl) {
     NoMusicServer server;
     EXPECT_FALSE(server.configured());
-    EXPECT_EQ(server.streamUrl("t1"), "");
+    EXPECT_EQ(server.stream("t1", 0).url, "");
+    EXPECT_EQ(server.stream("t1", 128).url, "");
 }
 
 TEST(NoMusicServer, EveryRequestFinishesWithNotConfiguredOnTheNextPoll) {

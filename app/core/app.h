@@ -195,6 +195,11 @@ private:
     void onStreamFailed(); // a remote track broke off: stop, and open it there on Play
     void checkBuffering(Clock::TimePoint now); // tick(): the earcon and "Waiting for network" while a stream is dry
     void checkReadAhead(); // tick(): pre-opens the next remote track near the end of this one
+    int streamingBitrate() const; // Streaming quality: kbit/s, 0 for the original file
+    // The stream of remote track `file` at the Streaming quality set now: the
+    // pre-opened one if it is that track at that quality, else a new one.
+    MusicServer::Stream remoteStream(size_t file);
+    MusicServer::Stream newStream(size_t file); // from the server, with the length it lists
     void rememberPosition(); // in the state map only, written by saveOnExit()
     std::string playerStatus() const;
 
@@ -257,9 +262,16 @@ private:
         bool said = false;   // "Waiting for network" has been said
     };
     std::optional<Dropout> dry_;
-    // The track pre-opened (checkReadAhead()), empty if none. Only opening that
-    // track takes the pre-open, and that moves fileIndex_ on to it.
-    std::filesystem::path readAhead_;
+    // The track pre-opened (checkReadAhead()), if any. Only opening that track
+    // takes the pre-open, and that moves fileIndex_ on to it. The player takes
+    // a pre-open over only for the same URL, so opening that track at the same
+    // quality reuses this stream (each new one from the server has a new salt).
+    struct ReadAhead {
+        std::string trackId;
+        int bitrate = 0;
+        MusicServer::Stream stream;
+    };
+    std::optional<ReadAhead> readAhead_;
 
     bool hold_ = false;
     std::array<bool, kButtonCount> held_{};   // raw keys down now

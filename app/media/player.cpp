@@ -12,6 +12,7 @@ extern "C" {
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
@@ -46,6 +47,9 @@ int64_t steadyNanoseconds() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
+
+// A transcode starts at whole seconds (Subsonic's timeOffset).
+double wholeSecond(double at) { return std::floor(std::max(0.0, at)); }
 
 template <class Duration> int64_t microseconds(Duration d) {
     return std::chrono::duration_cast<std::chrono::microseconds>(d).count();
@@ -114,10 +118,13 @@ struct Player::Input {
     std::unique_ptr<ResamplerInput> swrIn;
     double duration = 0;
     std::vector<Chapter> chapters;
+    AVIOContext* io = nullptr; // opened by openInput() itself (`answered`), not by FFmpeg: freed after fmt
+    bool noAudio = false; // the server answered, with no audio in it (a transcode past its end)
     ~Input() {
         swr_free(&swr);
         avcodec_free_context(&dec);
         if (fmt) avformat_close_input(&fmt);
+        avio_closep(&io);
     }
 };
 
@@ -144,10 +151,12 @@ struct Player::Dropout {
     std::optional<std::chrono::steady_clock::time_point> since; // set while the connection is lost
     std::chrono::milliseconds delay = kStreamRetryFirstDelay;  // before the next retry
     int64_t bytes = 0; // how far the stream had come (AVIOContext::pos) when it was lost
+    std::optional<double> reopenedAt; // a transcode opened again by a retry, at this place
     void restart(const AVIOContext* pb) {
         since = std::chrono::steady_clock::now();
         delay = kStreamRetryFirstDelay;
         bytes = pb->pos;
+        reopenedAt.reset();
     }
 };
 
@@ -173,7 +182,8 @@ int Player::interrupted(void* opaque) {
 
 // Everything that reads from the file or the network before decoding starts. A
 // stream is given up after `timeout` in all.
-bool Player::openInput(const std::string& path, OpenJob& job, std::chrono::milliseconds timeout, Input& in) {
+bool Player::openInput(const std::string& path, OpenJob& job, std::chrono::milliseconds timeout, Input& in,
+                       bool* answered) {
     in.fmt = avformat_alloc_context();
     if (!in.fmt) return false;
     in.fmt->interrupt_callback = {&Player::interrupted, &job};
@@ -189,7 +199,16 @@ bool Player::openInput(const std::string& path, OpenJob& job, std::chrono::milli
         av_dict_set_int(&options, "reconnect_delay_max", kStreamReconnectDelayMax, 0);
         job.deadline = steadyNanoseconds() + std::chrono::nanoseconds(timeout).count();
     }
-    int err = avformat_open_input(&in.fmt, path.c_str(), nullptr, &options); // frees fmt on failure
+    int err = 0;
+    if (answered) { // the connection first, to tell an answer without audio from no answer
+        err = avio_open2(&in.io, path.c_str(), AVIO_FLAG_READ, &in.fmt->interrupt_callback, &options);
+        *answered = err >= 0;
+        if (*answered) {
+            in.fmt->pb = in.io;
+            in.fmt->flags |= AVFMT_FLAG_CUSTOM_IO;
+        }
+    }
+    if (err >= 0) err = avformat_open_input(&in.fmt, path.c_str(), nullptr, &options); // frees fmt on failure
     av_dict_free(&options);
     if (err >= 0) err = avformat_find_stream_info(in.fmt, nullptr);
     job.deadline = 0;
@@ -198,6 +217,9 @@ bool Player::openInput(const std::string& path, OpenJob& job, std::chrono::milli
     bool timedOut = job.timedOut;
     if (job.stop) return false; // dropped: nobody waits for the reason
     if (err < 0 || timedOut) {
+        // What the end of an answer looks like (FFmpeg reports the end of a chunked one as EIO).
+        in.noAudio = answered && *answered && !timedOut &&
+                     (err == AVERROR_INVALIDDATA || err == AVERROR_EOF || err == AVERROR(EIO));
         std::fprintf(stderr, "player: cannot open %s: %s\n", printable(path).c_str(),
                      timedOut ? "no answer in time" : errorText(err).c_str());
         return false;
@@ -206,6 +228,7 @@ bool Player::openInput(const std::string& path, OpenJob& job, std::chrono::milli
     const AVCodec* codec = nullptr;
     int index = av_find_best_stream(in.fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
     if (index < 0 || !codec) {
+        in.noAudio = answered && *answered;
         std::fprintf(stderr, "player: no audio stream in %s\n", printable(path).c_str());
         return false;
     }
@@ -265,36 +288,49 @@ void Player::openThread(std::shared_ptr<OpenJob> job, std::string path, std::chr
 
 void Player::start(Input& in, double startAt) {
     fmt_ = std::exchange(in.fmt, nullptr);
+    io_ = std::exchange(in.io, nullptr);
     dec_ = std::exchange(in.dec, nullptr);
     stream_ = in.stream;
     swr_ = std::exchange(in.swr, nullptr);
     swrIn_ = std::move(in.swrIn);
-    duration_ = in.duration;
+    // A transcode's own length is an estimate at best, and only of what is left.
+    duration_ = transcoded_ ? transcoded_->duration : in.duration;
     chapters_ = std::move(in.chapters);
 
     mixer_.content().flush();
     endPts_ = 0;
     skipUntil_ = 0;
     if (duration_ > 0) startAt = std::min(startAt, duration_);
-    if (startAt > 0) seekRequest_ = startAt;
+    if (transcoded_) { // opened at inputStart_ already: what comes before startAt is dropped
+        endPts_ = startAt;
+        skipUntil_ = startAt;
+    } else if (startAt > 0) {
+        seekRequest_ = startAt;
+    }
     eof_ = false;
     state_ = State::Open; // last: the UI thread reads the fields above once it sees this
 }
 
-bool Player::open(const std::string& path, double startAt) {
+bool Player::open(const std::string& path, double startAt, std::optional<Transcoded> transcoded) {
+    if (transcoded && transcoded->duration > 0) startAt = std::min(startAt, transcoded->duration);
+    // A preload is the stream from its start: a transcode opened later is another URL.
+    bool fromStart = !transcoded || transcoded->offsetUrl.empty() || wholeSecond(startAt) == 0;
     std::thread preloadThread;
-    auto preloaded = takePreload(path, preloadThread);
+    auto preloaded = fromStart ? takePreload(path, preloadThread) : nullptr;
     close();
     stop_ = false;
     isUrl_ = isUrl(path);
     failed_ = false;
+    path_ = path;
+    transcoded_ = std::move(transcoded);
+    inputStart_ = inputStartFor(startAt);
     if (preloaded && adopt(std::move(preloaded), std::move(preloadThread), startAt)) return true;
     job_ = std::make_shared<OpenJob>();
     if (isUrl_) {
         state_ = State::Opening;
         job_->owner = this; // before the thread starts: no lock needed
         job_->startAt = startAt;
-        thread_ = std::thread(&Player::openThread, job_, path, openTimeout_);
+        thread_ = std::thread(&Player::openThread, job_, urlFrom(inputStart_), openTimeout_);
         return true;
     }
     job_->handedOver = true; // a local file opens here: close() waits for its decoder thread
@@ -382,7 +418,8 @@ void Player::close() {
     swrIn_.reset();
     avcodec_free_context(&dec_);
     if (fmt_) avformat_close_input(&fmt_);
-    job_.reset(); // after fmt_, whose interrupt callback points to it
+    avio_closep(&io_);
+    job_.reset(); // after fmt_ and io_, whose interrupt callbacks point to it
     stream_ = nullptr;
     chapters_.clear();
     duration_ = 0;
@@ -432,13 +469,39 @@ bool Player::buffering() const {
     return isOpen() && isUrl_ && playing_ && !eof_ && mixer_.content().buffered() == 0;
 }
 
-bool Player::seekInput(double at) {
-    if (av_seek_frame(fmt_, -1, int64_t(at * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD) < 0) return false;
+double Player::inputStartFor(double at) const {
+    return transcoded_ && !transcoded_->offsetUrl.empty() ? wholeSecond(at) : 0;
+}
+
+std::string Player::urlFrom(double inputStart) const {
+    return inputStart > 0 ? transcoded_->offsetUrl + std::to_string(int64_t(inputStart)) : path_;
+}
+
+Player::Seek Player::reopenInput(double at) {
+    double from = inputStartFor(at);
+    Input in; // gets the old input, and frees it on return
+    job_->timedOut = false;
+    bool answered = false;
+    if (!openInput(urlFrom(from), *job_, openTimeout_, in, &answered)) return in.noAudio ? Seek::PastEnd : Seek::Failed;
+    std::swap(fmt_, in.fmt);
+    std::swap(io_, in.io);
+    std::swap(dec_, in.dec);
+    std::swap(swr_, in.swr);
+    std::swap(swrIn_, in.swrIn);
+    stream_ = in.stream;
+    inputStart_ = from;
+    skipUntil_ = at; // a whole second, or the start, is at or before `at`
+    return Seek::Done;
+}
+
+Player::Seek Player::seekInput(double at) {
+    if (transcoded_) return reopenInput(at); // no byte ranges to seek with
+    if (av_seek_frame(fmt_, -1, int64_t(at * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD) < 0) return Seek::Failed;
     avcodec_flush_buffers(dec_);
     swr_init(swr_);
     skipUntil_ = at; // a seek lands at or before `at`
     if (fmt_->pb) fmt_->pb->error = 0; // the seek got through: an earlier error is over
-    return true;
+    return Seek::Done;
 }
 
 bool Player::retryStream(Dropout& dropout) {
@@ -453,9 +516,21 @@ bool Player::retryStream(Dropout& dropout) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     // A seek to where the queued audio ends asks the server for the rest (an
-    // HTTP Range request); the queued audio plays on meanwhile.
-    seekInput(endPts_);
+    // HTTP Range request, or a transcode from there); the queued audio plays on meanwhile.
+    // A transcode opened again is a new connection: whatever it reads shows the network is back.
+    // PastEnd: the read error that comes next is the end, as after a reopen that brings nothing.
+    if (seekInput(endPts_) != Seek::Failed && transcoded_) {
+        dropout.bytes = -1;
+        dropout.reopenedAt = endPts_;
+    }
     return true;
+}
+
+bool Player::transcodeCutShort(const Dropout& dropout) const {
+    if (duration_ <= 0 || endPts_ >= duration_ - std::chrono::duration<double>(kTranscodeEndSlack).count())
+        return false;
+    // The server listed it as longer than it is: opened again there, it had nothing more.
+    return !(dropout.reopenedAt && endPts_ <= *dropout.reopenedAt);
 }
 
 void Player::decodeLoop() {
@@ -468,17 +543,18 @@ void Player::decodeLoop() {
     while (!stop_) {
         double target = seekRequest_;
         if (target >= 0) {
-            if (seekInput(target)) {
+            Seek result = seekInput(target);
+            if (result != Seek::Failed) {
                 epoch = mixer_.content().flush();
                 endPts_ = target;
-                eof_ = false;
+                eof_ = result == Seek::PastEnd; // a transcode the server has no more of: it has ended
                 failed_ = false;
                 readErrors = 0;
                 if (dropout.since) dropout.restart(fmt_->pb); // the user is there: give it the full time again
             } else {
                 // Keep the queued audio and position. FFmpeg drops its read buffers even when the
                 // seek fails, so the decoder starts afresh on whatever comes next.
-                std::fprintf(stderr, "player: cannot seek to %.1f s\n", target);
+                if (!stop_) std::fprintf(stderr, "player: cannot seek to %.1f s\n", target);
                 avcodec_flush_buffers(dec_);
             }
             // Cleared after endPts_ is set, so position() never shows the old one.
@@ -494,6 +570,7 @@ void Player::decodeLoop() {
         // A network error (FFmpeg's reconnect failed), or any error while that lasts.
         bool lost = err < 0 && isUrl_ && fmt_->pb &&
                     (dropout.since || (fmt_->pb->error < 0 && fmt_->pb->error != AVERROR_EOF));
+        if (transcoded_) lost = err < 0 && fmt_->pb && transcodeCutShort(dropout);
         if (err >= 0) {
             readErrors = 0;
             // FFmpeg reads ahead: packets from what it got before the loss do not show
@@ -544,8 +621,13 @@ void Player::decodeLoop() {
 
 bool Player::emit(AVFrame* frame, uint64_t epoch) {
     double t = endPts_;
-    if (frame->best_effort_timestamp != AV_NOPTS_VALUE)
+    if (frame->best_effort_timestamp != AV_NOPTS_VALUE) {
         t = double(frame->best_effort_timestamp) * av_q2d(stream_->time_base);
+        if (transcoded_) { // the input starts at inputStart_ of the track
+            if (stream_->start_time != AV_NOPTS_VALUE) t -= double(stream_->start_time) * av_q2d(stream_->time_base);
+            t += inputStart_;
+        }
+    }
 
     if (frame->sample_rate != swrIn_->sampleRate || frame->format != swrIn_->sampleFormat ||
         av_channel_layout_compare(&frame->ch_layout, &swrIn_->layout) != 0) {

@@ -17,6 +17,12 @@ constexpr const char* kClientName = "oap";
 constexpr const char* kServerType = "subsonic"; // server.type in config.yaml
 constexpr int kSaltLength = 12; // hex digits
 constexpr int kHttpOkFirst = 200, kHttpOkLast = 299;
+// The OpenSubsonic extension that lets stream() start a transcode later, and its parameter (seconds).
+constexpr const char* kTranscodeOffset = "transcodeOffset";
+constexpr const char* kTimeOffset = "timeOffset";
+// A server that answers getOpenSubsonicExtensions with an error this many times
+// has no extensions (it is not OpenSubsonic); fewer could be a passing error.
+constexpr int kExtensionErrorsForNo = 3;
 
 // RFC 3986: everything but the unreserved characters is %XX-encoded, so ids,
 // names and passwords with '&', '=', '/', spaces or UTF-8 survive.
@@ -38,8 +44,6 @@ Subsonic::Config Subsonic::configFrom(const Settings& config) {
     c.url = config.getString("server.url");
     c.user = config.getString("server.user");
     c.password = config.getString("server.password");
-    c.format = config.getString("server.format");
-    c.maxBitrate = config.getInt("server.max_bitrate", 0);
     return c;
 }
 
@@ -172,12 +176,37 @@ void Subsonic::cancel(RequestId id) {
     if (waiting_.erase(id)) http_->cancel(id);
 }
 
-std::string Subsonic::streamUrl(const std::string& trackId) const {
+MusicServer::Stream Subsonic::stream(const std::string& trackId, int maxBitRate) {
     if (!configured()) return {};
     Params params = {{"id", trackId}};
-    if (!config_.format.empty() && config_.format != "raw") params.emplace_back("format", config_.format);
-    if (config_.maxBitrate > 0) params.emplace_back("maxBitRate", std::to_string(config_.maxBitrate));
-    return url("stream", params);
+    if (maxBitRate <= 0) return {url("stream", params), std::nullopt}; // the original file: it seeks with Range
+    if (transcodeOffset_ == Known::NotYet) askExtensions();
+    params.emplace_back("format", kTranscodeFormat);
+    params.emplace_back("maxBitRate", std::to_string(maxBitRate));
+    Stream stream{url("stream", params), Transcoded{}};
+    if (transcodeOffset_ == Known::Yes) stream.transcoded->offsetUrl = stream.url + "&" + kTimeOffset + "=";
+    return stream;
+}
+
+void Subsonic::askExtensions() {
+    transcodeOffset_ = Known::Asking;
+    request(
+        "getOpenSubsonicExtensions", {},
+        [](const std::string& body) {
+            auto parsed = subsonic::parseExtensions(body);
+            return Reply{parsed.error, std::move(parsed.items), false};
+        },
+        [this](Reply reply) {
+            auto* names = std::get_if<std::vector<std::string>>(&reply.data);
+            if (reply.error == Error::None) {
+                bool has = names && std::find(names->begin(), names->end(), kTranscodeOffset) != names->end();
+                transcodeOffset_ = has ? Known::Yes : Known::No;
+            } else if (reply.error != Error::Unreachable && ++extensionErrors_ >= kExtensionErrorsForNo) {
+                transcodeOffset_ = Known::No; // a server without OpenSubsonic, not a passing error
+            } else {
+                transcodeOffset_ = Known::NotYet; // ask again with the next transcode
+            }
+        });
 }
 
 void Subsonic::poll() {

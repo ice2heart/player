@@ -127,7 +127,7 @@ TEST(Subsonic, EachRequestHasAFreshSalt) {
     std::set<std::string> salts;
     for (int i = 0; i < 3; ++i) server.subsonic->ping([](Error, ServerInfo) {});
     std::vector<std::string> urls = {server.http->url(0), server.http->url(1), server.http->url(2),
-                                     server.subsonic->streamUrl("s1")};
+                                     server.subsonic->stream("s1", 0).url};
     for (const auto& url : urls) {
         std::string salt = param(url, "s");
         EXPECT_GE(salt.size(), 6u);
@@ -186,18 +186,85 @@ TEST(Subsonic, APageLargerThanTheServerAllowsIsCappedSoMoreStillWorks) {
     EXPECT_TRUE(result.more);
 }
 
-TEST(Subsonic, StreamUrlHasTheTokenAndTheChosenFormat) {
-    Server original; // no format: the file as it is
-    EXPECT_EQ(original.subsonic->streamUrl("s1"), kBase + "stream" + kAuth + "&id=s1");
-    auto c = config();
-    c.format = "raw"; // the same, said in config.yaml
-    Server raw(c);
-    EXPECT_EQ(raw.subsonic->streamUrl("s1"), kBase + "stream" + kAuth + "&id=s1");
+TEST(Subsonic, TheOriginalFileHasNeitherFormatNorMaxBitRate) {
+    Server server;
+    auto stream = server.subsonic->stream("s1", 0);
+    EXPECT_EQ(stream.url, kBase + "stream" + kAuth + "&id=s1");
+    EXPECT_FALSE(stream.transcoded) << "the original file seeks with Range";
+    EXPECT_TRUE(server.http->calls.empty()) << "nothing to ask the server for it";
+}
 
-    c.format = "mp3";
-    c.maxBitrate = 192;
-    Server transcoded(c);
-    EXPECT_EQ(transcoded.subsonic->streamUrl("s1"), kBase + "stream" + kAuth + "&id=s1&format=mp3&maxBitRate=192");
+TEST(Subsonic, ATranscodeCarriesFormatAndMaxBitRate) {
+    Server server;
+    auto stream = server.subsonic->stream("s1", 192);
+    EXPECT_EQ(stream.url, kBase + "stream" + kAuth + "&id=s1&format=mp3&maxBitRate=192");
+    ASSERT_TRUE(stream.transcoded);
+    EXPECT_EQ(stream.transcoded->offsetUrl, "") << "not known yet whether the server can start it later";
+    EXPECT_EQ(stream.transcoded->duration, 0) << "App knows the length, not the server";
+    ASSERT_EQ(server.http->calls.size(), 1u);
+    EXPECT_EQ(server.http->url(0), kBase + "getOpenSubsonicExtensions" + kAuth);
+    server.subsonic->stream("s2", 128);
+    EXPECT_EQ(server.http->calls.size(), 1u) << "asked once while the answer is out";
+}
+
+// Navidrome has transcodeOffset: a transcode then starts later with timeOffset (seconds).
+TEST(Subsonic, ATranscodeSeeksWithTimeOffsetWhenTheServerHasTranscodeOffset) {
+    Server server;
+    server.subsonic->stream("s1", 128);
+    server.http->answer(0, kOk, subsonicFixture("extensions.json"));
+    server.subsonic->poll();
+    auto stream = server.subsonic->stream("s1", 128);
+    ASSERT_TRUE(stream.transcoded);
+    EXPECT_EQ(stream.transcoded->offsetUrl, stream.url + "&timeOffset=");
+    EXPECT_EQ(server.subsonic->stream("s1", 0).transcoded, std::nullopt) << "the original file still seeks with Range";
+    EXPECT_EQ(server.http->calls.size(), 1u) << "asked once";
+}
+
+// A server without the extension has no offset: the player opens the
+// transcode from its start to seek.
+TEST(Subsonic, WithoutTranscodeOffsetATranscodeHasNoOffsetUrl) {
+    Server server;
+    server.subsonic->stream("s1", 128);
+    server.http->answer(0, kOk, subsonicFixture("extensions_no_offset.json"));
+    server.subsonic->poll();
+    auto stream = server.subsonic->stream("s1", 128);
+    ASSERT_TRUE(stream.transcoded);
+    EXPECT_EQ(stream.transcoded->offsetUrl, "");
+    EXPECT_EQ(server.http->calls.size(), 1u) << "an answer is an answer: not asked again";
+}
+
+// A server that is not OpenSubsonic answers with an error each time; a proxy
+// may fail once. After three errors it has no extensions.
+TEST(Subsonic, AServerThatAnswersWithErrorsHasNoTranscodeOffset) {
+    struct Answer {
+        long status;
+        std::string body;
+    };
+    for (const Answer& answer : {Answer{kOk, subsonicFixture("error_70_not_found.json")},
+                                 Answer{404, subsonicFixture("not_json.html")}}) {
+        Server server;
+        server.subsonic->stream("s1", 128);
+        for (std::size_t call = 0; call < 3; ++call) {
+            ASSERT_EQ(server.http->calls.size(), call + 1) << "asked again after an error " << answer.body;
+            server.http->answer(call, answer.status, answer.body);
+            server.subsonic->poll();
+            EXPECT_EQ(server.subsonic->stream("s1", 128).transcoded->offsetUrl, "");
+        }
+        server.subsonic->stream("s1", 128);
+        EXPECT_EQ(server.http->calls.size(), 3u) << "not asked a fourth time " << answer.body;
+    }
+}
+
+TEST(Subsonic, ExtensionsAreAskedForAgainWhenNoAnswerCame) {
+    Server server;
+    server.subsonic->stream("s1", 128);
+    server.http->unreachable(0);
+    server.subsonic->poll();
+    EXPECT_EQ(server.subsonic->stream("s1", 128).transcoded->offsetUrl, "");
+    ASSERT_EQ(server.http->calls.size(), 2u) << "the next transcode asks again";
+    server.http->answer(1, kOk, subsonicFixture("extensions.json"));
+    server.subsonic->poll();
+    EXPECT_NE(server.subsonic->stream("s1", 128).transcoded->offsetUrl, "");
 }
 
 TEST(Subsonic, PingReturnsServerTypeAndVersionFromPoll) {
@@ -316,7 +383,9 @@ TEST(Subsonic, NotConfiguredFinishesOnPollWithoutNetwork) {
     EXPECT_EQ(ping.error, Error::NotConfigured);
     EXPECT_EQ(albums.calls, 1);
     EXPECT_EQ(albums.error, Error::NotConfigured);
-    EXPECT_EQ(server.subsonic->streamUrl("s1"), "");
+    EXPECT_EQ(server.subsonic->stream("s1", 0).url, "");
+    EXPECT_EQ(server.subsonic->stream("s1", 128).url, "");
+    EXPECT_TRUE(server.http->calls.empty()) << "no extensions asked for";
 }
 
 TEST(Subsonic, IdsAreUniqueAndNeverZero) {
@@ -335,11 +404,9 @@ TEST(Subsonic, ConfigComesFromTheServerSettings) {
     settings.setString("server.url", "https://music.example");
     settings.setString("server.user", "ice");
     settings.setString("server.password", "sesame");
-    settings.setString("server.format", "opus");
-    settings.setString("server.max_bitrate", "128");
     Server server(Subsonic::configFrom(settings));
     EXPECT_TRUE(server.subsonic->configured());
-    EXPECT_EQ(server.subsonic->streamUrl("s1"), kBase + "stream" + kAuth + "&id=s1&format=opus&maxBitRate=128");
+    EXPECT_EQ(server.subsonic->stream("s1", 0).url, kBase + "stream" + kAuth + "&id=s1");
     EXPECT_FALSE(Server(Subsonic::configFrom(oap::Settings())).subsonic->configured());
 }
 

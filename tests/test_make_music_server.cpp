@@ -49,7 +49,8 @@ TEST(MakeMusicServer, SubsonicServerStreamsOnlyWithNetworkSupport) {
     ASSERT_NE(server, nullptr);
 #ifdef OAP_TESTS_EXPECT_NET
     EXPECT_TRUE(server->configured());
-    EXPECT_EQ(server->streamUrl("t1").rfind("https://music.example.com/rest/stream", 0), 0u) << server->streamUrl("t1");
+    std::string url = server->stream("t1", 0).url; // the original file: no request is made for it
+    EXPECT_EQ(url.rfind("https://music.example.com/rest/stream", 0), 0u) << url;
     EXPECT_EQ(err, "");
 #else
     EXPECT_FALSE(server->configured());

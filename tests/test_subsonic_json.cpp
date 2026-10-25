@@ -24,6 +24,15 @@ TEST(SubsonicJson, PingFromAClassicServerSaysSubsonicAndTheApiVersion) {
     EXPECT_EQ(result.info.version, "1.13.0");
 }
 
+TEST(SubsonicJson, ExtensionsAreListedByName) {
+    auto result = parseExtensions(subsonicFixture("extensions.json")); // as the test server answered
+    EXPECT_EQ(result.error, Error::None);
+    EXPECT_EQ(result.items, (std::vector<std::string>{"transcodeOffset", "formPost", "songLyrics", "indexBasedQueue",
+                                                      "transcoding", "playbackReport", "topSongsByArtistId"}));
+    EXPECT_TRUE(parseExtensions(subsonicFixture("ping_classic.json")).items.empty()) << "a server without any";
+    EXPECT_EQ(parseExtensions(subsonicFixture("error_70_not_found.json")).error, Error::Server);
+}
+
 TEST(SubsonicJson, WrongLoginIsBadLogin) {
     auto body = subsonicFixture("error_40_wrong_login.json");
     auto ping = parsePing(body);

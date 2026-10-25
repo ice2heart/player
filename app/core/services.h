@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <ctime>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,19 @@ struct Chapter {
     double start = 0;
 };
 
+// A stream that cannot seek in itself: a transcode, which the server makes
+// while it sends it, without byte ranges and often without a length. To go to
+// another place (a seek, a retry after a dropout, an open at a position) the
+// player opens the stream again.
+struct Transcoded {
+    // This plus whole seconds is the URL of the stream from that time on. Empty
+    // when the server cannot start a transcode later: then the stream opens from
+    // its start, and the audio before the place is decoded and dropped. It holds
+    // credentials like the stream URL: never speak or log it.
+    std::string offsetUrl;
+    double duration = 0; // seconds, as the server lists the track; 0 if unknown
+};
+
 // One audio file at a time.
 class MediaPlayer {
 public:
@@ -50,7 +64,10 @@ public:
     // background, opening() stays true until it is done, and then isOpen() says
     // whether it worked. A newer open() or close() drops an open still running,
     // so its result is never seen. Nothing plays until play() after the open.
-    virtual bool open(const std::string& path, double startAt = 0) = 0;
+    // `transcoded` is set for a stream that cannot seek in itself: it seeks by
+    // opening the stream again, and its duration() is the one given there.
+    virtual bool open(const std::string& path, double startAt = 0,
+                      std::optional<Transcoded> transcoded = std::nullopt) = 0;
     virtual bool opening() const = 0;
     // Read-ahead: starts opening the stream `path` in the background, next to
     // what is open and without disturbing it, so that a later open(path) takes
@@ -147,6 +164,11 @@ public:
         std::string type, version; // "navidrome", "0.64.2"
     };
     using RequestId = std::uint64_t; // unique per server object, never 0
+    // What the player opens for a track. Its URLs hold credentials: never speak or log them.
+    struct Stream {
+        std::string url;
+        std::optional<Transcoded> transcoded; // set for a transcode; its duration is left 0
+    };
     // `more` is true when the server may have another page after this one.
     // On an error the list is empty and `more` is false. When the server is not
     // configured, every request finishes (through poll()) with NotConfigured.
@@ -162,8 +184,9 @@ public:
     virtual RequestId playlists(Done<RemotePlaylist> done) = 0;
     virtual RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) = 0;
     virtual void cancel(RequestId id) = 0; // its callback will not run; unknown ids are ignored
-    // What Player opens. It holds credentials: never speak or log it.
-    virtual std::string streamUrl(const std::string& trackId) const = 0;
+    // The stream of a track: the original file with `maxBitRate` 0, else a
+    // transcode to at most that many kbit/s. Empty URLs when not configured.
+    virtual Stream stream(const std::string& trackId, int maxBitRate) = 0;
     virtual void poll() = 0; // UI thread: run the callbacks of finished requests
 };
 

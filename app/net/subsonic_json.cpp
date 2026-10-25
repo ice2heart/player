@@ -212,4 +212,19 @@ Parsed<RemotePlaylist> parsePlaylists(std::string_view body) {
 }
 Parsed<RemoteTrack> parsePlaylist(std::string_view body) { return parseList<RemoteTrack>(body, "playlist", "entry", track); }
 
+Parsed<std::string> parseExtensions(std::string_view body) {
+    Parsed<std::string> parsed;
+    Envelope envelope = open(body);
+    parsed.error = envelope.error;
+    if (envelope.error != Error::None) return parsed;
+    try {
+        forEach(child(envelope.response, "openSubsonicExtensions"),
+                [&](const YAML::Node& node) { parsed.items.push_back(text(node, "name")); });
+    } catch (const YAML::Exception&) {
+        parsed = {};
+        parsed.error = Error::Server;
+    }
+    return parsed;
+}
+
 } // namespace oap::subsonic

@@ -40,5 +40,7 @@ Parsed<RemoteAlbum> parseArtist(std::string_view body);     // getArtist: the ar
 Parsed<RemoteTrack> parseAlbum(std::string_view body);      // getAlbum: its songs
 Parsed<RemotePlaylist> parsePlaylists(std::string_view body);
 Parsed<RemoteTrack> parsePlaylist(std::string_view body);   // getPlaylist: its entries
+// getOpenSubsonicExtensions: the names of the extensions the server has.
+Parsed<std::string> parseExtensions(std::string_view body);
 
 } // namespace oap::subsonic

@@ -7,11 +7,13 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
 struct AVFormatContext;
+struct AVIOContext;
 struct AVCodecContext;
 struct AVStream;
 struct AVFrame;
@@ -43,6 +45,10 @@ constexpr int kStreamReconnectDelayMax = 0;
 constexpr std::chrono::milliseconds kStreamRetryFirstDelay = std::chrono::seconds(1);
 constexpr std::chrono::milliseconds kStreamRetryMaxDelay = std::chrono::seconds(8);
 constexpr std::chrono::milliseconds kStreamRetryGiveUp = std::chrono::seconds(30);
+// FFmpeg reports the end of a transcode (which has no length) as a read error,
+// just like a lost connection. Only one that comes earlier than this before
+// the end the server lists is taken for a lost connection.
+constexpr std::chrono::seconds kTranscodeEndSlack{2};
 
 // `line` with every URL cut down to its scheme and host, and every other query
 // (`?a=b`) cut off: a stream URL carries the server login in its query, and
@@ -67,13 +73,19 @@ std::string redactUrls(const std::string& line);
 // while it still runs, its thread becomes the decoder thread. A dropped preload
 // (cancelPreload(), another preload, the destructor) is dropped like an open:
 // its thread frees what it opened, or the input it left is freed with its job.
+// A transcode (open() with `transcoded`) is never seeked in: a seek, a retry
+// and an open at a place open its offset URL at the whole second (the audio up
+// to the place is dropped), or without one the stream from its start. Its
+// length is the one given with it. A preload is from the start, so only an
+// open from there (or a transcode without an offset URL) takes it over.
 class Player : public MediaPlayer {
 public:
     explicit Player(Mixer& mixer, std::chrono::milliseconds openTimeout = kStreamOpenTimeout,
                     std::chrono::milliseconds retryGiveUp = kStreamRetryGiveUp);
     ~Player() override;
 
-    bool open(const std::string& path, double startAt = 0) override;
+    bool open(const std::string& path, double startAt = 0,
+              std::optional<Transcoded> transcoded = std::nullopt) override;
     bool opening() const override { return state_ == State::Opening; }
     void preload(const std::string& path) override;
     void cancelPreload() override;
@@ -104,7 +116,10 @@ private:
     // FFmpeg's interrupt callback (its argument is the OpenJob), on whichever thread waits for I/O.
     static int interrupted(void* job);
     // Opens `path` into `in`. Touches no Player, so a dropped open can finish after the Player is gone.
-    static bool openInput(const std::string& path, OpenJob& job, std::chrono::milliseconds timeout, Input& in);
+    // With `answered`, it says whether the server answered; if it did with no
+    // audio (Input::noAudio), the open fails.
+    static bool openInput(const std::string& path, OpenJob& job, std::chrono::milliseconds timeout, Input& in,
+                          bool* answered = nullptr);
     // The thread of a stream's open: opens it, then decodes it for the job's
     // owner, unless the open was dropped first. A preload without an owner yet
     // leaves what it opened in the job and ends.
@@ -120,7 +135,18 @@ private:
     // queued audio ends. False once the retries have gone on for retryGiveUp_ of
     // playing time.
     bool retryStream(Dropout& dropout);
-    bool seekInput(double at); // decoder thread: the demuxer and decoder go to `at`; false if the seek failed
+    // Decoder thread, a transcode whose read failed: whether that was a lost
+    // connection, not its end. Unknown with no length: then it is the end.
+    bool transcodeCutShort(const Dropout& dropout) const;
+    // Decoder thread: the demuxer and decoder go to `at`. Failed leaves the input
+    // as it was. PastEnd: a transcode opened there had no audio (the server
+    // sends none past the end), so the track has ended.
+    enum class Seek { Done, Failed, PastEnd };
+    Seek seekInput(double at);
+    Seek reopenInput(double at); // a transcode: opens it again at `at` in place of the input it has
+    // Where a transcode opened at `at` starts: the whole second for an offset URL, else 0.
+    double inputStartFor(double at) const;
+    std::string urlFrom(double inputStart) const; // the URL of the transcode from there
     bool emit(AVFrame* frame, uint64_t epoch);
     bool shouldAbortWrite() const { return stop_ || seekRequest_ >= 0; }
     // (Re)builds `swr` for this input format. A file may change format mid-stream.
@@ -137,6 +163,7 @@ private:
     std::string preloadPath_;
     std::thread preloadThread_;
     AVFormatContext* fmt_ = nullptr;
+    AVIOContext* io_ = nullptr; // fmt_'s input when Player opened it itself (a transcode opened again)
     AVCodecContext* dec_ = nullptr;
     AVStream* stream_ = nullptr;
     SwrContext* swr_ = nullptr;
@@ -147,6 +174,10 @@ private:
     std::atomic<bool> eof_{false};
     std::atomic<bool> failed_{false}; // a stream ended with a network error, not at its end
     bool isUrl_ = false;              // the open input is a stream
+    // Set by open() before any thread can read them, for the whole open.
+    std::string path_;                       // what open() was given
+    std::optional<Transcoded> transcoded_;   // a transcode: seeks by opening it again
+    double inputStart_ = 0; // decoder thread: the time the input's first audio is at (a transcode opened later)
     std::atomic<double> seekRequest_{-1};
     std::atomic<double> endPts_{0}; // timestamp of the end of the audio already queued
     double skipUntil_ = 0;          // decoder thread: drop audio before this (exact seek)

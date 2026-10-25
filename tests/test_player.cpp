@@ -609,6 +609,18 @@ private:
         finish(fd);
     }
 
+    static std::string chunks(const std::string& data) {
+        constexpr size_t kChunk = 4096;
+        std::string out;
+        for (size_t at = 0; at < data.size(); at += kChunk) {
+            std::string part = data.substr(at, kChunk);
+            char size[16];
+            std::snprintf(size, sizeof size, "%zx\r\n", part.size());
+            out += size + part + "\r\n";
+        }
+        return out;
+    }
+
     static bool sendAll(int fd, const std::string& data) {
 #ifdef MSG_NOSIGNAL
         const int flags = MSG_NOSIGNAL;
@@ -938,6 +950,352 @@ TEST_F(PlayerTest, CloseDoesNotWaitForAStreamThatStoppedSending) {
     player.close();
     EXPECT_LT(secondsSince(start), kSlowMachine);
     EXPECT_FALSE(player.isOpen());
+}
+
+// A transcoding music server for one track (Subsonic stream with format and
+// maxBitRate): it makes the audio as it sends it, so a reply has no length and
+// no byte ranges ("Accept-Ranges: none", a Range header is ignored). It comes
+// in chunks (Transfer-Encoding: chunked, as Navidrome sends it), and FFmpeg
+// reports its end as a read error, as it does for Navidrome. With timeOffset=<seconds> in the URL the reply
+// starts there, as Navidrome's transcodeOffset does; past the end it holds no
+// audio (Navidrome sends a few bytes FFmpeg cannot open), or with HeaderOnly
+// just a WAV header. With cutFirstAt, the first
+// reply stops there and waits until reset(), which breaks the connection off
+// (TCP reset: an error), as a lost network does.
+class TranscodeServer {
+public:
+    enum PastEnd { NoAudio, HeaderOnly };
+    struct Request {
+        std::string target;   // the path and query of the request line
+        long rangeStart = -1; // from a Range header, -1 without one
+    };
+    explicit TranscodeServer(double seconds, std::optional<double> cutFirstAt = std::nullopt, PastEnd pastEnd = NoAudio)
+        : seconds_(seconds), cutFirstAt_(cutFirstAt), pastEnd_(pastEnd) {
+        fd_ = boundSocket(port_);
+        if (fd_ >= 0 && listen(fd_, 8) == 0) thread_ = std::thread([this] { run(); });
+        else ADD_FAILURE() << "cannot listen on a loopback socket";
+    }
+    ~TranscodeServer() {
+        stop_ = true;
+        if (thread_.joinable()) thread_.join();
+        {
+            std::lock_guard lock(mutex_);
+            for (int fd : open_) shutdown(fd, SHUT_RDWR); // ends a send() the player no longer reads
+        }
+        for (std::thread& t : clients_) t.join();
+        if (fd_ >= 0) ::close(fd_);
+    }
+    std::string url(const std::string& path) const { return "http://127.0.0.1:" + std::to_string(port_) + path; }
+    std::vector<Request> requests() const {
+        std::lock_guard lock(mutex_);
+        return requests_;
+    }
+    bool held() const { return held_; }
+    void reset() { reset_ = true; }
+
+    // What Navidrome sends for a transcode past its end: an ID3v2.4 tag (here all
+    // padding, 1200 bytes, the size in 7-bit bytes) and no audio.
+    static std::string id3Only() {
+        constexpr size_t kTagSize = 1200;
+        std::string tag = "ID3\x04";
+        tag += std::string(2, '\0'); // revision, flags
+        for (int shift : {21, 14, 7, 0}) tag += char((kTagSize >> shift) & 0x7f);
+        return tag + std::string(kTagSize, '\0');
+    }
+
+    // A WAV header for a stream of unknown length, then `seconds` of tone at 8 kHz mono.
+    static std::string streamedWav(double seconds) {
+        std::string wav = wavString(seconds);
+        for (size_t at : {size_t(4), size_t(40)}) wav.replace(at, 4, "\xff\xff\xff\xff");
+        return wav;
+    }
+
+private:
+    void run() {
+        while (!stop_) {
+            pollfd p{fd_, POLLIN, 0};
+            if (poll(&p, 1, 10) <= 0) continue;
+            int c = accept(fd_, nullptr, nullptr);
+            if (c < 0) continue;
+#ifdef SO_NOSIGPIPE
+            int one = 1;
+            setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+            std::lock_guard lock(mutex_);
+            open_.push_back(c);
+            clients_.emplace_back([this, c] { serve(c); });
+        }
+    }
+
+    void serve(int fd) {
+        std::string request;
+        char buf[4096];
+        while (request.find("\r\n\r\n") == std::string::npos) {
+            ssize_t n = read(fd, buf, sizeof buf);
+            if (n <= 0) return finish(fd, false);
+            request.append(buf, size_t(n));
+        }
+        Request r;
+        size_t space = request.find(' ');
+        r.target = request.substr(space + 1, request.find(' ', space + 1) - space - 1);
+        size_t range = request.find("Range: bytes=");
+        if (range != std::string::npos) r.rangeStart = std::stol(request.substr(range + 13));
+        double from = 0;
+        size_t offset = r.target.find("timeOffset=");
+        if (offset != std::string::npos) from = std::stod(r.target.substr(offset + 11));
+        bool cut;
+        {
+            std::lock_guard lock(mutex_);
+            cut = cutFirstAt_ && requests_.empty();
+            requests_.push_back(r);
+        }
+        std::string body = from < seconds_ || pastEnd_ == HeaderOnly ? streamedWav(std::max(0.0, seconds_ - from)) : id3Only();
+        if (cut) body.resize(std::min(body.size(), wavOffset(*cutFirstAt_)));
+        std::string head = "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nAccept-Ranges: none\r\n"
+                           "Connection: close\r\nTransfer-Encoding: chunked\r\n\r\n";
+        if (!sendAll(fd, head) || !sendAll(fd, chunks(body))) return finish(fd, false);
+        if (!cut) { // the end: the last chunk; the player reads to it, then hangs up
+            if (!sendAll(fd, "0\r\n\r\n")) return finish(fd, false);
+            shutdown(fd, SHUT_WR);
+            while (!stop_) {
+                pollfd p{fd, POLLIN, 0};
+                if (poll(&p, 1, 10) > 0 && read(fd, buf, sizeof buf) <= 0) break;
+            }
+            return finish(fd, false);
+        }
+        held_ = true;
+        while (!stop_ && !reset_) std::this_thread::sleep_for(5ms);
+        finish(fd, true);
+    }
+
+    static std::string chunks(const std::string& data) {
+        constexpr size_t kChunk = 4096;
+        std::string out;
+        for (size_t at = 0; at < data.size(); at += kChunk) {
+            std::string part = data.substr(at, kChunk);
+            char size[16];
+            std::snprintf(size, sizeof size, "%zx\r\n", part.size());
+            out += size + part + "\r\n";
+        }
+        return out;
+    }
+
+    static bool sendAll(int fd, const std::string& data) {
+#ifdef MSG_NOSIGNAL
+        const int flags = MSG_NOSIGNAL;
+#else
+        const int flags = 0;
+#endif
+        for (size_t sent = 0; sent < data.size();) {
+            ssize_t k = send(fd, data.data() + sent, data.size() - sent, flags);
+            if (k <= 0) return false;
+            sent += size_t(k);
+        }
+        return true;
+    }
+
+    void finish(int fd, bool reset) {
+        if (reset) { // close() then sends a TCP reset instead of the end of the stream
+            linger hard{1, 0};
+            setsockopt(fd, SOL_SOCKET, SO_LINGER, &hard, sizeof hard);
+        }
+        std::lock_guard lock(mutex_);
+        open_.erase(std::find(open_.begin(), open_.end(), fd));
+        ::close(fd);
+    }
+
+    double seconds_;
+    std::optional<double> cutFirstAt_;
+    PastEnd pastEnd_;
+    int fd_ = -1;
+    int port_ = 0;
+    mutable std::mutex mutex_; // for the three below
+    std::vector<Request> requests_;
+    std::vector<int> open_;
+    std::vector<std::thread> clients_; // only the accept thread adds, before the destructor joins
+    std::atomic<bool> held_{false};
+    std::atomic<bool> reset_{false};
+    std::atomic<bool> stop_{false};
+    std::thread thread_;
+};
+
+// Plays until the player has finished or failed, or `limit` has passed. Returns the frames heard.
+size_t heardUntilTheEnd(Player& player, Mixer& mixer, std::chrono::seconds limit = 9s) {
+    std::vector<float> buf(1024 * AudioStream::kChannels);
+    size_t heard = 0;
+    auto deadline = std::chrono::steady_clock::now() + limit;
+    while (!player.finished() && !player.failed() && std::chrono::steady_clock::now() < deadline) {
+        size_t got = mixer.content().read(buf.data(), 1024);
+        heard += got;
+        if (got == 0) std::this_thread::sleep_for(1ms);
+    }
+    return heard;
+}
+
+// No byte of a transcode is asked for with Range (FFmpeg's "bytes=0-" asks for all of it).
+void expectNoRangeSeek(const TranscodeServer& server) {
+    for (const auto& r : server.requests()) EXPECT_LE(r.rangeStart, 0) << r.target;
+}
+
+// Waits, hearing nothing, until a seek has opened the transcode again and the
+// audio from before it has been dropped.
+void afterTheSeek(const TranscodeServer& server) {
+    EXPECT_TRUE(waitFor([&] { return server.requests().size() == 2; })) << "opened again";
+    std::this_thread::sleep_for(300ms);
+}
+
+const char* const kTranscodePath = "/rest/stream?id=7&format=mp3&maxBitRate=128";
+
+// A seek in a transcode opens it again from the whole second (timeOffset) and
+// drops the rest up to the place: the server cannot send byte ranges of it.
+TEST_F(PlayerTest, ASeekInATranscodeOpensItAgainWithTimeOffsetNotRange) {
+    TranscodeServer server(10);
+    Player player(mixer_);
+    std::string url = server.url(kTranscodePath);
+    ASSERT_TRUE(player.open(url, 0, Transcoded{url + "&timeOffset=", 10}));
+    ASSERT_TRUE(waitFor([&] { return !player.opening(); }, 9s));
+    ASSERT_TRUE(player.isOpen());
+    EXPECT_DOUBLE_EQ(player.duration(), 10) << "the length the server lists";
+    player.play();
+    consume(player, mixer_, Mixer::kSampleRate); // 1 s
+    player.seek(6.5);
+    EXPECT_DOUBLE_EQ(player.position(), 6.5);
+    afterTheSeek(server);
+    size_t heard = 0;
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { heard = heardUntilTheEnd(player, mixer_); });
+    EXPECT_TRUE(player.finished()) << log;
+    EXPECT_NEAR(seconds(heard), 3.5, 0.05) << "from 6.5 s to the end";
+    auto requests = server.requests();
+    ASSERT_EQ(requests.size(), 2u) << log;
+    EXPECT_EQ(requests[0].target, kTranscodePath) << "the start, without an offset";
+    EXPECT_EQ(requests[1].target, std::string(kTranscodePath) + "&timeOffset=6");
+    expectNoRangeSeek(server);
+    EXPECT_EQ(log.find("cannot seek"), std::string::npos) << log;
+}
+
+TEST_F(PlayerTest, ATranscodeOpenedAtAPlaceStartsThereWithTimeOffset) {
+    TranscodeServer server(10);
+    Player player(mixer_);
+    std::string url = server.url(kTranscodePath);
+    ASSERT_TRUE(player.open(url, 4.5, Transcoded{url + "&timeOffset=", 10}));
+    ASSERT_TRUE(waitFor([&] { return !player.opening(); }, 9s));
+    ASSERT_TRUE(player.isOpen());
+    EXPECT_NEAR(player.position(), 4.5, 0.001);
+    player.play();
+    size_t heard = heardUntilTheEnd(player, mixer_);
+    EXPECT_TRUE(player.finished());
+    EXPECT_NEAR(seconds(heard), 5.5, 0.05);
+    auto requests = server.requests();
+    ASSERT_EQ(requests.size(), 1u);
+    EXPECT_EQ(requests[0].target, std::string(kTranscodePath) + "&timeOffset=4");
+}
+
+// A server without transcodeOffset: the transcode is opened again from its
+// start, and what comes before the place is decoded and dropped.
+TEST_F(PlayerTest, ATranscodeWithoutAnOffsetUrlSeeksByOpeningItFromTheStart) {
+    TranscodeServer server(10);
+    Player player(mixer_);
+    std::string url = server.url(kTranscodePath);
+    ASSERT_TRUE(player.open(url, 0, Transcoded{"", 10}));
+    ASSERT_TRUE(waitFor([&] { return !player.opening(); }, 9s));
+    player.play();
+    consume(player, mixer_, Mixer::kSampleRate);
+    player.seek(6.5);
+    afterTheSeek(server);
+    size_t heard = 0;
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { heard = heardUntilTheEnd(player, mixer_); });
+    EXPECT_TRUE(player.finished()) << log;
+    EXPECT_NEAR(seconds(heard), 3.5, 0.05);
+    auto requests = server.requests();
+    ASSERT_EQ(requests.size(), 2u) << log;
+    EXPECT_EQ(requests[1].target, kTranscodePath);
+    expectNoRangeSeek(server);
+}
+
+// FFmpeg reports the end of a transcode as a read error. Without a length,
+// that is the end; it is not retried.
+TEST_F(PlayerTest, ATranscodeOfUnknownLengthFinishesAtItsEnd) {
+    TranscodeServer server(3);
+    Player player(mixer_);
+    std::string url = server.url(kTranscodePath);
+    ASSERT_TRUE(player.open(url, 0, Transcoded{url + "&timeOffset=", 0}));
+    ASSERT_TRUE(waitFor([&] { return !player.opening(); }, 9s));
+    EXPECT_DOUBLE_EQ(player.duration(), 0);
+    player.play();
+    size_t heard = 0;
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { heard = heardUntilTheEnd(player, mixer_); });
+    EXPECT_TRUE(player.finished()) << log;
+    EXPECT_NEAR(seconds(heard), 3.0, 0.05);
+    EXPECT_EQ(server.requests().size(), 1u) << log;
+    EXPECT_EQ(log.find("retrying"), std::string::npos) << log;
+}
+
+// The server lists the track as longer than its transcode is: the error at the
+// real end looks like a dropout, but the retry there gets no audio, so the
+// track has ended. Navidrome answers past the end with a few bytes that are no
+// audio (HeaderOnly: a header the open takes, then nothing).
+TEST_F(PlayerTest, ATranscodeShorterThanListedFinishesAfterOneRetry) {
+    for (auto pastEnd : {TranscodeServer::NoAudio, TranscodeServer::HeaderOnly}) {
+        TranscodeServer server(3, std::nullopt, pastEnd);
+        Player player(mixer_);
+        std::string url = server.url(kTranscodePath);
+        ASSERT_TRUE(player.open(url, 0, Transcoded{url + "&timeOffset=", 8}));
+        ASSERT_TRUE(waitFor([&] { return !player.opening(); }, 9s));
+        player.play();
+        size_t heard = 0;
+        std::string log = stderrOf(dir_ / "stderr.txt", [&] { heard = heardUntilTheEnd(player, mixer_, 5s); });
+        EXPECT_TRUE(player.finished()) << pastEnd << log;
+        EXPECT_FALSE(player.failed());
+        EXPECT_NEAR(seconds(heard), 3.0, 0.05);
+        auto requests = server.requests();
+        ASSERT_EQ(requests.size(), 2u) << pastEnd << log;
+        EXPECT_EQ(requests[1].target, std::string(kTranscodePath) + "&timeOffset=3");
+    }
+}
+
+// A skip past the real end of a transcode: the server has no audio there, so the track has ended.
+TEST_F(PlayerTest, ASeekPastTheEndOfATranscodeEndsIt) {
+    TranscodeServer server(3);
+    Player player(mixer_);
+    std::string url = server.url(kTranscodePath);
+    ASSERT_TRUE(player.open(url, 0, Transcoded{url + "&timeOffset=", 8}));
+    ASSERT_TRUE(waitFor([&] { return !player.opening(); }, 9s));
+    player.play();
+    consume(player, mixer_, Mixer::kSampleRate / 2);
+    player.seek(6);
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { heardUntilTheEnd(player, mixer_, 5s); });
+    EXPECT_TRUE(player.finished()) << log;
+    EXPECT_NEAR(player.position(), 6, 0.01);
+    auto requests = server.requests();
+    ASSERT_EQ(requests.size(), 2u) << log;
+    EXPECT_EQ(requests[1].target, std::string(kTranscodePath) + "&timeOffset=6");
+}
+
+// A dropout in a transcode: the retry is a seek too, so it opens the transcode
+// again where the queued audio ends, and nothing is lost or repeated.
+TEST_F(PlayerTest, ATranscodeThatBreaksOffIsOpenedAgainWhereItStopped) {
+    TranscodeServer server(12, kCutAt);
+    Player player(mixer_);
+    std::string url = server.url(kTranscodePath);
+    ASSERT_TRUE(player.open(url, 0, Transcoded{url + "&timeOffset=", 12}));
+    ASSERT_TRUE(waitFor([&] { return !player.opening(); }, 9s));
+    player.play();
+    size_t heard = 0;
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] {
+        heard = consume(player, mixer_, Mixer::kSampleRate); // some of what came; the rest is queued
+        EXPECT_TRUE(waitFor([&] { return server.held(); })) << "the reply was cut short";
+        std::this_thread::sleep_for(200ms);
+        server.reset();
+        heard += heardUntilTheEnd(player, mixer_);
+    });
+    EXPECT_TRUE(player.finished()) << log;
+    EXPECT_FALSE(player.failed());
+    EXPECT_NEAR(seconds(heard), 12.0, 0.05) << log;
+    auto requests = server.requests();
+    ASSERT_EQ(requests.size(), 2u) << log;
+    EXPECT_NE(requests[1].target.find("&timeOffset="), std::string::npos) << requests[1].target;
+    expectNoRangeSeek(server);
+    EXPECT_NE(log.find("connection is back"), std::string::npos) << log;
 }
 
 // FFmpeg prints some URLs in its own messages, such as HLS and redirect errors.

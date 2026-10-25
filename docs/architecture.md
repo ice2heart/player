@@ -65,17 +65,17 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
-| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `MusicServer` with its `RemoteTrack` / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&`: the Streaming menu asks it for lists, `tick()` calls its `poll()`, and `playRemote()` uses `streamUrl()`. |
+| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `MusicServer` with its `RemoteTrack` / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&`: the Streaming menu asks it for lists, `tick()` calls its `poll()`, and opening a remote track asks it for `stream(id, maxBitRate)`: the URL, and for a transcode a `Transcoded` (offset URL, and the length `App` fills in from the listing) that `MediaPlayer::open()` takes. |
 | `app/net/http_client.{h,cpp}` | `Http`: asynchronous GET whose handler runs on the client's thread (tests use a fake). `HttpClient`: libcurl multi on one worker thread; 10 s connect timeout, 10 s without data or 60 s in all ends a request, answers over 16 MB fail; cancellable; the destructor aborts transfers and never waits on a socket. |
-| `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `streamUrl()`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
+| `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `stream()`: the original file with no `format` / `maxBitRate`, or an MP3 transcode (`format=mp3&maxBitRate=<kbps>`) whose offset URL adds `&timeOffset=` once `getOpenSubsonicExtensions` (asked with the first transcode) lists `transcodeOffset`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
 | `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists and getPlaylist answers (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
 | `app/net/md5.{h,cpp}` | `md5Hex()` for the auth token. |
-| `app/media/player.{h,cpp}` | `Player`: one audio file or stream URL, decoded on its own thread (FFmpeg). A local file opens in `open()`; a URL opens on the decoder thread (`opening()` until it is done), with a 10 s read timeout and HTTP reconnects, and the whole open gives up after 10 s (`kStreamOpenTimeout`). `preload()` opens the next track's stream the same way in the background, and `open()` of that URL takes it over. A stream whose connection is lost while it plays is retried with backoff at the same place for 30 s (`kStreamRetryGiveUp`); `buffering()` says when it has run dry meanwhile. An interrupt callback lets `close()` abort any network wait at once, and `close()` or a newer `open()` drops an open still running. Its error messages print a local path but never a URL (`://`), which would hold the server login, and FFmpeg's own messages pass through `redactUrls()`. |
+| `app/media/player.{h,cpp}` | `Player`: one audio file or stream URL, decoded on its own thread (FFmpeg). A local file opens in `open()`; a URL opens on the decoder thread (`opening()` until it is done), with a 10 s read timeout and HTTP reconnects, and the whole open gives up after 10 s (`kStreamOpenTimeout`). `preload()` opens the next track's stream the same way in the background, and `open()` of that URL takes it over. A stream whose connection is lost while it plays is retried with backoff at the same place for 30 s (`kStreamRetryGiveUp`); `buffering()` says when it has run dry meanwhile. A transcode (`open()` with `Transcoded`) has no byte ranges: a seek, a retry and an open at a place open it again (see Streams in section 4), and its length is the server's. An interrupt callback lets `close()` abort any network wait at once, and `close()` or a newer `open()` drops an open still running. Its error messages print a local path but never a URL (`://`), which would hold the server login, and FFmpeg's own messages pass through `redactUrls()`. |
 | `app/media/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. |
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
-| `app/core/library.{h,cpp}` | `Book` (also a remote list: stream URLs in `files`, server titles in `titles`, `remote` set), `scanLibrary()`. |
+| `app/core/library.{h,cpp}` | `Book` (also a remote list: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set), `scanLibrary()`. |
 | `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `serverConfigured()`. |
 | `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys) and `TsvStore` (`state.tsv`). |
 | `app/config/atomic_file.{h,cpp}` | `writeFileAtomically()`: temp file with mode 0600, `fsync`, `rename`. |
@@ -205,6 +205,22 @@ Rules:
   come on top, so "Server not reachable" can take longer than 30 s. A local
   file never fails this way. `buffering()` is true while a stream plays, has not
   ended or failed, and nothing is queued (also while a seek waits): it has run dry.
+- **Transcodes** (Streaming quality, step 2.4): the server makes the MP3 as it
+  sends it, so it has no byte ranges and no length of its own. `open(url, at,
+  Transcoded{offsetUrl, duration})` makes `Player` go to a place by opening the
+  stream again (`reopenInput()` on the decoder thread, which `seekInput()` uses for
+  a user seek and a dropout retry alike): `offsetUrl` plus whole seconds
+  (`timeOffset`), with the audio up to the exact place dropped (`skipUntil_`) and
+  timestamps moved by where the input starts (`inputStart_`); with no offset URL
+  (a server without `transcodeOffset`) the stream from its start, decoding and
+  dropping everything before the place. An open at a place opens the offset URL
+  at once, so a preload (from the start) is taken over only by an open from the
+  start. `duration()` is the length the server lists. FFmpeg reports the end of a
+  transcode as a read error, like a lost connection, so only an error more than
+  `kTranscodeEndSlack` (2 s) before that length is retried; without a length the
+  error is the end. A reopen that the server answers with no audio (Navidrome
+  past the end of a track listed too long), or one that opens and then brings
+  nothing, means the track has ended: a seek there ends it too.
 - **FFmpeg log:** `Player` installs an `av_log` callback that prints errors only
   and cuts every URL to its scheme and host, and every other `?query`, since some
   FFmpeg messages print URLs or request lines.
@@ -353,6 +369,7 @@ Home
 │   ├── Long press time  300–1500 ms
 │   ├── Menu wrap around on / off
 │   ├── Auto sleep       1–30 min / never
+│   ├── Streaming quality original file / 320 / 192 / 128 kbps (an MP3 transcode for a slow link; from the next track)
 │   └── Sleep timer →    Off · 1 · 15 · 30 · 45 min · 1 hour · End of chapter/track (only when something is loaded; opens on the timer that is set)
 ├── System
 │   ├── Status           battery (simulated), free space, Wi-Fi, time
@@ -417,8 +434,11 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   one on opens, the book or track is not loaded at all: whatever was loaded
   before stays loaded at the same place, and the user stays in the menu.
 - **Remote tracks** (see [streaming.md](streaming.md)): `App::playRemote(title, tracks, index)`
-  turns a list of `RemoteTrack`s into a `Book` with `remote` set, `files` = `server.streamUrl(id)`
-  and `titles` = the server titles, and plays it like music (`playMusic` → `switchTo(..., music=true)`),
+  turns a list of `RemoteTrack`s into a `Book` with `remote` set, `files` = the track ids,
+  `titles` = the server titles and `durations` = their lengths. Each track's stream comes from
+  `server.stream(id, streaming.bitrate)` when it is opened (`remoteStream()`), so a change of
+  Streaming quality takes effect with the next track; a transcode is opened with its
+  `Transcoded`, its length taken from the listing. The list plays like music (`playMusic` → `switchTo(..., music=true)`),
   so it saves no position and leaves `last_book` alone. Every spoken part name comes from
   `partTitle()`: the server title, or "Track 3" if it has none, never the URL, which holds the login.
 - A remote track that cannot be opened says "Cannot play Rain. Server not reachable." and **no
@@ -474,8 +494,12 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   without "Loading" or a wait. If the pre-open failed, the open is a normal one
   (pending, as above). A pause (sleep and power off pause too), a seek back out
   of the last 10 s, another book or list, or a track of unknown length (a
-  transcode) means no pre-open: `cancelPreload()` drops one that was made. The
-  last track and local books pre-open nothing.
+  transcode the server lists no length for) means no pre-open: `cancelPreload()`
+  drops one that was made. The last track and local books pre-open nothing.
+  `Player` takes a pre-open over only for the same URL, and each URL from the
+  server has a fresh salt, so `readAhead_` keeps the stream it pre-opened (with
+  the track id and the quality), and opening that track at that quality uses it.
+  A change of Streaming quality during the pre-open pre-opens the new one.
 
 ## 9. Persistence
 
@@ -486,7 +510,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 
 | File | Store | Keys |
 |------|-------|------|
-| `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, and `server.*` (see [streaming.md](streaming.md)) |
+| `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` (kbps, 0 = the original file), and `server.*` (see [streaming.md](streaming.md)) |
 | `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_book`: the book to resume on start (never music); `pos:<book path>`: `"<file index>:<seconds>"` |
 
 - `config.yaml` is nested YAML (`speech: {rate: 220}` is `speech.rate`). It is
@@ -585,8 +609,10 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   `FakeClock` (time only moves when the test advances it), `FakeStore` (what was
   last saved to a settings file, and how often) and `FakeMusicServer` (records each
   request; answers only when the test calls `reply` / `replyPing` / `fail`, and then
-  only on the next `poll()`; honours `cancel`). `test_fake_music_server.cpp` checks
-  that contract.
+  only on the next `poll()`; honours `cancel`; its stream URLs show the quality,
+  `fake://stream/<id>?maxBitRate=<kbps>`, and with `saltUrls` differ on each call, as a
+  real server's do). `FakePlayer` records the `Transcoded` of the last open.
+  `test_fake_music_server.cpp` checks that contract.
 - `test_config.cpp` tests YAML ⇄ dotted keys, `YamlStore` / `TsvStore` on real files
   (mode 0600, atomic replace, a broken file left alone) and `SettingsFiles`.
 - `test_app.cpp` drives `App` the way a user does, through `keyDown`/`keyUp`/`tick`

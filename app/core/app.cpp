@@ -26,6 +26,7 @@ constexpr const char* kRewindOnResume = "rewind_on_resume";
 constexpr const char* kLongPress = "buttons.long_press_ms";
 constexpr const char* kMenuWrap = "menu.wrap";
 constexpr const char* kAutoSleep = "power.auto_sleep_min";
+constexpr const char* kStreamingBitrate = "streaming.bitrate"; // kbit/s of a transcode; 0: the original file
 constexpr const char* kLastBook = "last_book";
 constexpr const char* kServerName = "server.name"; // the Streaming entry on Home
 
@@ -47,6 +48,13 @@ constexpr std::chrono::seconds kStreamOpenGiveUp{15};
 constexpr std::chrono::milliseconds kDryBeforeEarcon{500};
 constexpr std::chrono::seconds kDryBeforeWaitingForNetwork{3};
 constexpr std::chrono::seconds kPlayingBeforeRecovered{2};
+// Streaming quality: the original file (Range seeks, any format), or an MP3
+// transcode for a slow link (docs/streaming.md, step 2.4).
+constexpr int kOriginalQuality = 0;
+const std::vector<std::pair<int, std::string>> kStreamingQualities = {{kOriginalQuality, "original file"},
+                                                                      {320, "320 kilobits per second"},
+                                                                      {192, "192 kilobits per second"},
+                                                                      {128, "128 kilobits per second"}};
 // Read-ahead: while a remote track plays its last this long, the next one's stream
 // opens in the background (MediaPlayer::preload()), so the next track starts
 // without waiting for an open on a slow link.
@@ -83,8 +91,8 @@ std::string chapterTitle(const std::filesystem::path& file) {
     return i < name.size() ? name.substr(i) : name;
 }
 
-// The spoken name of part `i`. A remote part is never named after its file:
-// that is a stream URL with the server login in it.
+// The spoken name of part `i`. A remote part is never named after its file,
+// which is the server's track id.
 std::string partTitle(const Book& book, size_t i) {
     if (i < book.titles.size() && !book.titles[i].empty()) return book.titles[i];
     if (book.remote) return "Track " + std::to_string(i + 1);
@@ -1056,6 +1064,8 @@ std::vector<MenuItem> App::settingsMenu() {
     items.push_back(choice("Menu wrap around", kMenuWrap, {{0, "off"}, {1, "on"}}, 1));
     items.push_back(choice("Auto sleep", kAutoSleep,
                            {{1, "1 minute"}, {2, "2 minutes"}, {5, "5 minutes"}, {10, "10 minutes"}, {30, "30 minutes"}, {0, "never"}}, 5));
+    // Read when a track is opened: a change takes effect with the next one.
+    items.push_back(choice("Streaming quality", kStreamingBitrate, kStreamingQualities, kOriginalQuality));
     MenuItem timer = submenu("Sleep timer", [this] { return sleepTimerMenu(); });
     timer.selected = [this] { return sleepTimerIndex(); };
     timer.value = [this] {
@@ -1210,8 +1220,9 @@ bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& t
     list.title = title;
     list.remote = true;
     for (const RemoteTrack& t : tracks) {
-        list.files.emplace_back(server_.streamUrl(t.id));
+        list.files.emplace_back(t.id);
         list.titles.push_back(t.title);
+        list.durations.push_back(t.duration);
     }
     std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
     return playMusic(list, index, [this, screen] { enterPlayerFrom(screen); });
@@ -1277,7 +1288,14 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
         fileIndex_ = file;
         // A stream takes a moment to open: say why nothing plays yet.
         if (book_->remote && (origin == Origin::Menu || origin == Origin::Key)) say("Loading.");
-        if (player_.open(book_->files[file].string(), position)) {
+        bool opens = false;
+        if (book_->remote) {
+            MusicServer::Stream stream = remoteStream(file);
+            opens = player_.open(stream.url, position, stream.transcoded);
+        } else {
+            opens = player_.open(book_->files[file].string(), position);
+        }
+        if (opens) {
             if (player_.opening()) {
                 std::uint64_t screen = origin == Origin::Menu && !screens_.empty() ? screens_.back().id : 0;
                 pendingOpen_ = PendingOpen{screen,    origin,         partTitle(*book_, file), autoplay,
@@ -1535,17 +1553,38 @@ void App::checkBuffering(TimePoint now) {
 // or a seek back, it is dropped. A paused stream is not kept waiting: a server
 // may close a connection that stays idle.
 void App::checkReadAhead() {
-    // No length while it is closed or opening, nor for a stream that does not say (a transcode).
+    // No length while it is closed or opening, nor for a stream that does not say (a
+    // transcode the server lists no length for).
     bool wanted = player_.playing() && book_ && book_->remote && fileIndex_ + 1 < book_->files.size() &&
                   player_.duration() > 0 &&
                   player_.duration() - player_.position() <= std::chrono::duration<double>(kReadAhead).count();
-    if (wanted && book_->files[fileIndex_ + 1] != readAhead_) {
-        readAhead_ = book_->files[fileIndex_ + 1];
-        player_.preload(readAhead_.string());
-    } else if (!wanted && !readAhead_.empty()) {
+    if (wanted) {
+        // A new track, or the quality changed since: pre-open the stream that will be opened.
+        size_t next = fileIndex_ + 1;
+        const std::string id = book_->files[next].string();
+        if (!readAhead_ || readAhead_->trackId != id || readAhead_->bitrate != streamingBitrate()) {
+            readAhead_ = ReadAhead{id, streamingBitrate(), newStream(next)};
+            player_.preload(readAhead_->stream.url);
+        }
+    } else if (readAhead_) {
         player_.cancelPreload();
-        readAhead_.clear();
+        readAhead_.reset();
     }
+}
+
+int App::streamingBitrate() const { return std::max(kOriginalQuality, config_.getInt(kStreamingBitrate, kOriginalQuality)); }
+
+MusicServer::Stream App::remoteStream(size_t file) {
+    const std::string id = book_->files[file].string();
+    if (readAhead_ && readAhead_->trackId == id && readAhead_->bitrate == streamingBitrate()) return readAhead_->stream;
+    return newStream(file);
+}
+
+MusicServer::Stream App::newStream(size_t file) {
+    MusicServer::Stream stream = server_.stream(book_->files[file].string(), streamingBitrate());
+    // A transcode often has no length of its own: the server's listing has it.
+    if (stream.transcoded && file < book_->durations.size()) stream.transcoded->duration = book_->durations[file];
+    return stream;
 }
 
 void App::rememberPosition() {

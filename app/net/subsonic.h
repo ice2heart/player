@@ -25,8 +25,6 @@ class Subsonic : public MusicServer {
 public:
     struct Config {
         std::string url, user, password;
-        std::string format; // "raw" or empty: the original file; else a transcode ("mp3", "opus")
-        int maxBitrate = 0; // kbps, 0 = no limit
     };
     // The server.* keys of config.yaml.
     static Config configFrom(const Settings& config);
@@ -54,10 +52,18 @@ public:
     RequestId playlists(Done<RemotePlaylist> done) override;
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override;
     void cancel(RequestId id) override;
-    std::string streamUrl(const std::string& trackId) const override;
+    // A transcode is MP3: every Subsonic server can make it, and every bit rate
+    // of the Streaming quality setting is a standard MP3 rate. It seeks with
+    // timeOffset when the server has the OpenSubsonic extension transcodeOffset.
+    // The first transcode asks the server for its extensions (and the next one
+    // again if no answer came, or an error, up to three errors: a server that is
+    // not OpenSubsonic); until the answer is in, a transcode gets no offset URL,
+    // so it seeks by opening it again from the start.
+    Stream stream(const std::string& trackId, int maxBitRate) override;
     void poll() override;
 
     static constexpr int kMaxPageSize = 500; // getAlbumList2 returns at most this many
+    static constexpr const char* kTranscodeFormat = "mp3";
 
 private:
     using Params = std::vector<std::pair<std::string, std::string>>;
@@ -65,7 +71,7 @@ private:
     struct Reply {
         Error error = Error::None;
         std::variant<std::monostate, ServerInfo, std::vector<RemoteAlbum>, std::vector<RemoteArtist>,
-                     std::vector<RemoteTrack>, std::vector<RemotePlaylist>>
+                     std::vector<RemoteTrack>, std::vector<RemotePlaylist>, std::vector<std::string>>
             data;
         bool more = false;
     };
@@ -78,12 +84,16 @@ private:
     std::string url(const std::string& method, const Params& params) const;
     RequestId request(const std::string& method, const Params& params, Parser parse, std::function<void(Reply)> done);
     template <class T, class P> RequestId list(const std::string& method, const Params& params, P parse, Done<T> done);
+    void askExtensions(); // getOpenSubsonicExtensions, for transcodeOffset_
 
     Config config_;
     SaltSource salt_;
     std::shared_ptr<Inbox> inbox_ = std::make_shared<Inbox>();
     RequestId lastId_ = 0;
     std::unordered_map<RequestId, std::function<void(Reply)>> waiting_; // UI thread only
+    enum class Known { NotYet, Asking, Yes, No };
+    Known transcodeOffset_ = Known::NotYet; // whether a transcode can start later (timeOffset)
+    int extensionErrors_ = 0;               // answers to getOpenSubsonicExtensions that were errors
     std::unique_ptr<Http> http_; // reset first in the destructor
 };
 

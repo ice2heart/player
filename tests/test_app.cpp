@@ -243,7 +243,7 @@ TEST_F(AppTest, ChoosingAValueFromTheListSavesItAppliesItAndGoesBack) {
     EXPECT_EQ(configFile.onDisk("speech.rate"), "250") << "written at once";
     EXPECT_EQ(speech.rate, 250);
     EXPECT_EQ(level().title, "Settings");
-    EXPECT_EQ(speech.last(), "Speech rate, 250 words per minute, 1 of 10");
+    EXPECT_EQ(speech.last(), "Speech rate, 250 words per minute, 1 of 11");
 }
 
 TEST_F(AppTest, LeavingAValueListChangesNothing) {
@@ -254,7 +254,7 @@ TEST_F(AppTest, LeavingAValueListChangesNothing) {
     press(Button::Home);
     EXPECT_EQ(level().title, "Settings");
     EXPECT_EQ(settings.getInt("volume", 70), 70);
-    EXPECT_EQ(speech.last(), "Volume, 70 percent, 2 of 10");
+    EXPECT_EQ(speech.last(), "Volume, 70 percent, 2 of 11");
 }
 
 TEST_F(AppTest, LeftAndRightChangeASettingInPlace) {
@@ -312,7 +312,7 @@ TEST_F(AppTest, LeftAndRightDoNothingOnItemsWithoutAValue) {
         int stops = speech.stops;
         press(b);
         EXPECT_EQ(level().title, "Settings");
-        EXPECT_EQ(level().index, 9u);
+        EXPECT_EQ(level().index, 10u);
         EXPECT_EQ(speech.said.size(), said) << "silent";
         EXPECT_EQ(sounds.played.size(), played) << "silent";
         EXPECT_EQ(speech.stops, stops) << "speech goes on";
@@ -850,7 +850,7 @@ TEST_F(AppTest, SleepTimerAtEndOfALooseTrack) {
     hold(Button::Home);
     open("Settings");
     hold(Button::Down);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 10 of 10");
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 11 of 11");
 }
 
 TEST_F(AppTest, MusicDoesNotTakeOverTheBookToResume) {
@@ -2416,11 +2416,11 @@ TEST_F(AppTest, SleepTimerIsInSettings) {
     hold(Button::Home);
     open("Settings");
     hold(Button::Down);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 10 of 10");
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 11 of 11");
     press(Button::Ok);
     open("15 minutes");
     EXPECT_EQ(level().title, "Settings") << "choosing a time goes back";
-    EXPECT_EQ(speech.last(), "Sleep timer, 15 minutes left, 10 of 10");
+    EXPECT_EQ(speech.last(), "Sleep timer, 15 minutes left, 11 of 11");
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "Sleep timer. 15 minutes, current, 3 of 7") << "opens on the timer that is set";
     press(Button::Home);
@@ -2572,4 +2572,120 @@ TEST_F(AppTest, FactoryResetKeepsTheServerAndForgetsThePlace) {
     EXPECT_EQ(app->mode(), App::Mode::Menu) << "nothing to resume";
     app->shutdown();
     for (const auto& [key, value] : stateFile.file) EXPECT_NE(key.rfind("pos:", 0), 0u) << key;
+}
+
+// ---------------------------------------------------------------- streaming quality
+
+TEST_F(AppTest, StreamingQualityIsASettingThatDefaultsToTheOriginalFile) {
+    start();
+    open("Settings");
+    open("Streaming quality");
+    EXPECT_EQ(speech.last(), "Streaming quality. original file, current, 1 of 4");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"original file", "320 kilobits per second", "192 kilobits per second",
+                                                  "128 kilobits per second"}));
+}
+
+TEST_F(AppTest, TheOriginalFileStreamsWithoutATranscode) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 1));
+    EXPECT_EQ(player.file, "fake://stream/t2") << "no maxBitRate, no format";
+    EXPECT_FALSE(player.transcoded) << "it seeks with Range";
+}
+
+// A transcode seeks by opening its offset URL (timeOffset), with the length the server lists.
+TEST_F(AppTest, ATranscodeIsOpenedWithItsOffsetUrlAndTheServersLength) {
+    settings.setInt("streaming.bitrate", 128);
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 1));
+    EXPECT_EQ(player.file, "fake://stream/t2?maxBitRate=128");
+    ASSERT_TRUE(player.transcoded);
+    EXPECT_EQ(player.transcoded->offsetUrl, "fake://stream/t2?maxBitRate=128&timeOffset=");
+    EXPECT_DOUBLE_EQ(player.transcoded->duration, 180) << "Rain, as the server lists it";
+    player.pos = 170;
+    press(Button::Forward); // 30 s on would be past the end of Rain's 180 s
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_DOUBLE_EQ(player.pos, 179);
+}
+
+TEST_F(AppTest, ChangingTheQualityTakesEffectWithTheNextTrack) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    hold(Button::Home);
+    open("Settings");
+    open("Streaming quality");
+    open("192 kilobits per second");
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1"})) << "Storm Front plays on as it is";
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t2?maxBitRate=192");
+    ASSERT_TRUE(player.transcoded);
+    EXPECT_DOUBLE_EQ(player.transcoded->duration, 180);
+}
+
+TEST_F(AppTest, TheStreamingQualityIsSavedAndKeptAcrossARestart) {
+    start();
+    open("Settings");
+    open("Streaming quality");
+    open("320 kilobits per second");
+    EXPECT_EQ(configFile.onDisk("streaming.bitrate"), "320");
+    app->shutdown();
+    app.reset();
+    Settings reloaded{&configFile}; // config.yaml as the next start reads it
+    reloaded.load();
+    app = std::make_unique<App>(speech, player, sounds, volume, server, reloaded, state, clock, root, music);
+    app->start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    EXPECT_EQ(player.file, "fake://stream/t1?maxBitRate=320");
+    app.reset(); // before `reloaded` goes
+}
+
+// After a dropout Play opens the track again where it stopped: a transcode
+// does that through its offset URL, so the player is told it is one.
+TEST_F(AppTest, PlayAfterATranscodeBrokeOffOpensItAsATranscodeAtItsPlace) {
+    settings.setInt("streaming.bitrate", 128);
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.pos = 42;
+    player.broken = true;
+    app->tick();
+    ASSERT_TRUE(speech.heard("Server not reachable. Press play to try again."));
+    player.transcoded.reset();
+    press(Button::PlayPause);
+    EXPECT_EQ(player.file, "fake://stream/t1?maxBitRate=128");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    ASSERT_TRUE(player.transcoded);
+    EXPECT_EQ(player.transcoded->offsetUrl, "fake://stream/t1?maxBitRate=128&timeOffset=");
+}
+
+// The player takes a pre-open over only for the same URL. A real server's URL
+// has a fresh salt each time, so the pre-opened stream is the one opened.
+TEST_F(ReadAheadTest, ATranscodeIsPreOpenedAtTheQualitySetAndOpenedWithTheSameUrl) {
+    settings.setInt("streaming.bitrate", 128);
+    server.saltUrls = true;
+    playWeather();
+    ASSERT_DOUBLE_EQ(player.duration(), 200) << "Storm Front's length from the server";
+    player.pos = 195;
+    app->tick();
+    ASSERT_TRUE(player.preloaded);
+    EXPECT_EQ(player.preloaded->rfind("fake://stream/t2?maxBitRate=128#", 0), 0u) << *player.preloaded;
+    std::string preloaded = *player.preloaded;
+    app->tick();
+    EXPECT_EQ(player.preloads.size(), 1u) << "not asked again at every tick";
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, preloaded);
+    EXPECT_EQ(player.adopted, 1);
+    ASSERT_TRUE(player.transcoded);
+    EXPECT_DOUBLE_EQ(player.transcoded->duration, 180);
+}
+
+TEST_F(ReadAheadTest, ChangingTheQualityDuringAPreOpenPreOpensAtTheNewOne) {
+    nearTheEnd();
+    settings.setInt("streaming.bitrate", 192); // as the Settings menu sets it
+    app->tick();
+    EXPECT_EQ(player.preloaded, "fake://stream/t2?maxBitRate=192");
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t2?maxBitRate=192");
+    EXPECT_EQ(player.adopted, 1);
 }

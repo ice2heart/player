@@ -39,7 +39,7 @@ interface, with no change to `App`.
 | Album tracks | `getAlbum?id=` | `song[]` with `id, title, track, duration, suffix, artist`. |
 | Playlists | `getPlaylists`, `getPlaylist?id=` | The test server has none yet. |
 | Search | `search3?query=` | Needs text input (STT), so it comes later. |
-| Audio | `stream?id=` | Without `format`, the original file is sent (FLAC on the test server). **FFmpeg opens the URL as it is**: `ffprobe` read the format and the duration. Seeking uses HTTP Range. |
+| Audio | `stream?id=` | Without `format`, the original file is sent (FLAC on the test server). **FFmpeg opens the URL as it is**: `ffprobe` read the format and the duration. Seeking uses HTTP Range. With `format=mp3&maxBitRate=128` it is a transcode: `Accept-Ranges: none`, no length, and a Range header is ignored; `timeOffset=<s>` (extension `transcodeOffset`) starts it later. FFmpeg reports its end as a read error. |
 | Original file | `download?id=` | For the cache (phase 3). |
 | Played | `scrobble?id=&submission=` | For server play counts and "recent". |
 | Position | `createBookmark` / `getBookmarks`, `savePlayQueue` / `getPlayQueue` | For audiobook and queue sync (phase 5). |
@@ -102,6 +102,7 @@ The layering rules in CLAUDE.md still hold:
       virtual RequestId playlistTracks(std::string id, Done<RemoteTrack> done) = 0;
       virtual void cancel(RequestId id) = 0; // its callback will not run
       virtual std::string streamUrl(const std::string& trackId) const = 0; // what Player opens
+      // (since step 2.4: Stream stream(trackId, maxBitRate), the URL and, for a transcode, its offset URL)
       virtual void poll() = 0; // UI thread: run callbacks of finished requests
   };
   ```
@@ -140,6 +141,8 @@ speech:
   rate: 220
 volume: 70
 verbosity: 1
+streaming:
+  bitrate: 0                # Streaming quality: 0 = the original file, or 320 / 192 / 128 kbps MP3
 skip:
   back: 10
   forward: 30
@@ -157,9 +160,10 @@ server:
   url: https://navidrome.microserver
   user: ice
   password: "..."           # quote it: an all-digit password would be read as a number
-  format: raw               # raw | mp3 | opus  (transcode on slow Wi-Fi)
-  max_bitrate: 0            # kbps, 0 = no limit
 ```
+
+(Phase 1 read `server.format` and `server.max_bitrate`; since step 2.4 the Streaming
+quality setting, `streaming.bitrate`, replaces them, and they are not read.)
 
 - **The existing keys map directly.** The setting keys are already dotted
   (`speech.rate`, `skip.back`, `buttons.long_press_ms`, ...), so nested YAML is
@@ -329,7 +333,7 @@ a stream after a restart.
 | ✅ 2.1 | **Asynchronous `Player::open`.** Open on the decoder thread. `MediaPlayer` gets `opening()` (it has `failed()` since phase 1), or an open callback. `App` speaks "Loading" and stays responsive. | Keys are answered while an open is pending. A late open result after Home or after choosing another track does nothing. A failed asynchronous open says "Server not reachable". Media test: opening an unreachable URL does not block the caller. |
 | ✅ 2.2 | **Buffering feedback.** If the content stream runs dry while playing, play a "buffering" earcon (a new `Earcon`), and say "Waiting for network" after 3 s. Retry with backoff, and do not skip the track because of a short dropout. | Dry and recovered within 3 s: earcon only, same track. Dry for more than 3 s: the phrase is spoken once. Retries give up after the cap and fall back to phase 1's "Server not reachable. Press play to try again." |
 | ✅ 2.3 | **Read-ahead.** Open the next track's connection about 10 s before the current one ends, so tracks change without a gap on a slow link. | The next URL is opened about 10 s before the end (fake clock). A pre-opened track that fails falls back to a normal open. Leaving the album drops the pre-open. |
-| 2.4 | **Quality setting** (`choice()` in Settings → Streaming quality: Original / 320 / 192 / 128 kbps, default Original), saved in `config.yaml`. With transcoding, seek with `timeOffset` (extension `transcodeOffset`) instead of Range. | The stream URL carries `maxBitRate` / `format`, or neither for Original. A seek on a transcoded stream uses `timeOffset`, not Range. The setting persists across a restart. |
+| ✅ 2.4 | **Quality setting** (`choice()` in Settings → Streaming quality: Original / 320 / 192 / 128 kbps, default Original), saved in `config.yaml`. With transcoding, seek with `timeOffset` (extension `transcodeOffset`) instead of Range. | The stream URL carries `maxBitRate` / `format`, or neither for Original. A seek on a transcoded stream uses `timeOffset`, not Range. The setting persists across a restart. |
 | 2.5 | **Scrobble**: `scrobble submission=false` when a track starts and `true` after half of it or 4 min, so "Recently played" on the server is right. | The fake server records both calls at the right times. A skip before half sends no `true`. A failed scrobble says nothing. |
 | 2.6 | **Remember the place.** `last_stream` (server + album/playlist id + track + position) in `state.tsv`, so the device resumes after a restart. "Now playing" on Home works for streams too. | Exit and restart resume the same album, track and position. With the server down, resume says "Server not reachable". A local `last_book` still works. |
 | 2.7 | **Star / unstar** from the Player menu, and a **Starred** list in Streaming. | Star and unstar call the server. Starred loads like the other lists (Loading, filled, error). An error is spoken. |

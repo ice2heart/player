@@ -61,11 +61,15 @@ public:
 // another path replaces it and cancelPreload() drops it; an open() of another
 // path and close() leave it. `preloads` records every call, local paths too
 // (which the player ignores).
+//
+// An open with `transcoded` records it; like the real Player, duration() is then
+// the one given there, not `length`.
 class FakePlayer : public MediaPlayer {
 public:
-    bool open(const std::string& path, double startAt) override {
+    bool open(const std::string& path, double startAt, std::optional<Transcoded> how) override {
         if (beforeOpen) beforeOpen(path);
         opened.push_back(path);
+        transcoded = std::move(how);
         bool taken = preloaded == path;
         bool ready = taken && preloadWorked_;
         if (taken) preloaded.reset();
@@ -110,7 +114,7 @@ public:
     void seek(double seconds) override { pos = seconds; }
     // Like the real Player, a closed player is at 0 and has no length.
     double position() const override { return isOpen_ ? pos : 0; }
-    double duration() const override { return isOpen_ ? length : 0; }
+    double duration() const override { return !isOpen_ ? 0 : transcoded ? transcoded->duration : length; }
     const std::vector<Chapter>& chapters() const override { return embedded; }
     bool finished() const override { return isOpen_ && playing_ && atEnd && !broken; }
     bool failed() const override { return isOpen_ && playing_ && broken; }
@@ -119,6 +123,7 @@ public:
 
     std::vector<std::string> opened;
     std::string file;
+    std::optional<Transcoded> transcoded; // of the last open
     double pos = 0;
     double length = 600;
     std::vector<Chapter> embedded;
@@ -220,7 +225,16 @@ public:
         cancelled.push_back(id); // poll() skips it, even if answered or polled right now
         pending_.erase(id);
     }
-    std::string streamUrl(const std::string& trackId) const override { return "fake://stream/" + trackId; }
+    // "fake://stream/<id>" for the original file; a transcode adds "?maxBitRate=<kbps>",
+    // and its offset URL "&timeOffset=" after that. With saltUrls each call gives
+    // another URL ("#<n>" at the end), as a real server's fresh salt does.
+    Stream stream(const std::string& trackId, int maxBitRate) override {
+        std::string url = "fake://stream/" + trackId;
+        if (maxBitRate > 0) url += "?maxBitRate=" + std::to_string(maxBitRate);
+        if (saltUrls) url += "#" + std::to_string(++streams_);
+        if (maxBitRate <= 0) return {url, std::nullopt};
+        return {url, Transcoded{url + "&timeOffset=", 0}};
+    }
     void poll() override {
         // Callbacks may make new requests or cancel others, so work on a copy.
         auto batch = std::move(ready_);
@@ -273,6 +287,7 @@ public:
     std::vector<Request> requests;    // every request, in order
     std::vector<RequestId> cancelled; // every cancel() call, in order
     bool isConfigured = true;
+    bool saltUrls = false;
 
 private:
     using PingDone = std::function<void(Error, ServerInfo)>;
@@ -307,6 +322,7 @@ private:
     }
 
     RequestId lastId_ = 0;
+    int streams_ = 0;
     std::map<RequestId, Callback> pending_;                          // asked, not answered yet
     std::vector<std::pair<RequestId, std::function<void()>>> ready_; // answered, waiting for poll()
 };

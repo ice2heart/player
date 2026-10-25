@@ -335,6 +335,7 @@ Home
 │   ├── Wi-Fi
 │   ├── Sync account
 │   ├── Power (auto-sleep time, deep sleep)
+│   ├── Streaming quality (original file, or a transcode for a slow link)
 │   ├── Sleep timer
 │   ├── Language
 │   └── About / Update / Reset
