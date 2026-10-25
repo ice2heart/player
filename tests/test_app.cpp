@@ -1035,13 +1035,73 @@ TEST_F(AppTest, ARemoteTrackThatFailsWhenTheOneBeforeEndsStopsThere) {
     EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1", "fake://stream/t2"}))
         << "no other track tried, and no second wait on the server";
     EXPECT_FALSE(player.playing());
-    EXPECT_EQ(app->nowPlaying().chapter, "Storm Front") << "the finished track stays the current one";
+    // Storm Front was heard to the end: the track that failed is the current one,
+    // so Play does not open the finished one again (a transcode cannot seek to its end).
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain");
     player.unopenable.clear(); // the server is back
     press(Button::PlayPause);
-    EXPECT_EQ(player.file, "fake://stream/t1");
-    EXPECT_DOUBLE_EQ(player.pos, 200);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
     EXPECT_TRUE(player.playing());
     expectNoUrlSpoken(speech);
+}
+
+// Wi-Fi off during play: what was buffered runs out, then the stream fails.
+TEST_F(AppTest, AStreamThatBreaksOffSaysServerNotReachableAndPlayResumesThere) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.pos = 120;
+    player.broken = true;
+    app->tick();
+    EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1"})) << "no wait on the server for Rain";
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
+    press(Button::PlayPause);
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 120);
+    EXPECT_TRUE(player.playing());
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(AppTest, TheLastStreamBreakingOffIsNotTheEndOfTheMusic) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 2));
+    player.pos = 100;
+    player.broken = true;
+    app->tick();
+    EXPECT_FALSE(speech.heard("End of music. Press play to start again."));
+    EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.");
+    press(Button::PlayPause);
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    EXPECT_DOUBLE_EQ(player.pos, 100);
+}
+
+// The player is closed until Play: it knows neither the place nor the length.
+TEST_F(AppTest, WhereAmIAfterAFailedRemoteTrackSaysNoTimeLeft) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.pos = 42;
+    player.unopenable = {"fake://stream/t2"};
+    hold(Button::Forward); // fails: Storm Front stays current, closed
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Weather. Track 1 of 3, Storm Front. Paused.");
+    EXPECT_DOUBLE_EQ(app->nowPlaying().position, 42) << "where Play opens it";
+}
+
+TEST_F(AppTest, ALocalBookThatCannotBeOpenedLeavesTheRemoteTrackPlaying) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.pos = 42;
+    player.unopenable = {alphaFile(1), alphaFile(2)};
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    EXPECT_TRUE(speech.heard("Cannot open 02 - Calm.mp3"));
+    EXPECT_EQ(player.file, "fake://stream/t1") << "its server had nothing to do with it";
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
 }
 
 TEST_F(AppTest, NextAndPreviousRemoteTrackAndWhereAmIUseServerTitles) {
@@ -1438,9 +1498,11 @@ TEST_F(StreamingTest, AServerThisPlayerCannotUseSaysSo) {
     settings.setString("server.type", "audiobookshelf");
     settings.setString("server.url", "https://books.example");
     openServer();
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Server type not supported"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server not supported"}));
     press(Button::Ok);
     EXPECT_NE(speech.last().find("Subsonic"), std::string::npos) << speech.last();
+    // Also what a build without network support says: it must not blame the type alone.
+    EXPECT_NE(speech.last().find("network support"), std::string::npos) << speech.last();
     EXPECT_EQ(speech.last().find("https://"), std::string::npos) << "the address is not spoken";
 }
 
@@ -1738,6 +1800,18 @@ TEST_F(AppTest, ShutdownAfterPowerOffDoesNotWriteTheSameStateAgain) {
     open("Power off");
     app->shutdown(); // what the front end does once the goodbye is heard
     EXPECT_EQ(stateFile.saves, 1);
+    EXPECT_EQ(stateFile.onDisk("pos:" + alpha().string()), "0:33.0");
+}
+
+TEST_F(AppTest, AStateWriteThatFailedIsTriedAgainOnTheNextExit) {
+    playAlpha();
+    player.pos = 33;
+    stateFile.failSaves = true; // the card is read-only for a moment
+    press(Button::Power);       // sleep: the write fails
+    stateFile.failSaves = false;
+    press(Button::Ok); // wake
+    hold(Button::Power);
+    open("Power off"); // nothing changed since the sleep, but it is not on disk yet
     EXPECT_EQ(stateFile.onDisk("pos:" + alpha().string()), "0:33.0");
 }
 

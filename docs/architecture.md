@@ -169,7 +169,10 @@ Rules:
   resumes at the same byte). Not `reconnect_on_network_error`, so an unreachable
   server fails at once, and not `reconnect_streamed`, which would restart a
   stream without a length from the beginning. DNS lookups (`getaddrinfo`) are
-  not interruptible and are not covered by the cap.
+  not interruptible and are not covered by the cap. A stream that ends with a
+  network error (the reconnects gave up) is not finished: once what came has been
+  heard, `failed()` is true and `finished()` stays false. A local file never fails
+  this way.
 - **FFmpeg log:** `Player` installs an `av_log` callback that prints errors only
   and cuts every URL to its scheme and host, and every other `?query`, since some
   FFmpeg messages print URLs or request lines.
@@ -306,7 +309,7 @@ Home
 │   └── Server status              ("Checking the server.", then "Connected to Navidrome 0.64.2." or the error)
 │       <album> → Play album · <tracks>   (OK plays from that track to the end, via playRemote())
 │       No server: one item, "No server set up" (OK says how to add one);
-│       a server type this build cannot use: "Server type not supported"
+│       a server this build cannot use (another type, or no OAP_BUILD_NET): "Server not supported"
 ├── Podcasts                       (placeholder)
 ├── Settings
 │   ├── Speech rate      100–460 wpm
@@ -390,8 +393,15 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   other track is tried** (each try could block for the network timeout). What was current
   before stays current and paused at the same place. If that is a remote track it is **not
   opened again at once** (it would wait on the same dead server): `reopenAt_` holds its
-  position and Play opens it. At the end of a remote list the first track is likewise opened
-  only on Play.
+  position and Play opens it. When the next track fails at the end of one, the track that
+  failed becomes current at 0 instead, so Play does not reopen the one just heard. At the end
+  of a remote list the first track is likewise opened only on Play. A local book that cannot
+  be opened leaves a remote track that was playing open and playing.
+- A stream that **breaks off** mid-track (`MediaPlayer::failed()`, e.g. Wi-Fi off) says
+  "Server not reachable. Press play to try again." once the buffered audio has been heard
+  (`App::onStreamFailed()`). The track stays current, closed, with `reopenAt_` at the place
+  it got to; the next track is not tried. While a remote track is closed, "where am I" and
+  Album info leave out the time left, which the closed player does not know.
 - The open blocks the UI thread (up to 10 s, see Streams in §4), so `openFile()` says
   "Loading." before every remote open the user asked for. The next track at the end
   of one opens without it.
@@ -413,13 +423,15 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   or at once when chosen from the list), and on exit if the player volume changed.
   Writing drops comments; the file gets a header naming the keys, and keys in a
   fixed order. Numbers are written plain and everything else quoted, the password
-  always. A file that does not parse is reported on stderr, the defaults are used,
-  and it is never overwritten.
+  always. A file that does not parse, or is there but cannot be read, is reported
+  on stderr, the defaults are used, and it is never overwritten. A `config.yaml` or
+  `state.tsv` that is a symbolic link stays one: the file it points to is replaced.
 - **State is written only on exit and on sleep**, to spare the flash: Power off,
   Restart, Sleep and `App::shutdown()` (the front ends call it on SIGTERM / SIGINT /
   SIGHUP and when the window closes). Pause and a book change only update the map
   in memory, so switching back to a book still resumes it. The file is written
-  only when the map differs from what was last loaded or written. A crash or
+  only when the map differs from what was last loaded or written (a write that
+  failed counts as not written, so the next exit tries again). A crash or
   power loss loses the place since the last exit.
 - Up / Down in the player change the volume in memory; it is written on exit.
 - **Factory reset** clears both, but keeps the `server.*` keys, and restarts

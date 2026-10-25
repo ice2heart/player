@@ -13,7 +13,7 @@ class SettingsStore {
 public:
     virtual ~SettingsStore() = default;
     virtual SettingsMap load() = 0; // empty when there is no file yet
-    virtual void save(const SettingsMap& values) = 0;
+    virtual bool save(const SettingsMap& values) = 0; // false: not written (the reason is printed)
 };
 
 // Flat key/value map with dotted keys ("speech.rate", "server.url"), kept in
@@ -25,7 +25,7 @@ public:
     explicit Settings(SettingsStore* store) : store_(store) {}
 
     void load();
-    void save() const;
+    bool save() const; // false when the store could not write it
     void clear() { values_.clear(); }
     void clearExcept(const std::string& prefix); // keeps the keys starting with `prefix`
 

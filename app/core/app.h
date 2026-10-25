@@ -170,6 +170,7 @@ private:
     bool gotoChapter(int index); // false if its file did not open
     void stepChapter(int direction);
     void onFileFinished();
+    void onStreamFailed(); // a remote track broke off: stop, and open it there on Play
     void rememberPosition(); // in the state map only, written by saveOnExit()
     std::string playerStatus() const;
 

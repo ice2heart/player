@@ -153,10 +153,12 @@ int unusedPort() {
 // An HTTP server on the loopback interface, so the stream tests need no
 // internet. Each connection gets `reply` once its request has arrived and is
 // then held open without another byte until the server is destroyed: a server
-// that has stopped answering.
+// that has stopped answering. With HangUp, the server instead closes the
+// connection and stops listening after the first reply: a server that went away.
 class StalledServer {
 public:
-    explicit StalledServer(std::string reply = {}) : reply_(std::move(reply)) {
+    enum AfterReply { Hold, HangUp };
+    explicit StalledServer(std::string reply = {}, AfterReply after = Hold) : reply_(std::move(reply)), after_(after) {
         fd_ = boundSocket(port_);
         if (fd_ >= 0 && listen(fd_, 4) == 0) thread_ = std::thread([this] { run(); });
         else ADD_FAILURE() << "cannot listen on a loopback socket";
@@ -209,9 +211,16 @@ private:
             if (k <= 0) break;
             sent += size_t(k);
         }
+        if (after_ == HangUp) { // a reconnect is refused
+            ::close(client.fd);
+            client.fd = -1;
+            if (fd_ >= 0) ::close(fd_);
+            fd_ = -1;
+        }
     }
 
     std::string reply_;
+    AfterReply after_;
     int fd_ = -1;
     int port_ = 0;
     std::vector<Client> clients_; // the server thread's
@@ -384,6 +393,37 @@ TEST_F(PlayerTest, AnyUrlIsGivenUpAtTheOpenTimeout) {
     auto start = std::chrono::steady_clock::now();
     stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(player.open(url)); });
     EXPECT_LT(secondsSince(start), kSlowMachine);
+}
+
+// Plays until the player has finished or failed, or `limit` has passed.
+void playOut(Player& player, Mixer& mixer, std::chrono::seconds limit) {
+    std::vector<float> buf(1024 * AudioStream::kChannels);
+    auto deadline = std::chrono::steady_clock::now() + limit;
+    while (!player.finished() && !player.failed() && std::chrono::steady_clock::now() < deadline)
+        if (mixer.content().read(buf.data(), 1024) == 0) std::this_thread::sleep_for(1ms);
+}
+
+// Wi-Fi off or the server gone mid-track: once FFmpeg's reconnects give up
+// (about 4 s), the stream has failed, at the place it got to. It has not ended.
+TEST_F(PlayerTest, AStreamThatBreaksOffFailsInsteadOfFinishing) {
+    StalledServer server(partialWavReply(20, 6), StalledServer::HangUp);
+    Player player(mixer_);
+    ASSERT_TRUE(player.open(server.url("/tone.wav")));
+    player.play();
+    stderrOf(dir_ / "stderr.txt", [&] { playOut(player, mixer_, 9s); });
+    EXPECT_TRUE(player.failed());
+    EXPECT_FALSE(player.finished());
+    EXPECT_NEAR(player.position(), 6.0, 0.1);
+}
+
+TEST_F(PlayerTest, AWholeStreamFinishesAndDoesNotFail) {
+    StalledServer server(partialWavReply(6, 6), StalledServer::HangUp);
+    Player player(mixer_);
+    ASSERT_TRUE(player.open(server.url("/tone.wav")));
+    player.play();
+    playOut(player, mixer_, 9s);
+    EXPECT_TRUE(player.finished());
+    EXPECT_FALSE(player.failed());
 }
 
 // The decoder thread waits for data that never comes: close() (also run by the

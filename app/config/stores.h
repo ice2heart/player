@@ -12,7 +12,7 @@ class TsvStore : public SettingsStore {
 public:
     explicit TsvStore(std::filesystem::path file) : file_(std::move(file)) {}
     SettingsMap load() override;
-    void save(const SettingsMap& values) override;
+    bool save(const SettingsMap& values) override;
 
 private:
     std::filesystem::path file_;
@@ -25,7 +25,7 @@ class YamlStore : public SettingsStore {
 public:
     explicit YamlStore(std::filesystem::path file) : file_(std::move(file)) {}
     SettingsMap load() override;
-    void save(const SettingsMap& values) override;
+    bool save(const SettingsMap& values) override;
 
 private:
     std::filesystem::path file_;

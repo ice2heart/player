@@ -41,8 +41,14 @@ void syncFolder(const std::filesystem::path& folder) {
 }
 } // namespace
 
-bool writeFileAtomically(const std::filesystem::path& file, const std::string& contents) {
+bool writeFileAtomically(const std::filesystem::path& link, const std::string& contents) {
     std::error_code ec;
+    // A link stays a link: the file it points to is replaced, next to it.
+    std::filesystem::path file = link;
+    if (std::filesystem::is_symlink(link, ec)) {
+        auto target = std::filesystem::weakly_canonical(link, ec);
+        if (!ec) file = target;
+    }
     if (file.has_parent_path()) std::filesystem::create_directories(file.parent_path(), ec);
     std::filesystem::path tmp = file;
     tmp += ".tmp";

@@ -156,6 +156,8 @@ bool Player::open(const std::string& path, double startAt) {
     close();
     stop_ = false; // from here on, the interrupt callback lets FFmpeg wait
 
+    isUrl_ = isUrl(path);
+    failed_ = false;
     if (!openInput(path)) {
         close();
         return false;
@@ -239,7 +241,11 @@ double Player::position() const {
 }
 
 bool Player::finished() const {
-    return isOpen() && playing_ && eof_ && seekRequest_ < 0 && mixer_.content().buffered() == 0;
+    return isOpen() && playing_ && eof_ && !failed_ && seekRequest_ < 0 && mixer_.content().buffered() == 0;
+}
+
+bool Player::failed() const {
+    return isOpen() && playing_ && eof_ && failed_ && seekRequest_ < 0 && mixer_.content().buffered() == 0;
 }
 
 void Player::decodeLoop() {
@@ -258,6 +264,8 @@ void Player::decodeLoop() {
                 endPts_ = target;
                 skipUntil_ = target;
                 eof_ = false;
+                failed_ = false;
+                if (fmt_->pb) fmt_->pb->error = 0; // the seek got through: an earlier error is over
                 readErrors = 0;
             } else {
                 // Keep the queued audio and position. FFmpeg drops its read buffers even when the
@@ -287,6 +295,8 @@ void Player::decodeLoop() {
                          errorText(err).c_str());
         }
         bool flushing = err < 0;
+        // A stream that ends with a network error (reconnects gave up) has failed: it did not end.
+        if (flushing && isUrl_ && fmt_->pb && fmt_->pb->error < 0 && fmt_->pb->error != AVERROR_EOF) failed_ = true;
         if (!flushing && packet->stream_index != stream_->index) {
             av_packet_unref(packet);
             continue;

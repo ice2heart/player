@@ -154,6 +154,22 @@ TEST_F(ConfigTest, AFileThatIsNotASetOfKeysIsNeverOverwritten) {
     }
 }
 
+// E.g. edited with sudo and now owned by root: the server set up in it must survive.
+TEST_F(ConfigTest, AFileThatCannotBeReadIsNeverOverwritten) {
+    std::string text = "server:\n  url: https://music.example\n";
+    write(dir / "config.yaml", text);
+    fs::permissions(dir / "config.yaml", fs::perms::none);
+    if (readFile(dir / "config.yaml")) { // root reads it anyway
+        fs::permissions(dir / "config.yaml", kOwnerOnly);
+        GTEST_SKIP() << "the file stays readable for this user";
+    }
+    YamlStore store(dir / "config.yaml");
+    EXPECT_TRUE(store.load().empty());
+    EXPECT_FALSE(store.save({{"volume", "50"}}));
+    fs::permissions(dir / "config.yaml", kOwnerOnly);
+    EXPECT_EQ(read(dir / "config.yaml"), text);
+}
+
 TEST_F(ConfigTest, TsvStoreSavesAndLoads) {
     TsvStore store(dir / "state.tsv");
     EXPECT_TRUE(store.load().empty());
@@ -185,6 +201,18 @@ TEST_F(ConfigTest, AnAtomicWriteReplacesTheFileAndLeavesNoTempFile) {
     EXPECT_TRUE(writeFileAtomically(dir / "a.txt", "new"));
     EXPECT_EQ(read(dir / "a.txt"), "new");
     EXPECT_FALSE(fs::exists(dir / "a.txt.tmp"));
+}
+
+// E.g. config.yaml linked to a file on the boot partition, to edit it from a PC.
+TEST_F(ConfigTest, AnAtomicWriteToALinkWritesTheFileItPointsTo) {
+    fs::create_directories(dir / "boot");
+    write(dir / "boot" / "config.yaml", "old");
+    fs::create_symlink(fs::path("boot") / "config.yaml", dir / "config.yaml");
+    EXPECT_TRUE(writeFileAtomically(dir / "config.yaml", "new"));
+    EXPECT_TRUE(fs::is_symlink(dir / "config.yaml")) << "the link stays a link";
+    EXPECT_EQ(read(dir / "boot" / "config.yaml"), "new");
+    EXPECT_FALSE(fs::exists(dir / "config.yaml.tmp"));
+    EXPECT_FALSE(fs::exists(dir / "boot" / "config.yaml.tmp"));
 }
 
 TEST_F(ConfigTest, AFailedWriteKeepsTheOldFile) {

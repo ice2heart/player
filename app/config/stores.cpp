@@ -151,12 +151,20 @@ std::string nestYaml(const SettingsMap& values) {
 
 SettingsMap TsvStore::load() { return parseTsv(readFile(file_).value_or("")); }
 
-void TsvStore::save(const SettingsMap& values) { writeFileAtomically(file_, formatTsv(values)); }
+bool TsvStore::save(const SettingsMap& values) { return writeFileAtomically(file_, formatTsv(values)); }
 
 SettingsMap YamlStore::load() {
     unreadable_ = false;
     auto text = readFile(file_);
-    if (!text) return {};
+    if (!text) {
+        std::error_code ec;
+        if (std::filesystem::exists(file_, ec) || ec) { // there, but not for us to read
+            unreadable_ = true;
+            std::fprintf(stderr, "%s: cannot read it. Using default settings; the file will not be changed.\n",
+                         file_.c_str());
+        }
+        return {};
+    }
     try {
         return flattenYaml(*text);
     } catch (const YAML::Exception& e) {
@@ -166,12 +174,12 @@ SettingsMap YamlStore::load() {
     }
 }
 
-void YamlStore::save(const SettingsMap& values) {
+bool YamlStore::save(const SettingsMap& values) {
     if (unreadable_) {
         std::fprintf(stderr, "%s: not saved, the file has an error. Fix it and restart.\n", file_.c_str());
-        return;
+        return false;
     }
-    writeFileAtomically(file_, nestYaml(values));
+    return writeFileAtomically(file_, nestYaml(values));
 }
 
 } // namespace oap

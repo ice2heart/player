@@ -66,6 +66,7 @@ public:
 
     // End of file reached while playing and everything has been heard.
     bool finished() const override;
+    bool failed() const override;
 
 private:
     // FFmpeg's interrupt callback, on whichever thread is waiting for I/O.
@@ -93,6 +94,8 @@ private:
     std::atomic<bool> stop_{false};
     std::atomic<bool> playing_{false};
     std::atomic<bool> eof_{false};
+    std::atomic<bool> failed_{false}; // a stream ended with a network error, not at its end
+    bool isUrl_ = false;              // the open input is a stream
     std::atomic<double> seekRequest_{-1};
     std::atomic<double> endPts_{0}; // timestamp of the end of the audio already queued
     double skipUntil_ = 0;          // decoder thread: drop audio before this (exact seek)

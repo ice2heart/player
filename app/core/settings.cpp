@@ -8,8 +8,8 @@ void Settings::load() {
     if (store_) values_ = store_->load();
 }
 
-void Settings::save() const {
-    if (store_) store_->save(values_);
+bool Settings::save() const {
+    return !store_ || store_->save(values_);
 }
 
 void Settings::clearExcept(const std::string& prefix) {

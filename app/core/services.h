@@ -60,6 +60,10 @@ public:
 
     // End of file reached while playing and everything has been heard.
     virtual bool finished() const = 0;
+    // A stream broke off before its end (the network or the server went away)
+    // and everything that came has been heard. finished() stays false then.
+    // Local files never fail this way: a read error there ends the file.
+    virtual bool failed() const = 0;
 };
 
 // Short UI sounds.

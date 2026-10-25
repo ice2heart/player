@@ -37,9 +37,10 @@ constexpr int kRandomAlbums = 50;
 constexpr const char* kNoServerHelp =
     "To stream from your own music server, add a server section with its url, user and password to "
     "config.yaml, then restart the player.";
+// Also what a build without network support says (OAP_BUILD_NET=OFF): core cannot tell the two apart.
 constexpr const char* kUnsupportedServerHelp =
-    "This player streams from Subsonic servers, such as Navidrome. Check the type in the server section of "
-    "config.yaml.";
+    "This player streams only from Subsonic servers, such as Navidrome, and only when it is built with network "
+    "support. Check the type in the server section of config.yaml.";
 
 enum Verbosity { Beginner = 0, Normal = 1, Expert = 2 };
 
@@ -243,6 +244,7 @@ void App::tick() {
 
     // The end of a file is always the end of a chapter, even when the next
     // chapter has the same number (a one-file book or a loose track starts again).
+    if (book_ && player_.failed()) onStreamFailed();
     bool fileFinished = book_ && player_.finished();
     if (fileFinished) onFileFinished();
 
@@ -600,8 +602,7 @@ void App::saveOnExit() {
 // Power off writes, and then the front end's shutdown() would write the same again.
 void App::saveState() {
     if (state_.values() == savedState_) return;
-    state_.save();
-    savedState_ = state_.values();
+    if (state_.save()) savedState_ = state_.values(); // else the next exit tries again
 }
 
 MenuItem App::choice(const std::string& label, const std::string& key,
@@ -746,7 +747,7 @@ std::vector<MenuItem> App::albumMenu(const Book& album) {
 std::vector<MenuItem> App::streamingMenu() {
     if (!server_.configured()) {
         if (serverConfigured(config_)) // set up, but not as a server this player can use
-            return {action("Server type not supported", [this] { say(kUnsupportedServerHelp); })};
+            return {action("Server not supported", [this] { say(kUnsupportedServerHelp); })};
         return {action("No server set up", [this] { say(kNoServerHelp); })};
     }
     std::vector<MenuItem> items;
@@ -1192,11 +1193,16 @@ bool App::switchTo(const Book& book, bool music, size_t file, double position, b
     book_ = std::move(previous);
     music_ = wasMusic;
     fileIndex_ = wasFile;
-    if (book_ && wasOpen && book_->remote) {
+    if (book_ && wasOpen && book_->remote && book.remote) {
         reopenAt_ = wasAt; // its server is likely gone too: open it on Play, not now
     } else if (book_ && wasOpen) {
-        if (!player_.open(book_->files[wasFile].string(), wasAt)) book_.reset(), music_ = false;
-        else if (wasPlaying && !book.remote) player_.play(); // the server is gone: stay paused
+        if (player_.open(book_->files[wasFile].string(), wasAt)) {
+            if (wasPlaying && !book.remote) player_.play(); // the server is gone: stay paused
+        } else if (book_->remote) {
+            reopenAt_ = wasAt; // Play tries it again
+        } else {
+            book_.reset(), music_ = false;
+        }
     }
     return false;
 }
@@ -1357,9 +1363,15 @@ void App::stepChapter(int direction) {
 
 void App::onFileFinished() {
     if (fileIndex_ + 1 < book_->files.size()) {
+        size_t next = fileIndex_ + 1;
         // Quietly: "Loading." between every two tracks of an album would be too much.
-        if (loadFile(fileIndex_ + 1, 0, true, false)) return;
-        if (book_->remote) return; // "Server not reachable" was said: stop here
+        if (loadFile(next, 0, true, false)) return;
+        if (book_->remote) { // "Server not reachable" was said: stop here
+            // The finished track was heard to the end, so Play opens the one that failed.
+            fileIndex_ = next;
+            reopenAt_ = 0.0;
+            return;
+        }
     }
     player_.pause();
     if (book_->remote) { // next play starts the list again, opening it only then
@@ -1372,6 +1384,16 @@ void App::onFileFinished() {
     rememberPosition();
     earcons_.play(Earcon::Close);
     say(music_ ? "End of music. Press play to start again." : "End of book. Press play to start again.");
+}
+
+// What was buffered has been heard. Moving on to the next track would only wait
+// on the same server, so this track stays current and Play opens it again here.
+void App::onStreamFailed() {
+    double at = player_.position();
+    player_.close();
+    reopenAt_ = at;
+    earcons_.play(Earcon::Error);
+    say("Server not reachable. Press play to try again.");
 }
 
 void App::rememberPosition() {
@@ -1390,11 +1412,13 @@ std::string App::playerStatus() const {
     if (list.size() > 1)
         text += std::string(music_ ? "Track " : "Chapter ") + std::to_string(cur + 1) + " of " + std::to_string(list.size()) + ", " +
                 list[size_t(cur)].title + ". ";
-    double chapterEnd = player_.duration();
-    if (book_->files.size() == 1 && size_t(cur) + 1 < list.size()) chapterEnd = list[size_t(cur) + 1].start;
-    text += spokenDuration(chapterEnd - pos) + " left in " + unit() + ". ";
-    if (!music_ && book_->files.size() == 1 && list.size() > 1)
-        text += spokenDuration(player_.duration() - pos) + " left in book. ";
+    if (player_.isOpen()) { // else a remote track opened on Play: no place or length yet
+        double chapterEnd = player_.duration();
+        if (book_->files.size() == 1 && size_t(cur) + 1 < list.size()) chapterEnd = list[size_t(cur) + 1].start;
+        text += spokenDuration(chapterEnd - pos) + " left in " + unit() + ". ";
+        if (!music_ && book_->files.size() == 1 && list.size() > 1)
+            text += spokenDuration(player_.duration() - pos) + " left in book. ";
+    }
     text += player_.playing() ? "Playing." : "Paused.";
     if (sleepDeadline_)
         text += " Sleep timer, " + spokenDuration(std::chrono::duration<double>(*sleepDeadline_ - clock_.now()).count()) + " left.";
@@ -1412,7 +1436,7 @@ App::NowPlaying App::nowPlaying() const {
     np.chapter = list.empty() ? "" : list[size_t(cur)].title;
     np.chapterIndex = cur;
     np.chapterCount = int(list.size());
-    np.position = player_.position();
+    np.position = player_.isOpen() ? player_.position() : reopenAt_.value_or(0);
     np.duration = player_.duration();
     if (sleepDeadline_) np.sleepTimerLeft = std::chrono::duration<double>(*sleepDeadline_ - clock_.now()).count();
     return np;

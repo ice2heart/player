@@ -55,6 +55,7 @@ public:
         playing_ = false;
         pos = startAt;
         atEnd = false;
+        broken = false;
         return ok;
     }
     void close() override {
@@ -66,10 +67,12 @@ public:
     void pause() override { playing_ = false; }
     bool playing() const override { return playing_; }
     void seek(double seconds) override { pos = seconds; }
-    double position() const override { return pos; }
-    double duration() const override { return length; }
+    // Like the real Player, a closed player is at 0 and has no length.
+    double position() const override { return isOpen_ ? pos : 0; }
+    double duration() const override { return isOpen_ ? length : 0; }
     const std::vector<Chapter>& chapters() const override { return embedded; }
-    bool finished() const override { return isOpen_ && playing_ && atEnd; }
+    bool finished() const override { return isOpen_ && playing_ && atEnd && !broken; }
+    bool failed() const override { return isOpen_ && playing_ && broken; }
 
     std::vector<std::string> opened;
     std::string file;
@@ -77,6 +80,7 @@ public:
     double length = 600;
     std::vector<Chapter> embedded;
     bool atEnd = false;
+    bool broken = false; // the stream broke off: failed() once playing
     bool openSucceeds = true;
     std::vector<std::string> unopenable; // paths that fail to open
     std::function<void(const std::string& path)> beforeOpen; // e.g. to see what was said by then
@@ -103,9 +107,11 @@ public:
 class FakeStore : public SettingsStore {
 public:
     SettingsMap load() override { return file; }
-    void save(const SettingsMap& values) override {
+    bool save(const SettingsMap& values) override {
+        if (failSaves) return false; // e.g. the card is read-only for a moment
         file = values;
         ++saves;
+        return true;
     }
     std::string onDisk(const std::string& key) const {
         auto it = file.find(key);
@@ -114,6 +120,7 @@ public:
 
     SettingsMap file;
     int saves = 0;
+    bool failSaves = false;
 };
 
 // A music server that answers only when the test says so. Every request is

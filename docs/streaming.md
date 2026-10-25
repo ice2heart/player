@@ -297,12 +297,20 @@ The plan above is kept as it was written. Where the code differs, the code is ri
   its full version string, such as "Connected to Navidrome 0.64.2.", or the error.
 - **Albums and playlists** open on "Play album" or "Play playlist", then the tracks.
 - **A server type the player cannot use** (or any server in a build without
-  `OAP_BUILD_NET`) gives one item, "Server type not supported", instead of "No server set up".
+  `OAP_BUILD_NET`) gives one item, "Server not supported", instead of "No server set up".
+  OK says that the player streams only from Subsonic servers and only when built with
+  network support.
 - **Lists from the server are not rebuilt** when the user comes back to them: they
   keep what has loaded.
 - **A remote track that fails** says "Cannot play Storm. Server not reachable." What
   was current before stays current and paused. If that was a remote track too, it is
-  not opened again at once (it would wait on the same server): Play opens it.
+  not opened again at once (it would wait on the same server): Play opens it. When the
+  next track fails at the end of one, the failed track becomes current at 0, so Play
+  opens it and not the finished one again.
+- **A stream that breaks off mid-track** (Wi-Fi off, server gone) is not the end of the
+  track: `MediaPlayer` got `failed()` already (planned for phase 2). Once the buffered audio
+  has been heard it says "Server not reachable. Press play to try again.", tries no
+  other track, and Play opens the track again where it stopped.
 - **No migration from `settings.tsv`.** The old file is not read; settings start from
   the defaults.
 
@@ -311,8 +319,8 @@ The plan above is kept as it was written. Where the code differs, the code is ri
 ## Phase 2: robust streaming
 
 - **Asynchronous `Player::open`.** Open on the decoder thread. `App` speaks
-  "Loading" and stays responsive. `MediaPlayer` gets `opening()` and `failed()`,
-  or an open callback.
+  "Loading" and stays responsive. `MediaPlayer` gets `opening()` (it has `failed()`
+  since phase 1), or an open callback.
 - **Buffering feedback.** If the content stream runs dry while playing, play a
   "buffering" earcon (a new `Earcon`), and say "Waiting for network" after 3 s.
   Retry with backoff, and do not skip the track because of a short dropout.

@@ -127,8 +127,8 @@ these rules too ([streaming.md](streaming.md) has the plan).
   Try again goes back to "Loading" and asks again. Items that had loaded stay.
 - **Without a server the list says why and what to do.** With no `server:`
   section in `config.yaml` the Streaming menu has one item, "No server set up",
-  and OK says how to add one. A server of a type this player cannot use gives
-  "Server type not supported". An empty answer says so too ("No albums",
+  and OK says how to add one. A server this player cannot use (another type, or a
+  build without network support) gives "Server not supported". An empty answer says so too ("No albums",
   "No tracks", "No playlists").
 - **Long lists are paged by the server, not by the user.** Albums A to Z loads
   500 albums and fetches the next 500 in the background while the server has
