@@ -2634,6 +2634,447 @@ TEST_F(StreamingTest, ATrackThatOpensWhileTheUserIsInAnotherMenuPlaysWithoutLeav
     EXPECT_EQ(level().title, menu);
 }
 
+// ---------------------------------------------------------------- resuming a stream after a restart
+
+// The place in a remote album or playlist is kept as last_stream.* in
+// state.tsv, written only on exit and sleep. After a restart "Now playing" on
+// Home loads the list from the server again and opens the track at its place.
+class ResumeStreamTest : public StreamingTest {
+protected:
+    void SetUp() override {
+        StreamingTest::SetUp();
+        settings.setString("server.url", "https://music.example");
+        settings.setString("server.user", "ice");
+        settings.setString("server.password", "secret");
+    }
+    // Home > Server > Recently added > Weather > `track`: it plays.
+    void playFromAlbum(const std::string& track, std::vector<RemoteTrack> tracks = weather()) {
+        openList("Recently added");
+        answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+        open("Weather");
+        answer(std::move(tracks));
+        open(track);
+        ASSERT_TRUE(player.playing());
+    }
+    // Exit, and a new App on what was written to state.tsv, as after a reboot.
+    // `offline` runs between the two, e.g. to edit config.yaml.
+    void reboot(const std::function<void()>& offline = {}) {
+        app->shutdown();
+        app.reset();
+        if (offline) offline();
+        state = Settings(&stateFile);
+        state.load();
+        player = FakePlayer{};
+        speech.said.clear();
+        sounds.played.clear();
+        start();
+    }
+    void expectNoSecretOnDisk() const {
+        for (const auto& [key, value] : stateFile.file) {
+            EXPECT_EQ(value.find("fake://"), std::string::npos) << key;
+            EXPECT_EQ(value.find("secret"), std::string::npos) << key;
+        }
+    }
+};
+
+TEST_F(ResumeStreamTest, ExitAndRestartResumeTheSameAlbumTrackAndPosition) {
+    playFromAlbum("Rain");
+    player.pos = 42;
+    reboot();
+    EXPECT_EQ(stateFile.onDisk("last_stream.server"), "https://music.example");
+    EXPECT_EQ(stateFile.onDisk("last_stream.user"), "ice");
+    EXPECT_EQ(stateFile.onDisk("last_stream.kind"), "album");
+    EXPECT_EQ(stateFile.onDisk("last_stream.id"), "al1");
+    EXPECT_EQ(stateFile.onDisk("last_stream.title"), "Weather");
+    EXPECT_EQ(stateFile.onDisk("last_stream.track"), "1");
+    EXPECT_EQ(stateFile.onDisk("last_stream.track_id"), "t2");
+    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "42.0");
+    expectNoSecretOnDisk();
+
+    // Like a local book, nothing plays at boot; nothing is asked of the server yet.
+    std::size_t requests = server.requests.size();
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(speech.last(), "Home. Now playing, Weather, 1 of 8");
+    EXPECT_EQ(server.requests.size(), requests);
+    EXPECT_TRUE(player.opened.empty());
+
+    press(Button::Ok); // Now playing
+    EXPECT_EQ(speech.last(), "Loading.");
+    EXPECT_EQ(server.lastRequest().kind, Kind::AlbumTracks);
+    EXPECT_EQ(server.lastRequest().arg, "al1");
+    answer(weather());
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t2"}));
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(speech.last(), "Now playing. Weather, Rain.");
+    app->tick();
+    // A resume after a restart is a new play on the server.
+    EXPECT_EQ(server.scrobbles.back(), (FakeMusicServer::Scrobble{"t2", false}));
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t3") << "the rest of the album follows";
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(ResumeStreamTest, AResumeThatOpensInTheBackgroundEntersThePlayerOnceOpen) {
+    playFromAlbum("Rain");
+    player.pos = 42;
+    reboot();
+    player.holdStreams = true;
+    press(Button::Ok);
+    answer(weather());
+    EXPECT_EQ(app->mode(), App::Mode::Menu) << "still opening";
+    ASSERT_TRUE(player.finishOpen());
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+}
+
+TEST_F(ResumeStreamTest, PlayAfterARestartResumesTheStreamToo) {
+    playFromAlbum("Rain");
+    player.pos = 42;
+    reboot();
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Loading.");
+    answer(weather());
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(ResumeStreamTest, PlayWithNothingSavedStillSaysNothingToPlay) {
+    start();
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Nothing to play. Choose a book in the library.");
+    EXPECT_TRUE(server.requests.empty());
+}
+
+TEST_F(ResumeStreamTest, ASlashAtTheEndOfTheServerUrlIsTheSameServer) {
+    settings.setString("server.url", "https://music.example/");
+    playFromAlbum("Rain");
+    reboot([this] { settings.setString("server.url", "https://music.example"); });
+    EXPECT_EQ(labels().front(), "Now playing");
+}
+
+TEST_F(ResumeStreamTest, AnUnreadablePlaceStartsTheTrackFromItsStart) {
+    playFromAlbum("Rain");
+    reboot();
+    app.reset();
+    state.setString("last_stream.pos", "inf");
+    start();
+    press(Button::Ok);
+    answer(weather());
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+}
+
+TEST_F(ResumeStreamTest, APlaylistIsLoadedAgainToo) {
+    openList("Playlists");
+    answer(std::vector<RemotePlaylist>{{"p1", "Road", 3}});
+    open("Road");
+    answer(weather());
+    open("Sunshine");
+    player.pos = 10;
+    reboot();
+    EXPECT_EQ(stateFile.onDisk("last_stream.kind"), "playlist");
+    EXPECT_EQ(stateFile.onDisk("last_stream.id"), "p1");
+    press(Button::Ok);
+    EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+    EXPECT_EQ(server.lastRequest().arg, "p1");
+    answer(weather());
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    EXPECT_DOUBLE_EQ(player.pos, 10);
+    EXPECT_EQ(app->nowPlaying().title, "Road");
+}
+
+TEST_F(ResumeStreamTest, WithTheServerDownResumeSaysServerNotReachableAndStaysResponsive) {
+    playFromAlbum("Rain");
+    reboot();
+    press(Button::Ok);
+    ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_TRUE(player.opened.empty());
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Library, 2 of 8");
+    press(Button::Up);
+    press(Button::Ok); // the server is back: try again
+    answer(weather());
+    EXPECT_EQ(player.file, "fake://stream/t2");
+}
+
+TEST_F(ResumeStreamTest, ATrackThatCannotBeOpenedSaysSoAndLeavesNothingLoaded) {
+    playFromAlbum("Rain");
+    reboot();
+    player.unopenable = {"fake://stream/t2"};
+    press(Button::Ok);
+    answer(weather());
+    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_FALSE(app->nowPlaying().loaded);
+    EXPECT_EQ(labels().front(), "Now playing") << "it can be tried again";
+}
+
+TEST_F(ResumeStreamTest, ATrackThatMovedInTheListIsFoundByItsId) {
+    playFromAlbum("Rain");
+    player.pos = 42;
+    reboot();
+    press(Button::Ok);
+    auto tracks = weather();
+    std::swap(tracks[0], tracks[1]); // Rain is first now
+    answer(tracks);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_EQ(app->nowPlaying().chapterIndex, 0);
+}
+
+TEST_F(ResumeStreamTest, ATrackGoneFromTheListPlaysTheOneNowInItsPlaceFromItsStart) {
+    playFromAlbum("Rain");
+    player.pos = 42;
+    reboot();
+    press(Button::Ok);
+    auto tracks = weather();
+    tracks.erase(tracks.begin() + 1); // Rain is gone
+    answer(tracks);
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+}
+
+TEST_F(ResumeStreamTest, AListThatGotShorterPlaysItsFirstTrackFromItsStart) {
+    playFromAlbum("Sunshine");
+    player.pos = 42;
+    reboot();
+    press(Button::Ok);
+    answer(std::vector<RemoteTrack>{weather()[0]});
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+}
+
+TEST_F(ResumeStreamTest, TheSameTrackTwiceInAPlaylistResumesTheOneThatPlayed) {
+    auto tracks = weather();
+    tracks.push_back(tracks[1]); // Rain again, at the end
+    openList("Playlists");
+    answer(std::vector<RemotePlaylist>{{"p1", "Road", 4}});
+    open("Road");
+    answer(tracks);
+    press(Button::Up); // the second Rain, the last item
+    press(Button::Ok);
+    ASSERT_EQ(app->nowPlaying().chapterIndex, 3);
+    reboot();
+    press(Button::Ok);
+    answer(tracks);
+    EXPECT_EQ(app->nowPlaying().chapterIndex, 3);
+}
+
+TEST_F(ResumeStreamTest, LeavingHomeWhileTheListLoadsDropsIt) {
+    playFromAlbum("Rain");
+    reboot();
+    press(Button::Ok);
+    auto id = server.lastRequest().id;
+    open("Library");
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), id), server.cancelled.end());
+    EXPECT_FALSE(server.reply(id, weather())) << "the late answer is dropped";
+    app->tick();
+    EXPECT_TRUE(player.opened.empty());
+}
+
+TEST_F(ResumeStreamTest, SleepWhileTheListLoadsDropsIt) {
+    playFromAlbum("Rain");
+    reboot();
+    press(Button::Ok);
+    auto id = server.lastRequest().id;
+    press(Button::Power);
+    EXPECT_FALSE(server.reply(id, weather()));
+    press(Button::Ok); // wake
+    app->tick();
+    EXPECT_TRUE(player.opened.empty());
+}
+
+TEST_F(ResumeStreamTest, ShutdownWhileTheListLoadsDropsIt) {
+    playFromAlbum("Rain");
+    reboot();
+    press(Button::Ok);
+    auto id = server.lastRequest().id;
+    app->shutdown();
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), id), server.cancelled.end());
+}
+
+TEST_F(ResumeStreamTest, ALocalBookPlayedAfterTheStreamIsResumedInstead) {
+    playFromAlbum("Rain");
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    player.pos = 20;
+    reboot();
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_DOUBLE_EQ(player.pos, 20);
+    EXPECT_EQ(speech.last(), "Alpha, paused. Press play to continue.");
+    for (const auto& [key, value] : stateFile.file) EXPECT_NE(key.rfind("last_stream.", 0), 0u) << key;
+}
+
+TEST_F(ResumeStreamTest, AStreamPlayedAfterABookIsResumedAndTheBookKeepsItsPlace) {
+    start();
+    open("Library");
+    open("Alpha");
+    player.pos = 20;
+    hold(Button::Home);
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(weather());
+    open("Rain");
+    reboot();
+    EXPECT_EQ(stateFile.onDisk("last_book"), alpha().string());
+    ASSERT_EQ(app->mode(), App::Mode::Menu) << "the book is not resumed: the stream played last";
+    EXPECT_EQ(labels().front(), "Now playing");
+    EXPECT_EQ(speech.last(), "Home. Now playing, Weather, 1 of 8");
+    open("Library");
+    open("Alpha");
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_DOUBLE_EQ(player.pos, 20);
+}
+
+TEST_F(ResumeStreamTest, AStreamFromAnotherServerIsNotResumed) {
+    playFromAlbum("Rain");
+    state.setString("last_book", alpha().string()); // as if Alpha had played before
+    reboot([this] { settings.setString("server.url", "https://other.example"); });
+    EXPECT_EQ(app->mode(), App::Mode::Player) << "the book resumes instead";
+    EXPECT_EQ(player.file, alphaFile(1));
+}
+
+TEST_F(ResumeStreamTest, AStreamOfAnotherUserIsNotResumed) {
+    playFromAlbum("Rain");
+    reboot([this] { settings.setString("server.user", "guest"); });
+    EXPECT_EQ(labels().front(), "Library");
+}
+
+TEST_F(ResumeStreamTest, WithoutAServerTheStreamIsNotResumed) {
+    playFromAlbum("Rain");
+    reboot([this] { server.isConfigured = false; });
+    EXPECT_EQ(labels().front(), "Library");
+}
+
+TEST_F(ResumeStreamTest, AListNotFromTheServerMenusIsNotKept) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 1));
+    reboot();
+    for (const auto& [key, value] : stateFile.file) EXPECT_NE(key.rfind("last_stream.", 0), 0u) << key;
+    EXPECT_EQ(labels().front(), "Library");
+}
+
+TEST_F(ResumeStreamTest, ATitleWithALineBreakIsKeptOnOneLine) {
+    openList("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Wind\tand\nRain", "Band", 3}});
+    open("Wind\tand\nRain");
+    answer(weather());
+    open("Rain");
+    reboot();
+    EXPECT_EQ(stateFile.onDisk("last_stream.title"), "Wind\tand Rain") << "a tab is fine in a TSV value";
+}
+
+TEST_F(ResumeStreamTest, AStreamThatEndedResumesAtTheStartOfTheList) {
+    playFromAlbum("Sunshine");
+    player.atEnd = true;
+    app->tick(); // End of music
+    reboot();
+    EXPECT_EQ(stateFile.onDisk("last_stream.track"), "0");
+    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "0.0");
+}
+
+TEST_F(ResumeStreamTest, AFailedStreamIsKeptAtThePlaceItGotTo) {
+    playFromAlbum("Rain");
+    player.pos = 77;
+    player.broken = true;
+    app->tick(); // Server not reachable: closed, opened again at 77 on Play
+    reboot();
+    EXPECT_EQ(stateFile.onDisk("last_stream.track_id"), "t2");
+    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "77.0");
+}
+
+TEST_F(ResumeStreamTest, AnExitWhileTheResumedTrackOpensKeepsItsPlace) {
+    playFromAlbum("Rain");
+    player.pos = 42;
+    reboot();
+    player.holdStreams = true;
+    press(Button::Ok);
+    answer(weather()); // Rain is opening
+    reboot();
+    EXPECT_EQ(stateFile.onDisk("last_stream.track_id"), "t2");
+    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "42.0");
+}
+
+// The SD card is written only when the device sleeps or exits cleanly.
+TEST_F(ResumeStreamTest, StreamingWritesNothingToDiskUntilExit) {
+    playFromAlbum("Storm Front");
+    for (int i = 0; i < 10; ++i) {
+        player.pos += 30;
+        idle(30s); // minutes of playback
+    }
+    player.atEnd = true;
+    app->tick(); // the next track
+    ASSERT_EQ(player.file, "fake://stream/t2");
+    press(Button::PlayPause); // pause
+    press(Button::PlayPause); // play
+    press(Button::Forward);   // a seek
+    hold(Button::Forward);    // a track change
+    ASSERT_EQ(player.file, "fake://stream/t3");
+    EXPECT_EQ(stateFile.saves, 0);
+    EXPECT_EQ(configFile.saves, 0);
+}
+
+TEST_F(ResumeStreamTest, AResumedStreamWritesNothingToDiskUntilExit) {
+    playFromAlbum("Rain");
+    reboot();
+    int saves = stateFile.saves;
+    press(Button::Ok);
+    answer(weather());
+    ASSERT_TRUE(player.playing());
+    for (int i = 0; i < 10; ++i) {
+        player.pos += 30;
+        idle(30s);
+    }
+    press(Button::PlayPause);
+    press(Button::PlayPause);
+    hold(Button::Forward);
+    EXPECT_EQ(stateFile.saves, saves);
+    EXPECT_EQ(configFile.saves, 0);
+}
+
+TEST_F(ResumeStreamTest, SleepWritesTheStreamPlaceOnce) {
+    playFromAlbum("Rain");
+    player.pos = 33;
+    press(Button::Power);
+    EXPECT_EQ(stateFile.saves, 1);
+    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "33.0");
+    EXPECT_EQ(configFile.saves, 0);
+}
+
+TEST_F(ResumeStreamTest, PowerOffWritesTheStreamPlaceOnce) {
+    playFromAlbum("Rain");
+    player.pos = 34;
+    hold(Button::Power);
+    open("Power off");
+    EXPECT_EQ(stateFile.saves, 1);
+    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "34.0");
+    app->shutdown();
+    EXPECT_EQ(stateFile.saves, 1) << "nothing changed since";
+}
+
+TEST_F(ResumeStreamTest, ShutdownWritesTheStreamPlaceOnce) {
+    playFromAlbum("Rain");
+    player.pos = 35;
+    app->shutdown();
+    EXPECT_EQ(stateFile.saves, 1);
+    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "35.0");
+    EXPECT_EQ(configFile.saves, 0);
+}
+
 // ---------------------------------------------------------------- hold switch and power
 
 TEST_F(AppTest, HoldSwitchBlocksEverythingButPower) {

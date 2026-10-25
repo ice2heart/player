@@ -342,7 +342,7 @@ is added only at Beginner.
 
 ```
 Home
-├── Now playing: <book or album>   (only when something is loaded)
+├── Now playing: <book or album>   (when something is loaded, or a stream to resume: `last_stream.*`)
 ├── Library → <books>              (OK plays/resumes)
 ├── Music
 │   ├── Play all                   (every track, albums in order)
@@ -439,7 +439,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   `server.stream(id, streaming.bitrate)` when it is opened (`remoteStream()`), so a change of
   Streaming quality takes effect with the next track; a transcode is opened with its
   `Transcoded`, its length taken from the listing. The list plays like music (`playMusic` → `switchTo(..., music=true)`),
-  so it saves no position and leaves `last_book` alone. Every spoken part name comes from
+  so it saves no `pos:` key and leaves `last_book` alone. Every spoken part name comes from
   `partTitle()`: the server title, or "Track 3" if it has none, never the URL, which holds the login.
 - A remote track that cannot be opened says "Cannot play Rain. Server not reachable." and **no
   other track is tried** (each try could block for the network timeout). What was current
@@ -524,7 +524,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 | File | Store | Keys |
 |------|-------|------|
 | `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` (kbps, 0 = the original file), and `server.*` (see [streaming.md](streaming.md)) |
-| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_book`: the book to resume on start (never music); `pos:<book path>`: `"<file index>:<seconds>"` |
+| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_book`: the book to resume on start (never music); `pos:<book path>`: `"<file index>:<seconds>"`; `last_stream.server` / `.user` (the `server.url` without a trailing slash and `server.user`, never the password or a stream URL), `.kind` (`album` / `playlist`), `.id`, `.title`, `.track` (index), `.track_id`, `.pos` (seconds): the remote list that played last |
 
 - `config.yaml` is nested YAML (`speech: {rate: 220}` is `speech.rate`). It is
   written only when a setting changes in the Settings menu (on leaving the item,
@@ -541,6 +541,17 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   only when the map differs from what was last loaded or written (a write that
   failed counts as not written, so the next exit tries again). A crash or
   power loss loses the place since the last exit.
+- **Which place start() resumes:** the one that played last. `rememberPosition()`
+  keeps the place of a remote list from the Streaming menus (`Book::source`, the
+  album or playlist id) in `last_stream.*`; `openBook()` removes those keys, since a
+  local book is then the last played. Local music changes neither. If
+  `savedStream()` finds a place for the server set up now (same url and user, and
+  `MusicServer::configured()`), `start()` opens Home with "Now playing" first and
+  loads nothing; otherwise `last_book` resumes as before. OK on it, or Play with
+  nothing loaded, runs `resumeStream()`: "Loading.", `albumTracks` /
+  `playlistTracks` (`resume_`; a new screen, sleep and `shutdown()` cancel it), then
+  `playRemote(..., source, position)` with the track found by id. The answer's error
+  is spoken with `errorText()`.
 - Up / Down in the player change the volume in memory; it is written on exit.
 - **Factory reset** clears both, but keeps the `server.*` keys, and restarts
   without saving the position first, so it does not come back.

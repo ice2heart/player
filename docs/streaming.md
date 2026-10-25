@@ -335,9 +335,22 @@ a stream after a restart.
 | ✅ 2.3 | **Read-ahead.** Open the next track's connection about 10 s before the current one ends, so tracks change without a gap on a slow link. | The next URL is opened about 10 s before the end (fake clock). A pre-opened track that fails falls back to a normal open. Leaving the album drops the pre-open. |
 | ✅ 2.4 | **Quality setting** (`choice()` in Settings → Streaming quality: Original / 320 / 192 / 128 kbps, default Original), saved in `config.yaml`. With transcoding, seek with `timeOffset` (extension `transcodeOffset`) instead of Range. | The stream URL carries `maxBitRate` / `format`, or neither for Original. A seek on a transcoded stream uses `timeOffset`, not Range. The setting persists across a restart. |
 | ✅ 2.5 | **Scrobble**: `scrobble submission=false` when a track starts and `true` after half of it or 4 min, so "Recently played" on the server is right. | The fake server records both calls at the right times. A skip before half sends no `true`. A failed scrobble says nothing. |
-| 2.6 | **Remember the place.** `last_stream` (server + album/playlist id + track + position) in `state.tsv`, so the device resumes after a restart. "Now playing" on Home works for streams too. | Exit and restart resume the same album, track and position. With the server down, resume says "Server not reachable". A local `last_book` still works. |
+| ✅ 2.6 | **Remember the place.** `last_stream` (server + album/playlist id + track + position) in `state.tsv`, so the device resumes after a restart. "Now playing" on Home works for streams too. | Exit and restart resume the same album, track and position. With the server down, resume says "Server not reachable". A local `last_book` still works. |
 | 2.7 | **Star / unstar** from the Player menu, and a **Starred** list in Streaming. | Star and unstar call the server. Starred loads like the other lists (Loading, filled, error). An error is spoken. |
 | 2.8 | Docs: architecture.md (open thread, buffering earcon, read-ahead, `last_stream`), navigation.md (Player menu, Starred), SPEC where needed. | – |
+
+Step 2.6 as built: the place is the `last_stream.*` keys of `state.tsv` (server url and
+user, `album` or `playlist` and its id, title, track index and id, seconds), kept in
+memory on pause and list change and written only on exit and sleep, like `last_book`.
+Whichever played last resumes: opening a local book removes `last_stream.*`, and a
+stream played after a book is resumed instead of it (the book keeps its place in
+Library). Local music changes neither. At boot nothing is asked of the server and
+nothing plays: Home opens with "Now playing, Weather" first, and OK on it (or Play)
+says "Loading.", loads the list again, finds the track by its id (if it is gone, the
+track now at its index from its start, else the first track) and opens it at its
+place like a track chosen in the list. An error says "Server not reachable." (or the
+other list errors) and Home stays. A place saved for another server url or user, or
+with no server, is ignored. A resume after a restart is a new play for scrobbling.
 
 **Device check (manual):** keys are answered at once during "Loading". A short
 Wi-Fi drop during play gives the buffering earcon and the same track goes on.

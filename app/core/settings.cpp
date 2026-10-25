@@ -16,6 +16,10 @@ void Settings::clearExcept(const std::string& prefix) {
     std::erase_if(values_, [&](const auto& kv) { return kv.first.rfind(prefix, 0) != 0; });
 }
 
+void Settings::clearPrefix(const std::string& prefix) {
+    std::erase_if(values_, [&](const auto& kv) { return kv.first.rfind(prefix, 0) == 0; });
+}
+
 int Settings::getInt(const std::string& key, int fallback) const {
     auto it = values_.find(key);
     if (it == values_.end()) return fallback;

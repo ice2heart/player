@@ -326,7 +326,7 @@ Home
 │   ├── Add podcast (search / URL by voice)
 │   └── Refresh now
 ├── Music                      (albums = folders; Play all)
-├── Streaming                  (own music server; named after it; docs/streaming.md)
+├── Streaming                  (own music server; named after it; the last album or playlist resumes after a restart; docs/streaming.md)
 ├── Bookmarks
 ├── Settings
 │   ├── Speech (voice, rate, pitch, verbosity)

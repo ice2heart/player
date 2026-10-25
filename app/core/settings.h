@@ -28,6 +28,7 @@ public:
     bool save() const; // false when the store could not write it
     void clear() { values_.clear(); }
     void clearExcept(const std::string& prefix); // keeps the keys starting with `prefix`
+    void clearPrefix(const std::string& prefix); // removes the keys starting with `prefix`
 
     int getInt(const std::string& key, int fallback) const;
     void setInt(const std::string& key, int value) { values_[key] = std::to_string(value); }

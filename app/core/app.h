@@ -55,10 +55,14 @@ public:
     // says "Loading." and opens the player once the stream has opened, if the
     // user is still on the screen they chose it from; leaving that screen first
     // drops the open. `title` is what the list is called (album or playlist
-    // name). Saves no position and leaves `last_book` alone. If the track cannot
+    // name). Saves no `pos:` key and leaves `last_book` alone. If the track cannot
     // be opened it says "Server not reachable", tries no other track and keeps
     // what was loaded before (paused). Returns false if that happened at once.
-    bool playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index);
+    // With a `source` (the album or playlist on the server) the place is kept
+    // as `last_stream` in the state, and "Now playing" resumes it after a
+    // restart; `position` is where the track starts.
+    bool playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index,
+                    std::optional<RemoteSource> source = std::nullopt, double position = 0);
 
     // Read-only state for the simulator's visualisation.
     Mode mode() const;
@@ -150,8 +154,25 @@ private:
     void openRemoteAlbum(const RemoteAlbum& album);
     std::vector<MenuItem> albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist);
     std::vector<MenuItem> trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
-                                     const std::string& playAll);
+                                     const std::string& playAll, const RemoteSource& source);
     void checkServer(); // Server status
+
+    // The remote list that played last (state.tsv `last_stream.*`), to resume
+    // after a restart. Only for the server set up now (its url and user); none
+    // once a local book has been opened since, or when it is not readable.
+    struct StreamPlace {
+        RemoteSource source;
+        std::string title; // of the album or playlist
+        size_t track = 0;
+        std::string trackId;
+        double position = 0;
+    };
+    std::optional<StreamPlace> savedStream() const;
+    // "Now playing" on Home, or Play, with nothing loaded: loads the list from the server
+    // ("Loading."), then opens the saved track at its place, as if chosen there.
+    // Any new screen (or leaving Home), sleep and power off drop it; an error is said.
+    void resumeStream();
+    void cancelResume();
 
     // Playback. A local file opens at once. A remote track opens in the
     // background (MediaPlayer::opening()): the open is kept in pendingOpen_ and
@@ -169,7 +190,8 @@ private:
     };
     using Then = std::function<void()>;
     bool openBook(const Book& book, bool autoplay); // false if it cannot be opened
-    bool playMusic(const Book& album, size_t track, Then opened = {}); // false if it failed at once
+    bool playMusic(const Book& album, size_t track, Then opened = {},
+                   double position = 0); // false if it failed at once
     OpenResult switchTo(const Book& book, bool music, size_t file, double position, bool autoplay, Then opened = {});
     std::string unit() const { return music_ ? "track" : "chapter"; } // what one part is called
     OpenResult loadFile(size_t file, double position, bool autoplay, Origin origin, Then opened = {},
@@ -204,6 +226,7 @@ private:
     MusicServer::Stream remoteStream(size_t file);
     MusicServer::Stream newStream(size_t file); // from the server, with the length it lists
     void rememberPosition(); // in the state map only, written by saveOnExit()
+    double place() const;    // where the loaded track is, open or not
     std::string playerStatus() const;
 
     // Power
@@ -235,6 +258,7 @@ private:
     std::map<std::uint64_t, RemoteList> remoteLists_; // by Screen::id, while the screen is on the stack
     MusicServer::RequestId ping_ = 0;                 // Server status, while it waits; cancelled when the user moves on
     std::uint64_t pingScreen_ = 0;                    // the screen it was asked from
+    MusicServer::RequestId resume_ = 0; // resumeStream(): the list being loaded, 0 when none; a new screen cancels it
     bool sleeping_ = false;
     bool settingsChanged_ = false; // changed with Left / Right, not yet written to disk
     bool volumeChanged_ = false;   // changed in the player, written on exit

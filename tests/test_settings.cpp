@@ -27,6 +27,15 @@ TEST(Settings, LoadsFromAndSavesToItsStore) {
     EXPECT_EQ(store.onDisk("volume"), "40");
 }
 
+TEST(Settings, ClearPrefixRemovesOnlyThoseKeys) {
+    Settings s;
+    s.setString("last_stream.id", "al1");
+    s.setString("last_stream.pos", "4.0");
+    s.setString("last_book", "/books/Alpha");
+    s.clearPrefix("last_stream.");
+    EXPECT_EQ(s.values(), (oap::SettingsMap{{"last_book", "/books/Alpha"}}));
+}
+
 TEST(Settings, ClearForgetsEverything) {
     Settings s;
     s.setInt("volume", 10);

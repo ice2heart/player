@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <iterator>
@@ -29,6 +30,20 @@ constexpr const char* kAutoSleep = "power.auto_sleep_min";
 constexpr const char* kStreamingBitrate = "streaming.bitrate"; // kbit/s of a transcode; 0: the original file
 constexpr const char* kLastBook = "last_book";
 constexpr const char* kServerName = "server.name"; // the Streaming entry on Home
+constexpr const char* kServerUrl = "server.url";
+constexpr const char* kServerUser = "server.user";
+// The remote list that played last, resumed by "Now playing" after a restart.
+// The server is named by its url and user (never the password, nor a stream
+// URL, which holds the login), so a place on another server is not resumed.
+constexpr const char* kLastStream = "last_stream.";
+constexpr const char* kLastStreamServer = "last_stream.server";
+constexpr const char* kLastStreamUser = "last_stream.user";
+constexpr const char* kLastStreamKind = "last_stream.kind"; // "album" or "playlist"
+constexpr const char* kLastStreamId = "last_stream.id";
+constexpr const char* kLastStreamTitle = "last_stream.title";
+constexpr const char* kLastStreamTrack = "last_stream.track"; // index in the list
+constexpr const char* kLastStreamTrackId = "last_stream.track_id";
+constexpr const char* kLastStreamPos = "last_stream.pos"; // seconds into the track
 
 // Lists from the server (docs/streaming.md). Albums come in pages of the most
 // a Subsonic server sends at once; Random albums is one page, since each page
@@ -73,6 +88,19 @@ constexpr const char* kUnsupportedServerHelp =
     "support. Check the type in the server section of config.yaml.";
 
 enum Verbosity { Beginner = 0, Normal = 1, Expert = 2 };
+
+// A place in seconds as state.tsv keeps it: "42.5".
+std::string tenths(double seconds) {
+    char text[32];
+    std::snprintf(text, sizeof text, "%.1f", seconds);
+    return text;
+}
+
+// The same server with or without a slash at the end of its url.
+std::string serverIdentity(std::string url) {
+    while (!url.empty() && url.back() == '/') url.pop_back();
+    return url;
+}
 
 std::vector<std::pair<int, std::string>> range(int from, int to, int step, const std::string& unit) {
     std::vector<std::pair<int, std::string>> out;
@@ -209,6 +237,12 @@ void App::start() {
     earcons_.play(Earcon::Boot);
     say("Ready.");
 
+    // A stream played last: "Now playing" on Home resumes it. Nothing is asked
+    // of the server now, and nothing plays until the user chooses it.
+    if (savedStream()) {
+        goHome();
+        return;
+    }
     std::string last = state_.getString(kLastBook);
     for (const Book& b : scanLibrary(libraryRoot_)) {
         if (!last.empty() && b.path.string() == last && openBook(b, false)) {
@@ -224,6 +258,7 @@ void App::start() {
 
 void App::shutdown() {
     saveOnExit();
+    cancelResume();
     pendingOpen_.reset();
     player_.cancelPreload();
     player_.close();
@@ -498,6 +533,7 @@ void App::openMenu(const std::string& title, std::function<std::vector<MenuItem>
 
 void App::pushScreen(Screen screen) {
     if (ping_) server_.cancel(std::exchange(ping_, 0)); // the user moved on from Server status
+    cancelResume(); // likewise from a stream resume (resumeStream()) still loading
     screen.id = ++lastScreenId_;
     screens_.push_back(std::move(screen));
 }
@@ -717,6 +753,10 @@ std::vector<MenuItem> App::homeMenu() {
         MenuItem now = action("Now playing", [this] { enterPlayer(); });
         now.value = [this] { return book_ ? book_->title : std::string("nothing"); };
         items.push_back(now);
+    } else if (auto stream = savedStream()) {
+        MenuItem now = action("Now playing", [this] { resumeStream(); });
+        now.value = [title = stream->title] { return title; };
+        items.push_back(now);
     }
     items.push_back(submenu("Library", [this] { return libraryMenu(); }));
     items.push_back(submenu("Music", [this] { return musicMenu(); }));
@@ -839,8 +879,9 @@ std::vector<MenuItem> App::streamingMenu() {
                                        [this, id = p.id](int, MusicServer::Done<RemoteTrack> done) {
                                            return server_.playlistTracks(id, std::move(done));
                                        },
-                                       [this, name = p.name](const std::vector<RemoteTrack>& tracks) {
-                                           return trackItems(name, tracks, "Play playlist");
+                                       [this, name = p.name, id = p.id](const std::vector<RemoteTrack>& tracks) {
+                                           return trackItems(name, tracks, "Play playlist",
+                                                             {RemoteSource::Kind::Playlist, id});
                                        }),
                                    0, "No tracks", "This playlist is empty. Add tracks to it on the server.");
                 });
@@ -977,8 +1018,8 @@ void App::openRemoteAlbum(const RemoteAlbum& album) {
                        [this, id = album.id](int, MusicServer::Done<RemoteTrack> done) {
                            return server_.albumTracks(id, std::move(done));
                        },
-                       [this, name = album.name](const std::vector<RemoteTrack>& tracks) {
-                           return trackItems(name, tracks, "Play album");
+                       [this, name = album.name, id = album.id](const std::vector<RemoteTrack>& tracks) {
+                           return trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id});
                        }),
                    0, "No tracks", "This album has no tracks on the server.");
 }
@@ -997,16 +1038,16 @@ std::vector<MenuItem> App::albumItems(const std::vector<RemoteAlbum>& albums, bo
 
 // "Play album" first, then the tracks: OK on one plays from it to the end, like Music.
 std::vector<MenuItem> App::trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
-                                      const std::string& playAll) {
+                                      const std::string& playAll, const RemoteSource& source) {
     if (tracks.empty()) return {};
     auto list = std::make_shared<const std::vector<RemoteTrack>>(tracks); // one copy for all the items
     std::vector<MenuItem> items;
-    MenuItem all = action(playAll, [this, title, list] { playRemote(title, *list, 0); });
+    MenuItem all = action(playAll, [this, title, list, source] { playRemote(title, *list, 0, source); });
     all.value = [n = tracks.size()] { return countValue(n, "track"); };
     items.push_back(all);
     for (size_t i = 0; i < tracks.size(); ++i) {
         std::string label = tracks[i].title.empty() ? "Track " + std::to_string(i + 1) : tracks[i].title;
-        items.push_back(action(label, [this, title, list, i] { playRemote(title, *list, i); }));
+        items.push_back(action(label, [this, title, list, i, source] { playRemote(title, *list, i, source); }));
     }
     return items;
 }
@@ -1029,6 +1070,69 @@ void App::checkServer() {
         }
         say(connectedText(info));
     });
+}
+
+std::optional<App::StreamPlace> App::savedStream() const {
+    if (!server_.configured()) return std::nullopt;
+    std::string url = serverIdentity(config_.getString(kServerUrl));
+    if (url.empty() || serverIdentity(state_.getString(kLastStreamServer)) != url ||
+        state_.getString(kLastStreamUser) != config_.getString(kServerUser))
+        return std::nullopt; // another server, or none: its ids mean nothing here
+    StreamPlace place;
+    std::string kind = state_.getString(kLastStreamKind);
+    if (kind == "album") place.source.kind = RemoteSource::Kind::Album;
+    else if (kind == "playlist") place.source.kind = RemoteSource::Kind::Playlist;
+    else return std::nullopt;
+    place.source.id = state_.getString(kLastStreamId);
+    place.title = state_.getString(kLastStreamTitle);
+    place.trackId = state_.getString(kLastStreamTrackId);
+    if (place.source.id.empty()) return std::nullopt;
+    try {
+        place.track = std::stoul(state_.getString(kLastStreamTrack, "0"));
+        place.position = std::stod(state_.getString(kLastStreamPos, "0"));
+    } catch (...) {
+        place.track = 0, place.position = 0;
+    }
+    if (!std::isfinite(place.position) || place.position < 0) place.position = 0;
+    return place;
+}
+
+// The list is loaded again rather than saved: it may have changed on the
+// server, and stream URLs (with a fresh salt each) are never kept. The track is
+// found by its id; if it is gone, the track now at its index plays from its
+// start, or the first one.
+void App::resumeStream() {
+    auto place = savedStream();
+    if (!place) return;
+    cancelResume();
+    say("Loading.");
+    auto done = [this, place = *place](MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
+        resume_ = 0; // a new screen or sleep would have cancelled it: the user is still where they asked
+        tts_.stop();
+        if (error != MusicServer::Error::None) {
+            earcons_.play(Earcon::Error);
+            say(errorText(error) + ".");
+            return;
+        }
+        size_t index = place.track < tracks.size() ? place.track : 0;
+        double position = 0;
+        auto same = [&](size_t i) { return i < tracks.size() && tracks[i].id == place.trackId; };
+        if (!same(place.track)) {
+            for (size_t i = 0; i < tracks.size(); ++i)
+                if (same(i)) {
+                    index = i;
+                    break;
+                }
+        }
+        if (same(index)) position = place.position;
+        playRemote(place.title, tracks, index, place.source, position);
+    };
+    resume_ = place->source.kind == RemoteSource::Kind::Album ? server_.albumTracks(place->source.id, done)
+                                                               : server_.playlistTracks(place->source.id, done);
+}
+
+void App::cancelResume() {
+    if (resume_) server_.cancel(std::exchange(resume_, 0));
 }
 
 // The entry of sleepTimerMenu() that is set now.
@@ -1199,13 +1303,15 @@ bool App::openBook(const Book& book, bool autoplay) {
     }
     if (switchTo(book, false, file, pos, autoplay) == OpenResult::Failed) return false; // a local book opens at once
     state_.setString(kLastBook, book.path.string());
+    state_.clearPrefix(kLastStream); // the book played last: start() resumes it, not the stream
     sleepAtChapterEnd_ = -1;
     return true;
 }
 
-// Music plays from the chosen track and is never resumed later, so it neither
-// saves a position nor replaces the book that start() resumes.
-bool App::playMusic(const Book& album, size_t track, Then opened) {
+// Music plays from the chosen track. Local music is never resumed later, so it
+// neither saves a position nor replaces the book that start() resumes; a remote
+// list keeps its place as last_stream (rememberPosition()).
+bool App::playMusic(const Book& album, size_t track, Then opened, double position) {
     if (book_) rememberPosition();
     // Only once it plays: if it fails, the book before it keeps its sleep timer and rewind.
     auto playing = [this, opened = std::move(opened)] {
@@ -1213,10 +1319,11 @@ bool App::playMusic(const Book& album, size_t track, Then opened) {
         pausedAt_.reset();
         if (opened) opened();
     };
-    return switchTo(album, true, track, 0, true, std::move(playing)) != OpenResult::Failed;
+    return switchTo(album, true, track, position, true, std::move(playing)) != OpenResult::Failed;
 }
 
-bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index) {
+bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index,
+                     std::optional<RemoteSource> source, double position) {
     if (index >= tracks.size()) {
         earcons_.play(Earcon::Error);
         say("Nothing to play.");
@@ -1225,13 +1332,14 @@ bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& t
     Book list;
     list.title = title;
     list.remote = true;
+    list.source = std::move(source);
     for (const RemoteTrack& t : tracks) {
         list.files.emplace_back(t.id);
         list.titles.push_back(t.title);
         list.durations.push_back(t.duration);
     }
     std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
-    return playMusic(list, index, [this, screen] { enterPlayerFrom(screen); });
+    return playMusic(list, index, [this, screen] { enterPlayerFrom(screen); }, position);
 }
 
 // Loads `book` from `file`. If none of its files from there on opens, what was
@@ -1386,6 +1494,10 @@ void App::play() {
         double at = std::max(0.0, *reopenAt_ - (rewinds ? rewind : 0));
         // Or it says "Server not reachable", and Play tries again at the same place.
         openFile(fileIndex_, at, true, Origin::Resume, [this] { if (player_.playing()) earcons_.play(Earcon::Play); }, {});
+        return;
+    }
+    if (!book_ && savedStream()) { // after a restart: like "Now playing" on Home
+        resumeStream();
         return;
     }
     if (!book_ || !player_.isOpen()) {
@@ -1638,10 +1750,26 @@ MusicServer::Stream App::newStream(size_t file) {
 }
 
 void App::rememberPosition() {
+    if (book_ && book_->remote) { // a stream list: resumed after a restart, if it can be loaded again
+        if (!book_->source) return;
+        state_.setString(kLastStreamServer, serverIdentity(config_.getString(kServerUrl)));
+        state_.setString(kLastStreamUser, config_.getString(kServerUser));
+        state_.setString(kLastStreamKind, book_->source->kind == RemoteSource::Kind::Album ? "album" : "playlist");
+        state_.setString(kLastStreamId, book_->source->id);
+        std::string title = book_->title; // one TSV line: a line break would split it
+        std::replace_if(title.begin(), title.end(), [](char c) { return c == '\n' || c == '\r'; }, ' ');
+        state_.setString(kLastStreamTitle, title);
+        state_.setString(kLastStreamTrack, std::to_string(fileIndex_));
+        state_.setString(kLastStreamTrackId, book_->files[fileIndex_].string());
+        state_.setString(kLastStreamPos, tenths(place()));
+        return;
+    }
     if (!book_ || music_ || !player_.isOpen()) return;
-    char pos[32];
-    std::snprintf(pos, sizeof pos, "%.1f", player_.position());
-    state_.setString("pos:" + book_->path.string(), std::to_string(fileIndex_) + ":" + pos);
+    state_.setString("pos:" + book_->path.string(), std::to_string(fileIndex_) + ":" + tenths(player_.position()));
+}
+
+double App::place() const {
+    return player_.isOpen() ? player_.position() : pendingOpen_ ? pendingOpen_->position : reopenAt_.value_or(0);
 }
 
 std::string App::playerStatus() const {
@@ -1677,9 +1805,7 @@ App::NowPlaying App::nowPlaying() const {
     np.chapter = list.empty() ? "" : list[size_t(cur)].title;
     np.chapterIndex = cur;
     np.chapterCount = int(list.size());
-    np.position = player_.isOpen() ? player_.position()
-                  : pendingOpen_      ? pendingOpen_->position
-                                      : reopenAt_.value_or(0);
+    np.position = place();
     np.duration = player_.duration();
     if (sleepDeadline_) np.sleepTimerLeft = std::chrono::duration<double>(*sleepDeadline_ - clock_.now()).count();
     return np;
@@ -1703,6 +1829,7 @@ void App::setSleepTimer(int minutes, bool endOfChapter) {
 }
 
 void App::sleep(const std::string& announcement) {
+    cancelResume();
     dropPendingOpen(); // nothing may start playing while the device sleeps
     pause(false);
     saveOnExit(); // sleep on the device may end in the power being cut
