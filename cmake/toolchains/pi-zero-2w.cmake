@@ -10,7 +10,7 @@ set(CMAKE_C_FLAGS_INIT "-mcpu=cortex-a53")
 set(CMAKE_CXX_FLAGS_INIT "-mcpu=cortex-a53")
 
 # Run the arm64 test binary through qemu so gtest_discover_tests and ctest work.
-find_program(OAP_QEMU_AARCH64 qemu-aarch64-static qemu-aarch64)
+find_program(OAP_QEMU_AARCH64 NAMES qemu-aarch64-static qemu-aarch64)
 if(OAP_QEMU_AARCH64)
     set(CMAKE_CROSSCOMPILING_EMULATOR "${OAP_QEMU_AARCH64};-L;/usr/aarch64-linux-gnu")
 endif()
