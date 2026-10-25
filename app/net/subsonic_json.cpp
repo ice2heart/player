@@ -185,6 +185,8 @@ PingResult parsePing(std::string_view body) {
     return result;
 }
 
+Error parseStatus(std::string_view body) { return open(body).error; }
+
 Parsed<RemoteAlbum> parseAlbumList(std::string_view body, int pageSize) {
     auto parsed = parseList<RemoteAlbum>(body, "albumList2", "album", album);
     parsed.more = parsed.error == Error::None && pageSize > 0 && int(parsed.items.size()) >= pageSize;

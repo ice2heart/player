@@ -24,6 +24,7 @@ public:
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override;
     void cancel(RequestId id) override;
     Stream stream(const std::string&, int) override { return {}; }
+    void scrobble(const std::string&, bool) override {}
     void poll() override;
 
 private:

@@ -10,6 +10,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <ostream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -194,6 +195,8 @@ public:
 //   auto id = server.lastRequest().id;          // what App just asked for
 //   server.reply(id, {album1, album2}, /*more=*/false);
 //   app.tick();                                 // App calls poll(), callback runs
+//
+// scrobble() is recorded in `scrobbles`, in order (nothing comes back from it).
 class FakeMusicServer : public MusicServer {
 public:
     enum class Kind { Ping, Albums, Artists, ArtistAlbums, AlbumTracks, Playlists, PlaylistTracks };
@@ -235,6 +238,7 @@ public:
         if (maxBitRate <= 0) return {url, std::nullopt};
         return {url, Transcoded{url + "&timeOffset=", 0}};
     }
+    void scrobble(const std::string& trackId, bool submission) override { scrobbles.push_back({trackId, submission}); }
     void poll() override {
         // Callbacks may make new requests or cancel others, so work on a copy.
         auto batch = std::move(ready_);
@@ -286,6 +290,15 @@ public:
 
     std::vector<Request> requests;    // every request, in order
     std::vector<RequestId> cancelled; // every cancel() call, in order
+    struct Scrobble {
+        std::string trackId;
+        bool submission = false;
+        bool operator==(const Scrobble&) const = default;
+        friend void PrintTo(const Scrobble& s, std::ostream* out) {
+            *out << s.trackId << (s.submission ? " submission" : " now playing");
+        }
+    };
+    std::vector<Scrobble> scrobbles; // every scrobble() call, in order
     bool isConfigured = true;
     bool saltUrls = false;
 

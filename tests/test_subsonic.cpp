@@ -424,3 +424,40 @@ TEST(Subsonic, IsMadeFromConfigOnlyForTypeSubsonicWithAUrl) {
     EXPECT_EQ(Subsonic::fromConfig(settings), nullptr) << "another type of server";
     EXPECT_EQ(Subsonic::fromConfig(oap::Settings()), nullptr) << "no server section";
 }
+
+TEST(Subsonic, ScrobbleSaysNowPlayingOrPlayed) {
+    Server server;
+    server.subsonic->scrobble("s1", false);
+    server.subsonic->scrobble("s1", true);
+    ASSERT_EQ(server.http->calls.size(), 2u);
+    EXPECT_EQ(server.http->url(0), kBase + "scrobble" + kAuth + "&id=s1&submission=false");
+    EXPECT_EQ(server.http->url(1), kBase + "scrobble" + kAuth + "&id=s1&submission=true");
+}
+
+TEST(Subsonic, NoScrobbleWithoutAServer) {
+    Server server(config(""));
+    server.subsonic->scrobble("s1", true);
+    testing::internal::CaptureStderr();
+    server.subsonic->poll();
+    EXPECT_EQ(testing::internal::GetCapturedStderr(), "") << "nothing failed: nothing was sent";
+    EXPECT_TRUE(server.http->calls.empty());
+}
+
+// Nothing comes back from a scrobble: a failure is only logged, by its kind,
+// and never with the URL, which holds the login.
+TEST(Subsonic, AFailedScrobbleIsLoggedWithoutTheUrl) {
+    Server server;
+    for (int i = 0; i < 4; ++i) server.subsonic->scrobble("s1", true);
+    server.http->unreachable(0);
+    server.http->answer(1, kOk, subsonicFixture("error_40_wrong_login.json"));
+    server.http->answer(2, 500, subsonicFixture("not_json.html"));
+    server.http->answer(3, kOk, subsonicFixture("ping.json")); // this one worked
+    testing::internal::CaptureStderr();
+    server.subsonic->poll();
+    std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(err, "server: scrobble failed: server not reachable\n"
+                   "server: scrobble failed: wrong user name or password\n"
+                   "server: scrobble failed: server error\n");
+    for (const char* secret : {"music.example", "ice", "26719a1196d2a940705a59634eb18eab", "c19b2d", "s1"})
+        EXPECT_EQ(err.find(secret), std::string::npos) << secret;
+}

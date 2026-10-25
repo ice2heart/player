@@ -60,6 +60,8 @@ public:
     // not OpenSubsonic); until the answer is in, a transcode gets no offset URL,
     // so it seeks by opening it again from the start.
     Stream stream(const std::string& trackId, int maxBitRate) override;
+    // A failure is only logged to stderr, by its kind: never the URL.
+    void scrobble(const std::string& trackId, bool submission) override;
     void poll() override;
 
     static constexpr int kMaxPageSize = 500; // getAlbumList2 returns at most this many

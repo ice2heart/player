@@ -59,6 +59,11 @@ const std::vector<std::pair<int, std::string>> kStreamingQualities = {{kOriginal
 // opens in the background (MediaPlayer::preload()), so the next track starts
 // without waiting for an open on a slow link.
 constexpr std::chrono::seconds kReadAhead{10};
+// Scrobbling: a remote track counts as played on the server ("Recently played",
+// play counts) once it has been heard for this share of its length, or for
+// kScrobbleAtMost if that comes first (docs/streaming.md, step 2.5).
+constexpr double kScrobbleShare = 0.5;
+constexpr std::chrono::minutes kScrobbleAtMost{4};
 constexpr const char* kNoServerHelp =
     "To stream from your own music server, add a server section with its url, user and password to "
     "config.yaml, then restart the player.";
@@ -277,6 +282,7 @@ void App::tick() {
     bool fileFinished = book_ && player_.finished();
     if (fileFinished) onFileFinished();
     checkBuffering(now);
+    checkScrobble(now);
 
     if (sleepDeadline_ && now >= *sleepDeadline_) {
         sleepDeadline_.reset();
@@ -1287,7 +1293,8 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
     for (; file < book_->files.size(); ++file, position = 0) {
         fileIndex_ = file;
         // A stream takes a moment to open: say why nothing plays yet.
-        if (book_->remote && (origin == Origin::Menu || origin == Origin::Key)) say("Loading.");
+        if (book_->remote && (origin == Origin::Menu || origin == Origin::Key || origin == Origin::Resume))
+            say("Loading.");
         bool opens = false;
         if (book_->remote) {
             MusicServer::Stream stream = remoteStream(file);
@@ -1302,7 +1309,7 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
                                            position,  clock_.now(),   std::move(opened),       std::move(undo)};
                 return OpenResult::Pending;
             }
-            onOpened(autoplay, opened);
+            onOpened(autoplay, origin, opened);
             return OpenResult::Opened;
         }
         if (book_->remote) {
@@ -1316,8 +1323,13 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
     return OpenResult::Failed;
 }
 
-void App::onOpened(bool autoplay, const Then& opened) {
+void App::onOpened(bool autoplay, Origin origin, const Then& opened) {
     reopenAt_.reset();
+    // The current track opened again (Play after it broke off, or it is back
+    // behind a choice that failed) goes on with its play.
+    bool goesOn = scrobble_ && (origin == Origin::Resume || origin == Origin::Restore);
+    if (!book_->remote) scrobble_.reset();
+    else if (!goesOn) startTrackPlay();
     if (autoplay) player_.play();
     if (opened) opened();
 }
@@ -1333,7 +1345,7 @@ void App::onCannotPlay(const std::string& title, bool quiet, const Then& undo) {
 void App::finishPendingOpen() {
     PendingOpen open = std::move(*pendingOpen_);
     pendingOpen_.reset(); // before the callbacks, which may open again
-    if (player_.isOpen()) onOpened(open.autoplay, open.opened);
+    if (player_.isOpen()) onOpened(open.autoplay, open.origin, open.opened);
     else onCannotPlay(open.title, open.origin == Origin::Restore, open.undo);
 }
 
@@ -1373,7 +1385,7 @@ void App::play() {
         pausedAt_.reset();
         double at = std::max(0.0, *reopenAt_ - (rewinds ? rewind : 0));
         // Or it says "Server not reachable", and Play tries again at the same place.
-        openFile(fileIndex_, at, true, Origin::Key, [this] { if (player_.playing()) earcons_.play(Earcon::Play); }, {});
+        openFile(fileIndex_, at, true, Origin::Resume, [this] { if (player_.playing()) earcons_.play(Earcon::Play); }, {});
         return;
     }
     if (!book_ || !player_.isOpen()) {
@@ -1462,6 +1474,8 @@ bool App::gotoChapter(int index, Origin origin, Then opened) {
     if (ch.file != fileIndex_ || !player_.isOpen())
         return loadFile(ch.file, ch.start, willPlay(), origin, std::move(arrived)) != OpenResult::Failed;
     player_.seek(ch.start);
+    // The whole track from its start (not a chapter in it): heard again.
+    if (book_->remote && (book_->files.size() > 1 || player_.chapters().empty())) startTrackPlay();
     arrived();
     return true;
 }
@@ -1486,6 +1500,7 @@ void App::stepChapter(int direction) {
 }
 
 void App::onFileFinished() {
+    scrobble_.reset(); // its play is over: opening it again (Play at the end of the list) is a new one
     if (fileIndex_ + 1 < book_->files.size()) {
         size_t next = fileIndex_ + 1;
         // Quietly: "Loading." between every two tracks of an album would be too much.
@@ -1569,6 +1584,41 @@ void App::checkReadAhead() {
     } else if (readAhead_) {
         player_.cancelPreload();
         readAhead_.reset();
+    }
+}
+
+void App::startTrackPlay() {
+    scrobble_ = TrackPlay{};
+    scrobble_->trackId = book_->files[fileIndex_].string();
+}
+
+// Heard time is counted with clock_ while the track plays and is not dry, not
+// read from the player's position: a seek forward to the middle, or a pause, is
+// not listening. Each tick adds the time since the last one if both heard it.
+void App::checkScrobble(TimePoint now) {
+    if (!scrobble_) return;
+    TrackPlay& play = *scrobble_;
+    if (!book_ || !player_.playing() || player_.buffering()) {
+        play.heardSince.reset();
+        return;
+    }
+    if (!play.nowPlayingSent) {
+        play.nowPlayingSent = true;
+        server_.scrobble(play.trackId, false);
+    }
+    if (play.heardSince) play.heard += now - *play.heardSince;
+    play.heardSince = now;
+    // The player knows the length once open; a transcode has the server's (or none).
+    double length = player_.duration() > 0 ? player_.duration()
+                    : fileIndex_ < book_->durations.size() ? book_->durations[fileIndex_]
+                                                           : 0;
+    Clock::TimePoint::duration enough = kScrobbleAtMost;
+    if (length > 0)
+        enough = std::min(enough, std::chrono::duration_cast<Clock::TimePoint::duration>(
+                                      std::chrono::duration<double>(length * kScrobbleShare)));
+    if (!play.submitted && play.heard >= enough) {
+        play.submitted = true;
+        server_.scrobble(play.trackId, true);
     }
 }
 

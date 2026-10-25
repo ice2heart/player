@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <random>
 
 namespace oap {
@@ -35,6 +36,17 @@ std::string percentEncode(const std::string& s) {
         else out += '%', out += hex[c >> 4], out += hex[c & 0xf];
     }
     return out;
+}
+
+const char* errorName(MusicServer::Error error) {
+    switch (error) {
+    case MusicServer::Error::None: return "none";
+    case MusicServer::Error::NotConfigured: return "not configured";
+    case MusicServer::Error::Unreachable: return "server not reachable";
+    case MusicServer::Error::BadLogin: return "wrong user name or password";
+    case MusicServer::Error::Server: return "server error";
+    }
+    return "unknown";
 }
 
 } // namespace
@@ -186,6 +198,16 @@ MusicServer::Stream Subsonic::stream(const std::string& trackId, int maxBitRate)
     Stream stream{url("stream", params), Transcoded{}};
     if (transcodeOffset_ == Known::Yes) stream.transcoded->offsetUrl = stream.url + "&" + kTimeOffset + "=";
     return stream;
+}
+
+void Subsonic::scrobble(const std::string& trackId, bool submission) {
+    if (!configured()) return;
+    request(
+        "scrobble", {{"id", trackId}, {"submission", submission ? "true" : "false"}},
+        [](const std::string& body) { return Reply{subsonic::parseStatus(body), {}, false}; },
+        [](Reply reply) {
+            if (reply.error != Error::None) std::fprintf(stderr, "server: scrobble failed: %s\n", errorName(reply.error));
+        });
 }
 
 void Subsonic::askExtensions() {

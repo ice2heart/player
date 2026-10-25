@@ -474,7 +474,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   `undo`, exactly as a failed open did in phase 1. A local file opens at once and
   takes the same paths straight away.
 - `openFile()` says "Loading." before every remote open the user asked for
-  (`Origin::Menu` or `Key`). A track chosen in a menu keeps the user there (a list
+  (`Origin::Menu`, `Key` or `Resume`, Play opening a closed track again). A track chosen in a menu keeps the user there (a list
   of tracks, the Player menu) until it has opened; then the player opens if they
   are still on that screen. Play/Pause meanwhile decides whether it plays once
   open ("Paused." / "Loading."), and "where am I" says "Loading" instead of "Paused".
@@ -500,6 +500,19 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   server has a fresh salt, so `readAhead_` keeps the stream it pre-opened (with
   the track id and the quality), and opening that track at that quality uses it.
   A change of Streaming quality during the pre-open pre-opens the new one.
+- **Scrobbling:** each play of a remote track (`scrobble_`) tells the server
+  `scrobble(id, false)` ("now playing") once it plays, not when it is chosen and
+  not for an open that fails, and `scrobble(id, true)` once it has been heard for
+  half its length (the player's, else the server's) or `kScrobbleAtMost` (4 min),
+  whichever comes first (`App::checkScrobble()`, from `tick()`). Heard time is
+  counted with `clock_` while the player plays and is not dry, not read from the
+  position, so a pause, a dropout or a seek forward does not count. Opening another
+  track, the next one at the end, or going back to the start of the track (Previous,
+  or choosing it) starts a new play; Play opening the same track again after it broke
+  off (`Origin::Resume`) or after a failed choice (`Restore`) goes on with the same
+  play. The end of a track ends its play, and a local book ends it too: local files
+  are never scrobbled. `scrobble()` returns nothing, so a failed scrobble is never
+  heard; `Subsonic` logs it to stderr by its kind, never with the URL.
 
 ## 9. Persistence
 
@@ -611,7 +624,7 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   request; answers only when the test calls `reply` / `replyPing` / `fail`, and then
   only on the next `poll()`; honours `cancel`; its stream URLs show the quality,
   `fake://stream/<id>?maxBitRate=<kbps>`, and with `saltUrls` differ on each call, as a
-  real server's do). `FakePlayer` records the `Transcoded` of the last open.
+  real server's do; `scrobble()` calls are recorded in `scrobbles`). `FakePlayer` records the `Transcoded` of the last open.
   `test_fake_music_server.cpp` checks that contract.
 - `test_config.cpp` tests YAML ⇄ dotted keys, `YamlStore` / `TsvStore` on real files
   (mode 0600, atomic replace, a broken file left alone) and `SettingsFiles`.

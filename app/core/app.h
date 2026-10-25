@@ -163,6 +163,7 @@ private:
     enum class Origin {
         Menu,    // chosen in a menu: says "Loading.", and leaving that menu drops it
         Key,     // Play, or a skip in the player: says "Loading."
+        Resume,  // Play opens the current track again (closed after a failure or the end): says "Loading."
         Next,    // the next track at the end of one: quiet
         Restore, // what played before a choice that failed: quiet, even if it fails too
     };
@@ -174,7 +175,7 @@ private:
     OpenResult loadFile(size_t file, double position, bool autoplay, Origin origin, Then opened = {},
                         Then undo = {}); // within the loaded book
     OpenResult openFile(size_t file, double position, bool autoplay, Origin origin, Then opened, Then undo);
-    void onOpened(bool autoplay, const Then& opened);
+    void onOpened(bool autoplay, Origin origin, const Then& opened);
     // A remote track did not open: says so (unless `quiet`), then runs `undo`.
     void onCannotPlay(const std::string& title, bool quiet, const Then& undo);
     void finishPendingOpen(); // tick(): the player is done opening
@@ -195,6 +196,8 @@ private:
     void onStreamFailed(); // a remote track broke off: stop, and open it there on Play
     void checkBuffering(Clock::TimePoint now); // tick(): the earcon and "Waiting for network" while a stream is dry
     void checkReadAhead(); // tick(): pre-opens the next remote track near the end of this one
+    void startTrackPlay(); // the loaded remote track starts a new play (scrobble_)
+    void checkScrobble(Clock::TimePoint now); // tick(): tells the server what plays and what has been heard
     int streamingBitrate() const; // Streaming quality: kbit/s, 0 for the original file
     // The stream of remote track `file` at the Streaming quality set now: the
     // pre-opened one if it is that track at that quality, else a new one.
@@ -272,6 +275,20 @@ private:
         MusicServer::Stream stream;
     };
     std::optional<ReadAhead> readAhead_;
+    // The play of the remote track loaded now, for scrobbling. It starts when a
+    // track opens or restarts from its start, but goes on when the same track
+    // opens again where it was (Origin::Resume, Restore), and ends with the
+    // track or when a local book opens. Once it plays the server hears "now
+    // playing", and once it has been heard long enough (kScrobbleShare /
+    // kScrobbleAtMost) that it was played; each once. Local files are never scrobbled.
+    struct TrackPlay {
+        std::string trackId;
+        bool nowPlayingSent = false;
+        bool submitted = false;
+        Clock::TimePoint::duration heard{};  // listened time
+        std::optional<TimePoint> heardSince; // the last tick that heard it
+    };
+    std::optional<TrackPlay> scrobble_;
 
     bool hold_ = false;
     std::array<bool, kButtonCount> held_{};   // raw keys down now

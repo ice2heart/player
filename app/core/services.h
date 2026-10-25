@@ -187,6 +187,11 @@ public:
     // The stream of a track: the original file with `maxBitRate` 0, else a
     // transcode to at most that many kbit/s. Empty URLs when not configured.
     virtual Stream stream(const std::string& trackId, int maxBitRate) = 0;
+    // Tells the server a track plays now (`submission` false: "now playing")
+    // or has been heard (true: play count, "Recently played"). Sent in the
+    // background like any request, but nothing comes back: whether it worked
+    // is not reported, so a failed scrobble is never heard. Not configured: nothing.
+    virtual void scrobble(const std::string& trackId, bool submission) = 0;
     virtual void poll() = 0; // UI thread: run the callbacks of finished requests
 };
 

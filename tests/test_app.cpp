@@ -1858,6 +1858,299 @@ TEST_F(ReadAheadTest, ALocalBookIsNotPreOpened) {
     EXPECT_TRUE(player.preloads.empty());
 }
 
+// ---------------------------------------------------------------- scrobble
+
+// The server hears "now playing" when a remote track starts to play, and that
+// it was played once it has been heard for half its length or 4 minutes.
+class ScrobbleTest : public AsyncOpenTest {
+protected:
+    using Scrobble = FakeMusicServer::Scrobble;
+    static Scrobble nowPlaying(const std::string& id) { return {id, false}; }
+    static Scrobble played(const std::string& id) { return {id, true}; }
+    // Ticks through `ms` of playback, a second at a time, as the device's loop would.
+    void listen(std::chrono::milliseconds ms) {
+        for (; ms >= 1s; ms -= 1s) idle(1s);
+        if (ms > 0ms) idle(ms);
+    }
+};
+
+TEST_F(ScrobbleTest, NowPlayingIsSentOnceTheTrackHasOpenedAndPlays) {
+    start();
+    player.holdStreams = true;
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    idle(1s);
+    EXPECT_TRUE(server.scrobbles.empty()) << "chosen, not playing yet";
+    finishOpen();
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1")}));
+    listen(30s);
+    EXPECT_EQ(server.scrobbles.size(), 1u) << "once per play";
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(ScrobbleTest, ATrackThatFailsToOpenIsNotScrobbled) {
+    start();
+    player.holdStreams = true;
+    player.unopenable = {"fake://stream/t1"};
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    finishOpen();
+    ASSERT_EQ(speech.last(), "Cannot play Storm Front. Server not reachable.");
+    listen(5min);
+    EXPECT_TRUE(server.scrobbles.empty());
+}
+
+TEST_F(ScrobbleTest, ATrackOpenedPausedSaysNowPlayingOnlyOnPlay) {
+    playWeather();
+    press(Button::PlayPause); // paused
+    hold(Button::Forward);    // Rain opens, paused
+    finishOpen();
+    listen(10s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1")}));
+    press(Button::PlayPause);
+    idle(10ms); // the next tick
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), nowPlaying("t2")}));
+}
+
+TEST_F(ScrobbleTest, ATrackIsPlayedOnceHalfOfItHasBeenHeard) {
+    player.length = 200;
+    playWeather();
+    listen(99s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1")})) << "not half yet";
+    listen(1s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), played("t1")}));
+    listen(90s);
+    EXPECT_EQ(server.scrobbles.size(), 2u) << "once per play";
+}
+
+TEST_F(ScrobbleTest, ALongTrackIsPlayedAfterFourMinutes) {
+    player.length = 3600; // half of it would be 30 minutes
+    playWeather();
+    listen(239s);
+    EXPECT_EQ(server.scrobbles.size(), 1u);
+    listen(1s);
+    EXPECT_EQ(server.scrobbles.back(), played("t1"));
+}
+
+// A transcode (or a stream that does not say) has the length the server lists.
+TEST_F(ScrobbleTest, WithoutALengthFromThePlayerTheServersLengthCounts) {
+    player.length = 0;
+    playWeather(); // Storm Front: 200 s on the server
+    listen(99s);
+    EXPECT_EQ(server.scrobbles.size(), 1u);
+    listen(1s);
+    EXPECT_EQ(server.scrobbles.back(), played("t1"));
+}
+
+TEST_F(ScrobbleTest, ATrackOfUnknownLengthIsPlayedAfterFourMinutes) {
+    player.length = 0;
+    start();
+    std::vector<RemoteTrack> tracks = {{"t9", "Drone", "Band", "Weather", 0, 1}};
+    ASSERT_TRUE(app->playRemote("Weather", tracks, 0));
+    app->tick(); // it plays from here
+    listen(239s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t9")}));
+    listen(1s);
+    EXPECT_EQ(server.scrobbles.back(), played("t9"));
+}
+
+TEST_F(ScrobbleTest, ASkipBeforeHalfSendsNoSubmission) {
+    player.length = 200;
+    playWeather();
+    listen(60s);
+    hold(Button::Forward); // Rain
+    finishOpen();
+    listen(60s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), nowPlaying("t2")}));
+}
+
+TEST_F(ScrobbleTest, TheNextTrackAtTheEndOfOneIsScrobbledToo) {
+    player.length = 200;
+    playWeather();
+    listen(100s);
+    player.pos = 195; // pre-opens Rain
+    app->tick();
+    player.atEnd = true;
+    app->tick();
+    ASSERT_EQ(player.file, "fake://stream/t2");
+    ASSERT_EQ(player.adopted, 1);
+    EXPECT_EQ(server.scrobbles,
+              (std::vector<Scrobble>{nowPlaying("t1"), played("t1"), nowPlaying("t2")}));
+}
+
+TEST_F(ScrobbleTest, PausedTimeDoesNotCount) {
+    player.length = 200;
+    playWeather();
+    listen(50s);
+    press(Button::PlayPause); // pause
+    listen(4min);
+    press(Button::PlayPause); // play
+    listen(45s);
+    EXPECT_EQ(server.scrobbles.size(), 1u) << "about 95 s heard";
+    listen(10s);
+    EXPECT_EQ(server.scrobbles.back(), played("t1"));
+}
+
+// Heard time, not the place reached: jumping to the middle is not listening.
+TEST_F(ScrobbleTest, ASeekForwardDoesNotCount) {
+    player.length = 200;
+    playWeather();
+    for (int i = 0; i < 5; ++i) press(Button::Forward); // 150 s on
+    ASSERT_GE(player.pos, 150);
+    listen(30s);
+    EXPECT_EQ(server.scrobbles.size(), 1u);
+}
+
+TEST_F(ScrobbleTest, TimeTheStreamIsDryDoesNotCount) {
+    player.length = 200;
+    playWeather();
+    listen(50s);
+    player.dry = true;
+    listen(2min);
+    player.dry = false;
+    listen(45s);
+    EXPECT_EQ(server.scrobbles.size(), 1u) << "about 95 s heard";
+    listen(10s);
+    EXPECT_EQ(server.scrobbles.back(), played("t1"));
+}
+
+TEST_F(ScrobbleTest, RestartingATrackCountsItAgain) {
+    player.length = 200;
+    playWeather();
+    listen(100s);
+    player.pos = 100;
+    hold(Button::Back); // more than 3 s in: back to its start
+    ASSERT_EQ(player.file, "fake://stream/t1");
+    ASSERT_DOUBLE_EQ(player.pos, 0);
+    listen(100s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), played("t1"), nowPlaying("t1"),
+                                                       played("t1")}));
+}
+
+TEST_F(ScrobbleTest, PlayingTheListAgainAfterItsEndCountsAgain) {
+    player.length = 200;
+    start();
+    std::vector<RemoteTrack> one = {weather()[0]};
+    ASSERT_TRUE(app->playRemote("Weather", one, 0));
+    app->tick(); // it plays from here
+    listen(100s);
+    player.atEnd = true;
+    app->tick();
+    ASSERT_TRUE(speech.heard("End of music. Press play to start again."));
+    player.atEnd = false;
+    press(Button::PlayPause);
+    listen(1s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), played("t1"), nowPlaying("t1")}));
+}
+
+// Play after the stream broke off opens it again where it was: the same play goes on.
+TEST_F(ScrobbleTest, ATrackOpenedAgainAfterItBrokeOffGoesOnWithItsPlay) {
+    player.length = 200;
+    playWeather();
+    listen(60s);
+    player.pos = 60;
+    player.broken = true;
+    app->tick();
+    ASSERT_EQ(speech.last(), "Server not reachable. Press play to try again.");
+    listen(1min);
+    press(Button::PlayPause);
+    finishOpen();
+    ASSERT_DOUBLE_EQ(player.pos, 60);
+    listen(35s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1")})) << "about 95 s heard";
+    listen(10s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), played("t1")}));
+}
+
+// The place it opens at is rewound to 0 after a long pause, yet it is the
+// same play: what is said and counted does not depend on that place.
+TEST_F(ScrobbleTest, ATrackOpenedAgainAtItsStartAfterAFailedChoiceGoesOnWithItsPlay) {
+    player.length = 200;
+    playWeather();
+    listen(98s);
+    player.pos = 1;
+    press(Button::PlayPause); // paused at 1 s
+    listen(20s);
+    player.unopenable = {"fake://stream/t2"};
+    hold(Button::Forward); // Rain fails: Storm Front opens again on Play
+    finishOpen();
+    player.unopenable.clear();
+    press(Button::PlayPause);
+    finishOpen();
+    ASSERT_EQ(player.file, "fake://stream/t1");
+    ASSERT_DOUBLE_EQ(player.pos, 0) << "rewound 2 s";
+    listen(5s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), played("t1")}));
+}
+
+// Going back to the first chapter inside a track is a seek, like a skip back.
+TEST_F(ScrobbleTest, AChapterInsideATrackIsNotARestart) {
+    player.length = 200;
+    player.embedded = {{"Intro", 0}, {"Song", 50}};
+    start();
+    std::vector<RemoteTrack> one = {weather()[0]};
+    ASSERT_TRUE(app->playRemote("Weather", one, 0));
+    app->tick();
+    listen(20s);
+    player.pos = 20;
+    hold(Button::Back); // the start of Intro, the first chapter
+    ASSERT_DOUBLE_EQ(player.pos, 0);
+    listen(80s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), played("t1")}));
+}
+
+// A local book that cannot be opened: the track behind it opens again where it was.
+TEST_F(ScrobbleTest, ATrackBackBehindAFailedBookGoesOnWithItsPlay) {
+    player.length = 200;
+    playWeather();
+    listen(60s);
+    player.pos = 60;
+    player.unopenable = {alphaFile(1), alphaFile(2)};
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    finishOpen();
+    ASSERT_EQ(player.file, "fake://stream/t1");
+    ASSERT_TRUE(player.playing());
+    listen(45s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), played("t1")}));
+}
+
+TEST_F(ScrobbleTest, RestartingTheOnlyTrackCountsItAgain) {
+    player.length = 200;
+    start();
+    std::vector<RemoteTrack> one = {weather()[0]};
+    ASSERT_TRUE(app->playRemote("Weather", one, 0));
+    app->tick();
+    listen(30s);
+    player.pos = 30;
+    hold(Button::Back); // back to its start
+    ASSERT_DOUBLE_EQ(player.pos, 0);
+    listen(1s);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), nowPlaying("t1")}));
+}
+
+TEST_F(ScrobbleTest, LocalFilesAreNeverScrobbled) {
+    playAlpha();
+    listen(10min);
+    hold(Button::Home);
+    open("Music");
+    open("Lullaby");
+    listen(10min);
+    EXPECT_TRUE(server.scrobbles.empty());
+}
+
+// A local book chosen while a remote track plays stops its count.
+TEST_F(ScrobbleTest, ALocalBookAfterARemoteTrackIsNotCountedForIt) {
+    player.length = 200;
+    playWeather();
+    listen(60s);
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    ASSERT_EQ(player.file, alphaFile(1));
+    listen(5min);
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1")}));
+}
+
 // ---------------------------------------------------------------- streaming menu
 
 namespace {

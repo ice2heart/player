@@ -33,6 +33,8 @@ constexpr int kWrongCredentials = 40;
 std::string jsonForYaml(std::string_view json);
 
 PingResult parsePing(std::string_view body);
+// An answer that carries nothing but its status, such as scrobble's.
+Error parseStatus(std::string_view body);
 // getAlbumList2. `more` is true when the page is full (pageSize albums came back).
 Parsed<RemoteAlbum> parseAlbumList(std::string_view body, int pageSize);
 Parsed<RemoteArtist> parseArtists(std::string_view body);   // getArtists, all indexes in order

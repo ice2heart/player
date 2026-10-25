@@ -197,3 +197,13 @@ TEST(FakeMusicServer, StreamUrlNamesTheTrackAndATranscode) {
     ASSERT_TRUE(transcode.transcoded);
     EXPECT_EQ(transcode.transcoded->offsetUrl, "fake://stream/tr-42?maxBitRate=128&timeOffset=");
 }
+
+TEST(FakeMusicServer, ScrobblesAreRecordedInOrderAndMakeNoRequest) {
+    FakeMusicServer server;
+    server.scrobble("t1", false);
+    server.scrobble("t1", true);
+    EXPECT_EQ(server.scrobbles,
+              (std::vector<FakeMusicServer::Scrobble>{{"t1", false}, {"t1", true}}));
+    EXPECT_TRUE(server.requests.empty());
+    EXPECT_EQ(server.pendingCount(), 0u);
+}
