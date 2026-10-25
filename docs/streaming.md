@@ -1,7 +1,7 @@
 # Streaming from a Subsonic server: plan
 
-> Status: **phase 1 built** (stream and play; see [What phase 1 built differently](#what-phase-1-built-differently)).
-> Phases 2 to 5 are a plan. The code is described in [architecture.md](architecture.md), and the
+> Status: **phases 1 and 2 built** (stream and play, see [What phase 1 built differently](#what-phase-1-built-differently);
+> robust streaming, see [Phase 2](#phase-2-robust-streaming)). Phases 2a to 5 are a plan. The code is described in [architecture.md](architecture.md), and the
 > rules for lists from the server are in [navigation.md](navigation.md#lists-from-the-server).
 > Last updated: 2026-10-25.
 > Target server: Navidrome 0.64 (Subsonic API 1.16.1, OpenSubsonic). Test server:
@@ -103,6 +103,7 @@ The layering rules in CLAUDE.md still hold:
       virtual void cancel(RequestId id) = 0; // its callback will not run
       virtual std::string streamUrl(const std::string& trackId) const = 0; // what Player opens
       // (since step 2.4: Stream stream(trackId, maxBitRate), the URL and, for a transcode, its offset URL)
+      // (since step 2.5: void scrobble(trackId, submission), with no callback)
       virtual void poll() = 0; // UI thread: run callbacks of finished requests
   };
   ```
@@ -141,8 +142,6 @@ speech:
   rate: 220
 volume: 70
 verbosity: 1
-streaming:
-  bitrate: 0                # Streaming quality: 0 = the original file, or 320 / 192 / 128 kbps MP3
 skip:
   back: 10
   forward: 30
@@ -153,6 +152,8 @@ menu:
   wrap: 1
 power:
   auto_sleep_min: 10
+streaming:
+  bitrate: 0                # Streaming quality: 0 = the original file, or 320 / 192 / 128 kbps MP3
 
 server:
   type: subsonic            # first type; others (e.g. audiobookshelf) later
@@ -336,7 +337,7 @@ a stream after a restart.
 | ✅ 2.4 | **Quality setting** (`choice()` in Settings → Streaming quality: Original / 320 / 192 / 128 kbps, default Original), saved in `config.yaml`. With transcoding, seek with `timeOffset` (extension `transcodeOffset`) instead of Range. | The stream URL carries `maxBitRate` / `format`, or neither for Original. A seek on a transcoded stream uses `timeOffset`, not Range. The setting persists across a restart. |
 | ✅ 2.5 | **Scrobble**: `scrobble submission=false` when a track starts and `true` after half of it or 4 min, so "Recently played" on the server is right. | The fake server records both calls at the right times. A skip before half sends no `true`. A failed scrobble says nothing. |
 | ✅ 2.6 | **Remember the place.** `last_stream` (server + album/playlist id + track + position) in `state.tsv`, so the device resumes after a restart. "Now playing" on Home works for streams too. | Exit and restart resume the same album, track and position. With the server down, resume says "Server not reachable". A local `last_book` still works. |
-| 2.7 | Docs: architecture.md (open thread, buffering earcon, read-ahead, quality, scrobble, `last_stream`), navigation.md, SPEC where needed. | – |
+| ✅ 2.7 | Docs: architecture.md (open thread, buffering earcon, read-ahead, quality, scrobble, `last_stream`), navigation.md, SPEC where needed. | – |
 
 Step 2.6 as built: the place is the `last_stream.*` keys of `state.tsv` (server url and
 user, `album` or `playlist` and its id, title, track index and id, seconds), kept in
@@ -355,6 +356,8 @@ with no server, is ignored. A resume after a restart is a new play for scrobblin
 Wi-Fi drop during play gives the buffering earcon and the same track goes on.
 Tracks change without a gap on a slow link. After a restart, "Now playing" resumes
 the stream where it stopped.
+
+Known limits after phase 2: nothing plays offline, and stars are not built (phase 2a).
 
 ## Phase 2a: stars
 

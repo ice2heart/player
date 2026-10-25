@@ -35,7 +35,8 @@ Sleep in it closes the menu first, so the device wakes where you were.
 6. **A changed value works at once, and is saved when you leave the item.**
    You hear the new speech rate straight away. Steps are not written one by
    one: the file is written when another key is pressed or the device sleeps
-   or powers off.
+   or powers off. Streaming quality is the one exception: a stream that plays
+   would have to open again, so the new quality starts with the next track.
 7. **In a program, Left / Right are that program's own keys.** In the player
    they skip back and forward, and holding them or pressing them deeper
    moves to the previous or next chapter or track.
@@ -159,6 +160,13 @@ these rules too ([streaming.md](streaming.md) has the plan).
   reachable." and no other track is tried. What played before stays current and
   paused. If that was a streamed track too, it is opened again only when the
   user presses Play.
+- **A stream that runs dry says so, and the track goes on.** After 0.5 s without
+  audio the device plays the buffering earcon, and after 3 s it says "Waiting for
+  network." once. The player keeps retrying at the same place, so a short dropout
+  does not skip the track. If it cannot go on for 30 s, the device says "Server not
+  reachable. Press play to try again." once what came has been heard, and Play
+  opens the track again where it stopped. The next track's stream opens in the
+  background 10 s before the end, so tracks change without a wait.
 
 ## Checklist for a new menu, item or program
 

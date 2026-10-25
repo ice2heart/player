@@ -1,7 +1,7 @@
 # Software Architecture
 
 > Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end,
-> streaming from a Subsonic server: phase 1 of [streaming.md](streaming.md)). Last updated: 2026-10-24.
+> streaming from a Subsonic server: phases 1 and 2 of [streaming.md](streaming.md)). Last updated: 2026-10-25.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -30,7 +30,7 @@ core depends on none of them:
 ├───────────────────────────────────────────────────────────────────────┤
 │ Config  (app/config/, library "oapconfig", yaml-cpp)                  │
 │   YamlStore : SettingsStore   config.yaml (settings, server)          │
-│   TsvStore  : SettingsStore   state.tsv (positions, book to resume)   │
+│   TsvStore  : SettingsStore   state.tsv (positions, what to resume)   │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Net  (app/net/, library "oapnet", libcurl + yaml-cpp)                 │
 │   Subsonic : MusicServer   URLs with token auth, JSON answers         │
@@ -67,8 +67,8 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
 | `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `MusicServer` with its `RemoteTrack` / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&`: the Streaming menu asks it for lists, `tick()` calls its `poll()`, and opening a remote track asks it for `stream(id, maxBitRate)`: the URL, and for a transcode a `Transcoded` (offset URL, and the length `App` fills in from the listing) that `MediaPlayer::open()` takes. |
 | `app/net/http_client.{h,cpp}` | `Http`: asynchronous GET whose handler runs on the client's thread (tests use a fake). `HttpClient`: libcurl multi on one worker thread; 10 s connect timeout, 10 s without data or 60 s in all ends a request, answers over 16 MB fail; cancellable; the destructor aborts transfers and never waits on a socket. |
-| `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `stream()`: the original file with no `format` / `maxBitRate`, or an MP3 transcode (`format=mp3&maxBitRate=<kbps>`) whose offset URL adds `&timeOffset=` once `getOpenSubsonicExtensions` (asked with the first transcode) lists `transcodeOffset`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
-| `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists and getPlaylist answers (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
+| `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `stream()`: the original file with no `format` / `maxBitRate`, or an MP3 transcode (`format=mp3&maxBitRate=<kbps>`) whose offset URL adds `&timeOffset=` once `getOpenSubsonicExtensions` (asked with the first transcode) lists `transcodeOffset`. `scrobble()` sends `scrobble?id=&submission=` and only logs a failure to stderr (by its kind, never the URL). `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
+| `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists, getPlaylist and getOpenSubsonicExtensions answers, and `parseStatus()` for an answer with only a status (scrobble) (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
 | `app/net/md5.{h,cpp}` | `md5Hex()` for the auth token. |
 | `app/media/player.{h,cpp}` | `Player`: one audio file or stream URL, decoded on its own thread (FFmpeg). A local file opens in `open()`; a URL opens on the decoder thread (`opening()` until it is done), with a 10 s read timeout and HTTP reconnects, and the whole open gives up after 10 s (`kStreamOpenTimeout`). `preload()` opens the next track's stream the same way in the background, and `open()` of that URL takes it over. A stream whose connection is lost while it plays is retried with backoff at the same place for 30 s (`kStreamRetryGiveUp`); `buffering()` says when it has run dry meanwhile. A transcode (`open()` with `Transcoded`) has no byte ranges: a seek, a retry and an open at a place open it again (see Streams in section 4), and its length is the server's. An interrupt callback lets `close()` abort any network wait at once, and `close()` or a newer `open()` drops an open still running. Its error messages print a local path but never a URL (`://`), which would hold the server login, and FFmpeg's own messages pass through `redactUrls()`. |
 | `app/media/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. |
@@ -104,7 +104,8 @@ The unit tests wire in fakes instead (section 12).
 | Thread | Owner | Does |
 |--------|-------|------|
 | **Main / UI** | front end | Input events, `App::tick()`, drawing (simulator). **All `App` calls happen here.** The headless loop `poll()`s input with a 10 ms timeout. |
-| **Decoder** | `Player` | Opens a stream URL, then reads, decodes and resamples into the content stream. Blocks while the stream is full, or while a stream waits for data; `close()` aborts either at once. A thread still opening when it is dropped is left to end by itself (see Streams in section 4). |
+| **Decoder** | `Player` | Opens a stream URL, then reads, decodes and resamples into the content stream. Blocks while the stream is full, or while a stream waits for data or retries after a dropout; `close()` aborts either at once. A thread still opening when it is dropped is left to end by itself (see Streams in section 4). |
+| **Preload** | `Player` | Opens the next track's stream during the last 10 s of a remote track (read-ahead), next to the decoder thread. An `open()` of that URL takes it over; if it is still opening, it carries on as the decoder thread. Dropped like an open (Preload in section 4). |
 | **TTS worker** | `Tts` | Runs `espeak_Synth()` synchronously and resamples into the speech stream. |
 | **Audio callback** | `AudioOutput` | Calls `Mixer::render()` to pull PCM for the device. CoreAudio calls back; Pulse, ALSA and null run their own writer thread. |
 | **HTTP worker** | `HttpClient` | Runs every libcurl transfer and parses the answers (`Subsonic`). Finished results go into a mutex-protected inbox that `Subsonic::poll()` empties on the UI thread. |
@@ -117,6 +118,8 @@ Rules:
   `cancel(id)` on its request, so its callback never runs (section 7).
   Opening a stream is asynchronous too: `Player::open()` returns at once,
   and `App::tick()` sees the result when `opening()` turns false (section 8).
+  So is the read-ahead: `preload()` returns at once. Scrobbles go out like
+  any other request, with no callback.
 - Threads exchange data only through `AudioStream` (mutex-protected), atomics,
   and mutex-protected queues: the `Tts` text queue, the `HttpClient` job queue
   and the `Subsonic` inbox of finished requests.
@@ -292,6 +295,7 @@ does and does nothing else. Holding Home leaves the mode. The same texts
 
 ```
  start(): [Home]  or, with a last book, [Home, Player]
+          a stream played last: [Home], "Now playing" first, nothing loaded
 
  screens_:  Home ─► Library ─► Player ─► Player menu ─► Chapters
             ◄────────── Home / hold OK pops one ─────────────
@@ -308,7 +312,8 @@ does and does nothing else. Holding Home leaves the mode. The same texts
 - `mode()` is derived from the stack: `Player` when the top screen is the
   player, `Menu` otherwise, and `Sleeping` while asleep. Playback continues
   in the background on any screen.
-- **Sleeping** simulates suspend: playback is paused, and the position and any
+- **Sleeping** simulates suspend: playback is paused, a stream open or resume
+  still loading is dropped, and the position (or the stream's place) and any
   changed settings are saved. Any key wakes the device and says where you are.
 - **Power off** saves state, says goodbye and sets `quitRequested()`. The front
   end exits once speech has finished.
@@ -669,8 +674,8 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 
 - Speed control (libavfilter `atempo`, or Sonic), skip silence.
 - Bookmarks, podcasts (RSS), sync (Audiobookshelf).
-- Streaming phases 2 to 5 in [streaming.md](streaming.md): `Player::open()` off the UI
-  thread, buffering feedback, a local cache, one library with the server, and sync.
+- Streaming phases 2a to 5 in [streaming.md](streaming.md): star / unstar and a Starred
+  list, a local cache, one library with the server, and sync.
 - STT (Talk button): push-to-talk capture plus sherpa-onnx, Vosk or whisper.cpp.
 - Localisation of spoken strings; a choice of TTS voice.
 - Hardware abstraction (battery, headphone jack, Wi-Fi, Bluetooth, suspend): planned in [hal.md](hal.md).

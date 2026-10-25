@@ -278,7 +278,8 @@ Design:
   ```
 - **USB mass-storage mode** (or MTP) when connected to a PC to copy files directly.
 - Position saving: kept in memory on pause and book change, and written to
-  flash only on suspend, power-off and restart, to spare the flash. A crash or
+  flash only on suspend, power-off and restart, to spare the flash. The same holds
+  for the place in the album or playlist streamed last. A crash or
   sudden power loss loses the place since then, so the power MCU must shut down
   cleanly at low battery (see [docs/streaming.md](docs/streaming.md#configuration-one-yaml-file)).
 
@@ -289,7 +290,8 @@ Design:
 ### 5.1 Concepts
 - **Speech** for content (names, numbers, status).
 - **Earcons** (short sounds) for structure: menu open/close, wrap-around, end of list,
-  error, listening start/stop, boot, low battery. Keep them short (< 150 ms) and distinct.
+  error, listening start/stop, boot, low battery, waiting for the network (a stream that
+  ran dry). Keep them short (< 150 ms) and distinct.
 - **Haptics** (optional) mirror earcons for noisy environments.
 - **Verbosity levels**: Beginner (full hints) / Normal / Expert (minimal speech).
 
