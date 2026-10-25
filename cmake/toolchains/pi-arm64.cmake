@@ -12,6 +12,9 @@ endif()
 set(CMAKE_C_FLAGS_INIT "-mcpu=${OAP_PI_CPU}")
 set(CMAKE_CXX_FLAGS_INIT "-mcpu=${OAP_PI_CPU}")
 
+# Started over SSH, oap-headless reads the gamepad and buttons as well as the terminal.
+set(OAP_HEADLESS_TTY_INPUT "evdev,terminal" CACHE STRING "oap-headless default --input on a terminal")
+
 # Run the arm64 test binary through qemu so gtest_discover_tests and ctest work.
 find_program(OAP_QEMU_AARCH64 NAMES qemu-aarch64-static qemu-aarch64)
 if(OAP_QEMU_AARCH64)

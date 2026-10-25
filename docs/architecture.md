@@ -469,7 +469,9 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 - **Arguments:** `oap-headless [--config FILE] [--state FILE] [--music DIR] [--audio NAME] [--input LIST]
   [--evdev-device PATH] [--script STEPS] [LIBRARY_DIR]`. The config defaults to
   `~/.config/oap/config.yaml`, the state to `state.tsv` next to it (section 9).
-- **Inputs** (`--input evdev,terminal,none`; default `terminal` on a tty, else `evdev`):
+- **Inputs** (`--input evdev,terminal,none`; default `evdev` without a tty; on a tty the CMake
+  setting `OAP_HEADLESS_TTY_INPUT`: `terminal`, or `evdev,terminal` in the Pi toolchains, since
+  a desktop would see each key twice):
   - `EvdevInput` opens every `/dev/input/event*` with a mapped key (or just `--evdev-device`),
     reads `input_event`s non-blocking, ignores autorepeat, and rescans every 3 s for hot-plugged
     devices. Shift+Left/Right on a keyboard presses the deep stage, as in the simulator.

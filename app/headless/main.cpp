@@ -74,7 +74,7 @@ void usage() {
         "  --music DIR          music folder (default ./music)\n"
         "  --audio NAME         %s (default auto); alsa:DEVICE picks an ALSA PCM\n"
         "  --input LIST         comma-separated: evdev, terminal, none\n"
-        "                       (default: terminal if stdin is a terminal, else evdev)\n"
+        "                       (default: " OAP_HEADLESS_TTY_INPUT " if stdin is a terminal, else evdev)\n"
         "  --evdev-device PATH  read only this input device instead of all of /dev/input\n"
         "  --script STEPS       press buttons automatically, e.g. \"ok wait:2000 play quit\"\n",
         audio.c_str());
@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
             return 2;
         } else library = arg;
     }
-    if (inputs.empty()) inputs = isatty(STDIN_FILENO) ? "terminal" : "evdev";
+    if (inputs.empty()) inputs = isatty(STDIN_FILENO) ? OAP_HEADLESS_TTY_INPUT : "evdev";
     bool useEvdev = false, useTerminal = false;
     {
         std::istringstream in(inputs);

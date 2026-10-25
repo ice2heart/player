@@ -206,6 +206,10 @@ if(OAP_BUILD_HEADLESS)
     )
     target_link_libraries(oap-headless PRIVATE oapmusicserver oapconfig oapmedia oapaudio)
     target_compile_options(oap-headless PRIVATE -Wall -Wextra)
+    # Inputs when stdin is a terminal and --input is not given. A desktop would see each
+    # key twice from evdev and the terminal; the Pi toolchains add evdev for its gamepad and buttons.
+    set(OAP_HEADLESS_TTY_INPUT "terminal" CACHE STRING "oap-headless default --input on a terminal")
+    target_compile_definitions(oap-headless PRIVATE OAP_HEADLESS_TTY_INPUT="${OAP_HEADLESS_TTY_INPUT}")
 endif()
 
 # ---- tests: core, config, frontend and the null audio output, with fakes for speech, playback, sounds and time.
