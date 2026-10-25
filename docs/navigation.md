@@ -144,8 +144,11 @@ these rules too ([streaming.md](streaming.md) has the plan).
 - **The last album or playlist resumes after a restart.** When a stream played
   last, the device starts on Home (nothing plays), with "Now playing, Weather"
   first. OK on it, or Play, says "Loading.", loads the list from the server and
-  opens the track where it was, then the player. A new screen or sleep while it
-  loads drops it; an error is spoken ("Server not reachable.") and Home stays.
+  opens the track where it was, then the player. A new screen, sleep or Power off
+  while it loads drops it; an error is spoken ("Server not reachable.") and Home
+  stays. OK on "Now playing" again while the track opens goes to the player; if
+  the track then does not open, or sleep drops it, Home comes back instead of an
+  empty player.
   A local book played after the stream is resumed instead, as before.
 - **The player does not change.** A streamed track has the same keys, Player
   menu and "where am I?" as a local music track. Because opening a stream can

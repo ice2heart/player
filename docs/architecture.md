@@ -486,9 +486,15 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
 - **A pending open is dropped** (the player is closed and `undo` runs, silently)
   when the user leaves the menu it was chosen in (Home, Back), chooses another
   track, the device goes to sleep or powers off, so a late result never plays or
-  speaks. A skip or Play in the player (`Key`), the next track at the end of one
-  (`Next`, quiet) and reopening what played before a failed choice (`Restore`,
-  quiet even when it fails) belong to no screen. If the player has not finished
+  speaks. A newer open of another track of the same book (`loadFile()`: a skip,
+  the next track, a chapter chosen) drops the pending one without undoing it, and
+  keeps its `undo` to run after its own if it fails too: the pending open may be a
+  `switchTo()` whose undo loads the book before, which must not happen first. An
+  `undo` that leaves nothing loaded (a resumed list that failed) also leaves the
+  player screen, if the user had entered it. A skip or Play in the player
+  (`Key`), the next track at the end of one (`Next`, quiet) and reopening what
+  played before a failed choice (`Restore`, quiet even when it fails) belong to
+  no screen. If the player has not finished
   after `kStreamOpenGiveUp` (15 s, which covers a DNS lookup that FFmpeg cannot
   interrupt), `App` closes it and reports the track as not reachable. Automatic
   sleep and the end-of-track sleep timer wait while a track opens.
@@ -554,7 +560,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   `MusicServer::configured()`), `start()` opens Home with "Now playing" first and
   loads nothing; otherwise `last_book` resumes as before. OK on it, or Play with
   nothing loaded, runs `resumeStream()`: "Loading.", `albumTracks` /
-  `playlistTracks` (`resume_`; a new screen, sleep and `shutdown()` cancel it), then
+  `playlistTracks` (`resume_`; a new screen, sleep, Power off and `shutdown()` cancel it), then
   `playRemote(..., source, position)` with the track found by id. The answer's error
   is spoken with `errorText()`.
 - Up / Down in the player change the volume in memory; it is written on exit.

@@ -58,10 +58,11 @@ public:
 // preload() of a stream records it in `preloaded` (and `preloads`). An open()
 // of that path then takes it over: it is open at once, even with holdStreams,
 // unless preloadSucceeds was false when it was asked for (the preload failed),
-// and then it opens like any other stream. As on the real Player, a preload of
-// another path replaces it and cancelPreload() drops it; an open() of another
-// path and close() leave it. `preloads` records every call, local paths too
-// (which the player ignores).
+// and then it opens like any other stream. As on the real Player, a preload is
+// the stream from its start: a transcode with an offset URL opened at a later
+// second does not take it, and leaves it. A preload of another path replaces it
+// and cancelPreload() drops it; an open() of another path and close() leave it.
+// `preloads` records every call, local paths too (which the player ignores).
 //
 // An open with `transcoded` records it; like the real Player, duration() is then
 // the one given there, not `length`.
@@ -70,8 +71,9 @@ public:
     bool open(const std::string& path, double startAt, std::optional<Transcoded> how) override {
         if (beforeOpen) beforeOpen(path);
         opened.push_back(path);
+        bool fromStart = !how || how->offsetUrl.empty() || startAt < 1; // the whole second is 0
         transcoded = std::move(how);
-        bool taken = preloaded == path;
+        bool taken = preloaded == path && fromStart;
         bool ready = taken && preloadWorked_;
         if (taken) preloaded.reset();
         if (ready) ++adopted;

@@ -2894,6 +2894,104 @@ TEST_F(ResumeStreamTest, SleepWhileTheListLoadsDropsIt) {
     EXPECT_TRUE(player.opened.empty());
 }
 
+// Play in the Power menu starts a resume; Power off then drops it, since the
+// front end goes on ticking while "Goodbye" is spoken.
+TEST_F(ResumeStreamTest, PowerOffWhileTheListLoadsDropsIt) {
+    playFromAlbum("Rain");
+    reboot();
+    hold(Button::Power);
+    press(Button::PlayPause);
+    ASSERT_EQ(speech.last(), "Loading.");
+    auto id = server.lastRequest().id;
+    open("Power off");
+    ASSERT_TRUE(app->quitRequested());
+    EXPECT_FALSE(server.reply(id, weather())) << "the late answer is dropped";
+    app->tick();
+    EXPECT_TRUE(player.opened.empty());
+    EXPECT_EQ(speech.last(), "Powering off. Goodbye.");
+}
+
+// Home is not rebuilt while the track opens: OK on "Now playing" again goes to
+// the player, and does not load the list and open the track a second time.
+TEST_F(ResumeStreamTest, OkOnNowPlayingWhileTheTrackOpensEntersThePlayer) {
+    playFromAlbum("Rain");
+    player.pos = 42;
+    reboot();
+    player.holdStreams = true;
+    press(Button::Ok);
+    answer(weather());
+    ASSERT_TRUE(player.opening());
+    std::size_t requests = server.requests.size();
+    press(Button::Ok);
+    EXPECT_EQ(server.requests.size(), requests) << "the list is not loaded again";
+    EXPECT_EQ(player.opened.size(), 1u);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(speech.last(), "Now playing. Weather, Rain, loading.");
+    ASSERT_TRUE(player.finishOpen());
+    app->tick();
+    EXPECT_TRUE(player.playing());
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+}
+
+// The next track while the resumed one opens is the next track of that list,
+// not a track of what was loaded before it (here: nothing).
+TEST_F(ResumeStreamTest, NextTrackWhileTheResumedTrackOpensPlaysTheNextOne) {
+    playFromAlbum("Rain");
+    reboot();
+    player.holdStreams = true;
+    press(Button::Ok);
+    answer(weather());
+    press(Button::Ok); // the player
+    hold(Button::Forward);
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    EXPECT_EQ(speech.last(), "Sunshine");
+    ASSERT_TRUE(player.finishOpen());
+    app->tick();
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().title, "Weather");
+    EXPECT_EQ(app->nowPlaying().chapter, "Sunshine");
+}
+
+// A resumed track that does not open while the user is in the player leaves
+// nothing loaded: the player is left, back on Home, as when it fails from Home.
+TEST_F(ResumeStreamTest, AResumeThatFailsInThePlayerGoesBackToHome) {
+    playFromAlbum("Rain");
+    reboot();
+    player.holdStreams = true;
+    press(Button::Ok);
+    answer(weather());
+    press(Button::Ok); // the player
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    player.unopenable = {"fake://stream/t2"};
+    ASSERT_TRUE(player.finishOpen());
+    app->tick();
+    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
+    EXPECT_FALSE(app->nowPlaying().loaded);
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(level().title, "Home");
+    hold(Button::Forward); // in a menu: nothing happens
+    press(Button::Home);
+    EXPECT_EQ(level().title, "Home");
+}
+
+// Sleep drops the open of the resumed track, which leaves nothing loaded: the
+// device wakes on Home, not in a player with nothing in it.
+TEST_F(ResumeStreamTest, SleepWhileTheResumedTrackOpensInThePlayerWakesOnHome) {
+    playFromAlbum("Rain");
+    reboot();
+    player.holdStreams = true;
+    press(Button::Ok);
+    answer(weather());
+    press(Button::Ok); // the player
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    press(Button::Power);
+    press(Button::Ok); // wake
+    EXPECT_FALSE(app->nowPlaying().loaded);
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(level().title, "Home");
+    EXPECT_FALSE(player.finishOpen()) << "the open was dropped";
+}
+
 TEST_F(ResumeStreamTest, ShutdownWhileTheListLoadsDropsIt) {
     playFromAlbum("Rain");
     reboot();

@@ -73,7 +73,9 @@ public:
     // what is open and without disturbing it, so that a later open(path) takes
     // it over and need not wait. A local path, or the path already preloaded,
     // does nothing. If the preload failed, open(path) opens it again as usual;
-    // if it is still running, open(path) goes on with it (opening()). One
+    // if it is still running, open(path) goes on with it (opening()). A preload
+    // is the stream from its start: open(path) of a transcode with an offset URL
+    // at a later whole second opens that URL instead, and leaves the preload. One
     // preload is kept until open(path) takes it over, a preload of another path
     // replaces it, or cancelPreload() drops it: an open() of another path and
     // close() leave it alone.

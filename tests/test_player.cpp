@@ -672,15 +672,36 @@ size_t playUntilHeld(Mixer& mixer, FlakyServer& server, std::chrono::millisecond
     std::vector<float> buf(1024 * AudioStream::kChannels);
     size_t heard = 0;
     // Some of what came: the rest is queued, and the decoder waits on the socket.
-    while (heard < Mixer::kSampleRate) {
+    auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (heard < Mixer::kSampleRate && std::chrono::steady_clock::now() < deadline) {
         size_t got = mixer.content().read(buf.data(), 1024);
         heard += got;
         if (got == 0) std::this_thread::sleep_for(1ms);
     }
+    EXPECT_GE(heard, size_t(Mixer::kSampleRate)) << "the stream did not play";
     EXPECT_TRUE(waitFor([&] { return server.held() > 0; })) << "the reply was cut short at cutAt";
     std::this_thread::sleep_for(200ms);
     server.goDown(downFor);
     return heard;
+}
+
+// Hears everything queued, as fast as it comes, until the player has run dry
+// (buffering()) and nothing more comes for 100 ms: the decoder has written all
+// it had. Returns false if that did not happen within 5 s. Fast, so that the
+// playing time before a test pauses is short even on a busy machine.
+bool drainUntilDry(Player& player, Mixer& mixer) {
+    std::vector<float> buf(1024 * AudioStream::kChannels);
+    auto drain = [&] {
+        size_t got = 0;
+        for (size_t n; (n = mixer.content().read(buf.data(), 1024)) > 0;) got += n;
+        return got;
+    };
+    return waitFor([&] {
+        drain();
+        if (!player.buffering()) return false;
+        std::this_thread::sleep_for(100ms);
+        return drain() == 0 && player.buffering();
+    });
 }
 
 // A short dropout mid-track: what came plays, the player runs dry (buffering()),
@@ -743,8 +764,11 @@ TEST_F(PlayerTest, AStreamThatStaysAwayIsRetriedWithBackoffThenFails) {
     ASSERT_EQ(refused.size(), 3u) << log;
     double first = std::chrono::duration<double>(refused[1] - refused[0]).count();
     double second = std::chrono::duration<double>(refused[2] - refused[1]).count();
-    EXPECT_NEAR(first, 1.0, 0.3);
-    EXPECT_NEAR(second, 2.0, 0.3) << "each wait is twice the last";
+    // A wait is never shorter; on a busy machine it can be a good deal longer.
+    EXPECT_GE(first, 0.95);
+    EXPECT_LT(first, 1.0 + kSlowMachine / 5);
+    EXPECT_GE(second, 1.95) << "each wait is twice the last";
+    EXPECT_LT(second, 2.0 + kSlowMachine / 5);
     EXPECT_NE(log.find("giving up"), std::string::npos) << log;
 }
 
@@ -752,22 +776,41 @@ TEST_F(PlayerTest, AStreamThatStaysAwayIsRetriedWithBackoffThenFails) {
 // towards the cap, so Play after a long pause still finds it retrying.
 TEST_F(PlayerTest, APausedStreamDoesNotGiveUpItsRetries) {
     FlakyServer server(wavString(20), wavOffset(kCutAt));
-    Player player(mixer_, kStreamOpenTimeout, 1500ms);
+    Player player(mixer_, kStreamOpenTimeout, 2500ms);
     ASSERT_TRUE(openAndWait(player, server.url("/tone.wav")));
     player.play();
-    std::vector<float> buf(1024 * AudioStream::kChannels);
     std::string log = stderrOf(dir_ / "stderr.txt", [&] {
         playUntilHeld(mixer_, server, std::chrono::hours(1));
-        EXPECT_TRUE(waitFor([&] {
-            mixer_.content().read(buf.data(), 1024);
-            return player.buffering();
-        })) << "it ran dry";
+        EXPECT_TRUE(drainUntilDry(player, mixer_)) << "it ran dry";
         player.pause();
         std::this_thread::sleep_for(4s); // well past the cap
         player.play();
     });
     EXPECT_TRUE(player.buffering()) << "still retrying" << log;
     EXPECT_FALSE(player.failed());
+    EXPECT_EQ(log.find("giving up"), std::string::npos) << log;
+}
+
+// Only the time it plays counts, to the moment: a pause that covers one retry
+// and ends in the wait for the next leaves that wait's paused part out too.
+// The retries start at 0, 1 and 3 s after the loss. Paused from just after the
+// loss to 1.9 s, the stream has played about 1.1 s at the third, which is under
+// the cap; counted from the second (paused) retry it would be 2 s, at the cap.
+TEST_F(PlayerTest, APauseInTheWaitBeforeARetryIsLeftOutOfTheCap) {
+    FlakyServer server(wavString(20), wavOffset(kCutAt));
+    Player player(mixer_, kStreamOpenTimeout, 2000ms);
+    ASSERT_TRUE(openAndWait(player, server.url("/tone.wav")));
+    player.play();
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] {
+        playUntilHeld(mixer_, server, std::chrono::hours(1));
+        EXPECT_TRUE(drainUntilDry(player, mixer_)) << "it ran dry";
+        player.pause();
+        std::this_thread::sleep_for(1900ms);
+        player.play();
+        std::this_thread::sleep_for(1600ms); // past the third retry (3 s), before the fourth (7 s)
+    });
+    EXPECT_FALSE(player.failed()) << log;
+    EXPECT_TRUE(player.buffering()) << "still retrying" << log;
     EXPECT_EQ(log.find("giving up"), std::string::npos) << log;
 }
 
@@ -781,10 +824,7 @@ TEST_F(PlayerTest, ASeekDuringADropoutGivesTheRetriesTheFullTimeAgain) {
     std::vector<float> buf(1024 * AudioStream::kChannels);
     std::string log = stderrOf(dir_ / "stderr.txt", [&] {
         playUntilHeld(mixer_, server, std::chrono::hours(1));
-        EXPECT_TRUE(waitFor([&] {
-            mixer_.content().read(buf.data(), 1024);
-            return player.buffering();
-        })) << "it ran dry";
+        EXPECT_TRUE(drainUntilDry(player, mixer_)) << "it ran dry";
         // Past the cap: the retries would give up at the next error, were it not for the seek.
         std::this_thread::sleep_for(2700ms);
         player.seek(kCutAt - 1);

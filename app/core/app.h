@@ -105,6 +105,7 @@ private:
     void popScreen(); // back() without a sound or speech
     void goHome();
     void enterPlayer();
+    std::optional<size_t> playerScreenIndex() const; // its index in screens_, if it is on the stack
     void openPowerMenu();
     void saveChangedSettings(); // a value stepped with Left / Right, once the user moves on
     void saveConfig();
@@ -195,7 +196,7 @@ private:
     OpenResult switchTo(const Book& book, bool music, size_t file, double position, bool autoplay, Then opened = {});
     std::string unit() const { return music_ ? "track" : "chapter"; } // what one part is called
     OpenResult loadFile(size_t file, double position, bool autoplay, Origin origin, Then opened = {},
-                        Then undo = {}); // within the loaded book
+                        Then undo = {}); // within the loaded book; a pending open's undo runs only if this fails
     OpenResult openFile(size_t file, double position, bool autoplay, Origin origin, Then opened, Then undo);
     void onOpened(bool autoplay, Origin origin, const Then& opened);
     // A remote track did not open: says so (unless `quiet`), then runs `undo`.
@@ -203,6 +204,7 @@ private:
     void finishPendingOpen(); // tick(): the player is done opening
     void giveUpPendingOpen(); // tick(): it takes too long (Player's own cap did not end it)
     void dropPendingOpen();   // closes the player and runs the open's undo, silently
+    void leaveEmptyPlayer();  // after an undo that left nothing loaded: off the player screen
     bool willPlay() const;    // playing, or will once the pending open is done
     void enterPlayerFrom(std::uint64_t screenId); // only if the user is still on that screen
     void togglePlay();

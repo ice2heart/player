@@ -148,15 +148,26 @@ struct Player::OpenJob {
 };
 
 struct Player::Dropout {
-    std::optional<std::chrono::steady_clock::time_point> since; // set while the connection is lost
-    std::chrono::milliseconds delay = kStreamRetryFirstDelay;  // before the next retry
+    using Clock = std::chrono::steady_clock;
+    std::optional<Clock::time_point> since; // set while the connection is lost
+    Clock::duration played{};               // playing time since then (a pause does not count)
+    Clock::time_point counted;              // `played` runs up to here
+    std::chrono::milliseconds delay = kStreamRetryFirstDelay; // before the next retry
     int64_t bytes = 0; // how far the stream had come (AVIOContext::pos) when it was lost
     std::optional<double> reopenedAt; // a transcode opened again by a retry, at this place
     void restart(const AVIOContext* pb) {
-        since = std::chrono::steady_clock::now();
+        since = counted = Clock::now();
+        played = {};
         delay = kStreamRetryFirstDelay;
         bytes = pb->pos;
         reopenedAt.reset();
+    }
+    // Adds the time since the last count if it plays now. Called every few ms
+    // while a retry waits, so a pause is left out to the moment.
+    void count(bool playing) {
+        auto now = Clock::now();
+        if (playing) played += now - counted;
+        counted = now;
     }
 };
 
@@ -505,15 +516,15 @@ Player::Seek Player::seekInput(double at) {
 }
 
 bool Player::retryStream(Dropout& dropout) {
-    auto now = std::chrono::steady_clock::now();
-    if (!playing_) dropout.since = now; // paused, nobody waits: only playing time counts
-    if (now - *dropout.since >= retryGiveUp_) return false;
+    dropout.count(playing_); // paused, nobody waits: only playing time counts
+    if (dropout.played >= retryGiveUp_) return false;
     // In steps, so that close() and a seek do not wait for the retry.
-    auto until = now + dropout.delay;
+    auto until = std::chrono::steady_clock::now() + dropout.delay;
     dropout.delay = std::min(dropout.delay * 2, kStreamRetryMaxDelay);
     while (std::chrono::steady_clock::now() < until) {
         if (shouldAbortWrite()) return true; // the loop sees it next
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        dropout.count(playing_);
     }
     // A seek to where the queued audio ends asks the server for the rest (an
     // HTTP Range request, or a transcode from there); the queued audio plays on meanwhile.

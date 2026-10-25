@@ -40,8 +40,9 @@ constexpr std::chrono::seconds kStreamReadTimeout{10};
 constexpr int kStreamReconnectDelayMax = 0;
 // A stream whose connection is lost mid-track (reconnects failed) is opened again
 // at the place it got to, first after kStreamRetryFirstDelay, then after twice the
-// last wait, up to kStreamRetryMaxDelay. Once kStreamRetryGiveUp has passed
-// since the connection was lost, no retry starts: the stream has failed().
+// last wait, up to kStreamRetryMaxDelay. Once it has played for kStreamRetryGiveUp
+// since the connection was lost (paused time does not count), no retry starts:
+// the stream has failed().
 constexpr std::chrono::milliseconds kStreamRetryFirstDelay = std::chrono::seconds(1);
 constexpr std::chrono::milliseconds kStreamRetryMaxDelay = std::chrono::seconds(8);
 constexpr std::chrono::milliseconds kStreamRetryGiveUp = std::chrono::seconds(30);

@@ -547,8 +547,9 @@ void App::closeScreens(size_t keep) {
             remoteLists_.erase(list);
         }
         if (ping_ && pingScreen_ == id) server_.cancel(std::exchange(ping_, 0));
-        if (pendingOpen_ && pendingOpen_->screen == id) dropPendingOpen();
+        bool drop = pendingOpen_ && pendingOpen_->screen == id;
         screens_.pop_back();
+        if (drop) dropPendingOpen(); // after the pop: it may close more screens (leaveEmptyPlayer())
     }
 }
 
@@ -632,16 +633,20 @@ void App::enterPlayer() {
         goHome();
         return;
     }
-    auto player = std::find_if(screens_.begin(), screens_.end(),
-                               [](const Screen& s) { return s.kind == Screen::Kind::Player; });
-    if (player != screens_.end()) {
-        closeScreens(size_t(player - screens_.begin()) + 1);
+    if (auto player = playerScreenIndex()) {
+        closeScreens(*player + 1);
         earcons_.play(Earcon::Close);
     } else {
         pushScreen(playerScreen());
         earcons_.play(Earcon::Open);
     }
     say(nowPlayingSpeech());
+}
+
+std::optional<size_t> App::playerScreenIndex() const {
+    auto player = std::find_if(screens_.begin(), screens_.end(),
+                               [](const Screen& s) { return s.kind == Screen::Kind::Player; });
+    return player == screens_.end() ? std::nullopt : std::optional(size_t(player - screens_.begin()));
 }
 
 // After an open the user waited for: the player, unless they have opened
@@ -754,8 +759,12 @@ std::vector<MenuItem> App::homeMenu() {
         now.value = [this] { return book_ ? book_->title : std::string("nothing"); };
         items.push_back(now);
     } else if (auto stream = savedStream()) {
-        MenuItem now = action("Now playing", [this] { resumeStream(); });
-        now.value = [title = stream->title] { return title; };
+        // Home is not rebuilt while the resumed track opens: then this goes to the player.
+        MenuItem now = action("Now playing", [this] {
+            if (book_) enterPlayer();
+            else resumeStream();
+        });
+        now.value = [this, title = stream->title] { return book_ ? book_->title : title; };
         items.push_back(now);
     }
     items.push_back(submenu("Library", [this] { return libraryMenu(); }));
@@ -1376,16 +1385,25 @@ App::OpenResult App::switchTo(const Book& book, bool music, size_t file, double 
 // then `undo` runs.
 App::OpenResult App::loadFile(size_t file, double position, bool autoplay, Origin origin, Then opened,
                               Then undo) {
-    dropPendingOpen();
+    // A track still opening is of this book too (`file` is one of its tracks): it
+    // is dropped, but not undone now, since its undo may load another book (that
+    // of switchTo()). It runs if this open fails, after this one's own.
+    Then earlier;
+    if (pendingOpen_) {
+        earlier = std::move(pendingOpen_->undo);
+        pendingOpen_.reset();
+        player_.close();
+    }
     size_t wasFile = fileIndex_;
     bool wasOpen = player_.isOpen();
     double wasAt = player_.position();
-    auto restore = [this, wasFile, wasOpen, wasAt, undo = std::move(undo)] {
+    auto restore = [this, wasFile, wasOpen, wasAt, undo = std::move(undo), earlier = std::move(earlier)] {
         if (book_ && book_->remote) {
             fileIndex_ = wasFile;
             if (wasOpen) reopenAt_ = wasAt; // opened on Play: not a second wait on the server now
         }
         if (undo) undo();
+        if (earlier) earlier();
     };
     return openFile(file, position, autoplay, origin, std::move(opened), std::move(restore));
 }
@@ -1448,6 +1466,13 @@ void App::onCannotPlay(const std::string& title, bool quiet, const Then& undo) {
         say("Cannot play " + title + ". Server not reachable."); // never the URL: it holds the login
     }
     if (undo) undo();
+    leaveEmptyPlayer();
+}
+
+// After an undo: nothing may be loaded now (a resumed list, whose player the
+// user entered while it opened). Then there is no player to stay in.
+void App::leaveEmptyPlayer() {
+    if (auto player = playerScreenIndex(); !book_ && player) closeScreens(*player);
 }
 
 void App::finishPendingOpen() {
@@ -1471,6 +1496,7 @@ void App::dropPendingOpen() {
     pendingOpen_.reset();
     player_.close();
     if (undo) undo();
+    leaveEmptyPlayer();
 }
 
 bool App::willPlay() const { return player_.playing() || (pendingOpen_ && pendingOpen_->autoplay); }
@@ -1855,6 +1881,7 @@ void App::wake() {
 }
 
 void App::powerOff() {
+    cancelResume(); // the front end ticks on while "Goodbye" is spoken
     dropPendingOpen(); // nothing may start playing while the device shuts down
     pause(false);
     saveOnExit();
