@@ -318,22 +318,25 @@ The plan above is kept as it was written. Where the code differs, the code is ri
 
 ## Phase 2: robust streaming
 
-- **Asynchronous `Player::open`.** Open on the decoder thread. `App` speaks
-  "Loading" and stays responsive. `MediaPlayer` gets `opening()` (it has `failed()`
-  since phase 1), or an open callback.
-- **Buffering feedback.** If the content stream runs dry while playing, play a
-  "buffering" earcon (a new `Earcon`), and say "Waiting for network" after 3 s.
-  Retry with backoff, and do not skip the track because of a short dropout.
-- **Read-ahead.** Open the next track's connection about 10 s before the current
-  one ends, so tracks change without a gap on a slow link.
-- **Quality setting** (`choice()` in Settings → Streaming quality: Original / 320 /
-  192 / 128 kbps). With transcoding, seek with `timeOffset` (extension
-  `transcodeOffset`) instead of Range.
-- **Scrobble**: `scrobble submission=false` when a track starts and `true` after
-  half of it or 4 min, so "Recently played" on the server is right.
-- **Remember the place.** `last_stream` (server + album/playlist id + track + position)
-  so the device resumes after a restart. "Now playing" on Home works for streams too.
-- **Star / unstar** from the Player menu, and a **Starred** list in Streaming.
+Goal: streaming feels like local playback. Keys answer while a stream opens, a short
+dropout does not lose the track, tracks change without a gap, and the device resumes
+a stream after a restart.
+
+| # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
+|---|------|------|
+| 2.1 | **Asynchronous `Player::open`.** Open on the decoder thread. `MediaPlayer` gets `opening()` (it has `failed()` since phase 1), or an open callback. `App` speaks "Loading" and stays responsive. | Keys are answered while an open is pending. A late open result after Home or after choosing another track does nothing. A failed asynchronous open says "Server not reachable". Media test: opening an unreachable URL does not block the caller. |
+| 2.2 | **Buffering feedback.** If the content stream runs dry while playing, play a "buffering" earcon (a new `Earcon`), and say "Waiting for network" after 3 s. Retry with backoff, and do not skip the track because of a short dropout. | Dry and recovered within 3 s: earcon only, same track. Dry for more than 3 s: the phrase is spoken once. Retries give up after the cap and fall back to phase 1's "Server not reachable. Press play to try again." |
+| 2.3 | **Read-ahead.** Open the next track's connection about 10 s before the current one ends, so tracks change without a gap on a slow link. | The next URL is opened about 10 s before the end (fake clock). A pre-opened track that fails falls back to a normal open. Leaving the album drops the pre-open. |
+| 2.4 | **Quality setting** (`choice()` in Settings → Streaming quality: Original / 320 / 192 / 128 kbps, default Original), saved in `config.yaml`. With transcoding, seek with `timeOffset` (extension `transcodeOffset`) instead of Range. | The stream URL carries `maxBitRate` / `format`, or neither for Original. A seek on a transcoded stream uses `timeOffset`, not Range. The setting persists across a restart. |
+| 2.5 | **Scrobble**: `scrobble submission=false` when a track starts and `true` after half of it or 4 min, so "Recently played" on the server is right. | The fake server records both calls at the right times. A skip before half sends no `true`. A failed scrobble says nothing. |
+| 2.6 | **Remember the place.** `last_stream` (server + album/playlist id + track + position) in `state.tsv`, so the device resumes after a restart. "Now playing" on Home works for streams too. | Exit and restart resume the same album, track and position. With the server down, resume says "Server not reachable". A local `last_book` still works. |
+| 2.7 | **Star / unstar** from the Player menu, and a **Starred** list in Streaming. | Star and unstar call the server. Starred loads like the other lists (Loading, filled, error). An error is spoken. |
+| 2.8 | Docs: architecture.md (open thread, buffering earcon, read-ahead, `last_stream`), navigation.md (Player menu, Starred), SPEC where needed. | – |
+
+**Device check (manual):** keys are answered at once during "Loading". A short
+Wi-Fi drop during play gives the buffering earcon and the same track goes on.
+Tracks change without a gap on a slow link. After a restart, "Now playing" resumes
+the stream where it stopped.
 
 ## Phase 3: local cache and downloads
 
@@ -402,6 +405,8 @@ The plan above is kept as it was written. Where the code differs, the code is ri
   books, are added later behind the same interface.
 - Streaming is a **separate Home entry** for now and may be merged into Library and
   Music later.
+- Streams default to the **original file**. Streaming quality in Settings can pick a
+  transcode (320 / 192 / 128 kbps) for slow links.
 
 ## Open questions
 
@@ -412,8 +417,5 @@ The plan above is kept as it was written. Where the code differs, the code is ri
    the device keep only `t`/`s` (a token that never expires, so it is just as
    sensitive)? Navidrome API keys would be better once the server offers
    `apiKeyAuthentication`.
-3. Should streams default to the original file or to a transcode? FLAC is about
-   1 Mbit/s, which is fine on home Wi-Fi but heavy for a phone hotspot. The Pi Zero 2 W
-   decodes either one.
-4. TLS on the device: check that the Pi image trusts the server's certificate. A
+3. TLS on the device: check that the Pi image trusts the server's certificate. A
    self-signed home CA would need `server.ca_file` in `config.yaml`.
