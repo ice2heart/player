@@ -53,22 +53,42 @@ public:
 //   app->playRemote("Weather", tracks, 0); // "Loading."; App waits for the open
 //   player.finishOpen();                   // it worked (or failed: unopenable)
 //   app->tick();                           // App sees the result
+//
+// preload() of a stream records it in `preloaded` (and `preloads`). An open()
+// of that path then takes it over: it is open at once, even with holdStreams,
+// unless preloadSucceeds was false when it was asked for (the preload failed),
+// and then it opens like any other stream. As on the real Player, a preload of
+// another path replaces it and cancelPreload() drops it; an open() of another
+// path and close() leave it. `preloads` records every call, local paths too
+// (which the player ignores).
 class FakePlayer : public MediaPlayer {
 public:
     bool open(const std::string& path, double startAt) override {
         if (beforeOpen) beforeOpen(path);
         opened.push_back(path);
+        bool taken = preloaded == path;
+        bool ready = taken && preloadWorked_;
+        if (taken) preloaded.reset();
+        if (ready) ++adopted;
         file = path;
         playing_ = false;
         pos = startAt;
         atEnd = false;
         broken = false;
         dry = false;
-        opening_ = holdStreams && path.find("://") != std::string::npos; // a newer open drops the last one
-        isOpen_ = !opening_ && opens(path);
+        opening_ = !ready && holdStreams && isStream(path); // a newer open drops the last one
+        isOpen_ = ready || (!opening_ && opens(path)); // what a preload opened stays open
         return opening_ || isOpen_;
     }
     bool opening() const override { return opening_; }
+    void preload(const std::string& path) override {
+        if (preloaded == path) return;
+        preloads.push_back(path);
+        if (!isStream(path)) return;
+        preloaded = path;
+        preloadWorked_ = preloadSucceeds && opens(path);
+    }
+    void cancelPreload() override { preloaded.reset(); }
     // Ends the pending open: it works unless the path is unopenable. Returns
     // false, and does nothing, when no open is pending (dropped by close() or a
     // newer open, or already done): that is how a late result is simulated.
@@ -109,8 +129,13 @@ public:
     std::vector<std::string> unopenable; // paths that fail to open
     std::function<void(const std::string& path)> beforeOpen; // e.g. to see what was said by then
     bool holdStreams = false; // streams open only on finishOpen()
+    std::optional<std::string> preloaded; // the preload kept now
+    std::vector<std::string> preloads;    // every preload() asked for (but the same path again), in order
+    int adopted = 0;                      // opens that took a preload over
+    bool preloadSucceeds = true;          // false: preloads fail, and their open waits like any other
 
 private:
+    static bool isStream(const std::string& path) { return path.find("://") != std::string::npos; }
     bool opens(const std::string& path) const {
         return openSucceeds && std::find(unopenable.begin(), unopenable.end(), path) == unopenable.end();
     }
@@ -118,6 +143,7 @@ private:
     bool isOpen_ = false;
     bool opening_ = false;
     bool playing_ = false;
+    bool preloadWorked_ = false;
 };
 
 class FakeSounds : public SoundEffects {

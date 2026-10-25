@@ -1683,6 +1683,181 @@ TEST_F(AsyncOpenTest, TheRemoteTrackBehindAFailedLocalBookFailsQuietly) {
     EXPECT_TRUE(player.playing());
 }
 
+// ---------------------------------------------------------------- read-ahead
+
+// The next track's stream opens in the background near the end of a track, so
+// it starts at once. Streams open only on finishOpen() here, so a track that
+// plays without it was pre-opened.
+class ReadAheadTest : public AsyncOpenTest {
+protected:
+    // Plays on, as the audio device would, for `ms` of track and clock time.
+    void playFor(std::chrono::milliseconds ms) {
+        player.pos += std::chrono::duration<double>(ms).count();
+        idle(ms);
+    }
+    // Storm Front plays its last 5 s: Rain is pre-opened.
+    void nearTheEnd() {
+        playWeather();
+        player.pos = player.length - 5;
+        app->tick();
+        ASSERT_EQ(player.preloaded, "fake://stream/t2");
+    }
+};
+
+TEST_F(ReadAheadTest, TheNextTrackIsPreOpenedTenSecondsBeforeTheEndAndStartsAtOnce) {
+    playWeather();
+    player.pos = player.length - 12;
+    playFor(1500ms); // 10.5 s left
+    EXPECT_TRUE(player.preloads.empty()) << "not yet";
+    playFor(500ms); // 10 s left
+    EXPECT_EQ(player.preloads, (std::vector<std::string>{"fake://stream/t2"}));
+    for (int i = 0; i < 9; ++i) playFor(1s);
+    EXPECT_EQ(player.preloads.size(), 1u) << "opened once";
+    speech.said.clear();
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_EQ(player.adopted, 1);
+    EXPECT_FALSE(player.opening()) << "no wait for an open";
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain");
+    EXPECT_FALSE(speech.heard("Loading."));
+    EXPECT_FALSE(player.preloaded) << "taken over";
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(ReadAheadTest, APreOpenThatFailedFallsBackToANormalOpen) {
+    playWeather();
+    player.preloadSucceeds = false; // the server did not answer in time
+    player.pos = player.length - 5;
+    app->tick();
+    ASSERT_EQ(player.preloaded, "fake://stream/t2");
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_EQ(player.adopted, 0);
+    EXPECT_TRUE(player.opening()) << "opened again, as without read-ahead";
+    finishOpen();
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain");
+    EXPECT_FALSE(speech.heard("Cannot play Rain. Server not reachable."));
+}
+
+TEST_F(ReadAheadTest, LeavingTheAlbumDropsThePreOpen) {
+    nearTheEnd();
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    EXPECT_EQ(player.file, alphaFile(1));
+    app->tick(); // the front end ticks every few ms
+    EXPECT_FALSE(player.preloaded);
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_EQ(player.preloads, (std::vector<std::string>{"fake://stream/t2"})) << "a local book is not pre-opened";
+}
+
+TEST_F(ReadAheadTest, ChoosingAnotherRemoteListDropsThePreOpen) {
+    nearTheEnd();
+    std::vector<RemoteTrack> other = {{"o1", "Other", "Band", "Other", 100, 1}, {"o2", "Next", "Band", "Other", 100, 2}};
+    ASSERT_TRUE(app->playRemote("Other", other, 0));
+    app->tick();
+    EXPECT_FALSE(player.preloaded) << "while the new list opens";
+    finishOpen();
+    EXPECT_FALSE(player.preloaded) << "and once it plays";
+}
+
+TEST_F(ReadAheadTest, ASeekBackDropsThePreOpenUntilTheEndComesAgain) {
+    nearTheEnd();
+    player.pos = 100; // e.g. a chapter list jump; skips seek the same way
+    app->tick();
+    EXPECT_FALSE(player.preloaded);
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_EQ(player.preloaded, "fake://stream/t2");
+}
+
+// A connection kept waiting may be closed by the server: a pause drops it, and Play opens it again.
+TEST_F(ReadAheadTest, PausingDropsThePreOpenAndPlayOpensItAgain) {
+    nearTheEnd();
+    press(Button::PlayPause);
+    ASSERT_FALSE(player.playing());
+    app->tick(); // the front end ticks every few ms
+    EXPECT_FALSE(player.preloaded);
+    press(Button::PlayPause);
+    ASSERT_TRUE(player.playing());
+    app->tick();
+    EXPECT_EQ(player.preloaded, "fake://stream/t2");
+    EXPECT_EQ(player.preloads.size(), 2u);
+}
+
+// A track shorter than the read-ahead is in its last seconds as it starts.
+TEST_F(ReadAheadTest, AShortTrackPreOpensTheNextAtOnce) {
+    player.length = 8;
+    playWeather();
+    EXPECT_EQ(player.preloaded, "fake://stream/t2");
+    player.atEnd = true;
+    app->tick();
+    ASSERT_EQ(player.file, "fake://stream/t2");
+    EXPECT_EQ(player.preloaded, "fake://stream/t3") << "pre-opened as Rain starts";
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.adopted, 2);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(ReadAheadTest, SleepDropsThePreOpen) {
+    nearTheEnd();
+    press(Button::Power);
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    app->tick(); // the front end ticks every few ms
+    EXPECT_FALSE(player.preloaded);
+    idle(1min);
+    EXPECT_FALSE(player.preloaded) << "not pre-opened again while asleep";
+}
+
+TEST_F(ReadAheadTest, PowerOffDropsThePreOpen) {
+    nearTheEnd();
+    hold(Button::Power);
+    open("Power off");
+    ASSERT_TRUE(app->quitRequested());
+    app->tick(); // the front end goes on ticking while "Goodbye" is spoken
+    EXPECT_FALSE(player.preloaded);
+}
+
+TEST_F(ReadAheadTest, ShutdownDropsThePreOpen) {
+    nearTheEnd();
+    app->shutdown();
+    EXPECT_FALSE(player.preloaded);
+}
+
+TEST_F(ReadAheadTest, TheLastTrackPreOpensNothing) {
+    playWeather(1);
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_EQ(player.preloads, (std::vector<std::string>{"fake://stream/t3"})) << "the last track is pre-opened";
+    player.atEnd = true;
+    app->tick();
+    ASSERT_EQ(player.file, "fake://stream/t3");
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_EQ(player.preloads.size(), 1u) << "nothing follows it";
+}
+
+TEST_F(ReadAheadTest, ATrackOfUnknownLengthPreOpensNothing) {
+    player.length = 0; // a transcoded stream may not say
+    playWeather();
+    player.pos = 300;
+    app->tick();
+    EXPECT_TRUE(player.preloads.empty());
+}
+
+TEST_F(ReadAheadTest, ALocalBookIsNotPreOpened) {
+    playAlpha();
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_TRUE(player.preloads.empty());
+}
+
 // ---------------------------------------------------------------- streaming menu
 
 namespace {

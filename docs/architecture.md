@@ -70,7 +70,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `streamUrl()`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
 | `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists and getPlaylist answers (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
 | `app/net/md5.{h,cpp}` | `md5Hex()` for the auth token. |
-| `app/media/player.{h,cpp}` | `Player`: one audio file or stream URL, decoded on its own thread (FFmpeg). A local file opens in `open()`; a URL opens on the decoder thread (`opening()` until it is done), with a 10 s read timeout and HTTP reconnects, and the whole open gives up after 10 s (`kStreamOpenTimeout`). A stream whose connection is lost while it plays is retried with backoff at the same place for 30 s (`kStreamRetryGiveUp`); `buffering()` says when it has run dry meanwhile. An interrupt callback lets `close()` abort any network wait at once, and `close()` or a newer `open()` drops an open still running. Its error messages print a local path but never a URL (`://`), which would hold the server login, and FFmpeg's own messages pass through `redactUrls()`. |
+| `app/media/player.{h,cpp}` | `Player`: one audio file or stream URL, decoded on its own thread (FFmpeg). A local file opens in `open()`; a URL opens on the decoder thread (`opening()` until it is done), with a 10 s read timeout and HTTP reconnects, and the whole open gives up after 10 s (`kStreamOpenTimeout`). `preload()` opens the next track's stream the same way in the background, and `open()` of that URL takes it over. A stream whose connection is lost while it plays is retried with backoff at the same place for 30 s (`kStreamRetryGiveUp`); `buffering()` says when it has run dry meanwhile. An interrupt callback lets `close()` abort any network wait at once, and `close()` or a newer `open()` drops an open still running. Its error messages print a local path but never a URL (`://`), which would hold the server login, and FFmpeg's own messages pass through `redactUrls()`. |
 | `app/media/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. |
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
@@ -177,6 +177,17 @@ Rules:
   server fails the open at once, and not `reconnect_streamed`, which would restart a
   stream without a length from the beginning. DNS lookups (`getaddrinfo`) are
   not interruptible and are not covered by the cap.
+- **Preload (read-ahead):** `preload(url)` opens a stream on a thread of its own
+  with an `OpenJob` that has no owner yet, next to what plays. Done, the thread
+  leaves the opened `Input` in the job (or nothing, if it failed) and ends. An
+  `open()` of that URL takes the job over: a finished preload starts decoding at
+  once (`isOpen()` on return, as for a local file); one still running gets the
+  `Player` as its owner and its thread carries on as the decoder thread, as if
+  `open()` had started it. A preload that failed, before or after the takeover, is
+  opened once more as a normal open. One preload is kept; `open()` of another
+  path and `close()` leave it, and `cancelPreload()`, a preload of another path
+  and the destructor drop it like an open (its thread is detached and frees what
+  it opened; an `Input` left in the job is freed with it).
 - **Dropouts:** a read error of a stream that is a network error (FFmpeg's
   reconnect failed) does not end it. The decoder thread keeps the queued audio
   playing and retries: it waits 1 s, then twice the last wait up to 8 s
@@ -456,6 +467,15 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   after `kStreamOpenGiveUp` (15 s, which covers a DNS lookup that FFmpeg cannot
   interrupt), `App` closes it and reports the track as not reachable. Automatic
   sleep and the end-of-track sleep timer wait while a track opens.
+- **Read-ahead:** while a remote track plays its last `kReadAhead` (10 s, by the
+  player's position and length), `App::checkReadAhead()` (last in `tick()`) asks
+  the player to `preload()` the next track of the list, once; opening that track
+  (at the end of this one, or a skip) then takes the pre-open over and starts
+  without "Loading" or a wait. If the pre-open failed, the open is a normal one
+  (pending, as above). A pause (sleep and power off pause too), a seek back out
+  of the last 10 s, another book or list, or a track of unknown length (a
+  transcode) means no pre-open: `cancelPreload()` drops one that was made. The
+  last track and local books pre-open nothing.
 
 ## 9. Persistence
 

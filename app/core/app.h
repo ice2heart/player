@@ -194,6 +194,7 @@ private:
     void onFileFinished();
     void onStreamFailed(); // a remote track broke off: stop, and open it there on Play
     void checkBuffering(Clock::TimePoint now); // tick(): the earcon and "Waiting for network" while a stream is dry
+    void checkReadAhead(); // tick(): pre-opens the next remote track near the end of this one
     void rememberPosition(); // in the state map only, written by saveOnExit()
     std::string playerStatus() const;
 
@@ -256,6 +257,9 @@ private:
         bool said = false;   // "Waiting for network" has been said
     };
     std::optional<Dropout> dry_;
+    // The track pre-opened (checkReadAhead()), empty if none. Only opening that
+    // track takes the pre-open, and that moves fileIndex_ on to it.
+    std::filesystem::path readAhead_;
 
     bool hold_ = false;
     std::array<bool, kButtonCount> held_{};   // raw keys down now

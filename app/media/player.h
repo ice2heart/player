@@ -61,6 +61,12 @@ std::string redactUrls(const std::string& line);
 // A stream that loses its connection while it plays keeps its place and is
 // retried with backoff for `retryGiveUp` (buffering() once what came has been
 // heard); only then does it fail.
+// preload() opens a stream on a thread of its own, like an open but with no
+// Player to hand over to yet. open() of that path takes it over: once it has
+// opened, its input starts decoding at once (open in open(), as a local file);
+// while it still runs, its thread becomes the decoder thread. A dropped preload
+// (cancelPreload(), another preload, the destructor) is dropped like an open:
+// its thread frees what it opened, or the input it left is freed with its job.
 class Player : public MediaPlayer {
 public:
     explicit Player(Mixer& mixer, std::chrono::milliseconds openTimeout = kStreamOpenTimeout,
@@ -69,6 +75,8 @@ public:
 
     bool open(const std::string& path, double startAt = 0) override;
     bool opening() const override { return state_ == State::Opening; }
+    void preload(const std::string& path) override;
+    void cancelPreload() override;
     void close() override;
     bool isOpen() const override { return state_ == State::Open; }
 
@@ -90,16 +98,21 @@ private:
     enum class State { Closed, Opening, Open };
     struct ResamplerInput; // the input format swr_ was built for
     struct Input;          // what an open makes: demuxer, decoder, resampler, duration, chapters
-    struct OpenJob;        // one open() and its thread; shared with a thread that may outlive the Player
+    struct OpenJob;        // one open() or preload() and its thread; shared with a thread that may outlive the Player
     struct Dropout;        // decoder thread: a stream whose connection is lost, and its retries
 
     // FFmpeg's interrupt callback (its argument is the OpenJob), on whichever thread waits for I/O.
     static int interrupted(void* job);
     // Opens `path` into `in`. Touches no Player, so a dropped open can finish after the Player is gone.
     static bool openInput(const std::string& path, OpenJob& job, std::chrono::milliseconds timeout, Input& in);
-    // The decoder thread of a stream: opens it, then decodes it unless close() came first.
-    static void openAndDecode(std::shared_ptr<OpenJob> job, Player* self, std::string path, double startAt,
-                              std::chrono::milliseconds timeout);
+    // The thread of a stream's open: opens it, then decodes it for the job's
+    // owner, unless the open was dropped first. A preload without an owner yet
+    // leaves what it opened in the job and ends.
+    static void openThread(std::shared_ptr<OpenJob> job, std::string path, std::chrono::milliseconds timeout);
+    // Hands the preload of `path` over to the caller (with its thread), or nothing.
+    std::shared_ptr<OpenJob> takePreload(const std::string& path, std::thread& thread);
+    // open() of a preloaded stream. False if the preload failed: open as usual then.
+    bool adopt(std::shared_ptr<OpenJob> job, std::thread thread, double startAt);
     void start(Input& in, double startAt); // takes over what openInput() made; isOpen() from here on
     void decodeLoop();
     // Decoder thread: the connection of a stream is lost. Waits the dropout's
@@ -120,6 +133,9 @@ private:
     // Written before state_ becomes Open, and read by the UI thread only once it is Open.
     std::atomic<State> state_{State::Closed};
     std::shared_ptr<OpenJob> job_; // the open the fields below belong to
+    std::shared_ptr<OpenJob> preload_; // UI thread: the stream preload() opens, if any
+    std::string preloadPath_;
+    std::thread preloadThread_;
     AVFormatContext* fmt_ = nullptr;
     AVCodecContext* dec_ = nullptr;
     AVStream* stream_ = nullptr;

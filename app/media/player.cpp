@@ -106,28 +106,6 @@ ReadErrorAction onReadError(int error, bool atEndOfFile, int& consecutive) {
     return ++consecutive > kMaxReadErrors ? ReadErrorAction::End : ReadErrorAction::Retry;
 }
 
-// One open() and the thread it runs on. The thread keeps its own reference, so
-// the job outlives a Player that dropped the open (close() does not wait for it).
-struct Player::OpenJob {
-    std::atomic<bool> stop{false};       // close(): FFmpeg gives up any wait at once
-    std::atomic<int64_t> deadline{0};    // steady_clock ns at which an open of a stream gives up; 0: none
-    std::atomic<bool> timedOut{false};   // set by interrupted() when it ends an open
-    std::mutex mutex;                    // for the two below
-    bool dropped = false;                // close() came first: the thread frees what it opened and ends
-    bool handedOver = false;             // the thread decodes for the Player now: close() waits for it
-};
-
-struct Player::Dropout {
-    std::optional<std::chrono::steady_clock::time_point> since; // set while the connection is lost
-    std::chrono::milliseconds delay = kStreamRetryFirstDelay;  // before the next retry
-    int64_t bytes = 0; // how far the stream had come (AVIOContext::pos) when it was lost
-    void restart(const AVIOContext* pb) {
-        since = std::chrono::steady_clock::now();
-        delay = kStreamRetryFirstDelay;
-        bytes = pb->pos;
-    }
-};
-
 struct Player::Input {
     AVFormatContext* fmt = nullptr;
     AVCodecContext* dec = nullptr;
@@ -143,13 +121,46 @@ struct Player::Input {
     }
 };
 
+// One open() or preload() and the thread it runs on. The thread keeps its own
+// reference, so the job outlives a Player that dropped the open (close() does
+// not wait for it).
+struct Player::OpenJob {
+    std::atomic<bool> stop{false};       // close(): FFmpeg gives up any wait at once
+    std::atomic<int64_t> deadline{0};    // steady_clock ns at which an open of a stream gives up; 0: none
+    std::atomic<bool> timedOut{false};   // set by interrupted() when it ends an open
+    bool preload = false;                // made by preload(); set before its thread starts
+    std::mutex mutex;                    // for the six below
+    Player* owner = nullptr;             // who the thread decodes for; nullptr: a preload nobody took yet
+    double startAt = 0;                  // where the owner wants it to start
+    bool dropped = false;                // close() came first: the thread frees what it opened and ends
+    bool handedOver = false;             // the thread decodes for the Player now: close() waits for it
+    bool done = false;                   // a preload without an owner has opened (or failed); its thread ends
+    // What a preload without an owner opened (nullptr: it failed). Last, so it is
+    // freed while the fields above, which its interrupt callback reads, still exist.
+    std::unique_ptr<Input> input;
+};
+
+struct Player::Dropout {
+    std::optional<std::chrono::steady_clock::time_point> since; // set while the connection is lost
+    std::chrono::milliseconds delay = kStreamRetryFirstDelay;  // before the next retry
+    int64_t bytes = 0; // how far the stream had come (AVIOContext::pos) when it was lost
+    void restart(const AVIOContext* pb) {
+        since = std::chrono::steady_clock::now();
+        delay = kStreamRetryFirstDelay;
+        bytes = pb->pos;
+    }
+};
+
 Player::Player(Mixer& mixer, std::chrono::milliseconds openTimeout, std::chrono::milliseconds retryGiveUp)
     : mixer_(mixer), openTimeout_(openTimeout), retryGiveUp_(retryGiveUp) {
     av_log_set_level(AV_LOG_ERROR);
     av_log_set_callback(logRedacted);
 }
 
-Player::~Player() { close(); }
+Player::~Player() {
+    cancelPreload();
+    close();
+}
 
 int Player::interrupted(void* opaque) {
     auto* job = static_cast<OpenJob*>(opaque);
@@ -216,20 +227,39 @@ bool Player::openInput(const std::string& path, OpenJob& job, std::chrono::milli
     return true;
 }
 
-void Player::openAndDecode(std::shared_ptr<OpenJob> job, Player* self, std::string path, double startAt,
-                           std::chrono::milliseconds timeout) {
-    Input in;
-    bool ok = openInput(path, *job, timeout, in);
-    {
-        std::lock_guard lock(job->mutex);
+void Player::openThread(std::shared_ptr<OpenJob> job, std::string path, std::chrono::milliseconds timeout) {
+    auto in = std::make_unique<Input>();
+    bool ok = openInput(path, *job, timeout, *in);
+    bool again = job->preload; // a preload that fails once open() has taken it over is opened once more
+    Player* self;
+    double startAt;
+    for (;;) {
+        std::unique_lock lock(job->mutex);
         if (job->dropped) return; // the Player has moved on and may be gone: `in` frees itself
-        job->handedOver = true;   // from here on close() waits for this thread
+        if (!job->owner) {        // a preload: open() takes the input over, or cancelPreload() drops it with the job
+            job->done = true;
+            if (ok) job->input = std::move(in);
+            return;
+        }
+        if (!ok && std::exchange(again, false)) {
+            // As if open() had started it: a failed preload falls back to a normal open,
+            // whether it failed before open() (adopt()) or after.
+            lock.unlock();
+            job->timedOut = false;
+            in = std::make_unique<Input>();
+            ok = openInput(path, *job, timeout, *in);
+            continue;
+        }
+        job->handedOver = true; // from here on close() waits for this thread
+        self = job->owner;
+        startAt = job->startAt;
+        break;
     }
     if (!ok) {
         self->state_ = State::Closed;
         return;
     }
-    self->start(in, startAt);
+    self->start(*in, startAt);
     self->decodeLoop();
 }
 
@@ -252,14 +282,19 @@ void Player::start(Input& in, double startAt) {
 }
 
 bool Player::open(const std::string& path, double startAt) {
+    std::thread preloadThread;
+    auto preloaded = takePreload(path, preloadThread);
     close();
     stop_ = false;
     isUrl_ = isUrl(path);
     failed_ = false;
+    if (preloaded && adopt(std::move(preloaded), std::move(preloadThread), startAt)) return true;
     job_ = std::make_shared<OpenJob>();
     if (isUrl_) {
         state_ = State::Opening;
-        thread_ = std::thread(&Player::openAndDecode, job_, this, path, startAt, openTimeout_);
+        job_->owner = this; // before the thread starts: no lock needed
+        job_->startAt = startAt;
+        thread_ = std::thread(&Player::openThread, job_, path, openTimeout_);
         return true;
     }
     job_->handedOver = true; // a local file opens here: close() waits for its decoder thread
@@ -273,6 +308,59 @@ bool Player::open(const std::string& path, double startAt) {
     }
     job_.reset();
     return false;
+}
+
+std::shared_ptr<Player::OpenJob> Player::takePreload(const std::string& path, std::thread& thread) {
+    if (!preload_ || preloadPath_ != path) return nullptr;
+    thread = std::move(preloadThread_);
+    preloadPath_.clear();
+    return std::move(preload_);
+}
+
+bool Player::adopt(std::shared_ptr<OpenJob> job, std::thread thread, double startAt) {
+    std::unique_lock lock(job->mutex);
+    if (job->done) { // its thread has ended, or is about to: nothing to wait for
+        lock.unlock();
+        thread.join();
+        if (!job->input) return false; // it failed: perhaps the server is back now
+        job_ = std::move(job);
+        job_->handedOver = true; // close() waits for the decoder thread started here
+        start(*job_->input, startAt);
+        job_->input.reset(); // empty now: start() took what it held
+        thread_ = std::thread(&Player::decodeLoop, this);
+        return true;
+    }
+    // Still opening: its thread opens it for this Player now, as if open() had started it.
+    state_ = State::Opening; // before the thread can see the owner and start()
+    job->owner = this;
+    job->startAt = startAt;
+    lock.unlock();
+    job_ = std::move(job);
+    thread_ = std::move(thread);
+    return true;
+}
+
+void Player::preload(const std::string& path) {
+    if (!isUrl(path) || (preload_ && preloadPath_ == path)) return;
+    cancelPreload();
+    preload_ = std::make_shared<OpenJob>();
+    preload_->preload = true;
+    preloadPath_ = path;
+    preloadThread_ = std::thread(&Player::openThread, preload_, path, openTimeout_);
+}
+
+void Player::cancelPreload() {
+    if (!preload_) return;
+    preload_->stop = true; // its open gives up any wait at once
+    {
+        std::lock_guard lock(preload_->mutex);
+        preload_->dropped = true; // a thread still opening frees what it opened
+    }
+    // Not joined: it may be in a wait no interrupt reaches (a DNS lookup). An
+    // input it has left is freed with the job, here or when the thread ends.
+    preloadThread_.detach();
+    preload_.reset();
+    preloadPath_.clear();
 }
 
 void Player::close() {

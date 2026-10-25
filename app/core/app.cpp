@@ -47,6 +47,10 @@ constexpr std::chrono::seconds kStreamOpenGiveUp{15};
 constexpr std::chrono::milliseconds kDryBeforeEarcon{500};
 constexpr std::chrono::seconds kDryBeforeWaitingForNetwork{3};
 constexpr std::chrono::seconds kPlayingBeforeRecovered{2};
+// Read-ahead: while a remote track plays its last this long, the next one's stream
+// opens in the background (MediaPlayer::preload()), so the next track starts
+// without waiting for an open on a slow link.
+constexpr std::chrono::seconds kReadAhead{10};
 constexpr const char* kNoServerHelp =
     "To stream from your own music server, add a server section with its url, user and password to "
     "config.yaml, then restart the player.";
@@ -208,6 +212,7 @@ void App::start() {
 void App::shutdown() {
     saveOnExit();
     pendingOpen_.reset();
+    player_.cancelPreload();
     player_.close();
 }
 
@@ -280,6 +285,7 @@ void App::tick() {
     if (!sleeping_ && autoSleep > 0 && !player_.playing() && !pendingOpen_ && !tts_.speaking() &&
         now - lastActivity_ > std::chrono::minutes(autoSleep))
         sleep("Going to sleep.");
+    checkReadAhead(); // last: it sees what this tick opened, and whether playback stopped
 }
 
 // ---------------------------------------------------------------- buttons
@@ -1520,6 +1526,25 @@ void App::checkBuffering(TimePoint now) {
     if (!dry_->said && dryFor >= kDryBeforeWaitingForNetwork && !tts_.speaking()) {
         dry_->said = true;
         say("Waiting for network.");
+    }
+}
+
+// The pre-open lasts while the track plays its last kReadAhead and the next
+// track is from the same list. Opening that track takes it over; once anything
+// else is loaded or opening, or after a pause (which sleep and power off do too),
+// or a seek back, it is dropped. A paused stream is not kept waiting: a server
+// may close a connection that stays idle.
+void App::checkReadAhead() {
+    // No length while it is closed or opening, nor for a stream that does not say (a transcode).
+    bool wanted = player_.playing() && book_ && book_->remote && fileIndex_ + 1 < book_->files.size() &&
+                  player_.duration() > 0 &&
+                  player_.duration() - player_.position() <= std::chrono::duration<double>(kReadAhead).count();
+    if (wanted && book_->files[fileIndex_ + 1] != readAhead_) {
+        readAhead_ = book_->files[fileIndex_ + 1];
+        player_.preload(readAhead_.string());
+    } else if (!wanted && !readAhead_.empty()) {
+        player_.cancelPreload();
+        readAhead_.clear();
     }
 }
 

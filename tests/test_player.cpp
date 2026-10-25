@@ -157,6 +157,8 @@ int unusedPort() {
 // then held open without another byte until the server is destroyed: a server
 // that has stopped answering. With HangUp, the server instead closes the
 // connection and stops listening after the first reply: a server that went away.
+// After holdReplies(), requests get their reply only once release() is called:
+// a slow server.
 class StalledServer {
 public:
     enum AfterReply { Hold, HangUp };
@@ -174,15 +176,20 @@ public:
     }
     std::string url(const std::string& path) const { return "http://127.0.0.1:" + std::to_string(port_) + path; }
     int requests() const { return requests_; }
+    void holdReplies() { held_ = true; }
+    void release() { held_ = false; }
 
 private:
     struct Client {
         int fd;
         std::string request; // until its end has come
+        bool waiting = false; // its request has come, its reply is held back
     };
 
     void run() {
         while (!stop_) {
+            for (Client& c : clients_)
+                if (c.waiting && !held_ && c.fd >= 0) answer(c);
             std::vector<pollfd> fds{{fd_, POLLIN, 0}};
             for (const Client& c : clients_) fds.push_back({c.fd, POLLIN, 0}); // poll() skips fd -1
             if (poll(fds.data(), nfds_t(fds.size()), 10) <= 0) continue;
@@ -208,6 +215,12 @@ private:
         if (client.request.find("\r\n\r\n") == std::string::npos) return;
         ++requests_;
         client.request.clear();
+        if (held_) client.waiting = true;
+        else answer(client);
+    }
+
+    void answer(Client& client) {
+        client.waiting = false;
         for (size_t sent = 0; sent < reply_.size();) {
             ssize_t k = send(client.fd, reply_.data() + sent, reply_.size() - sent, 0);
             if (k <= 0) break;
@@ -227,6 +240,7 @@ private:
     int port_ = 0;
     std::vector<Client> clients_; // the server thread's
     std::atomic<int> requests_{0};
+    std::atomic<bool> held_{false};
     std::atomic<bool> stop_{false};
     std::thread thread_;
 };
@@ -769,6 +783,144 @@ TEST_F(PlayerTest, ASeekDuringADropoutGivesTheRetriesTheFullTimeAgain) {
     EXPECT_EQ(log.find("cannot seek"), std::string::npos) << "the seek must work for this test" << log;
     EXPECT_TRUE(player.buffering()) << "still retrying" << log;
     EXPECT_FALSE(player.failed());
+}
+
+// Read-ahead: the next track's stream is preloaded while a track plays. The
+// server here answers once and then goes away, so the stream can only play
+// from the connection the preload made.
+TEST_F(PlayerTest, APreloadedStreamOpensAtOnceWithoutANewConnection) {
+    StalledServer server(partialWavReply(6, 6), StalledServer::HangUp);
+    auto file = writeWav(dir_ / "tone.wav", 44100, 1, 1.5);
+    Player player(mixer_);
+    std::string url = server.url("/rest/stream.view?id=2&t=secret-token");
+    player.preload(url);
+    ASSERT_TRUE(waitFor([&] { return server.requests() == 1; }));
+    player.preload(url); // App asks again at every tick: it goes on with the same one
+    // What plays meanwhile is not disturbed, and an open of another path keeps the preload.
+    ASSERT_TRUE(player.open(file.string()));
+    player.play();
+    EXPECT_NEAR(seconds(consume(player, mixer_)), 1.5, 0.01);
+    ASSERT_TRUE(player.finished());
+    std::this_thread::sleep_for(1s); // the preload has opened by now (it reads a few kB from loopback)
+    auto start = std::chrono::steady_clock::now();
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_TRUE(player.open(url, 2)); });
+    EXPECT_LT(secondsSince(start), 1.0);
+    EXPECT_TRUE(player.isOpen()) << "open at once" << log;
+    EXPECT_FALSE(player.opening());
+    EXPECT_NEAR(player.duration(), 6.0, 0.01);
+    EXPECT_NEAR(player.position(), 2.0, 0.01) << "where open() asked for";
+    player.play();
+    EXPECT_NEAR(seconds(consume(player, mixer_)), 4.0, 0.01);
+    EXPECT_TRUE(player.finished());
+    EXPECT_FALSE(player.failed());
+    EXPECT_EQ(server.requests(), 1) << "no second connection";
+}
+
+// The track ends before the preload has opened: open() goes on with it.
+TEST_F(PlayerTest, APreloadStillRunningIsTakenOverByOpen) {
+    StalledServer server(partialWavReply(6, 6), StalledServer::HangUp);
+    server.holdReplies();
+    Player player(mixer_);
+    std::string url = server.url("/tone.wav");
+    player.preload(url);
+    ASSERT_TRUE(waitFor([&] { return server.requests() == 1; }));
+    ASSERT_TRUE(player.open(url, 2));
+    EXPECT_TRUE(player.opening());
+    EXPECT_FALSE(player.isOpen());
+    server.release();
+    EXPECT_TRUE(waitFor([&] { return !player.opening(); }));
+    ASSERT_TRUE(player.isOpen());
+    EXPECT_NEAR(player.position(), 2.0, 0.01) << "where open() asked for";
+    player.play();
+    playOut(player, mixer_, 9s);
+    EXPECT_TRUE(player.finished());
+    EXPECT_EQ(server.requests(), 1) << "no second connection";
+}
+
+// Taken over while it waits, the preload then gives up: open() goes on with a
+// new open, as if the preload had failed before it.
+TEST_F(PlayerTest, APreloadThatFailsAfterOpenTookItOverIsOpenedAgain) {
+    StalledServer server(partialWavReply(6, 6), StalledServer::HangUp);
+    server.holdReplies();
+    Player player(mixer_, 500ms);
+    std::string url = server.url("/tone.wav");
+    player.preload(url);
+    ASSERT_TRUE(waitFor([&] { return server.requests() == 1; }));
+    ASSERT_TRUE(player.open(url));
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] {
+        EXPECT_TRUE(waitFor([&] { return server.requests() == 2; })) << "opened again after the timeout";
+        server.release();
+        EXPECT_TRUE(waitFor([&] { return !player.opening(); }));
+    });
+    ASSERT_TRUE(player.isOpen()) << log;
+    player.play();
+    EXPECT_NEAR(seconds(consume(player, mixer_)), 6.0, 0.01);
+}
+
+// The preload found the server down: open() opens the stream again, as without read-ahead.
+TEST_F(PlayerTest, AFailedPreloadFallsBackToANormalOpen) {
+    FlakyServer server(wavString(3), SIZE_MAX);
+    Player player(mixer_);
+    std::string url = server.url("/tone.wav");
+    server.goDown(800ms);
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] {
+        player.preload(url);
+        EXPECT_TRUE(waitFor([&] { return !server.refused().empty(); }));
+        std::this_thread::sleep_for(1s); // the preload has failed, and the server is back
+        EXPECT_TRUE(openAndWait(player, url));
+    });
+    ASSERT_TRUE(player.isOpen()) << log;
+    player.play();
+    EXPECT_NEAR(seconds(consume(player, mixer_)), 3.0, 0.01);
+    EXPECT_TRUE(player.finished());
+}
+
+TEST_F(PlayerTest, ACancelledPreloadIsNotUsed) {
+    StalledServer server(partialWavReply(6, 6), StalledServer::HangUp);
+    Player player(mixer_);
+    std::string url = server.url("/tone.wav");
+    player.preload(url);
+    ASSERT_TRUE(waitFor([&] { return server.requests() == 1; }));
+    std::this_thread::sleep_for(500ms); // it has opened
+    player.cancelPreload();
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(openAndWait(player, url)); });
+    EXPECT_FALSE(player.isOpen()) << "the server has gone: only the dropped preload could have played";
+}
+
+TEST_F(PlayerTest, APreloadOfAnotherPathReplacesTheLast) {
+    StalledServer first(partialWavReply(6, 6), StalledServer::HangUp);
+    StalledServer second(partialWavReply(6, 6), StalledServer::HangUp);
+    Player player(mixer_);
+    player.preload(first.url("/tone.wav"));
+    ASSERT_TRUE(waitFor([&] { return first.requests() == 1; }));
+    player.preload(second.url("/tone.wav"));
+    ASSERT_TRUE(waitFor([&] { return second.requests() == 1; }));
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(openAndWait(player, first.url("/tone.wav"))); });
+    EXPECT_TRUE(openAndWait(player, second.url("/tone.wav"))) << "the second preload is kept";
+    EXPECT_EQ(second.requests(), 1) << "no second connection";
+}
+
+// A preload that waits on a server that does not answer is no reason to wait:
+// the Player goes away at once (the device powers off).
+TEST_F(PlayerTest, DestroyingThePlayerDoesNotWaitForAPreload) {
+    StalledServer server;
+    auto start = std::chrono::steady_clock::now();
+    {
+        Player player(mixer_);
+        player.preload(server.url("/tone.wav"));
+        ASSERT_TRUE(waitFor([&] { return server.requests() == 1; }));
+    }
+    EXPECT_LT(secondsSince(start), 1.0 + 0.5);
+}
+
+TEST_F(PlayerTest, ALocalFileIsNotPreloaded) {
+    auto file = writeWav(dir_ / "tone.wav", 44100, 1, 1.5);
+    Player player(mixer_);
+    player.preload(file.string()); // does nothing: a local file opens at once anyway
+    ASSERT_TRUE(player.open(file.string()));
+    EXPECT_TRUE(player.isOpen());
+    player.play();
+    EXPECT_NEAR(seconds(consume(player, mixer_)), 1.5, 0.01);
 }
 
 // The decoder thread waits for data that never comes: close() (also run by the

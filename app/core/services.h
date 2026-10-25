@@ -52,6 +52,16 @@ public:
     // so its result is never seen. Nothing plays until play() after the open.
     virtual bool open(const std::string& path, double startAt = 0) = 0;
     virtual bool opening() const = 0;
+    // Read-ahead: starts opening the stream `path` in the background, next to
+    // what is open and without disturbing it, so that a later open(path) takes
+    // it over and need not wait. A local path, or the path already preloaded,
+    // does nothing. If the preload failed, open(path) opens it again as usual;
+    // if it is still running, open(path) goes on with it (opening()). One
+    // preload is kept until open(path) takes it over, a preload of another path
+    // replaces it, or cancelPreload() drops it: an open() of another path and
+    // close() leave it alone.
+    virtual void preload(const std::string& path) = 0;
+    virtual void cancelPreload() = 0;
     virtual void close() = 0;
     virtual bool isOpen() const = 0;
 
