@@ -14,6 +14,7 @@ ctest --test-dir build --output-on-failure      # or ./build/oap-tests
 ./build/oap-headless library                    # device front end, Linux (--audio null without a sound card)
 docker build -f docker/Dockerfile --target native .   # clean Debian build + tests
 docker build -f docker/Dockerfile --target pi .       # Pi Zero 2 W cross build + tests under qemu
+docker build -f docker/Dockerfile --target pi --build-arg PI_MODEL=pi-4 .   # the same for the Pi 4
 ```
 
 `-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF` builds only the core, the config

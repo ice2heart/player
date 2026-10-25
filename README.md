@@ -93,6 +93,7 @@ a Linux host. Run from the repository root:
 ```sh
 docker build -f docker/Dockerfile --target native .   # Debian trixie, x86-64: sim, headless, tests
 docker build -f docker/Dockerfile --target pi .       # Debian trixie, Pi Zero 2 W cross build, tests under qemu
+docker build -f docker/Dockerfile --target pi --build-arg PI_MODEL=pi-4 .   # the same for the Pi 4
 ```
 
 To get the binaries, build the matching `-out` target into a folder. The `pi-out`
@@ -101,14 +102,24 @@ linked libraries:
 
 ```sh
 docker build -f docker/Dockerfile --target pi-out --output build-pi .
+docker build -f docker/Dockerfile --target pi-out --build-arg PI_MODEL=pi-4 --output build-pi4 .
 scp build-pi/oap-headless pi@raspberrypi.local:
 ```
 
-The `pi` target builds `oap-headless` and `oap-tests` for arm64 tuned for the
-Cortex-A53 (`-mcpu=cortex-a53`), on Debian trixie so the binaries match the glibc
-and FFmpeg of Raspberry Pi OS (trixie). They do not run on the older bookworm release. It uses
-[cmake/toolchains/pi-zero-2w.cmake](cmake/toolchains/pi-zero-2w.cmake), which also
-works outside Docker on a Debian trixie host with these packages:
+The `pi` target builds `oap-headless` and `oap-tests` for arm64, on Debian trixie so
+the binaries match the glibc and FFmpeg of Raspberry Pi OS (64-bit, trixie). They do
+not run on the older bookworm release or on 32-bit Raspberry Pi OS. `PI_MODEL` picks
+the board and its toolchain file:
+
+| `PI_MODEL` | Board | Tuned for | Toolchain file |
+|------------|-------|-----------|----------------|
+| `pi-zero-2w` (default) | Raspberry Pi Zero 2 W | Cortex-A53 (`-mcpu=cortex-a53`) | [cmake/toolchains/pi-zero-2w.cmake](cmake/toolchains/pi-zero-2w.cmake) |
+| `pi-4` | Raspberry Pi 4, Pi 400 | Cortex-A72 (`-mcpu=cortex-a72`) | [cmake/toolchains/pi-4.cmake](cmake/toolchains/pi-4.cmake) |
+
+Both include [cmake/toolchains/pi-arm64.cmake](cmake/toolchains/pi-arm64.cmake) and need
+the same runtime packages. Both CPUs are plain ARMv8-A, so either binary runs on either
+board; `PI_MODEL` only changes the tuning. The toolchain files also work outside
+Docker on a Debian trixie host with these packages:
 
 ```sh
 sudo dpkg --add-architecture arm64 && sudo apt update
@@ -116,16 +127,16 @@ sudo apt install crossbuild-essential-arm64 qemu-user cmake ninja-build pkgconf 
     libavformat-dev:arm64 libavcodec-dev:arm64 libswresample-dev:arm64 libavutil-dev:arm64 \
     libespeak-ng-dev:arm64 libpulse-dev:arm64 libasound2-dev:arm64 libyaml-cpp-dev:arm64 \
     libcurl4-openssl-dev:arm64
-cmake -S . -B build-pi -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/pi-zero-2w.cmake -DOAP_BUILD_SIM=OFF
+cmake -S . -B build-pi -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/pi-zero-2w.cmake -DOAP_BUILD_SIM=OFF   # or pi-4.cmake
 cmake --build build-pi && ctest --test-dir build-pi --output-on-failure
 ```
 
 ### Releases
 
 Pushing a tag like `v0.1.0` runs [.github/workflows/release.yml](.github/workflows/release.yml):
-it builds and tests on x86-64 and for the Pi (under qemu), and publishes a GitHub
-release with `oap-headless-<tag>-pi-zero-2w-arm64.tar.gz` (the Pi Zero 2 W
-`oap-headless` plus `DEPENDENCIES.txt`) and `DEPENDENCIES.txt` on its own, the
+it builds and tests on x86-64 and for both Pi boards (under qemu), and publishes a GitHub
+release with `oap-headless-<tag>-pi-zero-2w-arm64.tar.gz` and `oap-headless-<tag>-pi-4-arm64.tar.gz`
+(that board's `oap-headless` plus `DEPENDENCIES.txt`) and `DEPENDENCIES.txt` on its own, the
 `apt install` line for the runtime packages on Raspberry Pi OS.
 
 ```sh

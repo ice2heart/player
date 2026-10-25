@@ -22,23 +22,33 @@ jobs:
         run: docker build -f docker/Dockerfile --target native-out --output out .
 
   pi:
-    name: Build and test (Pi Zero 2 W, qemu)
+    name: Build and test (${{ matrix.name }}, qemu)
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - model: pi-zero-2w
+            name: Pi Zero 2 W
+          - model: pi-4
+            name: Pi 4
     steps:
       - uses: actions/checkout@v5
       - name: Cross build and run tests
-        run: docker build -f docker/Dockerfile --target pi-out --output out .
+        run: docker build -f docker/Dockerfile --target pi-out --build-arg PI_MODEL=${{ matrix.model }} --output out .
       - name: Package
         env:
           REF_NAME: ${{ github.ref_name }}
+          MODEL: ${{ matrix.model }}
         run: |
           # A branch name like feature/x (workflow_dispatch) would put a / in the file name.
           version=$(printf '%s' "$REF_NAME" | tr -c 'A-Za-z0-9._-' '-')
-          tar -C out -czf "oap-headless-$version-pi-zero-2w-arm64.tar.gz" oap-headless DEPENDENCIES.txt
+          tar -C out -czf "oap-headless-$version-$MODEL-arm64.tar.gz" oap-headless DEPENDENCIES.txt
           cp out/DEPENDENCIES.txt .
+      # Both boards link the same libraries, so their DEPENDENCIES.txt are the same
+      # and merge-multiple in the release job keeps one.
       - uses: actions/upload-artifact@v5
         with:
-          name: pi-binaries
+          name: pi-binaries-${{ matrix.model }}
           path: |
             oap-headless-*.tar.gz
             DEPENDENCIES.txt

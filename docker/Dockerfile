@@ -1,8 +1,10 @@
 # Build and test oap in a clean Debian. Targets:
 #   native  - x86-64/host build of everything (sim, headless, streaming, tests), runs ctest
 #             (oap-tests, oap-net-tests, oap-media-tests)
-#   pi      - cross build of oap-headless (with streaming) and the tests for the Pi Zero 2 W
-#             (arm64), runs ctest under qemu
+#   pi      - cross build of oap-headless (with streaming) and the tests for a 64-bit
+#             Raspberry Pi, runs ctest under qemu. --build-arg PI_MODEL picks the board:
+#             pi-zero-2w (default, Cortex-A53) or pi-4 (Cortex-A72), the toolchain
+#             file cmake/toolchains/$PI_MODEL.cmake
 #   *-out   - just the binaries, for `docker build --output`
 # OAP_BUILD_NET=ON is spelled out so a missing libcurl fails the build.
 # See README.md ("Docker") for the commands.
@@ -29,7 +31,7 @@ RUN cmake -S . -B /build -G Ninja -DOAP_BUILD_NET=ON \
 FROM scratch AS native-out
 COPY --from=native /build/oap-sim /build/oap-headless /build/oap-tests /
 
-# ---- Pi Zero 2 W: arm64 cross toolchain, :arm64 libraries and qemu to run the tests
+# ---- Raspberry Pi (Zero 2 W, 4): arm64 cross toolchain, :arm64 libraries and qemu to run the tests
 FROM ${DEBIAN} AS pi-deps
 RUN dpkg --add-architecture arm64 && apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build pkgconf ca-certificates git \
@@ -41,9 +43,12 @@ RUN dpkg --add-architecture arm64 && apt-get update && apt-get install -y --no-i
 WORKDIR /src
 
 FROM pi-deps AS pi
+ARG PI_MODEL=pi-zero-2w
 COPY . .
-RUN cmake -S . -B /build -G Ninja \
-        -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/pi-zero-2w.cmake \
+RUN test -f "cmake/toolchains/$PI_MODEL.cmake" \
+        || { echo "unknown PI_MODEL '$PI_MODEL' (pi-zero-2w, pi-4)" >&2; exit 1; } \
+    && cmake -S . -B /build -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE="cmake/toolchains/$PI_MODEL.cmake" \
         -DOAP_BUILD_SIM=OFF -DOAP_BUILD_NET=ON \
     && cmake --build /build \
     && ctest --test-dir /build --output-on-failure \
