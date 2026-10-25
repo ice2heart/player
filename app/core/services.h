@@ -45,7 +45,13 @@ struct Chapter {
 class MediaPlayer {
 public:
     virtual ~MediaPlayer() = default;
+    // Returns false if the open failed at once. A local file is open when this
+    // returns true. A stream (a URL) may still be opening then: it opens in the
+    // background, opening() stays true until it is done, and then isOpen() says
+    // whether it worked. A newer open() or close() drops an open still running,
+    // so its result is never seen. Nothing plays until play() after the open.
     virtual bool open(const std::string& path, double startAt = 0) = 0;
+    virtual bool opening() const = 0;
     virtual void close() = 0;
     virtual bool isOpen() const = 0;
 

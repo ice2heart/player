@@ -15,6 +15,7 @@ extern "C" {
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
+#include <utility>
 
 namespace oap {
 
@@ -72,7 +73,7 @@ std::string redactWord(const std::string& word) {
 // FFmpeg may log from any thread.
 void logRedacted(void* context, int level, const char* format, va_list args) {
     if ((level & 0xff) > av_log_get_level()) return; // the bits above are colours
-    static std::mutex mutex;
+    static std::mutex& mutex = *new std::mutex; // never destroyed: a dropped open may still log at exit
     static int printPrefix = 1; // FFmpeg's state between the parts of one line
     std::lock_guard lock(mutex);
     char line[2048];
@@ -104,6 +105,32 @@ ReadErrorAction onReadError(int error, bool atEndOfFile, int& consecutive) {
     return ++consecutive > kMaxReadErrors ? ReadErrorAction::End : ReadErrorAction::Retry;
 }
 
+// One open() and the thread it runs on. The thread keeps its own reference, so
+// the job outlives a Player that dropped the open (close() does not wait for it).
+struct Player::OpenJob {
+    std::atomic<bool> stop{false};       // close(): FFmpeg gives up any wait at once
+    std::atomic<int64_t> deadline{0};    // steady_clock ns at which an open of a stream gives up; 0: none
+    std::atomic<bool> timedOut{false};   // set by interrupted() when it ends an open
+    std::mutex mutex;                    // for the two below
+    bool dropped = false;                // close() came first: the thread frees what it opened and ends
+    bool handedOver = false;             // the thread decodes for the Player now: close() waits for it
+};
+
+struct Player::Input {
+    AVFormatContext* fmt = nullptr;
+    AVCodecContext* dec = nullptr;
+    AVStream* stream = nullptr;
+    SwrContext* swr = nullptr;
+    std::unique_ptr<ResamplerInput> swrIn;
+    double duration = 0;
+    std::vector<Chapter> chapters;
+    ~Input() {
+        swr_free(&swr);
+        avcodec_free_context(&dec);
+        if (fmt) avformat_close_input(&fmt);
+    }
+};
+
 Player::Player(Mixer& mixer, std::chrono::milliseconds openTimeout) : mixer_(mixer), openTimeout_(openTimeout) {
     av_log_set_level(AV_LOG_ERROR);
     av_log_set_callback(logRedacted);
@@ -112,22 +139,21 @@ Player::Player(Mixer& mixer, std::chrono::milliseconds openTimeout) : mixer_(mix
 Player::~Player() { close(); }
 
 int Player::interrupted(void* opaque) {
-    auto* self = static_cast<Player*>(opaque);
-    if (self->stop_) return 1; // close() is waiting
-    int64_t deadline = self->openDeadline_;
+    auto* job = static_cast<OpenJob*>(opaque);
+    if (job->stop) return 1; // close() is waiting, or has dropped this open
+    int64_t deadline = job->deadline;
     if (deadline == 0 || steadyNanoseconds() < deadline) return 0;
-    self->openTimedOut_ = true;
+    job->timedOut = true;
     return 1;
 }
 
-// avformat_open_input() and avformat_find_stream_info(), which read from the
-// file or the network. A stream is given up after openTimeout_ in all.
-bool Player::openInput(const std::string& path) {
-    fmt_ = avformat_alloc_context();
-    if (!fmt_) return false;
-    fmt_->interrupt_callback = {&Player::interrupted, this};
+// Everything that reads from the file or the network before decoding starts. A
+// stream is given up after `timeout` in all.
+bool Player::openInput(const std::string& path, OpenJob& job, std::chrono::milliseconds timeout, Input& in) {
+    in.fmt = avformat_alloc_context();
+    if (!in.fmt) return false;
+    in.fmt->interrupt_callback = {&Player::interrupted, &job};
     AVDictionary* options = nullptr;
-    openTimedOut_ = false;
     if (isUrl(path)) {
         // Options another protocol does not know are left unused.
         av_dict_set_int(&options, "rw_timeout", microseconds(kStreamReadTimeout), 0); // no data: the read fails
@@ -137,57 +163,71 @@ bool Player::openInput(const std::string& path) {
         // for streams without a length (a transcode), which would start again from 0.
         av_dict_set_int(&options, "reconnect", 1, 0);
         av_dict_set_int(&options, "reconnect_delay_max", kStreamReconnectDelayMax, 0);
-        openDeadline_ = steadyNanoseconds() + std::chrono::nanoseconds(openTimeout_).count();
+        job.deadline = steadyNanoseconds() + std::chrono::nanoseconds(timeout).count();
     }
-    int err = avformat_open_input(&fmt_, path.c_str(), nullptr, &options); // frees fmt_ on failure
+    int err = avformat_open_input(&in.fmt, path.c_str(), nullptr, &options); // frees fmt on failure
     av_dict_free(&options);
-    if (err >= 0) err = avformat_find_stream_info(fmt_, nullptr);
-    openDeadline_ = 0;
+    if (err >= 0) err = avformat_find_stream_info(in.fmt, nullptr);
+    job.deadline = 0;
     // Cut off, avformat_find_stream_info() may still succeed with what it has, but
     // the input is then at its end: no open.
-    bool timedOut = openTimedOut_;
-    if (err >= 0 && !timedOut) return true;
-    std::fprintf(stderr, "player: cannot open %s: %s\n", printable(path).c_str(),
-                 timedOut ? "no answer in time" : errorText(err).c_str());
-    return false;
-}
-
-bool Player::open(const std::string& path, double startAt) {
-    close();
-    stop_ = false; // from here on, the interrupt callback lets FFmpeg wait
-
-    isUrl_ = isUrl(path);
-    failed_ = false;
-    if (!openInput(path)) {
-        close();
+    bool timedOut = job.timedOut;
+    if (job.stop) return false; // dropped: nobody waits for the reason
+    if (err < 0 || timedOut) {
+        std::fprintf(stderr, "player: cannot open %s: %s\n", printable(path).c_str(),
+                     timedOut ? "no answer in time" : errorText(err).c_str());
         return false;
     }
+
     const AVCodec* codec = nullptr;
-    int index = av_find_best_stream(fmt_, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
+    int index = av_find_best_stream(in.fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
     if (index < 0 || !codec) {
         std::fprintf(stderr, "player: no audio stream in %s\n", printable(path).c_str());
-        close();
         return false;
     }
-    stream_ = fmt_->streams[index];
-    dec_ = avcodec_alloc_context3(codec);
-    if (avcodec_parameters_to_context(dec_, stream_->codecpar) < 0 || avcodec_open2(dec_, codec, nullptr) < 0) {
-        close();
+    in.stream = in.fmt->streams[index];
+    in.dec = avcodec_alloc_context3(codec);
+    if (!in.dec || avcodec_parameters_to_context(in.dec, in.stream->codecpar) < 0 ||
+        avcodec_open2(in.dec, codec, nullptr) < 0)
         return false;
-    }
+    in.swrIn = std::make_unique<ResamplerInput>();
+    if (!setupResampler(in.swr, *in.swrIn, in.dec->sample_rate, in.dec->sample_fmt, in.dec->ch_layout)) return false;
 
-    if (!setupResampler(dec_->sample_rate, dec_->sample_fmt, dec_->ch_layout)) {
-        close();
-        return false;
-    }
-
-    duration_ = fmt_->duration != AV_NOPTS_VALUE ? double(fmt_->duration) / AV_TIME_BASE : 0;
-    for (unsigned i = 0; i < fmt_->nb_chapters; ++i) {
-        const AVChapter* ch = fmt_->chapters[i];
+    in.duration = in.fmt->duration != AV_NOPTS_VALUE ? double(in.fmt->duration) / AV_TIME_BASE : 0;
+    for (unsigned i = 0; i < in.fmt->nb_chapters; ++i) {
+        const AVChapter* ch = in.fmt->chapters[i];
         const AVDictionaryEntry* title = av_dict_get(ch->metadata, "title", nullptr, 0);
-        chapters_.push_back({title ? title->value : "Chapter " + std::to_string(i + 1),
-                             double(ch->start) * av_q2d(ch->time_base)});
+        in.chapters.push_back({title ? title->value : "Chapter " + std::to_string(i + 1),
+                               double(ch->start) * av_q2d(ch->time_base)});
     }
+    return true;
+}
+
+void Player::openAndDecode(std::shared_ptr<OpenJob> job, Player* self, std::string path, double startAt,
+                           std::chrono::milliseconds timeout) {
+    Input in;
+    bool ok = openInput(path, *job, timeout, in);
+    {
+        std::lock_guard lock(job->mutex);
+        if (job->dropped) return; // the Player has moved on and may be gone: `in` frees itself
+        job->handedOver = true;   // from here on close() waits for this thread
+    }
+    if (!ok) {
+        self->state_ = State::Closed;
+        return;
+    }
+    self->start(in, startAt);
+    self->decodeLoop();
+}
+
+void Player::start(Input& in, double startAt) {
+    fmt_ = std::exchange(in.fmt, nullptr);
+    dec_ = std::exchange(in.dec, nullptr);
+    stream_ = in.stream;
+    swr_ = std::exchange(in.swr, nullptr);
+    swrIn_ = std::move(in.swrIn);
+    duration_ = in.duration;
+    chapters_ = std::move(in.chapters);
 
     mixer_.content().flush();
     endPts_ = 0;
@@ -195,13 +235,45 @@ bool Player::open(const std::string& path, double startAt) {
     if (duration_ > 0) startAt = std::min(startAt, duration_);
     if (startAt > 0) seekRequest_ = startAt;
     eof_ = false;
-    thread_ = std::thread(&Player::decodeLoop, this);
-    return true;
+    state_ = State::Open; // last: the UI thread reads the fields above once it sees this
+}
+
+bool Player::open(const std::string& path, double startAt) {
+    close();
+    stop_ = false;
+    isUrl_ = isUrl(path);
+    failed_ = false;
+    job_ = std::make_shared<OpenJob>();
+    if (isUrl_) {
+        state_ = State::Opening;
+        thread_ = std::thread(&Player::openAndDecode, job_, this, path, startAt, openTimeout_);
+        return true;
+    }
+    job_->handedOver = true; // a local file opens here: close() waits for its decoder thread
+    {
+        Input in; // freed before job_, which its interrupt callback points to
+        if (openInput(path, *job_, openTimeout_, in)) {
+            start(in, startAt);
+            thread_ = std::thread(&Player::decodeLoop, this);
+            return true;
+        }
+    }
+    job_.reset();
+    return false;
 }
 
 void Player::close() {
     stop_ = true; // also aborts a network wait of the decoder thread (interrupted())
+    if (job_) {
+        job_->stop = true;
+        std::lock_guard lock(job_->mutex);
+        job_->dropped = true;
+        // Still opening: FFmpeg may be in a wait no interrupt reaches (a DNS
+        // lookup). The thread no longer touches this Player and cleans up itself.
+        if (!job_->handedOver && thread_.joinable()) thread_.detach();
+    }
     if (thread_.joinable()) thread_.join();
+    state_ = State::Closed;
     mixer_.setContentPaused(true);
     mixer_.content().flush();
     playing_ = false;
@@ -209,10 +281,16 @@ void Player::close() {
     swrIn_.reset();
     avcodec_free_context(&dec_);
     if (fmt_) avformat_close_input(&fmt_);
+    job_.reset(); // after fmt_, whose interrupt callback points to it
     stream_ = nullptr;
     chapters_.clear();
     duration_ = 0;
     seekRequest_ = -1;
+}
+
+const std::vector<Chapter>& Player::chapters() const {
+    static const std::vector<Chapter> none;
+    return isOpen() ? chapters_ : none;
 }
 
 void Player::play() {
@@ -326,7 +404,7 @@ bool Player::emit(AVFrame* frame, uint64_t epoch) {
 
     if (frame->sample_rate != swrIn_->sampleRate || frame->format != swrIn_->sampleFormat ||
         av_channel_layout_compare(&frame->ch_layout, &swrIn_->layout) != 0) {
-        if (!setupResampler(frame->sample_rate, frame->format, frame->ch_layout)) {
+        if (!setupResampler(swr_, *swrIn_, frame->sample_rate, frame->format, frame->ch_layout)) {
             std::fprintf(stderr, "player: cannot convert audio format, skipping it\n");
             return true;
         }
@@ -360,12 +438,12 @@ bool Player::emit(AVFrame* frame, uint64_t epoch) {
     return true;
 }
 
-bool Player::setupResampler(int sampleRate, int sampleFormat, const AVChannelLayout& layout) {
-    if (!swrIn_) swrIn_ = std::make_unique<ResamplerInput>();
-    swrIn_->sampleRate = sampleRate;
-    swrIn_->sampleFormat = sampleFormat;
-    av_channel_layout_uninit(&swrIn_->layout);
-    av_channel_layout_copy(&swrIn_->layout, &layout);
+bool Player::setupResampler(SwrContext*& swr, ResamplerInput& input, int sampleRate, int sampleFormat,
+                            const AVChannelLayout& layout) {
+    input.sampleRate = sampleRate;
+    input.sampleFormat = sampleFormat;
+    av_channel_layout_uninit(&input.layout);
+    av_channel_layout_copy(&input.layout, &layout);
 
     AVChannelLayout in{}, out{}; // zeroed: av_channel_layout_copy frees dst first
     if (layout.order == AV_CHANNEL_ORDER_UNSPEC)
@@ -373,11 +451,11 @@ bool Player::setupResampler(int sampleRate, int sampleFormat, const AVChannelLay
     else
         av_channel_layout_copy(&in, &layout);
     av_channel_layout_default(&out, 2);
-    swr_free(&swr_);
-    int r = swr_alloc_set_opts2(&swr_, &out, AV_SAMPLE_FMT_FLT, Mixer::kSampleRate, &in,
+    swr_free(&swr);
+    int r = swr_alloc_set_opts2(&swr, &out, AV_SAMPLE_FMT_FLT, Mixer::kSampleRate, &in,
                                 AVSampleFormat(sampleFormat), sampleRate, 0, nullptr);
     av_channel_layout_uninit(&in);
-    return r >= 0 && swr_init(swr_) >= 0;
+    return r >= 0 && swr_init(swr) >= 0;
 }
 
 } // namespace oap

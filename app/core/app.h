@@ -51,11 +51,13 @@ public:
     bool quitRequested() const { return quit_; }
     void shutdown(); // writes the state and any changed setting
 
-    // Plays `tracks` from the server like a local album, from `index` on, and
-    // opens the player. `title` is what the list is called (album or playlist
+    // Plays `tracks` from the server like a local album, from `index` on. It
+    // says "Loading." and opens the player once the stream has opened, if the
+    // user is still on the screen they chose it from; leaving that screen first
+    // drops the open. `title` is what the list is called (album or playlist
     // name). Saves no position and leaves `last_book` alone. If the track cannot
-    // be opened it says "Server not reachable", tries no other track, keeps what
-    // was loaded before (paused) and returns false.
+    // be opened it says "Server not reachable", tries no other track and keeps
+    // what was loaded before (paused). Returns false if that happened at once.
     bool playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index);
 
     // Read-only state for the simulator's visualisation.
@@ -151,15 +153,35 @@ private:
                                      const std::string& playAll);
     void checkServer(); // Server status
 
-    // Playback
+    // Playback. A local file opens at once. A remote track opens in the
+    // background (MediaPlayer::opening()): the open is kept in pendingOpen_ and
+    // tick() finishes it. `opened` runs once the file is open (and playing, with
+    // `autoplay`); `undo` runs if it fails or is dropped, and goes back to what
+    // was loaded before.
+    enum class OpenResult { Opened, Pending, Failed };
+    // Who asked for an open: what a remote track says, and what drops it.
+    enum class Origin {
+        Menu,    // chosen in a menu: says "Loading.", and leaving that menu drops it
+        Key,     // Play, or a skip in the player: says "Loading."
+        Next,    // the next track at the end of one: quiet
+        Restore, // what played before a choice that failed: quiet, even if it fails too
+    };
+    using Then = std::function<void()>;
     bool openBook(const Book& book, bool autoplay); // false if it cannot be opened
-    bool playMusic(const Book& album, size_t track);
-    bool switchTo(const Book& book, bool music, size_t file, double position, bool autoplay);
+    bool playMusic(const Book& album, size_t track, Then opened = {}); // false if it failed at once
+    OpenResult switchTo(const Book& book, bool music, size_t file, double position, bool autoplay, Then opened = {});
     std::string unit() const { return music_ ? "track" : "chapter"; } // what one part is called
-    // `announce`: say "Loading." before a remote track is opened, as the open
-    // holds up the UI thread. Off for the next track at the end of one.
-    bool loadFile(size_t file, double position, bool autoplay, bool announce = true); // within the loaded book
-    bool openFile(size_t file, double position, bool autoplay, bool announce = true);
+    OpenResult loadFile(size_t file, double position, bool autoplay, Origin origin, Then opened = {},
+                        Then undo = {}); // within the loaded book
+    OpenResult openFile(size_t file, double position, bool autoplay, Origin origin, Then opened, Then undo);
+    void onOpened(bool autoplay, const Then& opened);
+    // A remote track did not open: says so (unless `quiet`), then runs `undo`.
+    void onCannotPlay(const std::string& title, bool quiet, const Then& undo);
+    void finishPendingOpen(); // tick(): the player is done opening
+    void giveUpPendingOpen(); // tick(): it takes too long (Player's own cap did not end it)
+    void dropPendingOpen();   // closes the player and runs the open's undo, silently
+    bool willPlay() const;    // playing, or will once the pending open is done
+    void enterPlayerFrom(std::uint64_t screenId); // only if the user is still on that screen
     void togglePlay();
     void play();
     void pause(bool announce);
@@ -167,7 +189,7 @@ private:
     void changeVolume(int delta);
     std::vector<ChapterRef> chapters() const;
     int currentChapter() const;
-    bool gotoChapter(int index); // false if its file did not open
+    bool gotoChapter(int index, Origin origin, Then opened = {}); // false if its file did not open
     void stepChapter(int direction);
     void onFileFinished();
     void onStreamFailed(); // a remote track broke off: stop, and open it there on Play
@@ -213,6 +235,18 @@ private:
     // it again at once would wait on the same dead server) or at the end of the
     // list. play() opens it at this position.
     std::optional<double> reopenAt_;
+    // A remote track that is opening. Its book and file are already book_ and
+    // fileIndex_. A newer open, sleep and leaving `screen` drop it (undo).
+    struct PendingOpen {
+        std::uint64_t screen = 0; // the menu it was chosen in (Origin::Menu); 0: none
+        Origin origin = Origin::Menu;
+        std::string title; // of the track, for "Cannot play"
+        bool autoplay = false; // Play / Pause while it opens changes this
+        double position = 0;   // where it opens
+        TimePoint since;       // when it was asked for
+        Then opened, undo;
+    };
+    std::optional<PendingOpen> pendingOpen_;
 
     bool hold_ = false;
     std::array<bool, kButtonCount> held_{};   // raw keys down now

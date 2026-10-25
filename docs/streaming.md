@@ -3,7 +3,7 @@
 > Status: **phase 1 built** (stream and play; see [What phase 1 built differently](#what-phase-1-built-differently)).
 > Phases 2 to 5 are a plan. The code is described in [architecture.md](architecture.md), and the
 > rules for lists from the server are in [navigation.md](navigation.md#lists-from-the-server).
-> Last updated: 2026-10-24.
+> Last updated: 2026-10-25.
 > Target server: Navidrome 0.64 (Subsonic API 1.16.1, OpenSubsonic). Test server:
 > `https://navidrome.microserver`. The credentials are kept in `.env` (git ignores it) only so
 > they are at hand during development; the program does not read it.
@@ -324,7 +324,7 @@ a stream after a restart.
 
 | # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
 |---|------|------|
-| 2.1 | **Asynchronous `Player::open`.** Open on the decoder thread. `MediaPlayer` gets `opening()` (it has `failed()` since phase 1), or an open callback. `App` speaks "Loading" and stays responsive. | Keys are answered while an open is pending. A late open result after Home or after choosing another track does nothing. A failed asynchronous open says "Server not reachable". Media test: opening an unreachable URL does not block the caller. |
+| ✅ 2.1 | **Asynchronous `Player::open`.** Open on the decoder thread. `MediaPlayer` gets `opening()` (it has `failed()` since phase 1), or an open callback. `App` speaks "Loading" and stays responsive. | Keys are answered while an open is pending. A late open result after Home or after choosing another track does nothing. A failed asynchronous open says "Server not reachable". Media test: opening an unreachable URL does not block the caller. |
 | 2.2 | **Buffering feedback.** If the content stream runs dry while playing, play a "buffering" earcon (a new `Earcon`), and say "Waiting for network" after 3 s. Retry with backoff, and do not skip the track because of a short dropout. | Dry and recovered within 3 s: earcon only, same track. Dry for more than 3 s: the phrase is spoken once. Retries give up after the cap and fall back to phase 1's "Server not reachable. Press play to try again." |
 | 2.3 | **Read-ahead.** Open the next track's connection about 10 s before the current one ends, so tracks change without a gap on a slow link. | The next URL is opened about 10 s before the end (fake clock). A pre-opened track that fails falls back to a normal open. Leaving the album drops the pre-open. |
 | 2.4 | **Quality setting** (`choice()` in Settings → Streaming quality: Original / 320 / 192 / 128 kbps, default Original), saved in `config.yaml`. With transcoding, seek with `timeOffset` (extension `transcodeOffset`) instead of Range. | The stream URL carries `maxBitRate` / `format`, or neither for Original. A seek on a transcoded stream uses `timeOffset`, not Range. The setting persists across a restart. |

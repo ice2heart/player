@@ -34,6 +34,10 @@ constexpr const char* kServerName = "server.name"; // the Streaming entry on Hom
 // is a new random draw and would repeat albums.
 constexpr int kAlbumPageSize = 500;
 constexpr int kRandomAlbums = 50;
+// Player gives up a stream open after 10 s, but a wait it cannot interrupt (a
+// DNS lookup) can take longer. App gives up a little after it, so "Loading"
+// always ends.
+constexpr std::chrono::seconds kStreamOpenGiveUp{15};
 constexpr const char* kNoServerHelp =
     "To stream from your own music server, add a server section with its url, user and password to "
     "config.yaml, then restart the player.";
@@ -194,6 +198,7 @@ void App::start() {
 
 void App::shutdown() {
     saveOnExit();
+    pendingOpen_.reset();
     player_.close();
 }
 
@@ -241,6 +246,8 @@ void App::tick() {
     auto now = clock_.now();
     for (const ButtonEvent& ev : gestures_.poll(now)) onGesture(ev);
     server_.poll(); // answers from the server fill their lists
+    if (pendingOpen_ && !player_.opening()) finishPendingOpen();
+    else if (pendingOpen_ && now - pendingOpen_->since > kStreamOpenGiveUp) giveUpPendingOpen();
 
     // The end of a file is always the end of a chapter, even when the next
     // chapter has the same number (a one-file book or a loose track starts again).
@@ -252,13 +259,15 @@ void App::tick() {
         sleepDeadline_.reset();
         sleep("Sleep timer ended.");
     }
-    if (sleepAtChapterEnd_ >= 0 && book_ && (fileFinished || currentChapter() != sleepAtChapterEnd_)) {
+    // While a track opens, the current one is the track it would replace if it fails.
+    if (sleepAtChapterEnd_ >= 0 && book_ &&
+        (fileFinished || (!pendingOpen_ && currentChapter() != sleepAtChapterEnd_))) {
         sleepAtChapterEnd_ = -1;
         sleep("End of " + unit() + ". Sleep timer ended.");
     }
 
     int autoSleep = config_.getInt(kAutoSleep, 5);
-    if (!sleeping_ && autoSleep > 0 && !player_.playing() && !tts_.speaking() &&
+    if (!sleeping_ && autoSleep > 0 && !player_.playing() && !pendingOpen_ && !tts_.speaking() &&
         now - lastActivity_ > std::chrono::minutes(autoSleep))
         sleep("Going to sleep.");
 }
@@ -431,7 +440,7 @@ std::string App::nowPlayingSpeech() const {
     std::string text = "Now playing. " + book_->title;
     std::string track = chapters()[size_t(currentChapter())].title;
     if (music_ && track != book_->title) text += ", " + track; // a loose track is its own "album"
-    return text + (player_.playing() ? "." : ", paused.");
+    return text + (pendingOpen_ ? ", loading." : player_.playing() ? "." : ", paused.");
 }
 
 void App::whereAmI() {
@@ -442,7 +451,9 @@ void App::whereAmI() {
     std::string path;
     for (const Screen& s : screens_) path += (path.empty() ? "" : ", ") + s.title;
     say(path + ". " + (screens_.empty() ? "" : itemSpeech(screens_.back())) +
-        (book_ ? std::string(player_.playing() ? ". Playing " : ". Paused, ") + book_->title : ""));
+        (book_ ? std::string(pendingOpen_ ? ". Loading " : player_.playing() ? ". Playing " : ". Paused, ") +
+                     book_->title
+               : ""));
 }
 
 // ---------------------------------------------------------------- screens
@@ -470,6 +481,7 @@ void App::closeScreens(size_t keep) {
             remoteLists_.erase(list);
         }
         if (ping_ && pingScreen_ == id) server_.cancel(std::exchange(ping_, 0));
+        if (pendingOpen_ && pendingOpen_->screen == id) dropPendingOpen();
         screens_.pop_back();
     }
 }
@@ -564,6 +576,12 @@ void App::enterPlayer() {
         earcons_.play(Earcon::Open);
     }
     say(nowPlayingSpeech());
+}
+
+// After an open the user waited for: the player, unless they have opened
+// something else meanwhile (an open is dropped when its screen is left).
+void App::enterPlayerFrom(std::uint64_t screenId) {
+    if (!screens_.empty() && screens_.back().id == screenId) enterPlayer();
 }
 
 // Like the player, there is only one Power menu: holding Power again returns to it, on Sleep.
@@ -1110,8 +1128,8 @@ std::vector<MenuItem> App::playerMenu() {
         say(book_->title + ". " + std::to_string(ch.size()) + " " + unit() + "s. " + playerStatus());
     }));
     items.push_back(action(music_ ? "Go to first track" : "Go to start of book", [this] {
-        bool wasPlaying = player_.playing();
-        if (loadFile(0, 0, wasPlaying)) enterPlayer(); // else the error was said: stay in the menu
+        // Once it is open; if it fails, the error is said and the user stays in the menu.
+        loadFile(0, 0, willPlay(), Origin::Menu, [this, screen = screens_.back().id] { enterPlayerFrom(screen); });
     }));
     items.push_back(action("Speed", [this] { say("Speed control is coming later."); }));
     items.push_back(action("Add bookmark", [this] { say("Bookmarks are coming later."); }));
@@ -1123,7 +1141,8 @@ std::vector<MenuItem> App::chaptersMenu() {
     auto list = chapters();
     for (size_t i = 0; i < list.size(); ++i) {
         items.push_back(action(list[i].title, [this, i] {
-            if (gotoChapter(int(i))) enterPlayer(); // else the error was said: stay in the list
+            // Once it is open; if it fails, the error is said and the user stays in the list.
+            gotoChapter(int(i), Origin::Menu, [this, screen = screens_.back().id] { enterPlayerFrom(screen); });
         }));
     }
     return items;
@@ -1146,7 +1165,7 @@ bool App::openBook(const Book& book, bool autoplay) {
         }
         if (file >= book.files.size()) file = 0, pos = 0;
     }
-    if (!switchTo(book, false, file, pos, autoplay)) return false;
+    if (switchTo(book, false, file, pos, autoplay) == OpenResult::Failed) return false; // a local book opens at once
     state_.setString(kLastBook, book.path.string());
     sleepAtChapterEnd_ = -1;
     return true;
@@ -1154,12 +1173,15 @@ bool App::openBook(const Book& book, bool autoplay) {
 
 // Music plays from the chosen track and is never resumed later, so it neither
 // saves a position nor replaces the book that start() resumes.
-bool App::playMusic(const Book& album, size_t track) {
+bool App::playMusic(const Book& album, size_t track, Then opened) {
     if (book_) rememberPosition();
-    if (!switchTo(album, true, track, 0, true)) return false;
-    sleepAtChapterEnd_ = -1;
-    pausedAt_.reset();
-    return true;
+    // Only once it plays: if it fails, the book before it keeps its sleep timer and rewind.
+    auto playing = [this, opened = std::move(opened)] {
+        sleepAtChapterEnd_ = -1;
+        pausedAt_.reset();
+        if (opened) opened();
+    };
+    return switchTo(album, true, track, 0, true, std::move(playing)) != OpenResult::Failed;
 }
 
 bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index) {
@@ -1175,93 +1197,157 @@ bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& t
         list.files.emplace_back(server_.streamUrl(t.id));
         list.titles.push_back(t.title);
     }
-    if (!playMusic(list, index)) return false;
-    enterPlayer();
-    return true;
+    std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
+    return playMusic(list, index, [this, screen] { enterPlayerFrom(screen); });
 }
 
 // Loads `book` from `file`. If none of its files from there on opens, what was
 // loaded before stays loaded, at the same place, so the user is where they were.
-bool App::switchTo(const Book& book, bool music, size_t file, double position, bool autoplay) {
-    std::optional<Book> previous = std::exchange(book_, book);
-    bool wasMusic = std::exchange(music_, music);
+App::OpenResult App::switchTo(const Book& book, bool music, size_t file, double position, bool autoplay,
+                              Then opened) {
+    dropPendingOpen(); // a failure goes back to what was loaded before it
     size_t wasFile = fileIndex_;
     bool wasOpen = player_.isOpen(), wasPlaying = player_.playing();
     double wasAt = player_.position();
-    if (openFile(file, position, autoplay)) return true;
-
-    book_ = std::move(previous);
-    music_ = wasMusic;
-    fileIndex_ = wasFile;
-    if (book_ && wasOpen && book_->remote && book.remote) {
-        reopenAt_ = wasAt; // its server is likely gone too: open it on Play, not now
-    } else if (book_ && wasOpen) {
-        if (player_.open(book_->files[wasFile].string(), wasAt)) {
-            if (wasPlaying && !book.remote) player_.play(); // the server is gone: stay paused
+    auto undo = [this, previous = std::exchange(book_, book), wasMusic = std::exchange(music_, music), wasFile,
+                 wasOpen, wasPlaying, wasAt, remote = book.remote] {
+        book_ = previous;
+        music_ = wasMusic;
+        fileIndex_ = wasFile;
+        if (!book_ || !wasOpen) return;
+        if (book_->remote && remote) {
+            reopenAt_ = wasAt; // its server is likely gone too: open it on Play, not now
         } else if (book_->remote) {
-            reopenAt_ = wasAt; // Play tries it again
+            // A local book failed: the server had nothing to do with it. The track opens
+            // again in the background; if that fails, Play tries it again.
+            openFile(wasFile, wasAt, wasPlaying, Origin::Restore, {}, [this, wasAt] { reopenAt_ = wasAt; });
+        } else if (player_.open(book_->files[wasFile].string(), wasAt)) {
+            if (wasPlaying && !remote) player_.play(); // the server is gone: stay paused
         } else {
             book_.reset(), music_ = false;
         }
-    }
-    return false;
+    };
+    return openFile(file, position, autoplay, Origin::Menu, std::move(opened), std::move(undo));
 }
 
 // Moves to `file` of the loaded book. If a remote track does not open, the
-// track that was loaded stays the current one, paused at the same place.
-bool App::loadFile(size_t file, double position, bool autoplay, bool announce) {
+// track that was loaded stays the current one, paused at the same place, and
+// then `undo` runs.
+App::OpenResult App::loadFile(size_t file, double position, bool autoplay, Origin origin, Then opened,
+                              Then undo) {
+    dropPendingOpen();
     size_t wasFile = fileIndex_;
     bool wasOpen = player_.isOpen();
     double wasAt = player_.position();
-    if (openFile(file, position, autoplay, announce)) return true;
-    if (book_ && book_->remote) {
-        fileIndex_ = wasFile;
-        if (wasOpen) reopenAt_ = wasAt; // opened on Play: not a second wait on the server now
-    }
-    return false;
+    auto restore = [this, wasFile, wasOpen, wasAt, undo = std::move(undo)] {
+        if (book_ && book_->remote) {
+            fileIndex_ = wasFile;
+            if (wasOpen) reopenAt_ = wasAt; // opened on Play: not a second wait on the server now
+        }
+        if (undo) undo();
+    };
+    return openFile(file, position, autoplay, origin, std::move(opened), std::move(restore));
 }
 
 // Opens `file`, or the next one that opens: a file that cannot be read is
 // reported and skipped, so one bad file does not stop a book or an album. A
 // remote track is tried once: when the server cannot be reached, every
-// following track would block the device too.
-bool App::openFile(size_t file, double position, bool autoplay, bool announce) {
-    if (!book_) return false;
+// following track would wait on it too. A local file opens here; a remote one
+// may still be opening on return (Pending), and finishPendingOpen() goes on.
+App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origin origin, Then opened,
+                              Then undo) {
+    if (!book_) return OpenResult::Failed;
     for (; file < book_->files.size(); ++file, position = 0) {
         fileIndex_ = file;
-        // The open waits for the server on this thread (up to 10 s): say why nothing answers.
-        if (book_->remote && announce) say("Loading.");
+        // A stream takes a moment to open: say why nothing plays yet.
+        if (book_->remote && (origin == Origin::Menu || origin == Origin::Key)) say("Loading.");
         if (player_.open(book_->files[file].string(), position)) {
-            reopenAt_.reset();
-            if (autoplay) player_.play();
-            return true;
+            if (player_.opening()) {
+                std::uint64_t screen = origin == Origin::Menu && !screens_.empty() ? screens_.back().id : 0;
+                pendingOpen_ = PendingOpen{screen,    origin,         partTitle(*book_, file), autoplay,
+                                           position,  clock_.now(),   std::move(opened),       std::move(undo)};
+                return OpenResult::Pending;
+            }
+            onOpened(autoplay, opened);
+            return OpenResult::Opened;
+        }
+        if (book_->remote) {
+            onCannotPlay(partTitle(*book_, file), origin == Origin::Restore, undo);
+            return OpenResult::Failed;
         }
         earcons_.play(Earcon::Error);
-        if (book_->remote) { // never say the URL: it holds the login
-            say("Cannot play " + partTitle(*book_, file) + ". Server not reachable.");
-            return false;
-        }
         say("Cannot open " + book_->files[file].filename().string());
     }
-    return false;
+    if (undo) undo();
+    return OpenResult::Failed;
 }
 
+void App::onOpened(bool autoplay, const Then& opened) {
+    reopenAt_.reset();
+    if (autoplay) player_.play();
+    if (opened) opened();
+}
+
+void App::onCannotPlay(const std::string& title, bool quiet, const Then& undo) {
+    if (!quiet) {
+        earcons_.play(Earcon::Error);
+        say("Cannot play " + title + ". Server not reachable."); // never the URL: it holds the login
+    }
+    if (undo) undo();
+}
+
+void App::finishPendingOpen() {
+    PendingOpen open = std::move(*pendingOpen_);
+    pendingOpen_.reset(); // before the callbacks, which may open again
+    if (player_.isOpen()) onOpened(open.autoplay, open.opened);
+    else onCannotPlay(open.title, open.origin == Origin::Restore, open.undo);
+}
+
+void App::giveUpPendingOpen() {
+    PendingOpen open = std::move(*pendingOpen_);
+    pendingOpen_.reset();
+    player_.close(); // drops the open: its result never shows
+    onCannotPlay(open.title, open.origin == Origin::Restore, open.undo);
+}
+
+// The user has moved on before the track opened: no result of it is ever heard.
+void App::dropPendingOpen() {
+    if (!pendingOpen_) return;
+    Then undo = std::move(pendingOpen_->undo);
+    pendingOpen_.reset();
+    player_.close();
+    if (undo) undo();
+}
+
+bool App::willPlay() const { return player_.playing() || (pendingOpen_ && pendingOpen_->autoplay); }
+
 void App::togglePlay() {
-    if (player_.playing()) pause(true);
-    else play();
+    if (pendingOpen_) { // whether it plays once it has opened
+        pendingOpen_->autoplay = !pendingOpen_->autoplay;
+        say(pendingOpen_->autoplay ? "Loading." : "Paused.");
+    } else if (player_.playing()) {
+        pause(true);
+    } else {
+        play();
+    }
 }
 
 void App::play() {
-    if (book_ && !player_.isOpen() && reopenAt_ && !openFile(fileIndex_, *reopenAt_, false))
-        return; // said "Server not reachable"
+    int rewind = config_.getInt(kRewindOnResume, 2);
+    bool rewinds = rewind > 0 && pausedAt_ && clock_.now() - *pausedAt_ > std::chrono::seconds(10);
+    if (book_ && !player_.isOpen() && reopenAt_) {
+        pausedAt_.reset();
+        double at = std::max(0.0, *reopenAt_ - (rewinds ? rewind : 0));
+        // Or it says "Server not reachable", and Play tries again at the same place.
+        openFile(fileIndex_, at, true, Origin::Key, [this] { if (player_.playing()) earcons_.play(Earcon::Play); }, {});
+        return;
+    }
     if (!book_ || !player_.isOpen()) {
         earcons_.play(Earcon::Error);
         say("Nothing to play. Choose a book in the library.");
         return;
     }
-    int rewind = config_.getInt(kRewindOnResume, 2);
-    if (rewind > 0 && pausedAt_ && clock_.now() - *pausedAt_ > std::chrono::seconds(10))
-        player_.seek(player_.position() - rewind);
+    if (rewinds) player_.seek(player_.position() - rewind);
     pausedAt_.reset();
     player_.play();
     earcons_.play(Earcon::Play);
@@ -1329,16 +1415,20 @@ int App::currentChapter() const {
     return cur;
 }
 
-bool App::gotoChapter(int index) {
+// `opened` runs once the chapter's file is open: at once, unless it is a remote track.
+bool App::gotoChapter(int index, Origin origin, Then opened) {
     auto list = chapters();
     if (index < 0 || index >= int(list.size())) return false;
     const ChapterRef& ch = list[size_t(index)];
-    if (ch.file != fileIndex_ || !player_.isOpen()) { // closed: a remote track that failed or ended the list
-        if (!loadFile(ch.file, ch.start, player_.playing())) return false;
-    } else {
-        player_.seek(ch.start);
-    }
-    if (sleepAtChapterEnd_ >= 0) sleepAtChapterEnd_ = index;
+    auto arrived = [this, index, opened = std::move(opened)] {
+        if (sleepAtChapterEnd_ >= 0) sleepAtChapterEnd_ = index;
+        if (opened) opened();
+    };
+    // Closed: a remote track that failed, ended the list or is still opening.
+    if (ch.file != fileIndex_ || !player_.isOpen())
+        return loadFile(ch.file, ch.start, willPlay(), origin, std::move(arrived)) != OpenResult::Failed;
+    player_.seek(ch.start);
+    arrived();
     return true;
 }
 
@@ -1356,7 +1446,7 @@ void App::stepChapter(int direction) {
         say(target < 0 ? "First " + unit() + "." : "Last " + unit() + ".");
         return;
     }
-    if (!gotoChapter(target)) return; // the error was said
+    if (!gotoChapter(target, Origin::Key)) return; // the error was said
     earcons_.play(Earcon::Move);
     say(list[size_t(target)].title);
 }
@@ -1365,13 +1455,14 @@ void App::onFileFinished() {
     if (fileIndex_ + 1 < book_->files.size()) {
         size_t next = fileIndex_ + 1;
         // Quietly: "Loading." between every two tracks of an album would be too much.
-        if (loadFile(next, 0, true, false)) return;
-        if (book_->remote) { // "Server not reachable" was said: stop here
-            // The finished track was heard to the end, so Play opens the one that failed.
+        // If a remote one fails, "Server not reachable" is said and it stops there. The
+        // finished track was heard to the end, so Play opens the one that failed.
+        auto failedHere = [this, next] {
+            if (!book_ || !book_->remote) return;
             fileIndex_ = next;
             reopenAt_ = 0.0;
-            return;
-        }
+        };
+        if (loadFile(next, 0, true, Origin::Next, {}, failedHere) != OpenResult::Failed || book_->remote) return;
     }
     player_.pause();
     if (book_->remote) { // next play starts the list again, opening it only then
@@ -1379,7 +1470,7 @@ void App::onFileFinished() {
         fileIndex_ = 0;
         reopenAt_ = 0.0;
     } else {
-        loadFile(0, 0, false); // next play starts the book again
+        loadFile(0, 0, false, Origin::Next); // next play starts the book again
     }
     rememberPosition();
     earcons_.play(Earcon::Close);
@@ -1419,7 +1510,7 @@ std::string App::playerStatus() const {
         if (!music_ && book_->files.size() == 1 && list.size() > 1)
             text += spokenDuration(player_.duration() - pos) + " left in book. ";
     }
-    text += player_.playing() ? "Playing." : "Paused.";
+    text += pendingOpen_ ? "Loading." : player_.playing() ? "Playing." : "Paused.";
     if (sleepDeadline_)
         text += " Sleep timer, " + spokenDuration(std::chrono::duration<double>(*sleepDeadline_ - clock_.now()).count()) + " left.";
     return text;
@@ -1436,7 +1527,9 @@ App::NowPlaying App::nowPlaying() const {
     np.chapter = list.empty() ? "" : list[size_t(cur)].title;
     np.chapterIndex = cur;
     np.chapterCount = int(list.size());
-    np.position = player_.isOpen() ? player_.position() : reopenAt_.value_or(0);
+    np.position = player_.isOpen() ? player_.position()
+                  : pendingOpen_      ? pendingOpen_->position
+                                      : reopenAt_.value_or(0);
     np.duration = player_.duration();
     if (sleepDeadline_) np.sleepTimerLeft = std::chrono::duration<double>(*sleepDeadline_ - clock_.now()).count();
     return np;
@@ -1460,6 +1553,7 @@ void App::setSleepTimer(int minutes, bool endOfChapter) {
 }
 
 void App::sleep(const std::string& announcement) {
+    dropPendingOpen(); // nothing may start playing while the device sleeps
     pause(false);
     saveOnExit(); // sleep on the device may end in the power being cut
     sleepDeadline_.reset();
@@ -1484,6 +1578,7 @@ void App::wake() {
 }
 
 void App::powerOff() {
+    dropPendingOpen(); // nothing may start playing while the device shuts down
     pause(false);
     saveOnExit();
     earcons_.play(Earcon::Sleep);
@@ -1493,6 +1588,7 @@ void App::powerOff() {
 
 void App::restart(bool saveFirst) {
     if (saveFirst) saveOnExit();
+    pendingOpen_.reset();
     player_.close();
     book_.reset();
     music_ = false;

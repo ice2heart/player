@@ -70,7 +70,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `streamUrl()`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
 | `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists and getPlaylist answers (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
 | `app/net/md5.{h,cpp}` | `md5Hex()` for the auth token. |
-| `app/media/player.{h,cpp}` | `Player`: one audio file or stream URL, decoded on its own thread (FFmpeg). A URL is opened with a 10 s read timeout and HTTP reconnects, and the whole open gives up after 10 s (`kStreamOpenTimeout`). An interrupt callback lets `close()` abort any network wait at once. Its error messages print a local path but never a URL (`://`), which would hold the server login, and FFmpeg's own messages pass through `redactUrls()`. |
+| `app/media/player.{h,cpp}` | `Player`: one audio file or stream URL, decoded on its own thread (FFmpeg). A local file opens in `open()`; a URL opens on the decoder thread (`opening()` until it is done), with a 10 s read timeout and HTTP reconnects, and the whole open gives up after 10 s (`kStreamOpenTimeout`). An interrupt callback lets `close()` abort any network wait at once, and `close()` or a newer `open()` drops an open still running. Its error messages print a local path but never a URL (`://`), which would hold the server login, and FFmpeg's own messages pass through `redactUrls()`. |
 | `app/media/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. |
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
@@ -104,7 +104,7 @@ The unit tests wire in fakes instead (section 12).
 | Thread | Owner | Does |
 |--------|-------|------|
 | **Main / UI** | front end | Input events, `App::tick()`, drawing (simulator). **All `App` calls happen here.** The headless loop `poll()`s input with a 10 ms timeout. |
-| **Decoder** | `Player` | Reads, decodes and resamples into the content stream. Blocks while the stream is full, or while a stream waits for data; `close()` aborts either at once. |
+| **Decoder** | `Player` | Opens a stream URL, then reads, decodes and resamples into the content stream. Blocks while the stream is full, or while a stream waits for data; `close()` aborts either at once. A thread still opening when it is dropped is left to end by itself (see Streams in section 4). |
 | **TTS worker** | `Tts` | Runs `espeak_Synth()` synchronously and resamples into the speech stream. |
 | **Audio callback** | `AudioOutput` | Calls `Mixer::render()` to pull PCM for the device. CoreAudio calls back; Pulse, ALSA and null run their own writer thread. |
 | **HTTP worker** | `HttpClient` | Runs every libcurl transfer and parses the answers (`Subsonic`). Finished results go into a mutex-protected inbox that `Subsonic::poll()` empties on the UI thread. |
@@ -115,8 +115,8 @@ Rules:
   `RequestId` at once; `App::tick()` calls `server.poll()`, which runs the
   callbacks of finished requests on the UI thread. Leaving a screen calls
   `cancel(id)` on its request, so its callback never runs (section 7).
-  The one exception is opening a stream URL in `Player::open()`, which still
-  runs on the UI thread, capped at 10 s (section 4, Streams).
+  Opening a stream is asynchronous too: `Player::open()` returns at once,
+  and `App::tick()` sees the result when `opening()` turns false (section 8).
 - Threads exchange data only through `AudioStream` (mutex-protected), atomics,
   and mutex-protected queues: the `Tts` text queue, the `HttpClient` job queue
   and the `Subsonic` inbox of finished requests.
@@ -159,12 +159,19 @@ Rules:
 - **Read errors:** only `AVERROR_EOF` ends a file. Other `av_read_frame` errors
   are retried every 10 ms; after 50 in a row the file is treated as ended.
   (FFmpeg's Ogg demuxer rejects chained streams that change format this way.)
-- **Streams:** any URL (`://`) is opened on the UI thread for now (asynchronous
-  in phase 2), so `Player::open()` gives up after `kStreamOpenTimeout` (10 s)
-  for `avformat_open_input` and `avformat_find_stream_info` together. FFmpeg's
-  interrupt callback checks that deadline and `stop_`, so `close()` and the
-  destructor never wait on a socket; the decoder thread notices within FFmpeg's
-  100 ms poll. Options: `rw_timeout` and `timeout` 10 s (a read or connect with no
+- **Streams:** any URL (`://`) is opened on the decoder thread: `Player::open()`
+  returns at once with `opening()` true, and the open gives up after
+  `kStreamOpenTimeout` (10 s) for `avformat_open_input` and
+  `avformat_find_stream_info` together. The thread opens into its own `Input` and
+  hands it to the `Player` (fields first, then `state_` = Open, which the UI thread
+  reads) only if the open was not dropped meanwhile; each open has an `OpenJob`
+  shared with its thread. FFmpeg's interrupt callback checks the job's deadline and
+  `stop`, so `close()` and the destructor never wait on a socket; the decoder thread
+  notices within FFmpeg's 100 ms poll. `close()` (also run by a newer `open()`)
+  marks a job still opening as dropped and detaches its thread instead of joining
+  it, so even a wait no interrupt reaches cannot hold up the UI; that thread then
+  frees what it opened and never touches the `Player` again. A local file is still
+  opened in `open()` on the calling thread. Options: `rw_timeout` and `timeout` 10 s (a read or connect with no
   data fails), `reconnect` with `reconnect_delay_max` 4 s (a dropped connection
   resumes at the same byte). Not `reconnect_on_network_error`, so an unreachable
   server fails at once, and not `reconnect_streamed`, which would restart a
@@ -402,9 +409,28 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   (`App::onStreamFailed()`). The track stays current, closed, with `reopenAt_` at the place
   it got to; the next track is not tried. While a remote track is closed, "where am I" and
   Album info leave out the time left, which the closed player does not know.
-- The open blocks the UI thread (up to 10 s, see Streams in §4), so `openFile()` says
-  "Loading." before every remote open the user asked for. The next track at the end
-  of one opens without it.
+- **A remote track opens in the background** (`MediaPlayer::opening()`), and `App`
+  stays responsive meanwhile. `openFile()` returns `Pending` and keeps the open in
+  `pendingOpen_`: the track is already `book_` / `fileIndex_`, and the open holds
+  what to do when it has opened (`opened`, such as entering the player) and how to
+  go back to what was loaded before (`undo`). `tick()` finishes it once `opening()`
+  is false: it plays, or says "Cannot play Rain. Server not reachable." and runs
+  `undo`, exactly as a failed open did in phase 1. A local file opens at once and
+  takes the same paths straight away.
+- `openFile()` says "Loading." before every remote open the user asked for
+  (`Origin::Menu` or `Key`). A track chosen in a menu keeps the user there (a list
+  of tracks, the Player menu) until it has opened; then the player opens if they
+  are still on that screen. Play/Pause meanwhile decides whether it plays once
+  open ("Paused." / "Loading."), and "where am I" says "Loading" instead of "Paused".
+- **A pending open is dropped** (the player is closed and `undo` runs, silently)
+  when the user leaves the menu it was chosen in (Home, Back), chooses another
+  track, the device goes to sleep or powers off, so a late result never plays or
+  speaks. A skip or Play in the player (`Key`), the next track at the end of one
+  (`Next`, quiet) and reopening what played before a failed choice (`Restore`,
+  quiet even when it fails) belong to no screen. If the player has not finished
+  after `kStreamOpenGiveUp` (15 s, which covers a DNS lookup that FFmpeg cannot
+  interrupt), `App` closes it and reports the track as not reachable. Automatic
+  sleep and the end-of-track sleep timer wait while a track opens.
 
 ## 9. Persistence
 

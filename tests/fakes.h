@@ -44,26 +44,46 @@ public:
     bool isSpeaking = false;
 };
 
+// With holdStreams set, a stream (a path with "://") opens like on the real
+// Player: open() returns true at once, opening() is true, and the open is done
+// only when the test calls finishOpen(), which then checks openSucceeds and
+// unopenable. Local files and, without holdStreams, streams open at once.
+//
+//   player.holdStreams = true;
+//   app->playRemote("Weather", tracks, 0); // "Loading."; App waits for the open
+//   player.finishOpen();                   // it worked (or failed: unopenable)
+//   app->tick();                           // App sees the result
 class FakePlayer : public MediaPlayer {
 public:
     bool open(const std::string& path, double startAt) override {
         if (beforeOpen) beforeOpen(path);
         opened.push_back(path);
         file = path;
-        bool ok = openSucceeds && std::find(unopenable.begin(), unopenable.end(), path) == unopenable.end();
-        isOpen_ = ok;
         playing_ = false;
         pos = startAt;
         atEnd = false;
         broken = false;
-        return ok;
+        opening_ = holdStreams && path.find("://") != std::string::npos; // a newer open drops the last one
+        isOpen_ = !opening_ && opens(path);
+        return opening_ || isOpen_;
+    }
+    bool opening() const override { return opening_; }
+    // Ends the pending open: it works unless the path is unopenable. Returns
+    // false, and does nothing, when no open is pending (dropped by close() or a
+    // newer open, or already done): that is how a late result is simulated.
+    bool finishOpen() {
+        if (!opening_) return false;
+        opening_ = false;
+        isOpen_ = opens(file);
+        return true;
     }
     void close() override {
         isOpen_ = false;
+        opening_ = false;
         playing_ = false;
     }
     bool isOpen() const override { return isOpen_; }
-    void play() override { playing_ = true; }
+    void play() override { playing_ = isOpen_; } // like the real Player: nothing to play until open
     void pause() override { playing_ = false; }
     bool playing() const override { return playing_; }
     void seek(double seconds) override { pos = seconds; }
@@ -84,9 +104,15 @@ public:
     bool openSucceeds = true;
     std::vector<std::string> unopenable; // paths that fail to open
     std::function<void(const std::string& path)> beforeOpen; // e.g. to see what was said by then
+    bool holdStreams = false; // streams open only on finishOpen()
 
 private:
+    bool opens(const std::string& path) const {
+        return openSucceeds && std::find(unopenable.begin(), unopenable.end(), path) == unopenable.end();
+    }
+
     bool isOpen_ = false;
+    bool opening_ = false;
     bool playing_ = false;
 };
 

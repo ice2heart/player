@@ -229,6 +229,23 @@ private:
     std::thread thread_;
 };
 
+// A stream opens in the background: waits until the open is done, and says
+// whether it worked.
+bool openAndWait(Player& player, const std::string& url) {
+    if (!player.open(url)) return false;
+    auto deadline = std::chrono::steady_clock::now() + 15s;
+    while (player.opening() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(1ms);
+    EXPECT_FALSE(player.opening()) << "the open never ended";
+    return player.isOpen();
+}
+
+// Waits until `done` is true, or `limit` has passed.
+bool waitFor(const std::function<bool()>& done, std::chrono::milliseconds limit = 5s) {
+    auto deadline = std::chrono::steady_clock::now() + limit;
+    while (!done() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(1ms);
+    return done();
+}
+
 class PlayerTest : public testing::Test {
 protected:
     void SetUp() override {
@@ -317,7 +334,7 @@ TEST_F(PlayerTest, FormatChangeToFewerChannels) {
 TEST_F(PlayerTest, AUrlThatCannotBeOpenedIsNotPrinted) {
     Player player(mixer_);
     std::string url = "file://" + (dir_ / "missing-secret-token.mp3").string();
-    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(player.open(url)); });
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(openAndWait(player, url)); });
     EXPECT_NE(log.find("player: cannot open"), std::string::npos) << log;
     EXPECT_EQ(log.find("secret-token"), std::string::npos) << log;
 }
@@ -326,7 +343,7 @@ TEST_F(PlayerTest, AUrlWithoutAudioIsNotPrinted) {
     std::ofstream(dir_ / "secret-token.srt") << "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n";
     Player player(mixer_);
     std::string url = "file://" + (dir_ / "secret-token.srt").string();
-    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(player.open(url)); });
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(openAndWait(player, url)); });
     EXPECT_NE(log.find("player: no audio stream"), std::string::npos) << log;
     EXPECT_EQ(log.find("secret-token"), std::string::npos) << log;
 }
@@ -338,21 +355,21 @@ TEST_F(PlayerTest, AStreamOnAPortWithNothingListeningFailsAtOnce) {
     Player player(mixer_);
     std::string url = "http://127.0.0.1:" + std::to_string(unusedPort()) + "/rest/stream.view?u=me&t=secret-token";
     auto start = std::chrono::steady_clock::now();
-    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(player.open(url)); });
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(openAndWait(player, url)); });
     EXPECT_LT(secondsSince(start), 2.0) << "even one retry would take 4 s";
     EXPECT_FALSE(player.isOpen());
     EXPECT_NE(log.find("player: cannot open a stream"), std::string::npos) << log;
     EXPECT_EQ(log.find("secret-token"), std::string::npos) << log;
 }
 
-// The open runs on the UI thread: a server that takes the request and never
-// answers is given up at the open timeout (shortened here; it is 10 s).
+// A server that takes the request and never answers is given up at the open
+// timeout (shortened here; it is 10 s), so "Loading" does not go on forever.
 TEST_F(PlayerTest, AStreamThatNeverAnswersIsGivenUpAtTheOpenTimeout) {
     StalledServer server;
     Player player(mixer_, std::chrono::milliseconds(300));
     auto start = std::chrono::steady_clock::now();
     std::string log = stderrOf(dir_ / "stderr.txt", [&] {
-        EXPECT_FALSE(player.open(server.url("/rest/stream.view?u=me&t=secret-token")));
+        EXPECT_FALSE(openAndWait(player, server.url("/rest/stream.view?u=me&t=secret-token")));
     });
     double took = secondsSince(start);
     EXPECT_EQ(server.requests(), 1) << "the request reached the server";
@@ -377,7 +394,8 @@ TEST_F(PlayerTest, AStreamThatStopsWhileOpeningIsGivenUpAtTheOpenTimeout) {
     StalledServer server(partialWavReply(20, 1));
     Player player(mixer_, std::chrono::milliseconds(300));
     auto start = std::chrono::steady_clock::now();
-    std::string log = stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(player.open(server.url("/tone.wav"))); });
+    std::string log =
+        stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(openAndWait(player, server.url("/tone.wav"))); });
     EXPECT_LT(secondsSince(start), kSlowMachine);
     EXPECT_FALSE(player.isOpen());
     EXPECT_NE(log.find("no answer in time"), std::string::npos) << log;
@@ -391,8 +409,59 @@ TEST_F(PlayerTest, AnyUrlIsGivenUpAtTheOpenTimeout) {
     std::string url = server.url("");
     url.replace(0, 4, "tcp");
     auto start = std::chrono::steady_clock::now();
-    stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(player.open(url)); });
+    stderrOf(dir_ / "stderr.txt", [&] { EXPECT_FALSE(openAndWait(player, url)); });
     EXPECT_LT(secondsSince(start), kSlowMachine);
+}
+
+// The open runs on the decoder thread: open() returns at once, and the caller
+// (the UI) goes on while the server keeps it waiting.
+TEST_F(PlayerTest, OpeningAStreamThatDoesNotAnswerDoesNotBlockTheCaller) {
+    StalledServer server;
+    Player player(mixer_, 8s); // within ctest's 10 s, so a blocking open fails rather than times out
+    auto start = std::chrono::steady_clock::now();
+    EXPECT_TRUE(player.open(server.url("/rest/stream.view?u=me&t=secret-token")));
+    EXPECT_LT(secondsSince(start), 1.0);
+    EXPECT_TRUE(player.opening());
+    EXPECT_FALSE(player.isOpen());
+    EXPECT_DOUBLE_EQ(player.duration(), 0);
+    player.play(); // nothing to play yet: ignored
+    EXPECT_FALSE(player.playing());
+    EXPECT_TRUE(waitFor([&] { return server.requests() == 1; })) << "the open goes on meanwhile";
+    EXPECT_TRUE(player.opening());
+}
+
+// Home or another track while a stream opens: close() returns at once, the open
+// is over, and it reports nothing (nobody waits for it any more).
+TEST_F(PlayerTest, CloseDropsAnOpenStillRunning) {
+    StalledServer server;
+    Player player(mixer_);
+    ASSERT_TRUE(player.open(server.url("/tone.wav")));
+    ASSERT_TRUE(waitFor([&] { return server.requests() == 1; })); // the open waits for the answer
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] {
+        auto start = std::chrono::steady_clock::now();
+        player.close();
+        EXPECT_LT(secondsSince(start), 1.0);
+        EXPECT_FALSE(player.opening());
+        std::this_thread::sleep_for(300ms); // FFmpeg has seen the interrupt by now
+    });
+    EXPECT_FALSE(player.opening());
+    EXPECT_FALSE(player.isOpen());
+    EXPECT_EQ(log.find("cannot open"), std::string::npos) << log;
+}
+
+TEST_F(PlayerTest, ANewOpenDropsAStreamStillOpening) {
+    StalledServer server;
+    auto file = writeWav(dir_ / "tone.wav", 44100, 1, 1.5);
+    Player player(mixer_);
+    ASSERT_TRUE(player.open(server.url("/tone.wav")));
+    ASSERT_TRUE(waitFor([&] { return server.requests() == 1; })); // the open waits for the answer
+    ASSERT_TRUE(player.open(file.string()));
+    EXPECT_TRUE(player.isOpen()) << "a local file opens at once";
+    EXPECT_FALSE(player.opening());
+    std::this_thread::sleep_for(500ms); // the dropped open has given up by now
+    EXPECT_TRUE(player.isOpen()) << "the dropped open did not close the new file";
+    player.play();
+    EXPECT_NEAR(seconds(consume(player, mixer_)), 1.5, 0.1);
 }
 
 // Plays until the player has finished or failed, or `limit` has passed.
@@ -408,7 +477,7 @@ void playOut(Player& player, Mixer& mixer, std::chrono::seconds limit) {
 TEST_F(PlayerTest, AStreamThatBreaksOffFailsInsteadOfFinishing) {
     StalledServer server(partialWavReply(20, 6), StalledServer::HangUp);
     Player player(mixer_);
-    ASSERT_TRUE(player.open(server.url("/tone.wav")));
+    ASSERT_TRUE(openAndWait(player, server.url("/tone.wav")));
     player.play();
     stderrOf(dir_ / "stderr.txt", [&] { playOut(player, mixer_, 9s); });
     EXPECT_TRUE(player.failed());
@@ -419,7 +488,8 @@ TEST_F(PlayerTest, AStreamThatBreaksOffFailsInsteadOfFinishing) {
 TEST_F(PlayerTest, AWholeStreamFinishesAndDoesNotFail) {
     StalledServer server(partialWavReply(6, 6), StalledServer::HangUp);
     Player player(mixer_);
-    ASSERT_TRUE(player.open(server.url("/tone.wav")));
+    ASSERT_TRUE(openAndWait(player, server.url("/tone.wav")));
+    EXPECT_NEAR(player.duration(), 6.0, 0.01) << "what the open learnt reaches the caller";
     player.play();
     playOut(player, mixer_, 9s);
     EXPECT_TRUE(player.finished());
@@ -431,7 +501,7 @@ TEST_F(PlayerTest, AWholeStreamFinishesAndDoesNotFail) {
 TEST_F(PlayerTest, CloseDoesNotWaitForAStreamThatStoppedSending) {
     StalledServer server(partialWavReply(20, 6));
     Player player(mixer_);
-    ASSERT_TRUE(player.open(server.url("/tone.wav")));
+    ASSERT_TRUE(openAndWait(player, server.url("/tone.wav")));
     player.play();
     // Less than what came, so the player does not wait for more yet.
     EXPECT_NEAR(seconds(consume(player, mixer_, 5 * Mixer::kSampleRate)), 5.0, 0.01);

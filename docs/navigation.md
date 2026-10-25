@@ -143,7 +143,13 @@ these rules too ([streaming.md](streaming.md) has the plan).
 - **The player does not change.** A streamed track has the same keys, Player
   menu and "where am I?" as a local music track. Because opening a stream can
   take a few seconds, the device says "Loading." before it opens a track the
-  user chose. A track that does not open says "Cannot play Storm. Server not
+  user chose, and the keys keep working meanwhile: a track chosen in a list
+  keeps the user on that list and the player opens once the track plays.
+  Play/Pause while it opens says "Paused." (it will not start) or "Loading." (it
+  will). Leaving that list (Home), choosing another track or going to sleep
+  drops the open, so a late result never plays or speaks. A skip in the player
+  keeps opening when the user leaves the player. After 15 s without an answer
+  it gives up. A track that does not open says "Cannot play Storm. Server not
   reachable." and no other track is tried. What played before stays current and
   paused. If that was a streamed track too, it is opened again only when the
   user presses Play.

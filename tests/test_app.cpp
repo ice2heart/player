@@ -914,8 +914,8 @@ TEST_F(AppTest, ChoosingARemoteTrackPlaysItsStreamAndSaysTheServerTitle) {
     expectNoUrlSpoken(speech);
 }
 
-// The open waits for the server on the UI thread (up to 10 s), so the user
-// hears why the device does not answer: before every open they asked for.
+// A stream takes a moment to open, so the user hears why nothing plays yet:
+// before every open they asked for.
 TEST_F(AppTest, ARemoteTrackSaysLoadingBeforeItIsOpened) {
     start();
     std::vector<std::string> lastSaidAtOpen;
@@ -1229,6 +1229,316 @@ TEST_F(AppTest, ChoosingAnUnreachableTrackFromTheTracksListStaysInTheList) {
     EXPECT_EQ(level().title, "Tracks");
     EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
     expectNoUrlSpoken(speech);
+}
+
+// ---------------------------------------------------------------- asynchronous open
+
+// Streams open in the background, as on the real Player: App gets the result
+// in tick() once the test has called player.finishOpen().
+class AsyncOpenTest : public AppTest {
+protected:
+    // Weather plays from `index`, its stream opened.
+    void playWeather(size_t index = 0) {
+        start();
+        player.holdStreams = true;
+        ASSERT_TRUE(app->playRemote("Weather", weather(), index));
+        ASSERT_TRUE(player.finishOpen());
+        app->tick();
+        ASSERT_TRUE(player.playing());
+    }
+    // Ends the pending open (it fails if its path is unopenable) and lets App see it.
+    void finishOpen() {
+        ASSERT_TRUE(player.finishOpen()) << "no open pending";
+        app->tick();
+    }
+};
+
+TEST_F(AsyncOpenTest, AFailedOpenSaysServerNotReachableAndKeepsWhatWasLoaded) {
+    playAlpha();
+    player.pos = 20;
+    player.holdStreams = true;
+    EXPECT_TRUE(app->playRemote("Weather", weather(), 1)) << "it has not failed yet";
+    EXPECT_EQ(speech.last(), "Loading.");
+    player.unopenable = {"fake://stream/t2"};
+    finishOpen();
+    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t3"), 0) << "no other track tried";
+    EXPECT_EQ(player.file, alphaFile(1)) << "the book is loaded again";
+    EXPECT_DOUBLE_EQ(player.pos, 20);
+    EXPECT_FALSE(player.playing()) << "paused";
+    EXPECT_EQ(app->nowPlaying().title, "Alpha");
+    expectNoUrlSpoken(speech);
+}
+
+// Each choice replaces the open before it, and a failure goes back to what
+// played before the first.
+TEST_F(AsyncOpenTest, ATrackChosenWhileAnotherOpensFallsBackToWhatPlayedBefore) {
+    playWeather();
+    player.pos = 42;
+    EXPECT_TRUE(app->playRemote("Gone", {{"x9", "Lost", "Band", "Gone", 100, 1}}, 0));
+    EXPECT_TRUE(app->playRemote("Away", {{"x8", "Far", "Band", "Away", 100, 1}}, 0));
+    player.unopenable = {"fake://stream/x8"};
+    finishOpen();
+    EXPECT_EQ(speech.last(), "Cannot play Far. Server not reachable.");
+    EXPECT_FALSE(speech.heard("Cannot play Lost. Server not reachable.")) << "its open was dropped, not failed";
+    EXPECT_EQ(app->nowPlaying().title, "Weather");
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
+    EXPECT_FALSE(player.playing());
+    press(Button::PlayPause); // opens Storm Front again, where it was
+    EXPECT_EQ(speech.last(), "Loading.");
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(sounds.last(), Earcon::Play);
+}
+
+TEST_F(AsyncOpenTest, TheNextTrackOpensInTheBackgroundEvenWhenTheUserLeavesThePlayer) {
+    playWeather();
+    speech.said.clear();
+    player.atEnd = true;
+    app->tick();
+    EXPECT_TRUE(player.opening());
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_FALSE(speech.heard("Loading."));
+    press(Button::Home); // back to Home, while it opens
+    ASSERT_TRUE(player.finishOpen()) << "not dropped: the user did not ask for it on that screen";
+    app->tick();
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain");
+    EXPECT_EQ(level().title, "Home") << "the user is not pulled back into the player";
+}
+
+TEST_F(AsyncOpenTest, TheNextTrackFailingInTheBackgroundStopsThere) {
+    playWeather();
+    player.atEnd = true;
+    app->tick();
+    player.unopenable = {"fake://stream/t2"};
+    finishOpen();
+    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain") << "Storm Front was heard to the end";
+    player.unopenable.clear();
+    press(Button::PlayPause);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(AsyncOpenTest, SleepWhileATrackOpensDropsIt) {
+    start();
+    player.holdStreams = true;
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    press(Button::Power);
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_FALSE(player.finishOpen()) << "dropped: nothing may start playing while the device sleeps";
+    app->tick();
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(speech.last(), "Going to sleep.");
+}
+
+TEST_F(AsyncOpenTest, SkippingAgainWhileATrackOpensKeepsPlaying) {
+    playWeather();
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Rain");
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Sunshine");
+    finishOpen();
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1", "fake://stream/t2", "fake://stream/t3"}));
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    EXPECT_TRUE(player.playing()) << "it was playing before the first skip";
+}
+
+TEST_F(AsyncOpenTest, PauseWhileATrackOpensKeepsItPausedOnceOpen) {
+    playWeather();
+    hold(Button::Forward); // Rain opens, to play
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Paused.");
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_TRUE(player.isOpen());
+    EXPECT_FALSE(player.playing());
+    press(Button::PlayPause);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(AsyncOpenTest, PlayWhileAPausedTrackOpensPlaysItOnceOpen) {
+    playWeather(1);
+    press(Button::PlayPause); // paused
+    hold(Button::Back);       // Storm Front opens, paused like Rain
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Loading.");
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_TRUE(player.playing());
+}
+
+// A skip or Play belongs to no menu: the user may go on browsing while it opens.
+TEST_F(AsyncOpenTest, ASkipStillOpensWhenTheUserLeavesThePlayer) {
+    playWeather();
+    hold(Button::Forward);
+    press(Button::Home); // back to Home
+    ASSERT_TRUE(player.finishOpen()) << "not dropped";
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(level().title, "Home");
+}
+
+TEST_F(AsyncOpenTest, PowerOffWhileATrackOpensDropsIt) {
+    start();
+    player.holdStreams = true;
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    hold(Button::Power);
+    open("Power off");
+    EXPECT_TRUE(app->quitRequested());
+    EXPECT_FALSE(player.finishOpen()) << "dropped: nothing may start while the device shuts down";
+    app->tick(); // the front end goes on ticking while "Goodbye" is spoken
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(speech.last(), "Powering off. Goodbye.");
+}
+
+// Player gives up after 10 s, but not during a DNS lookup: App gives up then.
+TEST_F(AsyncOpenTest, AnOpenThatNeverEndsIsGivenUp) {
+    start();
+    player.holdStreams = true;
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    idle(14s);
+    EXPECT_TRUE(player.opening());
+    EXPECT_EQ(speech.last(), "Loading.");
+    idle(2s);
+    EXPECT_EQ(speech.last(), "Cannot play Storm Front. Server not reachable.");
+    EXPECT_FALSE(player.finishOpen()) << "the player was closed: a result now never shows";
+    app->tick();
+    EXPECT_FALSE(player.playing());
+}
+
+TEST_F(AsyncOpenTest, AFailedChoiceKeepsTheSleepTimerOfTheBookBefore) {
+    playAlpha();
+    press(Button::Ok); // Player menu
+    open("Sleep timer");
+    open("End of chapter");
+    player.holdStreams = true;
+    player.unopenable = {"fake://stream/t1"};
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    finishOpen();
+    ASSERT_EQ(app->nowPlaying().title, "Alpha");
+    hold(Button::Home);
+    open("Now playing");
+    press(Button::PlayPause);
+    ASSERT_TRUE(player.playing());
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_TRUE(speech.heard("End of chapter. Sleep timer ended."));
+}
+
+TEST_F(AsyncOpenTest, PlayOpensAFailedTrackAgainRewoundAfterALongPause) {
+    playWeather();
+    player.pos = 50;
+    press(Button::PlayPause); // paused at 50
+    idle(20s);
+    player.unopenable = {"fake://stream/t2"};
+    hold(Button::Forward); // Rain fails: Storm Front is opened again on Play
+    finishOpen();
+    player.unopenable.clear();
+    press(Button::PlayPause);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 48) << "2 s back, as after any long pause";
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(sounds.last(), Earcon::Play);
+}
+
+TEST_F(AsyncOpenTest, NoAutomaticSleepWhileTheNextTrackOpens) {
+    playWeather();
+    idle(6min); // no key pressed for longer than the 5 min of automatic sleep
+    player.atEnd = true;
+    app->tick();
+    ASSERT_TRUE(player.opening());
+    idle(1s);
+    EXPECT_NE(app->mode(), App::Mode::Sleeping);
+    finishOpen();
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(AsyncOpenTest, SleepTimerAtEndOfTrackWaitsForTheTrackSkippedTo) {
+    playWeather();
+    press(Button::Ok); // Player menu
+    open("Sleep timer");
+    open("End of track"); // back in the Player menu
+    press(Button::Home);  // the player
+    hold(Button::Forward); // Rain opens
+    idle(1s);
+    EXPECT_NE(app->mode(), App::Mode::Sleeping) << "Storm Front did not end";
+    finishOpen();
+    idle(1s);
+    EXPECT_NE(app->mode(), App::Mode::Sleeping) << "the timer waits for the end of Rain";
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_TRUE(speech.heard("End of track. Sleep timer ended."));
+}
+
+TEST_F(AsyncOpenTest, WhereAmIInThePlayerWhileATrackOpensSaysLoading) {
+    playWeather();
+    hold(Button::Forward);
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Weather. Track 2 of 3, Rain. Loading.");
+    press(Button::Ok);   // Player menu
+    press(Button::Home); // back to the player
+    EXPECT_EQ(speech.last(), "Now playing. Weather, Rain, loading.");
+}
+
+TEST_F(AsyncOpenTest, GoToFirstTrackEntersThePlayerOnceItHasOpened) {
+    playWeather(1);
+    press(Button::Ok); // Player menu
+    open("Go to first track");
+    EXPECT_EQ(speech.last(), "Loading.");
+    EXPECT_EQ(level().title, "Player menu");
+    finishOpen();
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(AsyncOpenTest, ALocalBookThatCannotBeOpenedOpensTheRemoteTrackAgainInTheBackground) {
+    playWeather();
+    player.pos = 42;
+    player.unopenable = {alphaFile(1), alphaFile(2)};
+    speech.said.clear();
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    EXPECT_TRUE(speech.heard("Cannot open 02 - Calm.mp3"));
+    EXPECT_FALSE(speech.heard("Loading.")) << "the user did not ask for it";
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
+}
+
+// Only the book was asked for: the track behind it failing again is not news.
+TEST_F(AsyncOpenTest, TheRemoteTrackBehindAFailedLocalBookFailsQuietly) {
+    playWeather();
+    player.pos = 42;
+    player.unopenable = {alphaFile(1), alphaFile(2), "fake://stream/t1"};
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    speech.said.clear();
+    sounds.played.clear();
+    finishOpen();
+    EXPECT_TRUE(speech.said.empty());
+    EXPECT_TRUE(sounds.played.empty());
+    player.unopenable.clear();
+    press(Button::PlayPause); // Play tries it again, where it was
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
 }
 
 // ---------------------------------------------------------------- streaming menu
@@ -1614,6 +1924,104 @@ TEST_F(StreamingTest, APlaylistOpensItsTracks) {
     open("Sunshine");
     EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t3"}));
     EXPECT_EQ(app->nowPlaying().title, "Road");
+}
+
+TEST_F(StreamingTest, KeysAreAnsweredWhileATrackOpens) {
+    openList("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(weather());
+    player.holdStreams = true;
+    open("Rain");
+    EXPECT_EQ(speech.last(), "Loading.");
+    EXPECT_TRUE(player.opening());
+    EXPECT_EQ(level().title, "Weather") << "the user stays in the list meanwhile";
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Sunshine, 4 of 4");
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Paused.") << "it will not play once it has opened";
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Loading.") << "it will play again";
+    hold(Button::PlayPause); // where am I
+    EXPECT_EQ(speech.last(), "Home, Server, Recently added, Weather. Sunshine, 4 of 4. Loading Weather");
+    ASSERT_TRUE(player.finishOpen());
+    app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(speech.last(), "Now playing. Weather, Rain.");
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(StreamingTest, HomeWhileATrackOpensDropsTheLateResult) {
+    openList("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(weather());
+    player.holdStreams = true;
+    open("Rain");
+    press(Button::Home);
+    EXPECT_EQ(level().title, "Recently added");
+    speech.said.clear();
+    EXPECT_FALSE(player.finishOpen()) << "the open was dropped";
+    idle(1s);
+    EXPECT_TRUE(speech.said.empty());
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(level().title, "Recently added");
+    EXPECT_FALSE(app->nowPlaying().loaded) << "nothing was loaded before";
+}
+
+TEST_F(StreamingTest, HomeWhileATrackOpensKeepsTheBookThatPlayedBefore) {
+    playAlpha();
+    player.pos = 20;
+    hold(Button::Home);
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(weather());
+    player.holdStreams = true;
+    open("Rain");
+    hold(Button::Home);
+    EXPECT_FALSE(player.finishOpen());
+    app->tick();
+    EXPECT_EQ(app->nowPlaying().title, "Alpha");
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_DOUBLE_EQ(player.pos, 20);
+    EXPECT_FALSE(player.playing());
+}
+
+TEST_F(StreamingTest, ChoosingAnotherTrackWhileOneOpensPlaysOnlyThatOne) {
+    openList("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(weather());
+    player.holdStreams = true;
+    open("Rain");
+    open("Sunshine");
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t2", "fake://stream/t3"}));
+    ASSERT_TRUE(player.finishOpen());
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(speech.last(), "Now playing. Weather, Sunshine.");
+    EXPECT_FALSE(speech.heard("Now playing. Weather, Rain."));
+    EXPECT_FALSE(player.finishOpen()) << "no other open is left";
+}
+
+TEST_F(StreamingTest, ATrackThatOpensWhileTheUserIsInAnotherMenuPlaysWithoutLeavingIt) {
+    openList("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(weather());
+    player.holdStreams = true;
+    open("Rain");
+    hold(Button::Power); // the Power menu, on top of the album
+    std::string menu = level().title;
+    ASSERT_TRUE(player.finishOpen());
+    app->tick();
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(level().title, menu);
 }
 
 // ---------------------------------------------------------------- hold switch and power
