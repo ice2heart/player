@@ -63,6 +63,7 @@ public:
         pos = startAt;
         atEnd = false;
         broken = false;
+        dry = false;
         opening_ = holdStreams && path.find("://") != std::string::npos; // a newer open drops the last one
         isOpen_ = !opening_ && opens(path);
         return opening_ || isOpen_;
@@ -93,6 +94,8 @@ public:
     const std::vector<Chapter>& chapters() const override { return embedded; }
     bool finished() const override { return isOpen_ && playing_ && atEnd && !broken; }
     bool failed() const override { return isOpen_ && playing_ && broken; }
+    // Like the real Player: only while playing, and not once it has finished or failed.
+    bool buffering() const override { return isOpen_ && playing_ && dry && !atEnd && !broken; }
 
     std::vector<std::string> opened;
     std::string file;
@@ -101,6 +104,7 @@ public:
     std::vector<Chapter> embedded;
     bool atEnd = false;
     bool broken = false; // the stream broke off: failed() once playing
+    bool dry = false;    // the stream has run dry and is retried: buffering() while playing
     bool openSucceeds = true;
     std::vector<std::string> unopenable; // paths that fail to open
     std::function<void(const std::string& path)> beforeOpen; // e.g. to see what was said by then

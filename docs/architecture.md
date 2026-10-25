@@ -70,7 +70,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `streamUrl()`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
 | `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists and getPlaylist answers (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
 | `app/net/md5.{h,cpp}` | `md5Hex()` for the auth token. |
-| `app/media/player.{h,cpp}` | `Player`: one audio file or stream URL, decoded on its own thread (FFmpeg). A local file opens in `open()`; a URL opens on the decoder thread (`opening()` until it is done), with a 10 s read timeout and HTTP reconnects, and the whole open gives up after 10 s (`kStreamOpenTimeout`). An interrupt callback lets `close()` abort any network wait at once, and `close()` or a newer `open()` drops an open still running. Its error messages print a local path but never a URL (`://`), which would hold the server login, and FFmpeg's own messages pass through `redactUrls()`. |
+| `app/media/player.{h,cpp}` | `Player`: one audio file or stream URL, decoded on its own thread (FFmpeg). A local file opens in `open()`; a URL opens on the decoder thread (`opening()` until it is done), with a 10 s read timeout and HTTP reconnects, and the whole open gives up after 10 s (`kStreamOpenTimeout`). A stream whose connection is lost while it plays is retried with backoff at the same place for 30 s (`kStreamRetryGiveUp`); `buffering()` says when it has run dry meanwhile. An interrupt callback lets `close()` abort any network wait at once, and `close()` or a newer `open()` drops an open still running. Its error messages print a local path but never a URL (`://`), which would hold the server login, and FFmpeg's own messages pass through `redactUrls()`. |
 | `app/media/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. |
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
@@ -172,14 +172,28 @@ Rules:
   it, so even a wait no interrupt reaches cannot hold up the UI; that thread then
   frees what it opened and never touches the `Player` again. A local file is still
   opened in `open()` on the calling thread. Options: `rw_timeout` and `timeout` 10 s (a read or connect with no
-  data fails), `reconnect` with `reconnect_delay_max` 4 s (a dropped connection
-  resumes at the same byte). Not `reconnect_on_network_error`, so an unreachable
-  server fails at once, and not `reconnect_streamed`, which would restart a
+  data fails), `reconnect` with `reconnect_delay_max` 0 (FFmpeg reconnects a
+  dropped connection once, at once, at the same byte). Not `reconnect_on_network_error`, so an unreachable
+  server fails the open at once, and not `reconnect_streamed`, which would restart a
   stream without a length from the beginning. DNS lookups (`getaddrinfo`) are
-  not interruptible and are not covered by the cap. A stream that ends with a
-  network error (the reconnects gave up) is not finished: once what came has been
-  heard, `failed()` is true and `finished()` stays false. A local file never fails
-  this way.
+  not interruptible and are not covered by the cap.
+- **Dropouts:** a read error of a stream that is a network error (FFmpeg's
+  reconnect failed) does not end it. The decoder thread keeps the queued audio
+  playing and retries: it waits 1 s, then twice the last wait up to 8 s
+  (`kStreamRetryFirstDelay`, `kStreamRetryMaxDelay`), in 10 ms steps so that
+  `close()` and a seek do not wait, and then seeks to where the queued audio ends
+  (`endPts_`; `skipUntil_` drops what the seek gives before it), which makes FFmpeg
+  ask the server for the rest with a Range request. Every read error counts as
+  part of the dropout until bytes from beyond the place it was lost
+  (`AVIOContext::pos`) have come, since FFmpeg's read-ahead still holds older
+  data. Once `kStreamRetryGiveUp` (30 s, a constructor argument for tests) of
+  playing time has passed since the loss (time paused does not count, and a
+  seek that works starts it again), no retry starts and the stream has failed:
+  once what came has been heard, `failed()` is true and `finished()` stays false.
+  The read timeout that notices a stalled connection and a connect that hangs
+  come on top, so "Server not reachable" can take longer than 30 s. A local
+  file never fails this way. `buffering()` is true while a stream plays, has not
+  ended or failed, and nothing is queued (also while a seek waits): it has run dry.
 - **FFmpeg log:** `Player` installs an `av_log` callback that prints errors only
   and cuts every URL to its scheme and host, and every other `?query`, since some
   FFmpeg messages print URLs or request lines.
@@ -404,7 +418,18 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   failed becomes current at 0 instead, so Play does not reopen the one just heard. At the end
   of a remote list the first track is likewise opened only on Play. A local book that cannot
   be opened leaves a remote track that was playing open and playing.
-- A stream that **breaks off** mid-track (`MediaPlayer::failed()`, e.g. Wi-Fi off) says
+- A stream that **runs dry** while it plays (`MediaPlayer::buffering()`: a slow
+  network, or a dropout that `Player` retries) gets the `Buffering` earcon once it
+  has been dry for `kDryBeforeEarcon` (0.5 s, so the moment after a seek while the
+  new part loads is quiet), and "Waiting for network." once after
+  `kDryBeforeWaitingForNetwork` (3 s), said only when no other speech is playing
+  (`App::checkBuffering()`, from `tick()`, timed with `clock_`). The track is not
+  changed; when audio comes again it goes on. The dropout is over once audio has
+  played for `kPlayingBeforeRecovered` (2 s) without a gap, so a stream that
+  stutters on a slow link gets one earcon and then the phrase; the next dropout,
+  and Play after a pause, get them again.
+- A stream that **breaks off** mid-track (`MediaPlayer::failed()`: Wi-Fi off or the
+  server gone, and `Player`'s retries gave up) says
   "Server not reachable. Press play to try again." once the buffered audio has been heard
   (`App::onStreamFailed()`). The track stays current, closed, with `reopenAt_` at the place
   it got to; the next track is not tried. While a remote track is closed, "where am I" and

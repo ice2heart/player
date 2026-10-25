@@ -15,6 +15,7 @@ extern "C" {
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
+#include <optional>
 #include <utility>
 
 namespace oap {
@@ -116,6 +117,17 @@ struct Player::OpenJob {
     bool handedOver = false;             // the thread decodes for the Player now: close() waits for it
 };
 
+struct Player::Dropout {
+    std::optional<std::chrono::steady_clock::time_point> since; // set while the connection is lost
+    std::chrono::milliseconds delay = kStreamRetryFirstDelay;  // before the next retry
+    int64_t bytes = 0; // how far the stream had come (AVIOContext::pos) when it was lost
+    void restart(const AVIOContext* pb) {
+        since = std::chrono::steady_clock::now();
+        delay = kStreamRetryFirstDelay;
+        bytes = pb->pos;
+    }
+};
+
 struct Player::Input {
     AVFormatContext* fmt = nullptr;
     AVCodecContext* dec = nullptr;
@@ -131,7 +143,8 @@ struct Player::Input {
     }
 };
 
-Player::Player(Mixer& mixer, std::chrono::milliseconds openTimeout) : mixer_(mixer), openTimeout_(openTimeout) {
+Player::Player(Mixer& mixer, std::chrono::milliseconds openTimeout, std::chrono::milliseconds retryGiveUp)
+    : mixer_(mixer), openTimeout_(openTimeout), retryGiveUp_(retryGiveUp) {
     av_log_set_level(AV_LOG_ERROR);
     av_log_set_callback(logRedacted);
 }
@@ -326,25 +339,54 @@ bool Player::failed() const {
     return isOpen() && playing_ && eof_ && failed_ && seekRequest_ < 0 && mixer_.content().buffered() == 0;
 }
 
+bool Player::buffering() const {
+    // Also while a seek waits for the network: nothing is heard then either.
+    return isOpen() && isUrl_ && playing_ && !eof_ && mixer_.content().buffered() == 0;
+}
+
+bool Player::seekInput(double at) {
+    if (av_seek_frame(fmt_, -1, int64_t(at * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD) < 0) return false;
+    avcodec_flush_buffers(dec_);
+    swr_init(swr_);
+    skipUntil_ = at; // a seek lands at or before `at`
+    if (fmt_->pb) fmt_->pb->error = 0; // the seek got through: an earlier error is over
+    return true;
+}
+
+bool Player::retryStream(Dropout& dropout) {
+    auto now = std::chrono::steady_clock::now();
+    if (!playing_) dropout.since = now; // paused, nobody waits: only playing time counts
+    if (now - *dropout.since >= retryGiveUp_) return false;
+    // In steps, so that close() and a seek do not wait for the retry.
+    auto until = now + dropout.delay;
+    dropout.delay = std::min(dropout.delay * 2, kStreamRetryMaxDelay);
+    while (std::chrono::steady_clock::now() < until) {
+        if (shouldAbortWrite()) return true; // the loop sees it next
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    // A seek to where the queued audio ends asks the server for the rest (an
+    // HTTP Range request); the queued audio plays on meanwhile.
+    seekInput(endPts_);
+    return true;
+}
+
 void Player::decodeLoop() {
     AVPacket* packet = av_packet_alloc();
     AVFrame* frame = av_frame_alloc();
     uint64_t epoch = mixer_.content().epoch();
     int readErrors = 0; // in a row
+    Dropout dropout;
 
     while (!stop_) {
         double target = seekRequest_;
         if (target >= 0) {
-            if (av_seek_frame(fmt_, -1, int64_t(target * AV_TIME_BASE), AVSEEK_FLAG_BACKWARD) >= 0) {
-                avcodec_flush_buffers(dec_);
-                swr_init(swr_);
+            if (seekInput(target)) {
                 epoch = mixer_.content().flush();
                 endPts_ = target;
-                skipUntil_ = target;
                 eof_ = false;
                 failed_ = false;
-                if (fmt_->pb) fmt_->pb->error = 0; // the seek got through: an earlier error is over
                 readErrors = 0;
+                if (dropout.since) dropout.restart(fmt_->pb); // the user is there: give it the full time again
             } else {
                 // Keep the queued audio and position. FFmpeg drops its read buffers even when the
                 // seek fails, so the decoder starts afresh on whatever comes next.
@@ -361,8 +403,25 @@ void Player::decodeLoop() {
         }
 
         int err = av_read_frame(fmt_, packet);
+        // A network error (FFmpeg's reconnect failed), or any error while that lasts.
+        bool lost = err < 0 && isUrl_ && fmt_->pb &&
+                    (dropout.since || (fmt_->pb->error < 0 && fmt_->pb->error != AVERROR_EOF));
         if (err >= 0) {
             readErrors = 0;
+            // FFmpeg reads ahead: packets from what it got before the loss do not show
+            // that the connection is back, only bytes from further on do.
+            if (dropout.since && fmt_->pb && fmt_->pb->pos > dropout.bytes) {
+                std::fprintf(stderr, "player: stream connection is back\n");
+                dropout = {};
+            }
+        } else if (lost) {
+            if (!dropout.since) {
+                std::fprintf(stderr, "player: stream connection lost: %s, retrying\n", errorText(err).c_str());
+                dropout.restart(fmt_->pb);
+            }
+            if (retryStream(dropout)) continue;
+            std::fprintf(stderr, "player: stream connection lost, giving up\n");
+            failed_ = true; // it did not end: what came is heard, then failed()
         } else if (onReadError(err, fmt_->pb && avio_feof(fmt_->pb), readErrors) == ReadErrorAction::Retry) {
             if (readErrors == 1)
                 std::fprintf(stderr, "player: read error: %s, retrying\n", errorText(err).c_str());
@@ -373,8 +432,6 @@ void Player::decodeLoop() {
                          errorText(err).c_str());
         }
         bool flushing = err < 0;
-        // A stream that ends with a network error (reconnects gave up) has failed: it did not end.
-        if (flushing && isUrl_ && fmt_->pb && fmt_->pb->error < 0 && fmt_->pb->error != AVERROR_EOF) failed_ = true;
         if (!flushing && packet->stream_index != stream_->index) {
             av_packet_unref(packet);
             continue;

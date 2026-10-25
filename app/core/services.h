@@ -69,7 +69,13 @@ public:
     // A stream broke off before its end (the network or the server went away)
     // and everything that came has been heard. finished() stays false then.
     // Local files never fail this way: a read error there ends the file.
+    // Before it fails, a stream that loses its connection is retried for a while
+    // (the place is kept), and buffering() is true whenever it has run dry meanwhile.
     virtual bool failed() const = 0;
+    // A stream that plays has run dry: everything that came has been heard and
+    // more is awaited (a slow network, or a dropped connection being retried).
+    // False when paused, while opening, and once it has finished or failed.
+    virtual bool buffering() const = 0;
 };
 
 // Short UI sounds.
@@ -85,6 +91,7 @@ enum class Earcon {
     Boot,
     Sleep,
     Wake,
+    Buffering, // a stream that plays has run dry: waiting for the network
 };
 
 class SoundEffects {

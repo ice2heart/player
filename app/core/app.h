@@ -193,6 +193,7 @@ private:
     void stepChapter(int direction);
     void onFileFinished();
     void onStreamFailed(); // a remote track broke off: stop, and open it there on Play
+    void checkBuffering(Clock::TimePoint now); // tick(): the earcon and "Waiting for network" while a stream is dry
     void rememberPosition(); // in the state map only, written by saveOnExit()
     std::string playerStatus() const;
 
@@ -247,6 +248,14 @@ private:
         Then opened, undo;
     };
     std::optional<PendingOpen> pendingOpen_;
+    // The stream that plays first ran dry (MediaPlayer::buffering()) at `since`.
+    struct Dropout {
+        TimePoint since;
+        std::optional<TimePoint> playingSince; // audio has come again since then
+        bool earcon = false; // the buffering earcon has played
+        bool said = false;   // "Waiting for network" has been said
+    };
+    std::optional<Dropout> dry_;
 
     bool hold_ = false;
     std::array<bool, kButtonCount> held_{};   // raw keys down now

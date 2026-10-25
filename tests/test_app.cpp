@@ -1078,6 +1078,148 @@ TEST_F(AppTest, TheLastStreamBreakingOffIsNotTheEndOfTheMusic) {
     EXPECT_DOUBLE_EQ(player.pos, 100);
 }
 
+// ---------------------------------------------------------------- buffering
+
+namespace {
+long countOf(const std::vector<Earcon>& played, Earcon earcon) { return std::count(played.begin(), played.end(), earcon); }
+long countOf(const std::vector<std::string>& said, const std::string& text) {
+    return std::count(said.begin(), said.end(), text);
+}
+} // namespace
+
+// A short dropout: the earcon, and the same track goes on. Nothing is said.
+TEST_F(AppTest, AStreamDryForLessThanThreeSecondsGetsTheEarconOnly) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    speech.said.clear();
+    sounds.played.clear();
+    player.pos = 50;
+    player.dry = true;
+    app->tick(); // App sees it at once (it ticks every few ms)
+    idle(300ms);
+    EXPECT_EQ(countOf(sounds.played, Earcon::Buffering), 0) << "a moment after a seek is not a dropout";
+    idle(300ms);
+    EXPECT_EQ(countOf(sounds.played, Earcon::Buffering), 1);
+    idle(2300ms); // 2.9 s dry
+    player.dry = false;
+    for (int i = 0; i < 50; ++i) idle(100ms);
+    EXPECT_EQ(countOf(sounds.played, Earcon::Buffering), 1);
+    EXPECT_TRUE(speech.said.empty()) << speech.last();
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1"})) << "the same track, not opened again";
+    EXPECT_TRUE(player.playing());
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
+}
+
+TEST_F(AppTest, AStreamDryForMoreThanThreeSecondsSaysWaitingForNetworkOnce) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    speech.said.clear();
+    player.dry = true;
+    app->tick(); // App sees it at once (it ticks every few ms)
+    for (int i = 0; i < 29; ++i) idle(100ms);
+    EXPECT_FALSE(speech.heard("Waiting for network.")) << "not before 3 s";
+    idle(100ms);
+    EXPECT_EQ(speech.last(), "Waiting for network.");
+    for (int i = 0; i < 100; ++i) idle(100ms);
+    EXPECT_EQ(countOf(speech.said, "Waiting for network."), 1);
+    EXPECT_EQ(countOf(sounds.played, Earcon::Buffering), 1);
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1"}));
+}
+
+// Each dropout is new: after the stream has played for a while again, the next
+// one gets the earcon and the phrase again.
+TEST_F(AppTest, EachDropoutGetsItsOwnFeedback) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.dry = true;
+    app->tick(); // App sees it at once (it ticks every few ms)
+    idle(3s);
+    idle(100ms);
+    player.dry = false;
+    for (int i = 0; i < 25; ++i) idle(100ms); // 2.4 s of audio
+    player.dry = true;
+    app->tick(); // App sees it at once (it ticks every few ms)
+    idle(600ms);
+    EXPECT_EQ(countOf(sounds.played, Earcon::Buffering), 2);
+    idle(3s);
+    EXPECT_EQ(countOf(speech.said, "Waiting for network."), 2);
+}
+
+// A slow link: the audio comes in bits with gaps between. That is one dropout:
+// one earcon, then the phrase once it has gone on for 3 s, not an earcon per gap.
+TEST_F(AppTest, AStutteringStreamIsOneDropout) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    speech.said.clear();
+    sounds.played.clear();
+    for (int cycle = 0; cycle < 8; ++cycle) {
+        player.dry = true;
+        for (int i = 0; i < 7; ++i) idle(100ms); // 0.7 s dry
+        player.dry = false;
+        for (int i = 0; i < 3; ++i) idle(100ms); // 0.3 s of audio
+    }
+    EXPECT_EQ(countOf(sounds.played, Earcon::Buffering), 1);
+    EXPECT_EQ(speech.said, (std::vector<std::string>{"Waiting for network."}));
+}
+
+// Paused, nobody waits for the stream. Play during a dropout gets the feedback again.
+TEST_F(AppTest, PlayDuringADropoutGetsTheFeedbackAgain) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.dry = true;
+    app->tick();
+    idle(600ms);
+    press(Button::PlayPause); // pause
+    press(Button::PlayPause); // play: still dry
+    app->tick();
+    sounds.played.clear();
+    speech.said.clear();
+    idle(600ms);
+    EXPECT_EQ(countOf(sounds.played, Earcon::Buffering), 1);
+    for (int i = 0; i < 30; ++i) idle(100ms);
+    EXPECT_EQ(speech.said, (std::vector<std::string>{"Waiting for network."}));
+}
+
+// The phrase does not cut into other speech, such as a menu item being read: it
+// comes once that has been said.
+TEST_F(AppTest, WaitingForNetworkWaitsUntilOtherSpeechHasEnded) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    speech.said.clear();
+    player.dry = true;
+    app->tick(); // App sees it at once (it ticks every few ms)
+    speech.isSpeaking = true;
+    for (int i = 0; i < 50; ++i) idle(100ms);
+    EXPECT_FALSE(speech.heard("Waiting for network."));
+    speech.isSpeaking = false;
+    idle(100ms);
+    EXPECT_EQ(speech.said, (std::vector<std::string>{"Waiting for network."}));
+}
+
+// Player's retries give up (failed()): phase 1's message, and Play opens the
+// track again where it stopped.
+TEST_F(AppTest, ADropoutThatLastsEndsInServerNotReachable) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    player.pos = 80;
+    player.dry = true;
+    app->tick(); // App sees it at once (it ticks every few ms)
+    for (int i = 0; i < 40; ++i) idle(100ms);
+    ASSERT_EQ(speech.last(), "Waiting for network.");
+    player.broken = true;
+    idle(100ms);
+    EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    for (int i = 0; i < 40; ++i) idle(100ms);
+    EXPECT_EQ(countOf(speech.said, "Waiting for network."), 1);
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1"})) << "no other track";
+    press(Button::PlayPause);
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 80);
+    EXPECT_TRUE(player.playing());
+}
+
 // The player is closed until Play: it knows neither the place nor the length.
 TEST_F(AppTest, WhereAmIAfterAFailedRemoteTrackSaysNoTimeLeft) {
     start();

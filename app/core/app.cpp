@@ -38,6 +38,15 @@ constexpr int kRandomAlbums = 50;
 // DNS lookup) can take longer. App gives up a little after it, so "Loading"
 // always ends.
 constexpr std::chrono::seconds kStreamOpenGiveUp{15};
+// A stream that plays and has run dry (MediaPlayer::buffering()). After a seek it
+// is empty for a moment while the new part loads: only a longer gap gets the
+// buffering earcon. A dropout that lasts says so once; Player retries meanwhile,
+// and if it gives up, failed() says "Server not reachable". On a slow link the
+// audio comes in bits: only after it has played this long without a gap is the
+// dropout over, so the stutter gets one earcon and then the phrase.
+constexpr std::chrono::milliseconds kDryBeforeEarcon{500};
+constexpr std::chrono::seconds kDryBeforeWaitingForNetwork{3};
+constexpr std::chrono::seconds kPlayingBeforeRecovered{2};
 constexpr const char* kNoServerHelp =
     "To stream from your own music server, add a server section with its url, user and password to "
     "config.yaml, then restart the player.";
@@ -254,6 +263,7 @@ void App::tick() {
     if (book_ && player_.failed()) onStreamFailed();
     bool fileFinished = book_ && player_.finished();
     if (fileFinished) onFileFinished();
+    checkBuffering(now);
 
     if (sleepDeadline_ && now >= *sleepDeadline_) {
         sleepDeadline_.reset();
@@ -1485,6 +1495,32 @@ void App::onStreamFailed() {
     reopenAt_ = at;
     earcons_.play(Earcon::Error);
     say("Server not reachable. Press play to try again.");
+}
+
+// Feedback while a stream that plays has run dry: an earcon, then once
+// "Waiting for network", but not over other speech (it waits until that ends).
+// Pausing ends it: Play during a dropout gets the feedback again.
+void App::checkBuffering(TimePoint now) {
+    if (!player_.playing()) {
+        dry_.reset();
+        return;
+    }
+    if (!player_.buffering()) {
+        if (dry_ && !dry_->playingSince) dry_->playingSince = now;
+        if (dry_ && now - *dry_->playingSince >= kPlayingBeforeRecovered) dry_.reset();
+        return;
+    }
+    if (!dry_) dry_ = Dropout{now, {}};
+    dry_->playingSince.reset();
+    auto dryFor = now - dry_->since;
+    if (!dry_->earcon && dryFor >= kDryBeforeEarcon) {
+        dry_->earcon = true;
+        earcons_.play(Earcon::Buffering);
+    }
+    if (!dry_->said && dryFor >= kDryBeforeWaitingForNetwork && !tts_.speaking()) {
+        dry_->said = true;
+        say("Waiting for network.");
+    }
 }
 
 void App::rememberPosition() {

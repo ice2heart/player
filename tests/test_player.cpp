@@ -10,6 +10,7 @@ extern "C" {
 }
 
 #include <arpa/inet.h>
+#include <optional>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -22,6 +23,7 @@ extern "C" {
 #include <cstdio>
 #include <atomic>
 #include <cstdlib>
+#include <mutex>
 #include <functional>
 #include <sstream>
 #include <string>
@@ -472,11 +474,11 @@ void playOut(Player& player, Mixer& mixer, std::chrono::seconds limit) {
         if (mixer.content().read(buf.data(), 1024) == 0) std::this_thread::sleep_for(1ms);
 }
 
-// Wi-Fi off or the server gone mid-track: once FFmpeg's reconnects give up
-// (about 4 s), the stream has failed, at the place it got to. It has not ended.
+// Wi-Fi off or the server gone mid-track: once the retries give up (after a cap,
+// shortened here), the stream has failed, at the place it got to. It has not ended.
 TEST_F(PlayerTest, AStreamThatBreaksOffFailsInsteadOfFinishing) {
     StalledServer server(partialWavReply(20, 6), StalledServer::HangUp);
-    Player player(mixer_);
+    Player player(mixer_, kStreamOpenTimeout, 500ms);
     ASSERT_TRUE(openAndWait(player, server.url("/tone.wav")));
     player.play();
     stderrOf(dir_ / "stderr.txt", [&] { playOut(player, mixer_, 9s); });
@@ -493,6 +495,279 @@ TEST_F(PlayerTest, AWholeStreamFinishesAndDoesNotFail) {
     player.play();
     playOut(player, mixer_, 9s);
     EXPECT_TRUE(player.finished());
+    EXPECT_FALSE(player.failed());
+}
+
+// A music server for one file: it answers Range requests (each connection on its
+// own thread, since FFmpeg opens the next before it closes the last). Until
+// goDown(), a reply that would pass byte `cutAt` sends up to it and then waits,
+// as a slow network would. goDown() is the Wi-Fi gone: those connections are
+// closed, and for `downFor` every new one is closed at once; then the server
+// answers in full again.
+class FlakyServer {
+public:
+    FlakyServer(std::string body, size_t cutAt, std::string type = "audio/wav")
+        : body_(std::move(body)), cutAt_(cutAt), type_(std::move(type)) {
+        fd_ = boundSocket(port_);
+        if (fd_ >= 0 && listen(fd_, 8) == 0) thread_ = std::thread([this] { run(); });
+        else ADD_FAILURE() << "cannot listen on a loopback socket";
+    }
+    ~FlakyServer() {
+        stop_ = true;
+        if (thread_.joinable()) thread_.join();
+        {
+            std::lock_guard lock(mutex_);
+            for (int fd : open_) shutdown(fd, SHUT_RDWR); // ends a send() the player no longer reads
+        }
+        for (std::thread& t : clients_) t.join();
+        if (fd_ >= 0) ::close(fd_);
+    }
+    std::string url(const std::string& path) const { return "http://127.0.0.1:" + std::to_string(port_) + path; }
+    void goDown(std::chrono::milliseconds downFor) {
+        std::lock_guard lock(mutex_);
+        downAt_ = std::chrono::steady_clock::now();
+        downFor_ = downFor;
+    }
+    // When each connection was refused while the server was down.
+    std::vector<std::chrono::steady_clock::time_point> refused() const {
+        std::lock_guard lock(mutex_);
+        return refused_;
+    }
+    // Replies cut short at `cutAt`, so far.
+    int held() const { return held_; }
+
+private:
+    bool down() const { return downAt_ && std::chrono::steady_clock::now() - *downAt_ < downFor_; }
+
+    void run() {
+        while (!stop_) {
+            pollfd p{fd_, POLLIN, 0};
+            if (poll(&p, 1, 10) <= 0) continue;
+            int c = accept(fd_, nullptr, nullptr);
+            if (c < 0) continue;
+#ifdef SO_NOSIGPIPE
+            int one = 1;
+            setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+            std::lock_guard lock(mutex_);
+            if (down()) {
+                refused_.push_back(std::chrono::steady_clock::now());
+                ::close(c);
+                continue;
+            }
+            open_.push_back(c);
+            clients_.emplace_back([this, c] { serve(c); });
+        }
+    }
+
+    void serve(int fd) {
+        std::string request;
+        char buf[4096];
+        while (request.find("\r\n\r\n") == std::string::npos) {
+            ssize_t n = read(fd, buf, sizeof buf);
+            if (n <= 0) return finish(fd);
+            request.append(buf, size_t(n));
+        }
+        size_t start = 0;
+        size_t range = request.find("Range: bytes=");
+        if (range != std::string::npos) start = std::stoul(request.substr(range + 13));
+        start = std::min(start, body_.size());
+        std::string head = "HTTP/1.1 206 Partial Content\r\nContent-Type: " + type_ + "\r\nAccept-Ranges: bytes\r\n" +
+                           "Content-Length: " + std::to_string(body_.size() - start) + "\r\nContent-Range: bytes " +
+                           std::to_string(start) + "-" + std::to_string(body_.size() - 1) + "/" +
+                           std::to_string(body_.size()) + "\r\n\r\n";
+        bool hold;
+        {
+            std::lock_guard lock(mutex_);
+            hold = !downAt_ && start < cutAt_ && cutAt_ < body_.size();
+        }
+        size_t end = hold ? cutAt_ : body_.size();
+        if (sendAll(fd, head) && sendAll(fd, body_.substr(start, end - start)) && hold) {
+            ++held_;
+            while (!stop_) { // until the network goes
+                {
+                    std::lock_guard lock(mutex_);
+                    if (downAt_) break;
+                }
+                std::this_thread::sleep_for(5ms);
+            }
+        }
+        finish(fd);
+    }
+
+    static bool sendAll(int fd, const std::string& data) {
+#ifdef MSG_NOSIGNAL
+        const int flags = MSG_NOSIGNAL;
+#else
+        const int flags = 0;
+#endif
+        for (size_t sent = 0; sent < data.size();) {
+            ssize_t k = send(fd, data.data() + sent, data.size() - sent, flags);
+            if (k <= 0) return false;
+            sent += size_t(k);
+        }
+        return true;
+    }
+
+    void finish(int fd) {
+        std::lock_guard lock(mutex_);
+        open_.erase(std::find(open_.begin(), open_.end(), fd));
+        ::close(fd);
+    }
+
+    std::string body_;
+    size_t cutAt_;
+    std::string type_;
+    int fd_ = -1;
+    int port_ = 0;
+    mutable std::mutex mutex_; // for the five below
+    std::optional<std::chrono::steady_clock::time_point> downAt_;
+    std::chrono::milliseconds downFor_{0};
+    std::vector<std::chrono::steady_clock::time_point> refused_;
+    std::vector<int> open_;
+    std::vector<std::thread> clients_; // only the accept thread adds, before the destructor joins
+    std::atomic<int> held_{0};
+    std::atomic<bool> stop_{false};
+    std::thread thread_;
+};
+
+std::string wavString(double seconds) {
+    auto wav = wavBytes(8000, 1, seconds);
+    return std::string(wav.data(), wav.size());
+}
+size_t wavOffset(double seconds) { return 44 + size_t(8000 * seconds) * 2; }
+
+// FFmpeg reads 5 s of audio to open a stream: the dropouts below come after that.
+constexpr double kCutAt = 8;
+
+// Plays the stream until it has come up to `cutAt` and the player waits for
+// more, then takes the server down for `downFor`. Returns the frames heard by then.
+size_t playUntilHeld(Mixer& mixer, FlakyServer& server, std::chrono::milliseconds downFor) {
+    std::vector<float> buf(1024 * AudioStream::kChannels);
+    size_t heard = 0;
+    // Some of what came: the rest is queued, and the decoder waits on the socket.
+    while (heard < Mixer::kSampleRate) {
+        size_t got = mixer.content().read(buf.data(), 1024);
+        heard += got;
+        if (got == 0) std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_TRUE(waitFor([&] { return server.held() > 0; })) << "the reply was cut short at cutAt";
+    std::this_thread::sleep_for(200ms);
+    server.goDown(downFor);
+    return heard;
+}
+
+// A short dropout mid-track: what came plays, the player runs dry (buffering()),
+// retries, and the track goes on where it stopped, with nothing lost or repeated.
+TEST_F(PlayerTest, AStreamThatBreaksOffBrieflyGoesOnWhereItStopped) {
+    FlakyServer server(wavString(12), wavOffset(kCutAt));
+    Player player(mixer_);
+    ASSERT_TRUE(openAndWait(player, server.url("/tone.wav")));
+    player.play();
+    std::vector<float> buf(1024 * AudioStream::kChannels);
+    bool wasDry = false, dryWhilePaused = false;
+    size_t heard = 0;
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] {
+        heard = playUntilHeld(mixer_, server, 1500ms);
+        auto deadline = std::chrono::steady_clock::now() + 8s;
+        while (!player.finished() && !player.failed() && std::chrono::steady_clock::now() < deadline) {
+            size_t got = mixer_.content().read(buf.data(), 1024);
+            heard += got;
+            if (got == 0 && player.buffering() && !wasDry) {
+                wasDry = true;
+                player.pause();
+                dryWhilePaused = player.buffering();
+                player.play();
+            }
+            if (got == 0) std::this_thread::sleep_for(1ms);
+        }
+    });
+    EXPECT_TRUE(player.finished()) << log;
+    EXPECT_FALSE(player.failed());
+    EXPECT_FALSE(server.refused().empty()) << "the server was down when the player first came back";
+    EXPECT_TRUE(wasDry) << "the player ran dry while it waited";
+    EXPECT_FALSE(dryWhilePaused) << "a paused player is not buffering";
+    EXPECT_FALSE(player.buffering()) << "a finished stream is not buffering";
+    EXPECT_NEAR(seconds(heard), 12.0, 0.02) << log;
+    EXPECT_NE(log.find("connection is back"), std::string::npos) << log;
+}
+
+// The server does not come back: the player retries, each time waiting twice as
+// long, and gives up after the cap (shortened here), at the place it got to.
+TEST_F(PlayerTest, AStreamThatStaysAwayIsRetriedWithBackoffThenFails) {
+    FlakyServer server(wavString(20), wavOffset(kCutAt));
+    Player player(mixer_, kStreamOpenTimeout, 2500ms);
+    ASSERT_TRUE(openAndWait(player, server.url("/tone.wav")));
+    player.play();
+    std::chrono::steady_clock::time_point downAt;
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] {
+        playUntilHeld(mixer_, server, std::chrono::hours(1));
+        downAt = std::chrono::steady_clock::now();
+        playOut(player, mixer_, 8s);
+    });
+    double took = secondsSince(downAt);
+    EXPECT_TRUE(player.failed()) << log;
+    EXPECT_FALSE(player.finished());
+    EXPECT_FALSE(player.buffering()) << "a failed stream is not buffering";
+    EXPECT_NEAR(player.position(), kCutAt, 0.1);
+    EXPECT_GE(took, 2.5) << "retried until the cap";
+    EXPECT_LT(took, 2.5 + kSlowMachine);
+    // FFmpeg reconnects once at once; then Player retries after 1 s and after 2 s more.
+    auto refused = server.refused();
+    ASSERT_EQ(refused.size(), 3u) << log;
+    double first = std::chrono::duration<double>(refused[1] - refused[0]).count();
+    double second = std::chrono::duration<double>(refused[2] - refused[1]).count();
+    EXPECT_NEAR(first, 1.0, 0.3);
+    EXPECT_NEAR(second, 2.0, 0.3) << "each wait is twice the last";
+    EXPECT_NE(log.find("giving up"), std::string::npos) << log;
+}
+
+// Paused, nobody waits for the stream: the time it is paused does not count
+// towards the cap, so Play after a long pause still finds it retrying.
+TEST_F(PlayerTest, APausedStreamDoesNotGiveUpItsRetries) {
+    FlakyServer server(wavString(20), wavOffset(kCutAt));
+    Player player(mixer_, kStreamOpenTimeout, 1500ms);
+    ASSERT_TRUE(openAndWait(player, server.url("/tone.wav")));
+    player.play();
+    std::vector<float> buf(1024 * AudioStream::kChannels);
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] {
+        playUntilHeld(mixer_, server, std::chrono::hours(1));
+        EXPECT_TRUE(waitFor([&] {
+            mixer_.content().read(buf.data(), 1024);
+            return player.buffering();
+        })) << "it ran dry";
+        player.pause();
+        std::this_thread::sleep_for(4s); // well past the cap
+        player.play();
+    });
+    EXPECT_TRUE(player.buffering()) << "still retrying" << log;
+    EXPECT_FALSE(player.failed());
+    EXPECT_EQ(log.find("giving up"), std::string::npos) << log;
+}
+
+// A seek during a dropout that works (here from what FFmpeg still holds) is the
+// user listening on: the retries after it get the full time again.
+TEST_F(PlayerTest, ASeekDuringADropoutGivesTheRetriesTheFullTimeAgain) {
+    FlakyServer server(wavString(20), wavOffset(kCutAt));
+    Player player(mixer_, kStreamOpenTimeout, 2500ms);
+    ASSERT_TRUE(openAndWait(player, server.url("/tone.wav")));
+    player.play();
+    std::vector<float> buf(1024 * AudioStream::kChannels);
+    std::string log = stderrOf(dir_ / "stderr.txt", [&] {
+        playUntilHeld(mixer_, server, std::chrono::hours(1));
+        EXPECT_TRUE(waitFor([&] {
+            mixer_.content().read(buf.data(), 1024);
+            return player.buffering();
+        })) << "it ran dry";
+        // Past the cap: the retries would give up at the next error, were it not for the seek.
+        std::this_thread::sleep_for(2700ms);
+        player.seek(kCutAt - 1);
+        auto until = std::chrono::steady_clock::now() + 500ms; // what the seek gave is heard
+        while (std::chrono::steady_clock::now() < until && !player.failed())
+            if (mixer_.content().read(buf.data(), 1024) == 0) std::this_thread::sleep_for(1ms);
+    });
+    EXPECT_EQ(log.find("cannot seek"), std::string::npos) << "the seek must work for this test" << log;
+    EXPECT_TRUE(player.buffering()) << "still retrying" << log;
     EXPECT_FALSE(player.failed());
 }
 

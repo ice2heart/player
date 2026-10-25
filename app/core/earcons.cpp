@@ -44,6 +44,7 @@ std::vector<float> render(Earcon e) {
     case Earcon::Boot:   return synth({{523, 70}, {659, 70}, {784, 70}, {1047, 120}});
     case Earcon::Sleep:  return synth({{784, 80}, {659, 80}, {523, 140}});
     case Earcon::Wake:   return synth({{523, 60}, {659, 60}, {784, 90}});
+    case Earcon::Buffering: return synth({{440, 40}, {0, 40}, {440, 40}});
     }
     return {};
 }

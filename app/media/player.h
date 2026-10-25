@@ -33,8 +33,16 @@ ReadErrorAction onReadError(int error, bool atEndOfFile, int& consecutive);
 constexpr std::chrono::milliseconds kStreamOpenTimeout = std::chrono::seconds(10);
 // A stream read that gets no data for this long fails, and FFmpeg reconnects.
 constexpr std::chrono::seconds kStreamReadTimeout{10};
-// FFmpeg waits 0, 1, 3, 7 ... s between reconnects and gives up past this delay.
-constexpr int kStreamReconnectDelayMax = 4;
+// FFmpeg waits 0, 1, 3, 7 ... s between reconnects and gives up past this delay:
+// with 0 it reconnects once, at once. Player's own retries below take over then.
+constexpr int kStreamReconnectDelayMax = 0;
+// A stream whose connection is lost mid-track (reconnects failed) is opened again
+// at the place it got to, first after kStreamRetryFirstDelay, then after twice the
+// last wait, up to kStreamRetryMaxDelay. Once kStreamRetryGiveUp has passed
+// since the connection was lost, no retry starts: the stream has failed().
+constexpr std::chrono::milliseconds kStreamRetryFirstDelay = std::chrono::seconds(1);
+constexpr std::chrono::milliseconds kStreamRetryMaxDelay = std::chrono::seconds(8);
+constexpr std::chrono::milliseconds kStreamRetryGiveUp = std::chrono::seconds(30);
 
 // `line` with every URL cut down to its scheme and host, and every other query
 // (`?a=b`) cut off: a stream URL carries the server login in its query, and
@@ -50,9 +58,13 @@ std::string redactUrls(const std::string& line);
 // seen, and they do not wait for it (FFmpeg's interrupt callback aborts network
 // waits; the thread of an open that cannot be aborted, such as a DNS lookup,
 // is left to end by itself). FFmpeg's own messages go through redactUrls().
+// A stream that loses its connection while it plays keeps its place and is
+// retried with backoff for `retryGiveUp` (buffering() once what came has been
+// heard); only then does it fail.
 class Player : public MediaPlayer {
 public:
-    explicit Player(Mixer& mixer, std::chrono::milliseconds openTimeout = kStreamOpenTimeout);
+    explicit Player(Mixer& mixer, std::chrono::milliseconds openTimeout = kStreamOpenTimeout,
+                    std::chrono::milliseconds retryGiveUp = kStreamRetryGiveUp);
     ~Player() override;
 
     bool open(const std::string& path, double startAt = 0) override;
@@ -72,12 +84,14 @@ public:
     // End of file reached while playing and everything has been heard.
     bool finished() const override;
     bool failed() const override;
+    bool buffering() const override;
 
 private:
     enum class State { Closed, Opening, Open };
     struct ResamplerInput; // the input format swr_ was built for
     struct Input;          // what an open makes: demuxer, decoder, resampler, duration, chapters
     struct OpenJob;        // one open() and its thread; shared with a thread that may outlive the Player
+    struct Dropout;        // decoder thread: a stream whose connection is lost, and its retries
 
     // FFmpeg's interrupt callback (its argument is the OpenJob), on whichever thread waits for I/O.
     static int interrupted(void* job);
@@ -88,6 +102,12 @@ private:
                               std::chrono::milliseconds timeout);
     void start(Input& in, double startAt); // takes over what openInput() made; isOpen() from here on
     void decodeLoop();
+    // Decoder thread: the connection of a stream is lost. Waits the dropout's
+    // delay (doubled for the next time), then opens the stream again where the
+    // queued audio ends. False once the retries have gone on for retryGiveUp_ of
+    // playing time.
+    bool retryStream(Dropout& dropout);
+    bool seekInput(double at); // decoder thread: the demuxer and decoder go to `at`; false if the seek failed
     bool emit(AVFrame* frame, uint64_t epoch);
     bool shouldAbortWrite() const { return stop_ || seekRequest_ >= 0; }
     // (Re)builds `swr` for this input format. A file may change format mid-stream.
@@ -96,6 +116,7 @@ private:
 
     Mixer& mixer_;
     const std::chrono::milliseconds openTimeout_;
+    const std::chrono::milliseconds retryGiveUp_;
     // Written before state_ becomes Open, and read by the UI thread only once it is Open.
     std::atomic<State> state_{State::Closed};
     std::shared_ptr<OpenJob> job_; // the open the fields below belong to

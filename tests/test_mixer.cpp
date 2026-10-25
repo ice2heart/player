@@ -76,3 +76,11 @@ TEST(Earcons, NewEarconReplacesThePrevious) {
     EXPECT_GT(m.effects().buffered(), 0u);
     EXPECT_LT(m.effects().buffered(), boot);
 }
+
+// The front ends play every earcon through Earcons: a new one must make a sound.
+TEST(Earcons, BufferingIsASound) {
+    Mixer m;
+    Earcons e(m);
+    e.play(Earcon::Buffering);
+    EXPECT_GT(m.effects().buffered(), size_t(Mixer::kSampleRate / 10)) << "long enough to hear";
+}
