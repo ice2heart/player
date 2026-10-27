@@ -152,7 +152,8 @@ int main(int argc, char** argv) {
     SystemClock clock;
     SettingsFiles settings(config, state);
     std::unique_ptr<MusicServer> server = makeMusicServer(settings.config());
-    App app(tts, player, earcons, mixer, *server, settings.config(), settings.state(), clock, library, music, cache);
+    std::unique_ptr<Downloader> downloader = makeDownloader(settings.config());
+    App app(tts, player, earcons, mixer, *server, *downloader, settings.config(), settings.state(), clock, library, music, cache);
 
     EvdevInput evdev;
     if (useEvdev && evdev.open(evdevDevice) == 0)

@@ -95,6 +95,7 @@ if(OAP_BUILD_NET)
     endif()
     add_library(oapnet STATIC
         app/net/http_client.cpp
+        app/net/http_downloader.cpp
         app/net/md5.cpp
         app/net/subsonic.cpp
         app/net/subsonic_json.cpp
@@ -107,6 +108,7 @@ endif()
 add_library(oapfrontend STATIC
     app/frontend/gamepad.cpp
     app/frontend/held_buttons.cpp
+    app/frontend/no_downloader.cpp
     app/frontend/no_music_server.cpp
     app/frontend/presses.cpp
     app/frontend/terminal_keys.cpp
@@ -237,6 +239,8 @@ if(OAP_BUILD_TESTS)
         tests/test_library.cpp
         tests/test_make_music_server.cpp
         tests/test_mixer.cpp
+        tests/test_fake_downloader.cpp
+        tests/test_no_downloader.cpp
         tests/test_no_music_server.cpp
         tests/test_presses.cpp
         tests/test_settings.cpp
@@ -267,6 +271,7 @@ if(OAP_BUILD_TESTS)
     if(OAP_BUILD_NET)
         add_executable(oap-net-tests
             tests/test_http_client.cpp
+            tests/test_http_downloader.cpp
             tests/test_md5.cpp
             tests/test_subsonic.cpp
             tests/test_subsonic_json.cpp

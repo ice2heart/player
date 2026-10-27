@@ -38,11 +38,12 @@ public:
     // `config` holds what the user sets (config.yaml), `state` the positions and
     // the book to resume (state.tsv). State is written only on exit and on sleep.
     // `server` gives the stream URLs of remote tracks; a front end without one
-    // passes a server that is not configured. `cacheRoot` is the folder of
+    // passes a server that is not configured. `downloader` fetches tracks of
+    // that server into the cache; App does not use it yet. `cacheRoot` is the folder of
     // downloaded tracks (empty: none); it is left out of Library and Music
     // when it lies inside them.
     App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
-        Settings& config, Settings& state, Clock& clock, std::filesystem::path libraryRoot,
+        Downloader& downloader, Settings& config, Settings& state, Clock& clock, std::filesystem::path libraryRoot,
         std::filesystem::path musicRoot, std::filesystem::path cacheRoot = {});
 
     void start();
@@ -251,6 +252,7 @@ private:
     SoundEffects& earcons_;
     VolumeControl& volume_;
     MusicServer& server_;
+    [[maybe_unused]] Downloader& downloader_; // for the download steps of phase 3 (3.4)
     Settings& config_;
     Settings& state_;
     SettingsMap savedState_; // what state.tsv holds

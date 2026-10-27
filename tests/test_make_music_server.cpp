@@ -57,3 +57,26 @@ TEST(MakeMusicServer, SubsonicServerStreamsOnlyWithNetworkSupport) {
     EXPECT_EQ(err, "server: this build has no network support (OAP_BUILD_NET=OFF); streaming is off\n");
 #endif
 }
+
+TEST(MakeDownloader, NoServerSetUpIsNotConfigured) {
+    auto downloader = makeDownloader(Settings());
+    ASSERT_NE(downloader, nullptr);
+    EXPECT_FALSE(downloader->configured());
+}
+
+TEST(MakeDownloader, AnotherServerTypeIsNotConfigured) {
+    auto downloader = makeDownloader(serverConfig("audiobookshelf"));
+    ASSERT_NE(downloader, nullptr);
+    EXPECT_FALSE(downloader->configured());
+}
+
+// A Subsonic server downloads only with network support.
+TEST(MakeDownloader, SubsonicServerDownloadsOnlyWithNetworkSupport) {
+    auto downloader = makeDownloader(serverConfig("subsonic"));
+    ASSERT_NE(downloader, nullptr);
+#ifdef OAP_TESTS_EXPECT_NET
+    EXPECT_TRUE(downloader->configured());
+#else
+    EXPECT_FALSE(downloader->configured());
+#endif
+}

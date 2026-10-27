@@ -7,6 +7,8 @@
 #include "core/settings.h"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <optional>
@@ -340,6 +342,100 @@ private:
     int streams_ = 0;
     std::map<RequestId, Callback> pending_;                          // asked, not answered yet
     std::vector<std::pair<RequestId, std::function<void()>>> ready_; // answered, waiting for poll()
+};
+
+// A Downloader that finishes only when the test says so, like FakeMusicServer.
+// download() records the request and returns its id; nothing is written until the
+// test calls finish(), which can also create the file.
+//
+//   auto id = downloader.lastRequest().id;
+//   downloader.progress(id, 1000, 4000);       // optional
+//   downloader.finish(id, Result::Ok);         // writes dest (Ok only), see below
+//   app.tick();                                // App calls poll(), callbacks run
+//
+// `cancelled` lists every cancel() call. A cancelled id gets no callback even if
+// the test still finishes it (finish() then returns false). With `isConfigured`
+// false a download finishes at once with NotConfigured (still delivered by poll()).
+class FakeDownloader : public Downloader {
+public:
+    struct Request {
+        RequestId id = 0;
+        std::string trackId, dest;
+    };
+
+    bool configured() const override { return isConfigured; }
+    RequestId download(const std::string& trackId, const std::string& dest, Progress progress, Done done) override {
+        RequestId id = ++lastId_;
+        requests.push_back({id, trackId, dest});
+        if (isConfigured) pending_.emplace(id, Callbacks{std::move(progress), std::move(done)});
+        else ready_.emplace_back(id, [done = std::move(done)] { if (done) done(Result::NotConfigured); });
+        return id;
+    }
+    void cancel(RequestId id) override {
+        cancelled.push_back(id);
+        pending_.erase(id);
+        std::erase_if(ready_, [id](const auto& r) { return r.first == id; });
+    }
+    void poll() override {
+        auto batch = std::move(ready_);
+        ready_.clear();
+        for (auto& [id, run] : batch)
+            if (std::find(cancelled.begin(), cancelled.end(), id) == cancelled.end()) run();
+    }
+
+    // Report progress; the callback runs on the next poll(). False if not pending.
+    bool progress(RequestId id, long long bytes, long long total) {
+        auto it = pending_.find(id);
+        if (it == pending_.end()) return false;
+        if (it->second.progress)
+            ready_.emplace_back(id, [cb = it->second.progress, bytes, total] { cb(bytes, total); });
+        return true;
+    }
+    // Finish a download; the callback runs on the next poll(). With Ok and
+    // `writeFile`, `dest` is created with `contents` first (and its folders), as a
+    // real download leaves the finished file. Other results leave a `.part` of `partial`
+    // bytes when `partial` is not empty. False if the id is not pending (cancelled,
+    // finished, or never made): that is how a late answer is simulated.
+    bool finish(RequestId id, Result result, bool writeFile = true, const std::string& contents = "audio",
+                const std::string& partial = "") {
+        auto it = pending_.find(id);
+        if (it == pending_.end()) return false;
+        const std::string dest = destOf(id);
+        if (result == Result::Ok && writeFile) write(dest, contents);
+        else if (result != Result::Ok && !partial.empty()) write(dest + ".part", partial);
+        ready_.emplace_back(id, [cb = std::move(it->second.done), result] { if (cb) cb(result); });
+        pending_.erase(it);
+        return true;
+    }
+
+    const Request& lastRequest() const {
+        if (requests.empty()) throw std::logic_error("FakeDownloader: no download requested");
+        return requests.back();
+    }
+    std::size_t pendingCount() const { return pending_.size(); }
+
+    std::vector<Request> requests;    // every download(), in order
+    std::vector<RequestId> cancelled; // every cancel() call, in order
+    bool isConfigured = true;
+
+private:
+    struct Callbacks {
+        Progress progress;
+        Done done;
+    };
+    std::string destOf(RequestId id) const {
+        for (const auto& r : requests)
+            if (r.id == id) return r.dest;
+        return {};
+    }
+    static void write(const std::string& path, const std::string& contents) {
+        std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+        std::ofstream(path, std::ios::binary) << contents;
+    }
+
+    RequestId lastId_ = 0;
+    std::map<RequestId, Callbacks> pending_;
+    std::vector<std::pair<RequestId, std::function<void()>>> ready_;
 };
 
 } // namespace oap::test

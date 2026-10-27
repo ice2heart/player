@@ -186,6 +186,24 @@ TEST(Subsonic, APageLargerThanTheServerAllowsIsCappedSoMoreStillWorks) {
     EXPECT_TRUE(result.more);
 }
 
+TEST(Subsonic, DownloadUrlIsTheDownloadMethodWithTheSameAuthAsAStream) {
+    auto urls = Subsonic::downloadUrls(config(), [] { return std::string("c19b2d"); });
+    EXPECT_EQ(urls("s1"), kBase + "download" + kAuth + "&id=s1");
+    EXPECT_EQ(urls("a b&c"), kBase + "download" + kAuth + "&id=a%20b%26c") << "ids are escaped";
+    EXPECT_EQ(urls("s1").find("sesame"), std::string::npos);
+}
+
+TEST(Subsonic, DownloadUrlsHaveAFreshSaltAndTokenEach) {
+    auto urls = Subsonic::downloadUrls(config());
+    std::string first = urls("s1"), second = urls("s1");
+    EXPECT_NE(param(first, "s"), param(second, "s"));
+    EXPECT_EQ(param(second, "t"), oap::md5Hex("sesame" + param(second, "s")));
+}
+
+TEST(Subsonic, DownloadUrlIsEmptyWithoutAServerUrl) {
+    EXPECT_EQ(Subsonic::downloadUrls(config(""))("s1"), "");
+}
+
 TEST(Subsonic, TheOriginalFileHasNeitherFormatNorMaxBitRate) {
     Server server;
     auto stream = server.subsonic->stream("s1", 0);

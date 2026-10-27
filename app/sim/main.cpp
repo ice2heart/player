@@ -338,7 +338,8 @@ int main(int argc, char** argv) {
     SystemClock clock;
     SettingsFiles settings(config, state);
     std::unique_ptr<MusicServer> server = makeMusicServer(settings.config());
-    App app(tts, player, earcons, mixer, *server, settings.config(), settings.state(), clock, library, music, cache);
+    std::unique_ptr<Downloader> downloader = makeDownloader(settings.config());
+    App app(tts, player, earcons, mixer, *server, *downloader, settings.config(), settings.state(), clock, library, music, cache);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());

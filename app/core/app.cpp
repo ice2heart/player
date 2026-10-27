@@ -222,9 +222,9 @@ MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn) {
 } // namespace
 
 App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
-         Settings& config, Settings& state, Clock& clock, std::filesystem::path libraryRoot,
+         Downloader& downloader, Settings& config, Settings& state, Clock& clock, std::filesystem::path libraryRoot,
          std::filesystem::path musicRoot, std::filesystem::path cacheRoot)
-    : tts_(speech), player_(player), earcons_(sounds), volume_(volume), server_(server), config_(config), state_(state),
+    : tts_(speech), player_(player), earcons_(sounds), volume_(volume), server_(server), downloader_(downloader), config_(config), state_(state),
       savedState_(state.values()), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)), lastActivity_(clock.now()) {}
 
 // ---------------------------------------------------------------- lifecycle

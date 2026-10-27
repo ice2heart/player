@@ -34,7 +34,7 @@ build dir between core-only and a front end.
   interfaces in `app/core/services.h` (`Speech`, `MediaPlayer`, `SoundEffects`,
   `VolumeControl`, `Clock`). Do not include `media/` or `platform/` headers from core.
 - `app/media/` holds the FFmpeg `Player` and eSpeak NG `Tts` that implement those interfaces.
-- `app/net/` holds `HttpClient` (libcurl) and `Subsonic : MusicServer`. A stream
+- `app/net/` holds `HttpClient` (libcurl), `Subsonic : MusicServer` and `HttpDownloader : Downloader`. A stream
   URL holds the user name and a token that never expires: never speak, log or print it.
 - `app/frontend/` is code shared by the front ends with no dependencies (tested);
   the one exception is `make_music_server.cpp`, its own library `oapmusicserver`, which

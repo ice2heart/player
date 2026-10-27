@@ -31,10 +31,17 @@ public:
     // The server config.yaml sets up, if it is a Subsonic one: `server.type` is
     // "subsonic" (in any case) or left out, and there is a `server.url`. Else nullptr, and the
     // front end uses a server that is not configured.
+    static bool handles(const Settings& config); // fromConfig() would make a server
     static std::unique_ptr<Subsonic> fromConfig(const Settings& config);
 
     using SaltSource = std::function<std::string()>;
     static std::string randomSalt();
+
+    // The URL of a track's original file for the Downloader (`download?id=`),
+    // with the same token auth as stream(). It holds credentials: never speak
+    // or log it. Each call has a fresh salt. Empty when `config` has no url.
+    using DownloadUrls = std::function<std::string(const std::string& trackId)>;
+    static DownloadUrls downloadUrls(Config config, SaltSource salt = randomSalt);
 
     // Requests go through `http` (an HttpClient in the program, a fake in tests).
     Subsonic(Config config, std::unique_ptr<Http> http, SaltSource salt = randomSalt);
@@ -83,6 +90,8 @@ private:
         std::vector<std::pair<RequestId, Reply>> ready;
     };
 
+    static std::string buildUrl(const Config& config, const std::string& salt, const std::string& method,
+                                const Params& params);
     std::string url(const std::string& method, const Params& params) const;
     RequestId request(const std::string& method, const Params& params, Parser parse, std::function<void(Reply)> done);
     template <class T, class P> RequestId list(const std::string& method, const Params& params, P parse, Done<T> done);

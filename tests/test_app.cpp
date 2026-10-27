@@ -51,7 +51,7 @@ protected:
     }
 
     void start() {
-        app = std::make_unique<App>(speech, player, sounds, volume, server, settings, state, clock, root, music, cache);
+        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache);
         app->start();
     }
 
@@ -102,6 +102,7 @@ protected:
     FakeSounds sounds;
     FakeVolume volume;
     FakeMusicServer server;
+    FakeDownloader downloader;
     FakeClock clock;
     FakeStore configFile; // config.yaml
     FakeStore stateFile;  // state.tsv
@@ -3490,7 +3491,7 @@ TEST_F(AppTest, TheStreamingQualityIsSavedAndKeptAcrossARestart) {
     app.reset();
     Settings reloaded{&configFile}; // config.yaml as the next start reads it
     reloaded.load();
-    app = std::make_unique<App>(speech, player, sounds, volume, server, reloaded, state, clock, root, music);
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, reloaded, state, clock, root, music);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
     EXPECT_EQ(player.file, "fake://stream/t1?maxBitRate=320");

@@ -38,6 +38,10 @@ std::string percentEncode(const std::string& s) {
     return out;
 }
 
+void trimTrailingSlashes(std::string& url) {
+    while (!url.empty() && url.back() == '/') url.pop_back();
+}
+
 const char* errorName(MusicServer::Error error) {
     switch (error) {
     case MusicServer::Error::None: return "none";
@@ -59,10 +63,14 @@ Subsonic::Config Subsonic::configFrom(const Settings& config) {
     return c;
 }
 
-std::unique_ptr<Subsonic> Subsonic::fromConfig(const Settings& config) {
+bool Subsonic::handles(const Settings& config) {
     std::string type = config.getString("server.type", kServerType);
     std::transform(type.begin(), type.end(), type.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-    if (type != kServerType || !serverConfigured(config)) return nullptr;
+    return type == kServerType && serverConfigured(config);
+}
+
+std::unique_ptr<Subsonic> Subsonic::fromConfig(const Settings& config) {
+    if (!handles(config)) return nullptr;
     return std::make_unique<Subsonic>(configFrom(config));
 }
 
@@ -81,7 +89,7 @@ std::string Subsonic::randomSalt() {
 
 Subsonic::Subsonic(Config config, std::unique_ptr<Http> http, SaltSource salt)
     : config_(std::move(config)), salt_(std::move(salt)), http_(std::move(http)) {
-    while (!config_.url.empty() && config_.url.back() == '/') config_.url.pop_back();
+    trimTrailingSlashes(config_.url);
 }
 
 Subsonic::Subsonic(Config config) : Subsonic(std::move(config), std::make_unique<HttpClient>()) {}
@@ -92,13 +100,25 @@ Subsonic::~Subsonic() {
 
 bool Subsonic::configured() const { return !config_.url.empty(); }
 
-std::string Subsonic::url(const std::string& method, const Params& params) const {
-    std::string salt = salt_();
-    std::string out = config_.url + "/rest/" + method + "?u=" + percentEncode(config_.user) +
-                      "&t=" + md5Hex(config_.password + salt) + "&s=" + percentEncode(salt) + "&v=" + kApiVersion +
+std::string Subsonic::buildUrl(const Config& config, const std::string& salt, const std::string& method,
+                               const Params& params) {
+    std::string out = config.url + "/rest/" + method + "?u=" + percentEncode(config.user) +
+                      "&t=" + md5Hex(config.password + salt) + "&s=" + percentEncode(salt) + "&v=" + kApiVersion +
                       "&c=" + kClientName + "&f=json";
     for (const auto& [key, value] : params) out += "&" + key + "=" + percentEncode(value);
     return out;
+}
+
+std::string Subsonic::url(const std::string& method, const Params& params) const {
+    return buildUrl(config_, salt_(), method, params);
+}
+
+Subsonic::DownloadUrls Subsonic::downloadUrls(Config config, SaltSource salt) {
+    trimTrailingSlashes(config.url);
+    return [config = std::move(config), salt = std::move(salt)](const std::string& trackId) -> std::string {
+        if (config.url.empty()) return {};
+        return buildUrl(config, salt(), "download", {{"id", trackId}});
+    };
 }
 
 MusicServer::RequestId Subsonic::request(const std::string& method, const Params& params, Parser parse,

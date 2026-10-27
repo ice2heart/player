@@ -1,7 +1,9 @@
 #include "frontend/make_music_server.h"
 
+#include "frontend/no_downloader.h"
 #include "frontend/no_music_server.h"
 #ifdef OAP_HAVE_NET
+#include "net/http_downloader.h"
 #include "net/subsonic.h"
 #endif
 
@@ -24,6 +26,16 @@ std::unique_ptr<MusicServer> makeMusicServer(const Settings& config) {
 #endif
     }
     return std::make_unique<NoMusicServer>();
+}
+
+std::unique_ptr<Downloader> makeDownloader(const Settings& config) {
+#ifdef OAP_HAVE_NET
+    if (Subsonic::handles(config))
+        return std::make_unique<HttpDownloader>(Subsonic::downloadUrls(Subsonic::configFrom(config)));
+#else
+    (void)config;
+#endif
+    return std::make_unique<NoDownloader>();
 }
 
 } // namespace oap

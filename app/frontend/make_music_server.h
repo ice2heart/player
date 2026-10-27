@@ -14,4 +14,9 @@ namespace oap {
 // reported on stderr. Never returns nullptr.
 std::unique_ptr<MusicServer> makeMusicServer(const Settings& config);
 
+// The Downloader for the same server: an HttpDownloader for a Subsonic server
+// when this build has network support, else a NoDownloader. Says nothing on
+// stderr (makeMusicServer reports an unusable server). Never returns nullptr.
+std::unique_ptr<Downloader> makeDownloader(const Settings& config);
+
 } // namespace oap

@@ -199,4 +199,40 @@ public:
     virtual void poll() = 0; // UI thread: run the callbacks of finished requests
 };
 
+// Fetches tracks of a music server into files, one after the other, in the
+// background (Subsonic first, implemented in app/net/). Like MusicServer it
+// never blocks: download() queues the track and returns its id at once, and the
+// callbacks run later, on the UI thread, from poll(). cancel(id) stops the
+// transfer, and the callbacks of that id never run.
+//
+// The bytes go to `<dest>.part`. A `.part` left by an earlier try (a failure, a
+// cancel, a restart) is continued from where it ends, or started over when the
+// server cannot continue it. Only a complete file is renamed to `dest`, so
+// `dest` exists only when it is whole. A failure or cancel keeps the `.part`.
+// Folders above `dest` are created. A `dest` that exists is replaced.
+class Downloader {
+public:
+    enum class Result {
+        Ok,
+        NotConfigured, // no server to fetch from
+        Unreachable,   // no answer, or the connection broke off: the `.part` can be continued
+        Server,        // the server refused (an HTTP error status, or an error instead of audio)
+        Disk,          // the file or its folder could not be written
+    };
+    using RequestId = std::uint64_t; // unique per downloader, never 0
+    // Bytes of the file so far (what a continued `.part` already had included)
+    // and its whole size, 0 if the server did not say. May be skipped when it
+    // comes faster than poll() is called: only the latest is delivered.
+    using Progress = std::function<void(long long bytes, long long total)>;
+    using Done = std::function<void(Result)>;
+
+    virtual ~Downloader() = default;
+    virtual bool configured() const = 0;
+    // `progress` may be empty. `done` runs once, unless the request is cancelled.
+    virtual RequestId download(const std::string& trackId, const std::string& dest, Progress progress,
+                               Done done) = 0;
+    virtual void cancel(RequestId id) = 0; // unknown ids are ignored
+    virtual void poll() = 0;               // UI thread: run the callbacks
+};
+
 } // namespace oap
