@@ -218,6 +218,57 @@ these rules too ([streaming.md](streaming.md) has the plan).
   opens the track again where it stopped. The next track's stream opens in the
   background 10 s before the end, so tracks change without a wait.
 
+## Music and Library (planned for phase 4)
+
+Not built yet. Today Music lists the folders on the device, Library lists local
+books, and Streaming is its own Home entry. [streaming.md](streaming.md) phase 4
+builds one library from files and server. Until then the rules above and the
+tree in [architecture.md](architecture.md#current-menu-tree) are what the device
+does. The rules below are the contract for phase 4.
+
+```
+Music
+├── Play all
+├── Artists → <artist> → <albums>
+├── Albums A to Z → <albums>
+├── Genres → <genre> → <albums>
+├── Recently added → <albums>
+├── Recently played → <albums>
+└── Refresh library
+```
+
+- **One list for both sources.** An album that is on the device and on the server
+  is one entry. It plays from the local files first, then from a download, then
+  from the server. Browsing uses the saved index, so it opens at once, works
+  offline and never waits on the network. Start-up does not rescan.
+- **Music lists are local menus.** They are not "lists from the server": no
+  "Loading" and no "Try again". A scan or sync that finishes meanwhile replaces
+  the index silently, and the menu shows it the next time you come back to it
+  (the selected item stays). Opening a server album that is not downloaded loads
+  its tracks, so that list follows "Lists from the server".
+- **Play all** plays what is on the device (local and downloaded), never the
+  whole server. With nothing on the device it says "No music".
+- **Recently added** is newest first. **Recently played** is the albums you
+  played, the last one first. Each says why it is empty ("No new albums", "Nothing
+  played yet").
+- **Album info** is the last item of an album's list, after the tracks. OK says
+  where the album plays from ("On the device", "Downloaded" or "On the server"),
+  the artist, and the number of tracks. It only reports, so it stays where it
+  is. Nothing else speaks where an album plays from. When the queue plan
+  ([queue.md](queue.md) Q7) is built first, Album info moves to Options.
+- **Refresh library** is an action that reports and stays. It says "Updating the
+  library." at once, then the result ("Library updated, 12 albums.") or the error
+  ("Server not reachable.", "Wrong user name or password.", "Server error."). Keys
+  work meanwhile. Moving to another screen or sleeping drops the answer, so a late
+  result is never spoken. A second press while it runs says "Still updating.". With
+  no server set up it only rescans the files. A refresh that changed nothing writes
+  nothing.
+- **Server books are in Library**, after the local books, with the value "on the
+  server" (spoken after the title). They are never in Music. They open as books:
+  chapters are the tracks, and the place is kept and resumed like a local book.
+  While their tracks load, the "Loading" rules apply.
+- **Streaming stays a separate Home entry.** It keeps its own lists as above.
+
 ## Checklist for a new menu, item or program
 
 - [ ] It is one of the item types above. A setting uses `choice()`.
