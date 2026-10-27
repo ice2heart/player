@@ -1,9 +1,12 @@
 #include "track_cache.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <tuple>
 
 namespace fs = std::filesystem;
 
@@ -11,7 +14,9 @@ namespace oap {
 
 namespace {
 constexpr const char* kManifestName = "manifest.tsv";
-constexpr const char* kManifestHeader = "oap-cache 1";
+constexpr const char* kManifestHeader = "oap-cache 2";
+constexpr const char* kListTag = "list"; // second line: list, kind, id, name, artist
+constexpr size_t kListColumns = 5;
 constexpr const char* kPartSuffix = ".part";
 constexpr size_t kColumns = 7;
 constexpr size_t kHostLimit = 40; // characters of the host kept in a server key
@@ -110,19 +115,42 @@ bool parseLine(const std::string& line, CachedTrack& track) {
     return !track.id.empty() && plainFileName(track.file);
 }
 
-// The tracks of a manifest file; empty if it is missing or any line is wrong.
-std::vector<CachedTrack> readManifest(const fs::path& file) {
-    std::vector<CachedTrack> tracks;
+const char* kindName(RemoteSource::Kind kind) { return kind == RemoteSource::Kind::Album ? "album" : "playlist"; }
+
+bool parseListLine(const std::string& line, CachedList& list) {
+    std::vector<std::string> cells;
+    std::string cell;
+    std::istringstream in(line);
+    while (std::getline(in, cell, '\t')) cells.push_back(cell);
+    if (!line.empty() && line.back() == '\t') cells.emplace_back();
+    if (cells.size() != kListColumns || cells[0] != kListTag) return false;
+    if (cells[1] == "album") list.source.kind = RemoteSource::Kind::Album;
+    else if (cells[1] == "playlist") list.source.kind = RemoteSource::Kind::Playlist;
+    else return false;
+    return unescape(cells[2], list.source.id) && unescape(cells[3], list.name) && unescape(cells[4], list.artist) &&
+           !list.source.id.empty();
+}
+
+// A manifest file; a list with an empty id if it is missing or any line is wrong.
+CachedList readManifest(const fs::path& file) {
+    CachedList list;
     std::ifstream in(file, std::ios::binary);
     std::string line;
-    if (!in || !std::getline(in, line) || line != kManifestHeader) return tracks;
+    if (!in || !std::getline(in, line) || line != kManifestHeader || !std::getline(in, line) ||
+        !parseListLine(line, list))
+        return {};
     while (std::getline(in, line)) {
         CachedTrack track;
         if (!parseLine(line, track)) return {};
-        tracks.push_back(std::move(track));
+        list.tracks.push_back(std::move(track));
     }
     if (in.bad()) return {};
-    return tracks;
+    return list;
+}
+
+std::string lowerCase(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
 }
 } // namespace
 
@@ -163,29 +191,39 @@ std::string TrackCache::safeName(const std::string& id) {
     return out;
 }
 
-fs::path TrackCache::listFolder(const std::string& listId) const {
-    return enabled() ? serverDir_ / safeName(listId) : fs::path();
+fs::path TrackCache::listFolder(const RemoteSource& list) const {
+    // The kind and ":" make the name differ for an album and a playlist with one id.
+    return enabled() ? serverDir_ / safeName(std::string(kindName(list.kind)) + ":" + list.id) : fs::path();
 }
 
-fs::path TrackCache::manifestFile(const std::string& listId) const {
-    return enabled() ? listFolder(listId) / kManifestName : fs::path();
+fs::path TrackCache::manifestFile(const RemoteSource& list) const {
+    return enabled() ? listFolder(list) / kManifestName : fs::path();
 }
 
-std::vector<CachedTrack> TrackCache::load(const std::string& listId) const {
-    return enabled() ? readManifest(manifestFile(listId)) : std::vector<CachedTrack>();
+CachedList TrackCache::readFolder(const fs::path& folder) const {
+    CachedList list = readManifest(folder / kManifestName);
+    if (list.source.id.empty() || listFolder(list.source).filename() != folder.filename()) return {};
+    return list;
 }
 
-bool TrackCache::save(const std::string& listId, const std::vector<CachedTrack>& tracks) const {
-    if (!enabled()) return false;
+CachedList TrackCache::load(const RemoteSource& list) const {
+    return enabled() ? readFolder(listFolder(list)) : CachedList();
+}
+
+bool TrackCache::save(const CachedList& list) const {
+    if (!enabled() || list.source.id.empty()) return false;
+    const std::vector<CachedTrack>& tracks = list.tracks;
     std::error_code ec;
-    fs::create_directories(listFolder(listId), ec);
+    fs::create_directories(listFolder(list.source), ec);
     if (ec) return false;
-    fs::path file = manifestFile(listId);
+    fs::path file = manifestFile(list.source);
     fs::path tmp = file;
     tmp += ".tmp";
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         out << kManifestHeader << '\n';
+        out << kListTag << '\t' << kindName(list.source.kind) << '\t' << escape(list.source.id) << '\t'
+            << escape(list.name) << '\t' << escape(list.artist) << '\n';
         for (const CachedTrack& t : tracks) {
             char duration[32];
             std::snprintf(duration, sizeof duration, "%.3f", t.duration);
@@ -225,16 +263,44 @@ std::optional<fs::path> TrackCache::find(const std::string& trackId) const {
     for (fs::directory_iterator it(serverDir_, ec), end; !ec && it != end; it.increment(ec)) {
         std::error_code entryEc;
         if (!it->is_directory(entryEc)) continue;
-        for (const CachedTrack& t : readManifest(it->path() / kManifestName))
+        for (const CachedTrack& t : readFolder(it->path()).tracks)
             if (t.id == trackId)
                 if (auto path = completeIn(it->path(), t)) return path;
     }
     return std::nullopt;
 }
 
-std::optional<fs::path> TrackCache::completeFile(const std::string& listId, const CachedTrack& track) const {
+std::optional<fs::path> TrackCache::completeFile(const RemoteSource& list, const CachedTrack& track) const {
     if (!enabled()) return std::nullopt;
-    return completeIn(listFolder(listId), track);
+    return completeIn(listFolder(list), track);
+}
+
+std::vector<CachedList> TrackCache::lists() const {
+    std::vector<CachedList> out;
+    if (!enabled()) return out;
+    std::error_code ec;
+    for (fs::directory_iterator it(serverDir_, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code entryEc;
+        if (!it->is_directory(entryEc)) continue;
+        CachedList list = readFolder(it->path());
+        if (list.source.id.empty()) continue;
+        std::erase_if(list.tracks, [&](const CachedTrack& t) { return !completeIn(it->path(), t); });
+        if (!list.tracks.empty()) out.push_back(std::move(list));
+    }
+    std::sort(out.begin(), out.end(), [](const CachedList& a, const CachedList& b) {
+        return std::tuple(lowerCase(a.name), a.source.kind, a.source.id) <
+               std::tuple(lowerCase(b.name), b.source.kind, b.source.id);
+    });
+    return out;
+}
+
+bool TrackCache::remove(const RemoteSource& list) const {
+    fs::path folder = listFolder(list);
+    // listFolder() is always one name below the server's folder; check anyway before deleting a tree.
+    if (folder.empty() || folder.filename().empty() || folder.parent_path() != serverDir_) return false;
+    std::error_code ec;
+    fs::remove_all(folder, ec);
+    return !fs::exists(folder, ec);
 }
 
 std::map<std::string, fs::path> TrackCache::index() const {
@@ -244,7 +310,7 @@ std::map<std::string, fs::path> TrackCache::index() const {
     for (fs::directory_iterator it(serverDir_, ec), end; !ec && it != end; it.increment(ec)) {
         std::error_code entryEc;
         if (!it->is_directory(entryEc)) continue;
-        for (const CachedTrack& t : readManifest(it->path() / kManifestName))
+        for (const CachedTrack& t : readFolder(it->path()).tracks)
             if (auto path = completeIn(it->path(), t)) out.emplace(t.id, *path);
     }
     return out;

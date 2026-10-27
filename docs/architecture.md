@@ -78,7 +78,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
 | `app/core/library.{h,cpp}` | `Book` (also a remote list: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set), `scanLibrary(root, skip)`, which leaves out the cache folder `skip`. |
-| `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<list id>/`, where a list is an album or a playlist. Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 1`, then per track tab-separated: id, file, title, duration, server `changed` time, pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), written to `manifest.tsv.tmp` and renamed (no `fsync`: core has no OS calls). A missing or corrupt manifest reads as empty. `find(trackId)` returns the complete file of a track from any list (`index()` does it for every track in one pass, `completeFile()` for one manifest entry), never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
+| `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<kind>%3A<list id>/`, where a list is an album or a playlist (the kind in the folder name keeps an album and a playlist with one id apart). Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 2`, then a line `list<TAB>album|playlist<TAB>id<TAB>name<TAB>artist`, then per track tab-separated: id, file, title, duration, server `changed` time, pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), written to `manifest.tsv.tmp` and renamed (no `fsync`: core has no OS calls). A missing or corrupt manifest reads as empty, and so does a manifest of format 1 (it had no list line; no device ever held one) or one whose list line does not match its folder (a copied folder). `lists()` gives the lists with at least one complete track, sorted by name, for Streaming > Downloaded; `remove()` deletes one list folder, only ever a direct child of the server's folder. `find(trackId)` returns the complete file of a track from any list (`index()` does it for every track in one pass, `completeFile()` for one manifest entry), never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
 | `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `serverConfigured()`. |
 | `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys) and `TsvStore` (`state.tsv`). |
 | `app/config/atomic_file.{h,cpp}` | `writeFileAtomically()`: temp file with mode 0600, `fsync`, `rename`. |
@@ -364,6 +364,7 @@ Home
 │   ├── Artists → <artist> → <albums>
 │   ├── Playlists → <playlist> → Play playlist · Download playlist · <tracks>
 │   ├── Random albums → <albums>   (one page of 50)
+│   ├── Downloaded                 (only with a cache folder; built from the manifests, not the server: <name> → Play album|Play playlist · Delete download → [Cancel, Yes, delete] · <tracks>)
 │   └── Server status              ("Checking the server.", then "Connected to Navidrome 0.64.2." or the error)
 │       <album> → Play album · Download album · <tracks>   (Download only with a cache folder and a downloader; OK plays from that track to the end, via playRemote())
 │       No server: one item, "No server set up" (OK says how to add one);
@@ -518,8 +519,21 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   id to file, for the server in the config) in memory, built at the first call and
   updated when a download saves a track. The open of a track passes `verify`, which
   also checks that the file is still there. A file added to the cache by anything
-  but `App`'s own downloads is not seen until the index is rebuilt (steps 3.5 and
-  later must update or reset it).
+  but `App`'s own downloads is not seen until the index is rebuilt (Delete download
+  resets it; step 3.7 must update or reset it too).
+- **Downloaded (3.5):** Streaming > Downloaded (`downloadedMenu()`, a menu with a
+  `build`, so it is rebuilt when the user comes back) lists `TrackCache::lists()`:
+  the lists of the server in the config that have a complete track. Each item opens
+  `downloadedListMenu()`, built from the manifest and the files on disk: "Play
+  album/playlist" first, "Delete download", then the complete tracks; they play with
+  `playRemote()` and the list's `RemoteSource`, so a cached file opens (section
+  "Play from the cache") and `last_stream` is saved like for a server list. Delete
+  download opens a list of "Cancel" (selected) and "Yes, delete". `deleteDownload()`
+  refuses with a spoken reason when the list is the book loaded in the player; it
+  cancels the download when that list is downloading; then `TrackCache::remove()`,
+  `cacheIndex_.reset()`, two `popScreen()` (the rebuilt Downloaded list shows what is
+  left) and "Deleted Weather.". The folder name keeps an album and a playlist apart;
+  the manifest keeps the name and artist. Offline use (the server down) is step 3.6.
 - **Downloads (3.4):** `trackItems()` adds "Download album" / "Download playlist"
   after the Play item when `canDownload()`. `startDownload()` reads the list's
   manifest, skips (and pins) the tracks whose files are whole, checks the free

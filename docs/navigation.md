@@ -155,6 +155,21 @@ these rules too ([streaming.md](streaming.md) has the plan).
   Home and playing something do not stop it. When it ends the device says
   "Download finished, Weather." unless something is playing, which gets only an
   earcon (and a sleeping device says nothing).
+- **Downloaded** (in the Streaming menu after Random albums, only where a cache
+  folder is set up) lists the albums and playlists that are on the disk, by name
+  (an album says its artist, a playlist says "playlist"). It is read from the
+  disk, not the server, so it opens at once, and it is rebuilt when you come back
+  to it, like a local menu. An album or playlist opens with "Play album" / "Play
+  playlist" first, then "Delete download", then the tracks that are whole; they
+  play from their files like any list, and the place is kept as for the server
+  list. "Delete download" is a dangerous action, so it opens a list of "Cancel"
+  (selected) and "Yes, delete". Yes removes the files, says "Deleted Weather." and
+  goes back to Downloaded, which no longer has it. The list that is loaded in the
+  player is not deleted: the device says "Cannot delete Weather while it is loaded
+  in the player. Play something else first." and stays on the list. Deleting the
+  list that is downloading cancels the download. With nothing downloaded the list
+  has one item, "No downloads"; OK says "Nothing is downloaded. Choose Download
+  album in an album."
 - **The last album or playlist resumes after a restart.** When a stream played
   last, the device starts on Home (nothing plays), with "Now playing, Weather"
   first. OK on it, or Play, says "Loading.", loads the list from the server and

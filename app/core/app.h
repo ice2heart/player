@@ -167,7 +167,8 @@ private:
     void openRemoteAlbum(const RemoteAlbum& album);
     std::vector<MenuItem> albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist);
     std::vector<MenuItem> trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
-                                     const std::string& playAll, const RemoteSource& source);
+                                     const std::string& playAll, const RemoteSource& source,
+                                     const std::string& artist);
 
     // Downloads (docs/streaming.md, step 3.4). One album or playlist at a time, its
     // tracks one after the other, each into its list folder in the cache; the
@@ -179,7 +180,7 @@ private:
             size_t number = 0; // its place in the list, from 1
         };
         RemoteSource source;
-        std::string title;
+        std::string title, artist; // of the list, kept in its manifest
         std::vector<Item> todo; // what is left to fetch, in list order
         size_t next = 0;        // the item being fetched
         size_t total = 0;       // tracks in the list
@@ -187,13 +188,17 @@ private:
         Downloader::RequestId request = 0;
     };
     bool canDownload() const; // a cache folder, a server and a downloader that works
-    void startDownload(const std::string& title, const std::vector<RemoteTrack>& tracks, const RemoteSource& source);
+    void startDownload(const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
+                       const RemoteSource& source);
     void fetchNextTrack();
     void onTrackDownloaded(Downloader::Result result);
     void failDownload(const RemoteTrack& track, size_t number, const std::string& reason);
     void finishDownload();
     std::string downloadProgress() const; // "Downloading, 3 of 9 tracks", empty when none runs
     TrackCache trackCache() const;        // of the server in the config
+    std::vector<MenuItem> downloadedMenu();                               // Streaming > Downloaded
+    std::vector<MenuItem> downloadedListMenu(const RemoteSource& source); // one downloaded album or playlist
+    void deleteDownload(const RemoteSource& source, const std::string& title);
     void checkServer(); // Server status
 
     // The remote list that played last (state.tsv `last_stream.*`), to resume

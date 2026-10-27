@@ -906,7 +906,7 @@ std::vector<MenuItem> App::streamingMenu() {
                                        },
                                        [this, name = p.name, id = p.id](const std::vector<RemoteTrack>& tracks) {
                                            return trackItems(name, tracks, "Play playlist",
-                                                             {RemoteSource::Kind::Playlist, id});
+                                                             {RemoteSource::Kind::Playlist, id}, "");
                                        }),
                                    0, "No tracks", "This playlist is empty. Add tracks to it on the server.");
                 });
@@ -924,6 +924,7 @@ std::vector<MenuItem> App::streamingMenu() {
     items.push_back(action("Random albums", [this] {
         openAlbumList("Random albums", "random", kRandomAlbums, false);
     }));
+    if (trackCache().enabled()) items.push_back(submenu("Downloaded", [this] { return downloadedMenu(); }));
     items.push_back(action("Server status", [this] { checkServer(); }));
     return items;
 }
@@ -1043,8 +1044,8 @@ void App::openRemoteAlbum(const RemoteAlbum& album) {
                        [this, id = album.id](int, MusicServer::Done<RemoteTrack> done) {
                            return server_.albumTracks(id, std::move(done));
                        },
-                       [this, name = album.name, id = album.id](const std::vector<RemoteTrack>& tracks) {
-                           return trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id});
+                       [this, name = album.name, artist = album.artist, id = album.id](const std::vector<RemoteTrack>& tracks) {
+                           return trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id}, artist);
                        }),
                    0, "No tracks", "This album has no tracks on the server.");
 }
@@ -1064,7 +1065,8 @@ std::vector<MenuItem> App::albumItems(const std::vector<RemoteAlbum>& albums, bo
 // "Play album" first, then "Download album" where downloads can work, then the
 // tracks: OK on one plays from it to the end, like Music.
 std::vector<MenuItem> App::trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
-                                      const std::string& playAll, const RemoteSource& source) {
+                                      const std::string& playAll, const RemoteSource& source,
+                                      const std::string& artist) {
     if (tracks.empty()) return {};
     auto list = std::make_shared<const std::vector<RemoteTrack>>(tracks); // one copy for all the items
     std::vector<MenuItem> items;
@@ -1073,13 +1075,99 @@ std::vector<MenuItem> App::trackItems(const std::string& title, const std::vecto
     items.push_back(all);
     if (canDownload()) {
         const char* what = source.kind == RemoteSource::Kind::Album ? "Download album" : "Download playlist";
-        items.push_back(action(what, [this, title, list, source] { startDownload(title, *list, source); }));
+        items.push_back(action(what, [this, title, artist, list, source] { startDownload(title, artist, *list, source); }));
     }
     for (size_t i = 0; i < tracks.size(); ++i) {
         std::string label = tracks[i].title.empty() ? "Track " + std::to_string(i + 1) : tracks[i].title;
         items.push_back(action(label, [this, title, list, i, source] { playRemote(title, *list, i, source); }));
     }
     return items;
+}
+
+// ---------------------------------------------------------- downloaded lists
+
+namespace {
+// What a downloaded list is called in a menu; a list saved without a name is still spoken as what it is.
+std::string downloadedName(const CachedList& list) {
+    if (!list.name.empty()) return list.name;
+    return list.source.kind == RemoteSource::Kind::Album ? "Album" : "Playlist";
+}
+
+bool sameList(const RemoteSource& a, const RemoteSource& b) { return a.kind == b.kind && a.id == b.id; }
+} // namespace
+
+// Streaming > Downloaded: the lists whose manifests are in the cache, by name.
+// Read from disk each time the menu is built, so it shows what changed meanwhile.
+std::vector<MenuItem> App::downloadedMenu() {
+    std::vector<MenuItem> items;
+    for (const CachedList& list : trackCache().lists()) {
+        MenuItem item = submenu(downloadedName(list), [this, source = list.source] { return downloadedListMenu(source); });
+        std::string about = list.source.kind == RemoteSource::Kind::Playlist ? "playlist" : list.artist;
+        if (!about.empty()) item.value = [about] { return about; };
+        items.push_back(std::move(item));
+    }
+    if (items.empty())
+        items.push_back(action("No downloads", [this] { say("Nothing is downloaded. Choose Download album in an album."); }));
+    return items;
+}
+
+// The tracks of a downloaded list that are whole on disk: "Play album" first, then
+// "Delete download", then the tracks. They play from their files like any list.
+std::vector<MenuItem> App::downloadedListMenu(const RemoteSource& source) {
+    TrackCache store = trackCache();
+    CachedList list = store.load(source);
+    auto tracks = std::make_shared<std::vector<RemoteTrack>>();
+    for (const CachedTrack& t : list.tracks) {
+        if (!store.completeFile(source, t)) continue;
+        RemoteTrack track;
+        track.id = t.id;
+        track.title = t.title;
+        track.duration = t.duration;
+        tracks->push_back(std::move(track));
+    }
+    if (tracks->empty()) return {action("No tracks", [this] { say("The tracks of this download are gone from the disk."); })};
+    std::string title = downloadedName(list);
+    std::vector<MenuItem> items;
+    MenuItem all = action(source.kind == RemoteSource::Kind::Album ? "Play album" : "Play playlist",
+                          [this, title, tracks, source] { playRemote(title, *tracks, 0, source); });
+    all.value = [n = tracks->size()] { return countValue(n, "track"); };
+    items.push_back(all);
+    // A dangerous action: behind a list that opens on Cancel.
+    items.push_back(submenu("Delete download", [this, source, title] {
+        return std::vector<MenuItem>{
+            action("Cancel", [this] { back(); }),
+            action("Yes, delete", [this, source, title] { deleteDownload(source, title); }),
+        };
+    }));
+    for (size_t i = 0; i < tracks->size(); ++i) {
+        std::string label = (*tracks)[i].title.empty() ? "Track " + std::to_string(i + 1) : (*tracks)[i].title;
+        items.push_back(action(label, [this, title, tracks, i, source] { playRemote(title, *tracks, i, source); }));
+    }
+    return items;
+}
+
+// Removes the list's folder. The list that is loaded in the player is refused (its
+// next tracks would have to come from the network); a download of it is cancelled first.
+void App::deleteDownload(const RemoteSource& source, const std::string& title) {
+    if (book_ && book_->remote && book_->source && sameList(*book_->source, source)) {
+        earcons_.play(Earcon::Error);
+        say("Cannot delete " + title + " while it is loaded in the player. Play something else first.");
+        return;
+    }
+    if (download_ && sameList(download_->source, source)) {
+        downloader_.cancel(download_->request);
+        download_.reset();
+    }
+    if (!trackCache().remove(source)) {
+        earcons_.play(Earcon::Error);
+        say("Cannot delete " + title + ".");
+        return;
+    }
+    cacheIndex_.reset(); // its files are gone: the index is made again from the manifests left
+    popScreen();         // the confirmation, then the list that is gone, back to Downloaded (rebuilt)
+    popScreen();
+    earcons_.play(Earcon::Close);
+    say("Deleted " + title + ". " + itemSpeech(screens_.back()));
 }
 
 // Says "Checking" now and the answer when it comes, if the user is still on
@@ -1842,7 +1930,8 @@ std::string downloadFileName(const RemoteTrack& track) {
 // OK on a Download item. While that list downloads it says how far it is. A
 // download that failed has been dropped, so OK goes on with what is missing:
 // tracks already whole are skipped and the .part of the failed one continues.
-void App::startDownload(const std::string& title, const std::vector<RemoteTrack>& tracks, const RemoteSource& source) {
+void App::startDownload(const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
+                        const RemoteSource& source) {
     if (download_) {
         if (download_->source.kind == source.kind && download_->source.id == source.id) say(downloadProgress() + ".");
         else say("Another download is running.");
@@ -1850,17 +1939,19 @@ void App::startDownload(const std::string& title, const std::vector<RemoteTrack>
     }
     TrackCache store = trackCache();
     if (!store.enabled()) return;
-    std::vector<CachedTrack> manifest = store.load(source.id);
+    CachedList cached = store.load(source);
+    std::vector<CachedTrack>& manifest = cached.tracks;
     Download job;
     job.source = source;
     job.title = title;
+    job.artist = artist;
     job.total = tracks.size();
     bool pinned = false; // a track the automatic cache kept now belongs to the user
     std::uintmax_t needed = 0;
     for (size_t i = 0; i < tracks.size(); ++i) {
         auto entry = std::find_if(manifest.begin(), manifest.end(),
                                   [&](const CachedTrack& t) { return t.id == tracks[i].id; });
-        if (entry != manifest.end() && store.completeFile(source.id, *entry)) {
+        if (entry != manifest.end() && store.completeFile(source, *entry)) {
             job.finished++;
             if (!entry->pinned) entry->pinned = pinned = true;
             continue;
@@ -1868,7 +1959,10 @@ void App::startDownload(const std::string& title, const std::vector<RemoteTrack>
         job.todo.push_back({tracks[i], i + 1});
         if (tracks[i].size > 0) needed += std::uintmax_t(tracks[i].size);
     }
-    if (pinned && !store.save(source.id, manifest)) {
+    cached.source = source;
+    cached.name = title;
+    cached.artist = artist;
+    if (pinned && !store.save(cached)) {
         earcons_.play(Earcon::Error);
         say("Cannot write the download.");
         return;
@@ -1893,7 +1987,7 @@ void App::startDownload(const std::string& title, const std::vector<RemoteTrack>
 void App::fetchNextTrack() {
     Download& job = *download_;
     const RemoteTrack& track = job.todo[job.next].track;
-    std::string dest = (trackCache().listFolder(job.source.id) / downloadFileName(track)).string();
+    std::string dest = (trackCache().listFolder(job.source) / downloadFileName(track)).string();
     job.request = downloader_.download(track.id, dest, {}, [this](Downloader::Result result) { onTrackDownloaded(result); });
 }
 
@@ -1905,7 +1999,7 @@ void App::onTrackDownloaded(Downloader::Result result) {
     const RemoteTrack& track = item.track;
     TrackCache store = trackCache();
     std::string fileName = downloadFileName(track);
-    std::filesystem::path file = store.listFolder(job.source.id) / fileName;
+    std::filesystem::path file = store.listFolder(job.source) / fileName;
     switch (result) {
     case Downloader::Result::Ok: break;
     case Downloader::Result::NotConfigured: failDownload(track, item.number, "No server set up"); return;
@@ -1920,7 +2014,11 @@ void App::onTrackDownloaded(Downloader::Result result) {
         failDownload(track, item.number, "The file is incomplete");
         return;
     }
-    std::vector<CachedTrack> manifest = store.load(job.source.id);
+    CachedList cached = store.load(job.source);
+    std::vector<CachedTrack>& manifest = cached.tracks;
+    cached.source = job.source;
+    cached.name = job.title;
+    cached.artist = job.artist;
     CachedTrack entry{track.id, fileName, track.title, track.duration, "", true, 0};
     auto old = std::find_if(manifest.begin(), manifest.end(), [&](const CachedTrack& t) { return t.id == track.id; });
     if (old != manifest.end()) {
@@ -1929,7 +2027,7 @@ void App::onTrackDownloaded(Downloader::Result result) {
     } else {
         manifest.push_back(entry);
     }
-    if (!store.save(job.source.id, manifest)) {
+    if (!store.save(cached)) {
         failDownload(track, item.number, "Cannot write the file");
         return;
     }

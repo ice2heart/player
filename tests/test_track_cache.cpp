@@ -6,7 +6,9 @@
 #include <fstream>
 #include <string>
 
+using oap::CachedList;
 using oap::CachedTrack;
+using oap::RemoteSource;
 using oap::TrackCache;
 using oap::test::testTempDir;
 namespace fs = std::filesystem;
@@ -15,6 +17,14 @@ namespace {
 void writeFile(const fs::path& p, const std::string& contents) {
     fs::create_directories(p.parent_path());
     std::ofstream(p, std::ios::binary) << contents;
+}
+
+RemoteSource album(const std::string& id) { return {RemoteSource::Kind::Album, id}; }
+RemoteSource playlist(const std::string& id) { return {RemoteSource::Kind::Playlist, id}; }
+
+CachedList listOf(RemoteSource source, std::vector<CachedTrack> tracks, std::string name = "Weather",
+                  std::string artist = "Band") {
+    return {std::move(source), std::move(name), std::move(artist), std::move(tracks)};
 }
 
 CachedTrack track(std::string id, std::string file) {
@@ -47,9 +57,9 @@ TEST_F(TrackCacheTest, ManifestRoundTrips) {
     CachedTrack b = track("s2", "02.mp3");
     b.duration = 0;
     b.changed = "";
-    ASSERT_TRUE(cache().save("al1", {a, b}));
+    ASSERT_TRUE(cache().save(listOf(album("al1"), {a, b})));
 
-    auto loaded = cache().load("al1");
+    auto loaded = cache().load(album("al1")).tracks;
     ASSERT_EQ(loaded.size(), 2u);
     EXPECT_EQ(loaded[0].id, "s1");
     EXPECT_EQ(loaded[0].file, "01.flac");
@@ -65,13 +75,13 @@ TEST_F(TrackCacheTest, ManifestRoundTrips) {
 }
 
 TEST_F(TrackCacheTest, SaveReplacesTheManifestAndLeavesNoTemporaryFile) {
-    ASSERT_TRUE(cache().save("al1", {track("s1", "01.flac"), track("s2", "02.flac")}));
-    ASSERT_TRUE(cache().save("al1", {track("s3", "03.flac")}));
-    auto loaded = cache().load("al1");
+    ASSERT_TRUE(cache().save(listOf(album("al1"), {track("s1", "01.flac"), track("s2", "02.flac")})));
+    ASSERT_TRUE(cache().save(listOf(album("al1"), {track("s3", "03.flac")})));
+    auto loaded = cache().load(album("al1")).tracks;
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded[0].id, "s3");
     int files = 0;
-    for (const auto& e : fs::directory_iterator(cache().listFolder("al1"))) {
+    for (const auto& e : fs::directory_iterator(cache().listFolder(album("al1")))) {
         (void)e;
         ++files;
     }
@@ -79,36 +89,36 @@ TEST_F(TrackCacheTest, SaveReplacesTheManifestAndLeavesNoTemporaryFile) {
 }
 
 TEST_F(TrackCacheTest, FailedSaveKeepsTheOldManifest) {
-    ASSERT_TRUE(cache().save("al1", {track("s1", "01.flac")}));
+    ASSERT_TRUE(cache().save(listOf(album("al1"), {track("s1", "01.flac")})));
     // A folder where the temporary file goes makes the write fail.
-    fs::path tmp = cache().manifestFile("al1");
+    fs::path tmp = cache().manifestFile(album("al1"));
     tmp += ".tmp";
     fs::create_directories(tmp);
-    EXPECT_FALSE(cache().save("al1", {track("s2", "02.flac")}));
-    auto loaded = cache().load("al1");
+    EXPECT_FALSE(cache().save(listOf(album("al1"), {track("s2", "02.flac")})));
+    auto loaded = cache().load(album("al1")).tracks;
     ASSERT_EQ(loaded.size(), 1u);
     EXPECT_EQ(loaded[0].id, "s1");
 }
 
 TEST_F(TrackCacheTest, FindsACompleteFileInAnyList) {
     TrackCache c = cache();
-    writeFile(c.listFolder("al1") / "01.flac", "audio");
-    writeFile(c.listFolder("pl2") / "x.mp3", "audio");
-    ASSERT_TRUE(c.save("al1", {track("s1", "01.flac")}));
-    ASSERT_TRUE(c.save("pl2", {track("s9", "x.mp3")}));
-    EXPECT_EQ(c.find("s1"), c.listFolder("al1") / "01.flac");
-    EXPECT_EQ(c.find("s9"), c.listFolder("pl2") / "x.mp3");
+    writeFile(c.listFolder(album("al1")) / "01.flac", "audio");
+    writeFile(c.listFolder(playlist("pl2")) / "x.mp3", "audio");
+    ASSERT_TRUE(c.save(listOf(album("al1"), {track("s1", "01.flac")})));
+    ASSERT_TRUE(c.save(listOf(playlist("pl2"), {track("s9", "x.mp3")})));
+    EXPECT_EQ(c.find("s1"), c.listFolder(album("al1")) / "01.flac");
+    EXPECT_EQ(c.find("s9"), c.listFolder(playlist("pl2")) / "x.mp3");
     EXPECT_FALSE(c.find("s2"));
     EXPECT_FALSE(c.find(""));
 }
 
 TEST_F(TrackCacheTest, PartMissingAndEmptyFilesAreNeverReturned) {
     TrackCache c = cache();
-    writeFile(c.listFolder("al1") / "01.flac.part", "half");
-    writeFile(c.listFolder("al1") / "03.flac", "");
-    fs::create_directories(c.listFolder("al1") / "04.flac");
-    ASSERT_TRUE(c.save("al1", {track("s1", "01.flac.part"), track("s2", "02.flac"), track("s3", "03.flac"),
-                               track("s4", "04.flac")}));
+    writeFile(c.listFolder(album("al1")) / "01.flac.part", "half");
+    writeFile(c.listFolder(album("al1")) / "03.flac", "");
+    fs::create_directories(c.listFolder(album("al1")) / "04.flac");
+    ASSERT_TRUE(c.save(listOf(album("al1"), {track("s1", "01.flac.part"), track("s2", "02.flac"), track("s3", "03.flac"),
+                                                 track("s4", "04.flac")})));
     EXPECT_FALSE(c.find("s1")); // a .part file
     EXPECT_FALSE(c.find("s2")); // in the manifest, no file
     EXPECT_FALSE(c.find("s3")); // empty file
@@ -117,60 +127,156 @@ TEST_F(TrackCacheTest, PartMissingAndEmptyFilesAreNeverReturned) {
 
 TEST_F(TrackCacheTest, IndexHoldsTheCompleteFilesOfAllListsAndOnlyThose) {
     TrackCache c = cache();
-    writeFile(c.listFolder("al1") / "01.flac", "audio");
-    writeFile(c.listFolder("al1") / "02.flac.part", "half");
-    writeFile(c.listFolder("al1") / "03.flac", "");
-    writeFile(c.listFolder("pl2") / "x.mp3", "audio");
-    ASSERT_TRUE(c.save("al1", {track("s1", "01.flac"), track("s2", "02.flac.part"), track("s3", "03.flac"),
-                               track("s4", "04.flac")}));
-    ASSERT_TRUE(c.save("pl2", {track("s9", "x.mp3")}));
-    EXPECT_EQ(c.index(), (std::map<std::string, fs::path>{{"s1", c.listFolder("al1") / "01.flac"},
-                                                           {"s9", c.listFolder("pl2") / "x.mp3"}}));
+    writeFile(c.listFolder(album("al1")) / "01.flac", "audio");
+    writeFile(c.listFolder(album("al1")) / "02.flac.part", "half");
+    writeFile(c.listFolder(album("al1")) / "03.flac", "");
+    writeFile(c.listFolder(playlist("pl2")) / "x.mp3", "audio");
+    ASSERT_TRUE(c.save(listOf(album("al1"), {track("s1", "01.flac"), track("s2", "02.flac.part"), track("s3", "03.flac"),
+                                                 track("s4", "04.flac")})));
+    ASSERT_TRUE(c.save(listOf(playlist("pl2"), {track("s9", "x.mp3")})));
+    EXPECT_EQ(c.index(), (std::map<std::string, fs::path>{{"s1", c.listFolder(album("al1")) / "01.flac"},
+                                                           {"s9", c.listFolder(playlist("pl2")) / "x.mp3"}}));
     EXPECT_TRUE(TrackCache(root, "", "anna").index().empty());
 }
 
 TEST_F(TrackCacheTest, FileOnDiskWithoutManifestEntryIsNotFound) {
     TrackCache c = cache();
-    writeFile(c.listFolder("al1") / "01.flac", "audio");
+    writeFile(c.listFolder(album("al1")) / "01.flac", "audio");
     EXPECT_FALSE(c.find("s1"));
 }
 
 TEST_F(TrackCacheTest, CorruptManifestIsIgnored) {
     TrackCache c = cache();
-    writeFile(c.listFolder("al1") / "01.flac", "audio");
-    const std::string good = "oap-cache 1\ns1\t01.flac\tT\t1.000\t\t0\t0\n";
+    writeFile(c.listFolder(album("al1")) / "01.flac", "audio");
+    const std::string head = "oap-cache 2\nlist\talbum\tal1\tWeather\tBand\n";
+    const std::string row = "s1\t01.flac\tT\t1.000\t\t0\t0\n";
     for (const std::string& bad : {
              std::string("not a manifest at all\n"),
              std::string(""),
-             std::string("oap-cache 2\ns1\t01.flac\tT\t1.000\t\t0\t0\n"), // another version
-             std::string("oap-cache 1\ns1\t01.flac\tT\t1\t\t0\t0\textra\n"), // too many columns
-             std::string("oap-cache 1\ns1\t01.flac\n"),                       // too few columns
-             std::string("oap-cache 1\ns1\t01.flac\tT\tx\t\t0\t0\n"),          // duration is not a number
-             std::string("oap-cache 1\ns1\t01.flac\tT\t1\t\t7\t0\n"),          // pinned is not 0 or 1
-             std::string("oap-cache 1\ns1\t01.flac\tT\t1\t\t0\tlater\n"),      // last played is not a number
-             std::string("oap-cache 1\ns1\t../../etc/passwd\tT\t1\t\t0\t0\n"), // leaves the folder
-             std::string("oap-cache 1\ns1\t01.flac\tT\\x\t1\t\t0\t0\n"),       // unknown escape
-             good + "garbage line\n",                                          // one bad line spoils the file
+             std::string("oap-cache 1\n") + row,                                                   // format 1 has no list line
+             std::string("oap-cache 3\nlist\talbum\tal1\tWeather\tBand\n") + row,                  // another version
+             std::string("oap-cache 2\n") + row,                                                   // no list line
+             std::string("oap-cache 2\nlist\tbook\tal1\tWeather\tBand\n") + row,                   // unknown kind
+             std::string("oap-cache 2\nlist\talbum\t\tWeather\tBand\n") + row,                     // empty id
+             std::string("oap-cache 2\nlist\talbum\tal1\tWeather\n") + row,                        // list line too short
+             std::string("oap-cache 2\nlist\talbum\tal1\tWeather\\x\tBand\n") + row,              // unknown escape
+             head + "s1\t01.flac\tT\t1.000\t\t0\t0\textra\n",                                    // too many columns
+             head + "s1\t01.flac\n",                                                              // too few columns
+             head + "s1\t01.flac\tT\tx\t\t0\t0\n",                                                // duration is not a number
+             head + "s1\t01.flac\tT\t1\t\t7\t0\n",                                                // pinned is not 0 or 1
+             head + "s1\t01.flac\tT\t1\t\t0\tlater\n",                                            // last played is not a number
+             head + "s1\t../../etc/passwd\tT\t1\t\t0\t0\n",                                       // leaves the folder
+             head + "s1\t01.flac\tT\\x\t1\t\t0\t0\n",                                             // unknown escape
+             head + row + "garbage line\n",                                                        // one bad line spoils the file
+             "oap-cache 2\nlist\talbum\tother\tWeather\tBand\n" + row,                          // the manifest of another list
          }) {
-        writeFile(c.manifestFile("al1"), bad);
-        EXPECT_TRUE(c.load("al1").empty()) << bad;
+        writeFile(c.manifestFile(album("al1")), bad);
+        EXPECT_TRUE(c.load(album("al1")).tracks.empty()) << bad;
+        EXPECT_TRUE(c.load(album("al1")).source.id.empty()) << bad;
         EXPECT_FALSE(c.find("s1")) << bad;
+        EXPECT_TRUE(c.lists().empty()) << bad;
     }
-    writeFile(c.manifestFile("al1"), good);
-    EXPECT_EQ(c.load("al1").size(), 1u);
+    writeFile(c.manifestFile(album("al1")), head + row);
+    EXPECT_EQ(c.load(album("al1")).tracks.size(), 1u);
     EXPECT_TRUE(c.find("s1"));
+    EXPECT_EQ(c.lists().size(), 1u);
 }
 
 TEST_F(TrackCacheTest, NoManifestIsEmpty) {
-    EXPECT_TRUE(cache().load("nothing").empty());
+    EXPECT_TRUE(cache().load(album("nothing")).tracks.empty());
     EXPECT_FALSE(cache().find("s1"));
+}
+
+TEST_F(TrackCacheTest, ListKeepsItsKindNameAndArtist) {
+    CachedList in = listOf(playlist("p7"), {track("s1", "01.flac")}, "Tab\there\nnew line", "A\\B");
+    ASSERT_TRUE(cache().save(in));
+    CachedList out = cache().load(playlist("p7"));
+    EXPECT_EQ(out.source.kind, RemoteSource::Kind::Playlist);
+    EXPECT_EQ(out.source.id, "p7");
+    EXPECT_EQ(out.name, in.name);
+    EXPECT_EQ(out.artist, in.artist);
+    ASSERT_EQ(out.tracks.size(), 1u);
+}
+
+TEST_F(TrackCacheTest, AnAlbumAndAPlaylistWithTheSameIdAreApart) {
+    TrackCache c = cache();
+    EXPECT_NE(c.listFolder(album("7")), c.listFolder(playlist("7")));
+    EXPECT_EQ(c.listFolder(album("7")).parent_path(), c.serverFolder());
+    writeFile(c.listFolder(album("7")) / "a.flac", "audio");
+    writeFile(c.listFolder(playlist("7")) / "p.flac", "audio");
+    ASSERT_TRUE(c.save(listOf(album("7"), {track("sa", "a.flac")}, "Album seven")));
+    ASSERT_TRUE(c.save(listOf(playlist("7"), {track("sp", "p.flac")}, "Playlist seven")));
+    EXPECT_EQ(c.load(album("7")).tracks[0].id, "sa");
+    EXPECT_EQ(c.load(playlist("7")).tracks[0].id, "sp");
+    EXPECT_EQ(c.lists().size(), 2u);
+}
+
+TEST_F(TrackCacheTest, ListsAreSortedByNameAndHoldOnlyCompleteTracks) {
+    TrackCache c = cache();
+    writeFile(c.listFolder(album("b1")) / "x.flac", "audio");
+    writeFile(c.listFolder(album("b2")) / "y.flac", "audio");
+    writeFile(c.listFolder(playlist("b3")) / "z.flac", "audio");
+    writeFile(c.listFolder(album("b2")) / "y2.flac.part", "half");
+    writeFile(c.listFolder(album("b4")) / "w.flac.part", "half");
+    ASSERT_TRUE(c.save(listOf(album("b1"), {track("s1", "x.flac")}, "weather", "Band")));
+    ASSERT_TRUE(c.save(listOf(album("b2"), {track("s2", "y.flac"), track("s2b", "y2.flac.part"), track("s2c", "gone.flac")},
+                              "Apples", "Cider")));
+    ASSERT_TRUE(c.save(listOf(playlist("b3"), {track("s3", "z.flac")}, "Zebra", "")));
+    ASSERT_TRUE(c.save(listOf(album("b4"), {track("s4", "w.flac.part")}, "Only a part", ""))); // nothing whole
+    fs::create_directories(c.serverFolder() / "no-manifest");
+    auto lists = c.lists();
+    ASSERT_EQ(lists.size(), 3u);
+    EXPECT_EQ(lists[0].name, "Apples"); // letter case does not matter
+    EXPECT_EQ(lists[1].name, "weather");
+    EXPECT_EQ(lists[2].name, "Zebra");
+    EXPECT_EQ(lists[0].artist, "Cider");
+    EXPECT_EQ(lists[2].source.kind, RemoteSource::Kind::Playlist);
+    ASSERT_EQ(lists[0].tracks.size(), 1u);
+    EXPECT_EQ(lists[0].tracks[0].id, "s2");
+}
+
+TEST_F(TrackCacheTest, AManifestCopiedToAnotherFolderIsNotListed) {
+    TrackCache c = cache();
+    writeFile(c.listFolder(album("a1")) / "x.flac", "audio");
+    ASSERT_TRUE(c.save(listOf(album("a1"), {track("s1", "x.flac")})));
+    fs::copy(c.listFolder(album("a1")), c.serverFolder() / "copy", fs::copy_options::recursive);
+    ASSERT_EQ(c.lists().size(), 1u);
+}
+
+TEST_F(TrackCacheTest, RemoveDeletesOnlyThatListsFolder) {
+    TrackCache c = cache();
+    writeFile(c.listFolder(album("a1")) / "x.flac", "audio");
+    writeFile(c.listFolder(playlist("a1")) / "y.flac", "audio");
+    ASSERT_TRUE(c.save(listOf(album("a1"), {track("s1", "x.flac")})));
+    ASSERT_TRUE(c.save(listOf(playlist("a1"), {track("s2", "y.flac")})));
+    TrackCache other(root, "https://other.example", "anna");
+    writeFile(other.listFolder(album("a1")) / "x.flac", "audio");
+    EXPECT_TRUE(c.remove(album("a1")));
+    EXPECT_FALSE(fs::exists(c.listFolder(album("a1"))));
+    EXPECT_TRUE(fs::exists(c.listFolder(playlist("a1")) / "y.flac"));
+    EXPECT_TRUE(fs::exists(other.listFolder(album("a1")) / "x.flac"));
+    EXPECT_TRUE(fs::exists(c.serverFolder()));
+    EXPECT_TRUE(c.remove(album("a1"))) << "already gone is fine";
+}
+
+TEST_F(TrackCacheTest, RemoveNeverLeavesTheServerFolder) {
+    TrackCache c = cache();
+    fs::create_directories(root / "keep");
+    writeFile(root / "keep" / "f", "x");
+    for (const RemoteSource& s : {album(""), album(".."), album("../keep"), album("/"), playlist("../../")}) {
+        fs::create_directories(c.serverFolder()); // a deleted folder would hide a ".." that climbs out of it
+        c.remove(s);
+        EXPECT_TRUE(fs::exists(root / "keep" / "f")) << s.id;
+    }
+    ASSERT_TRUE(fs::exists(root / "keep" / "f"));
+    EXPECT_FALSE(TrackCache(root, "", "anna").remove(album("a1")));
 }
 
 TEST_F(TrackCacheTest, AnEmptyServerUrlStoresNothing) {
     TrackCache c(root, "", "anna");
     EXPECT_FALSE(c.enabled());
-    EXPECT_FALSE(c.save("al1", {track("s1", "01.flac")}));
-    EXPECT_TRUE(c.load("al1").empty());
+    EXPECT_FALSE(c.save(listOf(album("al1"), {track("s1", "01.flac")})));
+    EXPECT_TRUE(c.load(album("al1")).tracks.empty());
     EXPECT_FALSE(c.find("s1"));
     EXPECT_FALSE(fs::exists(root));
 }
@@ -178,7 +284,7 @@ TEST_F(TrackCacheTest, AnEmptyServerUrlStoresNothing) {
 TEST_F(TrackCacheTest, AnEmptyRootStoresNothing) {
     TrackCache c("", "https://music.example.com", "anna");
     EXPECT_FALSE(c.enabled());
-    EXPECT_FALSE(c.save("al1", {track("s1", "01.flac")}));
+    EXPECT_FALSE(c.save(listOf(album("al1"), {track("s1", "01.flac")})));
 }
 
 TEST_F(TrackCacheTest, ServerKeyIsASafeNameWithoutCredentials) {
@@ -214,5 +320,5 @@ TEST_F(TrackCacheTest, SafeNameNeverLeavesTheFolder) {
     EXPECT_EQ(TrackCache::safeName(""), "%00");
     EXPECT_EQ(TrackCache::safeName("Сон"), "%D0%A1%D0%BE%D0%BD");
     TrackCache c = cache();
-    EXPECT_EQ(c.listFolder("../../x").parent_path(), c.serverFolder());
+    EXPECT_EQ(c.listFolder(album("../../x")).parent_path(), c.serverFolder());
 }
