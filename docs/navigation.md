@@ -41,7 +41,8 @@ Sleep in it closes the menu first, so the device wakes where you were.
    they skip back and forward, and holding them or pressing them deeper
    moves to the previous or next chapter or track.
 8. **Play/Pause, Power and Talk work the same on every screen.** Holding
-   Play/Pause ("where am I?") speaks the screen path and the selected item.
+   Play/Pause ("where am I?") speaks the screen path and the selected item,
+   and the progress of a download that runs ("Downloading, 3 of 9 tracks.").
 9. **Every press of a key that has a job is heard.** The press interrupts
    speech and plays an earcon, speaks, or both. Rule 5 is the one exception.
 
@@ -141,6 +142,19 @@ these rules too ([streaming.md](streaming.md) has the plan).
 - **Server status reports and stays.** It says "Checking the server.", then
   "Connected to Navidrome 0.64.2." (the server's name and full version) or the
   error. Moving to another screen drops the answer.
+- **Download album / Download playlist** is the item right after "Play album" /
+  "Play playlist". It is offered only where it can work: a cache folder, a server
+  and a downloader that is set up. OK starts the download and says "Downloading, 0
+  of 9 tracks." (tracks already whole count as done and are not fetched again).
+  OK on it while it runs says the same with the count so far, and so does "where
+  am I?", in a menu and in the player. One list downloads at a time: starting
+  another says "Another download is running." Not enough room on the disk for the
+  tracks that are missing starts nothing and says "Not enough space." A track
+  that fails is said once ("Cannot download Rain. Server not reachable."), the
+  download stops, and OK on Download again goes on from there. Leaving the menu,
+  Home and playing something do not stop it. When it ends the device says
+  "Download finished, Weather." unless something is playing, which gets only an
+  earcon (and a sleeping device says nothing).
 - **The last album or playlist resumes after a restart.** When a stream played
   last, the device starts on Home (nothing plays), with "Now playing, Weather"
   first. OK on it, or Play, says "Loading.", loads the list from the server and

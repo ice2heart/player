@@ -207,21 +207,47 @@ bool TrackCache::save(const std::string& listId, const std::vector<CachedTrack>&
     return true;
 }
 
+namespace {
+// The path of a manifest entry if its file is complete: not a `.part`, present and not empty.
+std::optional<fs::path> completeIn(const fs::path& folder, const CachedTrack& t) {
+    if (t.file.ends_with(kPartSuffix)) return std::nullopt;
+    fs::path path = folder / t.file;
+    std::error_code ec;
+    auto size = fs::file_size(path, ec); // fails for a missing file and for a folder
+    if (ec || size == 0) return std::nullopt;
+    return path;
+}
+} // namespace
+
 std::optional<fs::path> TrackCache::find(const std::string& trackId) const {
     if (!enabled()) return std::nullopt;
     std::error_code ec;
     for (fs::directory_iterator it(serverDir_, ec), end; !ec && it != end; it.increment(ec)) {
         std::error_code entryEc;
         if (!it->is_directory(entryEc)) continue;
-        for (const CachedTrack& t : readManifest(it->path() / kManifestName)) {
-            if (t.id != trackId || t.file.ends_with(kPartSuffix)) continue;
-            fs::path path = it->path() / t.file;
-            std::error_code fileEc;
-            auto size = fs::file_size(path, fileEc); // fails for a missing file and for a folder
-            if (!fileEc && size > 0) return path;
-        }
+        for (const CachedTrack& t : readManifest(it->path() / kManifestName))
+            if (t.id == trackId)
+                if (auto path = completeIn(it->path(), t)) return path;
     }
     return std::nullopt;
+}
+
+std::optional<fs::path> TrackCache::completeFile(const std::string& listId, const CachedTrack& track) const {
+    if (!enabled()) return std::nullopt;
+    return completeIn(listFolder(listId), track);
+}
+
+std::map<std::string, fs::path> TrackCache::index() const {
+    std::map<std::string, fs::path> out;
+    if (!enabled()) return out;
+    std::error_code ec;
+    for (fs::directory_iterator it(serverDir_, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code entryEc;
+        if (!it->is_directory(entryEc)) continue;
+        for (const CachedTrack& t : readManifest(it->path() / kManifestName))
+            if (auto path = completeIn(it->path(), t)) out.emplace(t.id, *path);
+    }
+    return out;
 }
 
 } // namespace oap

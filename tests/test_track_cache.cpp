@@ -115,6 +115,20 @@ TEST_F(TrackCacheTest, PartMissingAndEmptyFilesAreNeverReturned) {
     EXPECT_FALSE(c.find("s4")); // a folder
 }
 
+TEST_F(TrackCacheTest, IndexHoldsTheCompleteFilesOfAllListsAndOnlyThose) {
+    TrackCache c = cache();
+    writeFile(c.listFolder("al1") / "01.flac", "audio");
+    writeFile(c.listFolder("al1") / "02.flac.part", "half");
+    writeFile(c.listFolder("al1") / "03.flac", "");
+    writeFile(c.listFolder("pl2") / "x.mp3", "audio");
+    ASSERT_TRUE(c.save("al1", {track("s1", "01.flac"), track("s2", "02.flac.part"), track("s3", "03.flac"),
+                               track("s4", "04.flac")}));
+    ASSERT_TRUE(c.save("pl2", {track("s9", "x.mp3")}));
+    EXPECT_EQ(c.index(), (std::map<std::string, fs::path>{{"s1", c.listFolder("al1") / "01.flac"},
+                                                           {"s9", c.listFolder("pl2") / "x.mp3"}}));
+    EXPECT_TRUE(TrackCache(root, "", "anna").index().empty());
+}
+
 TEST_F(TrackCacheTest, FileOnDiskWithoutManifestEntryIsNotFound) {
     TrackCache c = cache();
     writeFile(c.listFolder("al1") / "01.flac", "audio");

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -52,6 +53,13 @@ public:
     // The complete cached file of a track, whichever list it is in; none when
     // it is not cached, its file is missing or empty, or it is a `.part` file.
     std::optional<std::filesystem::path> find(const std::string& trackId) const;
+
+    // The file of a manifest entry of `listId` if it is complete (the rules of find()).
+    std::optional<std::filesystem::path> completeFile(const std::string& listId, const CachedTrack& track) const;
+
+    // Every track find() would return, by track id, from one pass over the
+    // manifests: for a caller that asks often and keeps the answer in memory.
+    std::map<std::string, std::filesystem::path> index() const;
 
 private:
     std::filesystem::path serverDir_;

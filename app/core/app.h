@@ -5,10 +5,13 @@
 #include "menu.h"
 #include "services.h"
 #include "settings.h"
+#include "track_cache.h"
 
 #include <array>
 #include <deque>
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -39,12 +42,18 @@ public:
     // the book to resume (state.tsv). State is written only on exit and on sleep.
     // `server` gives the stream URLs of remote tracks; a front end without one
     // passes a server that is not configured. `downloader` fetches tracks of
-    // that server into the cache; App does not use it yet. `cacheRoot` is the folder of
+    // that server into the cache (Download album / playlist). `cacheRoot` is the folder of
     // downloaded tracks (empty: none); it is left out of Library and Music
     // when it lies inside them.
     App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
         Downloader& downloader, Settings& config, Settings& state, Clock& clock, std::filesystem::path libraryRoot,
         std::filesystem::path musicRoot, std::filesystem::path cacheRoot = {});
+
+    // How much room is left on the disk of a folder, in bytes; none if that cannot
+    // be told. Downloads check it before they start. The default asks
+    // std::filesystem::space(); a test sets its own.
+    using FreeSpace = std::function<std::optional<std::uintmax_t>(const std::filesystem::path&)>;
+    void setFreeSpace(FreeSpace freeSpace) { freeSpace_ = std::move(freeSpace); }
 
     void start();
     void keyDown(Button button);
@@ -159,6 +168,32 @@ private:
     std::vector<MenuItem> albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist);
     std::vector<MenuItem> trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
                                      const std::string& playAll, const RemoteSource& source);
+
+    // Downloads (docs/streaming.md, step 3.4). One album or playlist at a time, its
+    // tracks one after the other, each into its list folder in the cache; the
+    // manifest gets the track (pinned) once it is whole. Nothing here belongs to a
+    // screen: leaving the menu, Home or playing something does not stop it.
+    struct Download {
+        struct Item {
+            RemoteTrack track;
+            size_t number = 0; // its place in the list, from 1
+        };
+        RemoteSource source;
+        std::string title;
+        std::vector<Item> todo; // what is left to fetch, in list order
+        size_t next = 0;        // the item being fetched
+        size_t total = 0;       // tracks in the list
+        size_t finished = 0;    // of those, whole in the cache
+        Downloader::RequestId request = 0;
+    };
+    bool canDownload() const; // a cache folder, a server and a downloader that works
+    void startDownload(const std::string& title, const std::vector<RemoteTrack>& tracks, const RemoteSource& source);
+    void fetchNextTrack();
+    void onTrackDownloaded(Downloader::Result result);
+    void failDownload(const RemoteTrack& track, size_t number, const std::string& reason);
+    void finishDownload();
+    std::string downloadProgress() const; // "Downloading, 3 of 9 tracks", empty when none runs
+    TrackCache trackCache() const;        // of the server in the config
     void checkServer(); // Server status
 
     // The remote list that played last (state.tsv `last_stream.*`), to resume
@@ -226,7 +261,10 @@ private:
     void startTrackPlay(); // the loaded remote track starts a new play (scrobble_)
     void checkScrobble(Clock::TimePoint now); // tick(): tells the server what plays and what has been heard
     // The downloaded file of remote track `id` (TrackCache::find()), none if there is none.
-    std::optional<std::filesystem::path> cachedFile(const std::string& id) const;
+    // Looks in an index kept in memory (built at the first call, kept up to date by
+    // the downloads), so it is cheap enough for every tick. `verify`: also checks that
+    // the file is still on disk, which a track about to open needs.
+    std::optional<std::filesystem::path> cachedFile(const std::string& id, bool verify = false) const;
     int streamingBitrate() const; // Streaming quality: kbit/s, 0 for the original file
     // The stream of remote track `file` at the Streaming quality set now: the
     // pre-opened one if it is that track at that quality, else a new one.
@@ -252,7 +290,7 @@ private:
     SoundEffects& earcons_;
     VolumeControl& volume_;
     MusicServer& server_;
-    [[maybe_unused]] Downloader& downloader_; // for the download steps of phase 3 (3.4)
+    Downloader& downloader_;
     Settings& config_;
     Settings& state_;
     SettingsMap savedState_; // what state.tsv holds
@@ -260,6 +298,7 @@ private:
     std::filesystem::path libraryRoot_;
     std::filesystem::path musicRoot_;
     std::filesystem::path cacheRoot_; // downloaded tracks; never scanned as library or music
+    FreeSpace freeSpace_;
     GestureDetector gestures_;
 
     std::vector<Screen> screens_;
@@ -268,6 +307,14 @@ private:
     MusicServer::RequestId ping_ = 0;                 // Server status, while it waits; cancelled when the user moves on
     std::uint64_t pingScreen_ = 0;                    // the screen it was asked from
     MusicServer::RequestId resume_ = 0; // resumeStream(): the list being loaded, 0 when none; a new screen cancels it
+    std::optional<Download> download_;
+    // The complete files of the server in the config, by track id (TrackCache::index()).
+    // `server` is the folder name it was made for; another server in the config rebuilds it.
+    struct CacheIndex {
+        std::string server;
+        std::map<std::string, std::filesystem::path> files;
+    };
+    mutable std::optional<CacheIndex> cacheIndex_;
     bool sleeping_ = false;
     bool settingsChanged_ = false; // changed with Left / Right, not yet written to disk
     bool volumeChanged_ = false;   // changed in the player, written on exit

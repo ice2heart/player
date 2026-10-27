@@ -66,7 +66,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
-| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `Downloader` (queues a track download into `<dest>.part`, renamed when complete; the same `RequestId` / `poll()` / `cancel()` contract as `MusicServer`, results `Ok` / `NotConfigured` / `Unreachable` / `Server` / `Disk`; `App` takes one but does not use it before the download steps of phase 3), and `MusicServer` with its `RemoteTrack` (with the original's `suffix` and `size`) / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&`: the Streaming menu asks it for lists, `tick()` calls its `poll()`, and opening a remote track asks it for `stream(id, maxBitRate)`: the URL, and for a transcode a `Transcoded` (offset URL, and the length `App` fills in from the listing) that `MediaPlayer::open()` takes. |
+| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `Downloader` (queues a track download into `<dest>.part`, renamed when complete; the same `RequestId` / `poll()` / `cancel()` contract as `MusicServer`, results `Ok` / `NotConfigured` / `Unreachable` / `Server` / `Disk`; `App` takes one for Download album / playlist), and `MusicServer` with its `RemoteTrack` (with the original's `suffix` and `size`) / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&`: the Streaming menu asks it for lists, `tick()` calls its `poll()`, and opening a remote track asks it for `stream(id, maxBitRate)`: the URL, and for a transcode a `Transcoded` (offset URL, and the length `App` fills in from the listing) that `MediaPlayer::open()` takes. |
 | `app/net/http_client.{h,cpp}` | `Http`: asynchronous GET whose handler runs on the client's thread (tests use a fake). `HttpClient`: libcurl multi on one worker thread; 10 s connect timeout, 10 s without data or 60 s in all ends a request, answers over 16 MB fail; cancellable; the destructor aborts transfers and never waits on a socket. |
 | `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `stream()`: the original file with no `format` / `maxBitRate`, or an MP3 transcode (`format=mp3&maxBitRate=<kbps>`) whose offset URL adds `&timeOffset=` once `getOpenSubsonicExtensions` (asked with the first transcode) lists `transcodeOffset`. `scrobble()` sends `scrobble?id=&submission=` and only logs a failure to stderr (by its kind, never the URL). `downloadUrls(Config)` gives the `download?id=` URL of a track for `HttpDownloader`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
 | `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists, getPlaylist and getOpenSubsonicExtensions answers, and `parseStatus()` for an answer with only a status (scrobble) (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
@@ -78,7 +78,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
 | `app/core/library.{h,cpp}` | `Book` (also a remote list: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set), `scanLibrary(root, skip)`, which leaves out the cache folder `skip`. |
-| `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<list id>/`, where a list is an album or a playlist. Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 1`, then per track tab-separated: id, file, title, duration, server `changed` time, pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), written to `manifest.tsv.tmp` and renamed (no `fsync`: core has no OS calls). A missing or corrupt manifest reads as empty. `find(trackId)` returns the complete file of a track from any list, never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
+| `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<list id>/`, where a list is an album or a playlist. Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 1`, then per track tab-separated: id, file, title, duration, server `changed` time, pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), written to `manifest.tsv.tmp` and renamed (no `fsync`: core has no OS calls). A missing or corrupt manifest reads as empty. `find(trackId)` returns the complete file of a track from any list (`index()` does it for every track in one pass, `completeFile()` for one manifest entry), never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
 | `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `serverConfigured()`. |
 | `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys) and `TsvStore` (`state.tsv`). |
 | `app/config/atomic_file.{h,cpp}` | `writeFileAtomically()`: temp file with mode 0600, `fsync`, `rename`. |
@@ -362,10 +362,10 @@ Home
 │   ├── Recently added → <albums>  (one page of 500)
 │   ├── Albums A to Z → <albums>   (pages of 500, the next one fetched while the server has more)
 │   ├── Artists → <artist> → <albums>
-│   ├── Playlists → <playlist> → Play playlist · <tracks>
+│   ├── Playlists → <playlist> → Play playlist · Download playlist · <tracks>
 │   ├── Random albums → <albums>   (one page of 50)
 │   └── Server status              ("Checking the server.", then "Connected to Navidrome 0.64.2." or the error)
-│       <album> → Play album · <tracks>   (OK plays from that track to the end, via playRemote())
+│       <album> → Play album · Download album · <tracks>   (Download only with a cache folder and a downloader; OK plays from that track to the end, via playRemote())
 │       No server: one item, "No server set up" (OK says how to add one);
 │       a server this build cannot use (another type, or no OAP_BUILD_NET): "Server not supported"
 ├── Podcasts                       (placeholder)
@@ -513,6 +513,27 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   pre-opens nothing for a cached next track (it is a file). A cached track is
   scrobbled like a streamed one (it is a play on the server's account; offline
   the call is lost, as for any scrobble). The menus do not change.
+- **Cache index:** `cachedFile()` is called once per tick near the end of a
+  track, so it never reads the disk by itself. It keeps `TrackCache::index()` (track
+  id to file, for the server in the config) in memory, built at the first call and
+  updated when a download saves a track. The open of a track passes `verify`, which
+  also checks that the file is still there. A file added to the cache by anything
+  but `App`'s own downloads is not seen until the index is rebuilt (steps 3.5 and
+  later must update or reset it).
+- **Downloads (3.4):** `trackItems()` adds "Download album" / "Download playlist"
+  after the Play item when `canDownload()`. `startDownload()` reads the list's
+  manifest, skips (and pins) the tracks whose files are whole, checks the free
+  space of the cache root against the sizes of the rest (`App::setFreeSpace()`,
+  default `std::filesystem::space()`; an unknown size counts as 0, a failed query
+  as room enough) and holds one `Download` in `download_`. It asks the
+  `Downloader` for one track at a time into `<list folder>/<safe id>.<suffix>`; each
+  `Ok` (file size checked against `RemoteTrack.size` when known, a mismatch
+  deletes the file and fails) is added to `manifest.tsv` pinned, and updates the cache
+  index. A failure is spoken once and drops the `Download`; OK on the item starts again
+  and skips what is whole, the `.part` continuing. The download belongs to no screen,
+  so leaving menus never cancels it; `tick()` calls `downloader_.poll()`, and
+  `shutdown()` cancels the transfer (the `.part` stays). `whereAmI()` adds
+  `downloadProgress()`. The end is spoken, or an earcon while something plays.
 - **Read-ahead:** while a remote track plays its last `kReadAhead` (10 s, by the
   player's position and length), `App::checkReadAhead()` (last in `tick()`) asks
   the player to `preload()` the next track of the list, once; opening that track
