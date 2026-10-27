@@ -473,21 +473,75 @@ fetched again; phase 4 sync may fill it.
 
 ## Phase 4: one library (local files and server)
 
-- **Library index** instead of separate `scanLibrary()` lists:
-  `Item { id, source: local|server|cached, kind: book|music|podcast, title, artist, album, tracks }`.
-  It is kept on disk (SQLite, as in SPEC §4.7) so that start-up does not rescan and
-  browsing works offline.
-- **Incremental sync** of the server catalogue: `getIndexes ifModifiedSince` and
-  album `changed` times. It runs on Wi-Fi connect and from a "Refresh" item.
-- **Duplicates:** when a local album and a server album are the same (MusicBrainz id,
-  or artist + album + track count), show one entry and prefer the local file.
-- **Browse across sources:** Music → Artists / Albums / Genres / Recently added /
-  Recently played. Each item says where it plays from only when asked ("Info").
-- **Audiobooks from the server:** a server music folder (`getMusicFolders`), picked in
-  `config.yaml` (`server.audiobook_folder: Audiobooks`), is treated as books. Books save
-  positions and set `last_book`, and they are listed under Library.
-- **Streaming** stays a separate Home entry for now (decided). It may later become a
-  filter ("Server only") inside Library and Music, once the merged views work well.
+Goal: Music lists local albums and server albums together, by artist, album and genre,
+with one entry when an album is both on the device and on the server. Start-up does not
+rescan or wait for the server. Browsing works offline. Audiobooks on the server are
+listed in Library, keep their place and resume like local books.
+
+Decided for this phase:
+
+- **Library index** in place of the `scanLibrary()` calls in the menus:
+  `Item { id, source: local|server|cached, kind: book|music|podcast, title, artist, album, tracks, seenOn }`.
+  It is kept on disk, so start-up does not rescan and browsing works offline. It is
+  stored in **SQLite** (`library.db` next to `state.tsv`, as SPEC §4.7 says). Core holds the
+  index in memory and never sees SQLite: it loads and saves through a `LibraryStore`
+  interface in `services.h`. `SqliteLibraryStore` lives in a new library `app/library/`
+  (`oaplibrary`). Writes follow the flash rule: only what changed, in one transaction,
+  and play times only on exit and sleep.
+- **Where an item was seen.** Each item and each track keeps `seenOn`, a list of server
+  references `<server key>:<kind>:<id>`. The server key is `TrackCache::serverKey(url,
+  user)`, the key the cache folders already use. The kind is `album`, `playlist` or `track`, and the
+  id is the server's id (for example `ab12cd:album:3a1f9c`). A download gets the
+  reference of the server it came from, and a local album that matches a server album
+  (4.8) gets that album's reference. A direct check asks "is this on server X, and with
+  which id?". It needs no name matching, and the server copy of a local or downloaded
+  album can be opened, merged again after a sync, or dropped when it leaves the server.
+  A local item with no match has none. No reference holds a URL or a token.
+- **Books stay folders.** A local book is still one folder (or one file) under the
+  library root, titled by its folder. Only music is grouped by its tags. `podcast` is
+  reserved for later and nothing sets it in this phase.
+- **Scans and syncs run in the background.** The menus use the saved index at once, and
+  a new scan or sync replaces it when it is done. It is saved only when it changed, so
+  start-up writes nothing when nothing changed.
+- **Server sync** runs once at start-up, silently, and from a "Refresh library" item.
+  A sync that starts when Wi-Fi connects needs a network state from the platform
+  ([hal.md](hal.md), not built), so it comes later. The cheap check is `lastModified` from
+  `getArtists`. Only when that changed is the album list (`getAlbumList2
+  alphabeticalByName`, 500 per page) fetched again. The tracks of a server album are not
+  stored in the index: opening the album loads them, as Streaming does today.
+- **Duplicates:** when a local album and a server album are the same (MusicBrainz album
+  id, or else artist + album + track count, with case and spaces ignored), one entry is
+  shown and the local files are preferred, then a download (`cached`), then the server.
+- **Where it plays from** is spoken only when asked: an "Album info" item at the end of
+  an album's list. If [queue.md](queue.md) Q7 is built first, it moves to Options.
+- **Play all** in Music plays what is on the device (local and downloaded), never the
+  whole server.
+- **Streaming** stays a separate Home entry for now. It may later become a filter
+  ("Server only") inside Library and Music, once the merged views work well.
+
+| # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
+|---|------|------|
+| 4.1 | **Navigation contract first** (docs only): navigation.md and SPEC §5 get the new Music tree (Play all · Artists · Albums A to Z · Genres · Recently added · Recently played · Refresh library), "Album info", server books in Library, and what Refresh says. SPEC §4.7 names `library.db`. | – |
+| 4.2 | **`LibraryIndex` in core** (`app/core/library_index.{h,cpp}`): items and tracks as above, plus per track the location, title, artist, number, duration, size and file time, and per item the genre, year, MusicBrainz album id, the wall time it was first seen and the time it was last played. Items and tracks carry `seenOn` references (see above), with lookups both ways: from a reference to the item or track, and from an item to its reference on a given server key. Load and save go through a `LibraryStore` interface in `services.h` (load everything; save the items that changed and remove the ones that went). `FakeLibraryStore` in `tests/fakes.h` keeps it in memory and counts the saves. No menu change yet. | `tests/test_library_index.cpp`: an unchanged index saves nothing; one changed item saves only that item; a removed item is removed from the store; lookups by id and by path; an item with references to two servers is found by each and round-trips both; a reference is found for its own server key only; adding the same reference twice keeps one. |
+| 4.3 | **`SqliteLibraryStore`** in `app/library/` (`oaplibrary`, links SQLite): a schema with a version table (items, tracks, references), a save in one transaction, WAL off, and `synchronous=FULL`, so a power cut leaves the old data. A database of an unknown version or a damaged one is moved aside and the store starts empty (the next scan and sync fill it again). Front ends take `--library-db FILE` (device: `/data/config/library.db`; elsewhere next to `state.tsv`). Build: SQLite from the system (`libsqlite3-dev`, also arm64) or else fetched as the amalgamation like yaml-cpp, so the core-only build and its tests need no system package; both Docker targets get the package. | `tests/test_sqlite_library_store.cpp` on a temp dir: round-trip of items, tracks and references with non-ASCII, quotes and newlines in titles; saving one item leaves the others unchanged; removing an item removes its tracks and references; a damaged file and a newer schema version open as empty without a crash and are moved aside; the file is mode 0600. `docker build --target native` and `--target pi` pass, and so does the core-only configure. |
+| 4.4 | **Tags of local files.** A `TagReader` interface in `services.h` (title, artist, album artist, album, track and disc number, genre, year, duration, MusicBrainz album id; none for a file that cannot be read). `FfmpegTagReader` in `app/media/` reads the container metadata (ID3, Vorbis comments, MP4 atoms; keys compared without case). `FakeTagReader` in `tests/fakes.h`. | Media tests on small files the test writes with tags (MP3, FLAC, M4A), including Cyrillic and emoji. A file with no tags gives the duration and empty tags. A file that is not audio gives none. |
+| 4.5 | **Background scan.** A `LibraryScanner` interface (asynchronous, cancellable, results through `poll()`, like `MusicServer`), and `ThreadedScanner` in `app/frontend/` that walks the library and music roots on its own thread, skips the cache folder, keeps the entries whose path, size and file time did not change, and reads tags (through `TagReader`) only for new or changed files. Both front ends wire it. `FakeLibraryScanner` in `tests/fakes.h`. | On a temp folder with `FakeTagReader`: unchanged files are not read again; a changed file is; a removed file leaves the index; the cache folder is never entered. After cancel the callback does not run. A file whose tags cannot be read is still listed, with its folder and file names. |
+| 4.6 | **Library and Music read the index.** `App` loads the saved index at start-up, starts a scan and no longer calls `scanLibrary()` from the menus. A finished scan replaces the local items and saves the index if it changed. Music albums are grouped by album artist + album tag; files without tags are grouped by folder as today. The Music menu keeps its current shape until 4.9. | With a saved index and no scan delivered yet, Library and Music list it. A book added on disk appears after the scan is delivered. Two folders tagged as one album give one album; a folder of untagged files is one album with its folder name. A scan that changes nothing writes no index. The existing Library and Music tests pass. |
+| 4.7 | **Server catalogue in the index.** `RemoteAlbum` gets `genre`, `year`, `created` and `musicBrainzId`. `MusicServer` gets `catalogueVersion(done)` (`getArtists` `lastModified`). At start-up and from Music → Refresh library, `App` checks it, fetches all albums when it changed, and replaces the server items. Each server item gets its `seenOn` reference (`<server key>:album:<id>`). Items from another server key are dropped, and so are references to that key on local items. The start-up sync is silent. Refresh says "Updating the library." and then the result or the error. Refresh also rescans the local files. | Net tests: `lastModified` and the new album fields are parsed from the fixtures, and missing fields are empty. App tests: an unchanged `lastModified` fetches no album list; a changed one replaces the items, and an album the server dropped is gone; a sync error at start-up says nothing and the saved items stay; Refresh speaks the result and the error; items saved for another url or user are not listed. |
+| 4.8 | **Duplicates and downloads.** Merge local, server and downloaded (pinned in `TrackCache`) albums by the rule above into one entry with the preferred source. A download takes its reference from its manifest (server key, kind, list id, track ids). A merged entry keeps the server's reference, and the next sync matches it by that reference first and uses the name rule only for items with no reference. When an album leaves the server, its reference is removed and the local or downloaded entry stays. "Album info" at the end of an album's list says where it plays from ("On this device", "Downloaded", or the server's name), and "Also on the server" for a merged entry. | Same album local and on the server: one entry, and playing it opens local files and no stream URL. The same name with another track count gives two entries. A matching MusicBrainz id merges different spellings. A downloaded server album is `cached`, plays its files, and carries the reference of the server it came from. After a merge, a sync where the server renames the album keeps one entry, matched by reference. An album removed from the server leaves the local entry with no reference. Album info names each source. |
+| 4.9 | **Music → Artists and Albums A to Z across sources.** Music becomes: Play all, Artists → albums, Albums A to Z, then the later items. A server album opens with "Loading" and its tracks, as in Streaming (same errors, same "Play album" first item). Offline, a server-only album says "Server not reachable", and its tracks are not listed. Artists are sorted by name, ignoring the server's `ignoredArticles` ("The"), and include Cyrillic and other non-Latin names. | Artists list local and server artists once each, sorted. An artist's albums include both sources. A local album plays at once; a server album shows Loading, then its tracks. Server unreachable: a server album gives the error item, a local album still plays. Play all plays only device files. The Music tests from 4.6 are rewritten for the new tree. |
+| 4.10 | **Genres, Recently added, Recently played.** Genres from tags and from the server's album genre. Recently added is newest first: the first-seen time for local albums, `created` for server albums. Recently played is the last-played time an album gets when it plays, kept in memory and written with the index on exit and sleep, like the state. | A genre lists albums from both sources. Recently added orders a new local album and a new server album by time. Playing an album puts it first in Recently played after a restart. Playing writes nothing to disk until exit or sleep. A wall time before 2020-01-01 is ignored, as in the cache. |
+| 4.11 | **Audiobooks from the server.** `MusicServer::musicFolders(done)` (`getMusicFolders`) and a `musicFolderId` on the album list. `server.audiobook_folder` in `config.yaml` names a folder, and sync gives its albums `kind: book`. They are listed in Library after the local books (with "on the server" as the value), not in Music. They open as books: chapters are the tracks, the place is kept per server key + album id in `state`, and it is resumed when the book is opened again. Fetched with "Loading", as in 4.9. | Net tests: the folders are parsed, and the album list URL carries `musicFolderId`. With the folder set, its albums are in Library and not in Music; without it nothing changes. Opening a server book says "Chapter", and pause, another book, then this book again resume the place. No `pos:` key is ever made from a URL, and nothing spoken or saved contains one. |
+| 4.12 | **Resume a server book.** `last_book` can name a server book, so "Now playing" on Home and a restart resume it like a local book. With the server down, a downloaded book plays from its files; otherwise "Server not reachable." is said and Home stays. Opening a server book removes `last_stream.*`, as a local book does today. | Exit and restart resume the server book at its chapter and place. Server down: a downloaded book plays offline, and one that is not downloaded gives the error. A local `last_book` and a `last_stream` still resume as before. |
+| 4.13 | Docs: architecture.md (index, scanner, tag reader, sync, merged views, server books), navigation.md where the build differs from 4.1, SPEC, and what phase 4 built differently. | – |
+
+**Device check (manual):** with the test server set up, the first start lists Music
+from local files, and the server albums appear within a minute without anything being
+said. A restart lists everything at once, with no scan wait. An album that is both local
+and on the server is listed once and plays without network traffic. With Wi-Fi off,
+Music still lists everything, a local album plays, and a server album says "Server not
+reachable". A book in the server's audiobook folder is in Library and resumes after a
+restart. Refresh library after an album is added on the server lists it.
 
 ## Phase 5: sync and playlists
 
@@ -512,6 +566,7 @@ fetched again; phase 4 sync may fill it.
 ## Decisions
 
 - New libraries libcurl and yaml-cpp: **yes**. yaml-cpp reads both the config and the JSON answers.
+- The library index (phase 4) is stored in **SQLite**, behind a `LibraryStore` interface, so core stays free of it.
 - **One config file**, `config.yaml`, for menu settings and the server. Positions stay in `state.tsv`.
 - **State is written only on exit** (and sleep), to spare the flash. A crash or power loss loses the place since the last exit.
 - `.env` only stores the test credentials for development; the program does not read it.
