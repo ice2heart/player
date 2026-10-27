@@ -57,7 +57,7 @@ protected:
     }
 
     void start() {
-        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache);
+        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache, &diskFiles());
         app->start();
     }
 
@@ -3569,7 +3569,7 @@ protected:
     }
     // Track `id` of Weather is downloaded into the cache; returns its file.
     std::string download(const std::string& id) {
-        TrackCache store(cache, "https://music.example", "bob");
+        TrackCache store(diskFiles(), cache, "https://music.example", "bob");
         std::vector<CachedTrack> tracks = store.load(albumSource("weather")).tracks;
         tracks.push_back({id, id + ".mp3", id, 100, "", true, 0});
         fs::create_directories(store.listFolder(albumSource("weather")));
@@ -3710,7 +3710,7 @@ protected:
                 {"t2", "Rain", "Band", "Weather", 180, 2, "mp3", 5},
                 {"t3", "Sunshine", "Band", "Weather", 240, 3, "flac", 5}};
     }
-    TrackCache store() const { return TrackCache(cache, "https://music.example", "bob"); }
+    TrackCache store() const { return TrackCache(diskFiles(), cache, "https://music.example", "bob"); }
     // Streaming > Recently added > Weather, on its first item.
     void openAlbum(std::vector<RemoteTrack> tracks = sized()) {
         openList("Recently added");
@@ -3773,6 +3773,20 @@ TEST_F(DownloadTest, NoDownloadItemWithoutACacheFolderAServerOrADownloader) {
     EXPECT_EQ(labels().at(1), "Storm Front") << "no server address to key the cache by";
 }
 
+TEST_F(DownloadTest, AnAppWithoutTextFilesHasNoCacheEvenWithAFolder) {
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache);
+    app->start();
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(sized());
+    EXPECT_EQ(labels().at(1), "Storm Front") << "no Download item: manifests cannot be read or written";
+    press(Button::Home);
+    auto items = labels();
+    EXPECT_EQ(std::count(items.begin(), items.end(), "Downloaded"), 0) << "and no Downloaded list";
+}
+
 TEST_F(DownloadTest, TracksAreFetchedInOrderIntoTheListFolderAndPinnedOneByOne) {
     openAlbum();
     startDownload();
@@ -3821,15 +3835,96 @@ TEST_F(DownloadTest, TracksAlreadyCompleteAreSkippedAndKeptAndPinned) {
     finishLast();
     EXPECT_EQ(trackIdsRequested(), (std::vector<std::string>{"t1", "t3"}));
     auto manifest = c.load(albumSource("al1")).tracks;
-    ASSERT_EQ(manifest.size(), 4u);
-    EXPECT_EQ(manifest[0].id, "t2");
+    ASSERT_EQ(manifest.size(), 3u) << "x9 is not in the album any more: dropped";
+    EXPECT_EQ(manifest[0].id, "t1") << "in the order of the server's list";
     EXPECT_TRUE(manifest[0].pinned);
-    EXPECT_EQ(manifest[0].lastPlayed, 77) << "what was there is kept";
-    EXPECT_EQ(manifest[1].id, "x9");
-    EXPECT_EQ(manifest[2].id, "t1");
-    EXPECT_TRUE(manifest[2].pinned);
-    EXPECT_EQ(manifest[2].lastPlayed, 5) << "a track fetched again keeps its play time";
-    EXPECT_EQ(manifest[3].id, "t3");
+    EXPECT_EQ(manifest[0].lastPlayed, 5) << "a track fetched again keeps its play time";
+    EXPECT_EQ(manifest[1].id, "t2");
+    EXPECT_TRUE(manifest[1].pinned);
+    EXPECT_EQ(manifest[1].lastPlayed, 77) << "what was there is kept";
+    EXPECT_EQ(manifest[2].id, "t3");
+    EXPECT_FALSE(fs::exists(c.listFolder(albumSource("al1")) / "old.flac")) << "and so is its file";
+}
+
+// Seeds the Weather album folder with these tracks (id, pinned), each with a whole file, in this order.
+static void seedWeather(const TrackCache& c, std::vector<std::pair<std::string, bool>> tracks) {
+    std::vector<CachedTrack> manifest;
+    for (const auto& [id, pinned] : tracks) {
+        touch(c.listFolder(albumSource("al1")) / (id + ".mp3"));
+        manifest.push_back({id, id + ".mp3", id, 100, "", pinned, 0});
+    }
+    ASSERT_TRUE(c.save(cachedAlbum("al1", manifest)));
+}
+
+static std::vector<std::string> idsOf(const std::vector<CachedTrack>& tracks) {
+    std::vector<std::string> ids;
+    for (const CachedTrack& t : tracks) ids.push_back(t.id);
+    return ids;
+}
+
+TEST_F(DownloadTest, TheManifestFollowsTheServersOrderWhenTheListIsDownloadedAgain) {
+    seedWeather(store(), {{"t3", true}, {"t1", true}}); // an earlier download, when the list was ordered otherwise
+    openAlbum();
+    startDownload();
+    EXPECT_EQ(trackIdsRequested(), (std::vector<std::string>{"t2"}));
+    finishLast();
+    EXPECT_EQ(idsOf(store().load(albumSource("al1")).tracks), (std::vector<std::string>{"t1", "t2", "t3"}));
+}
+
+TEST_F(DownloadTest, AnAlbumThatIsAllDownloadedIsReorderedAndLosesTheTracksTheServerDropped) {
+    seedWeather(store(), {{"t3", true}, {"x9", true}, {"u1", false}, {"t2", true}, {"t1", true}});
+    openAlbum();
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Already downloaded.");
+    EXPECT_TRUE(downloader.requests.empty());
+    EXPECT_EQ(idsOf(store().load(albumSource("al1")).tracks), (std::vector<std::string>{"t1", "t2", "t3", "u1"}))
+        << "x9 left the server's list; u1 is a copy of the automatic cache and stays, after the others";
+    EXPECT_FALSE(fs::exists(store().listFolder(albumSource("al1")) / "x9.mp3")) << "the dropped track's file goes";
+    EXPECT_TRUE(fs::exists(store().listFolder(albumSource("al1")) / "u1.mp3"));
+}
+
+TEST_F(DownloadTest, ATrackListedTwiceIsFetchedAndCountedOnce) {
+    auto tracks = sized();
+    tracks.push_back(tracks[0]); // t1 again: four entries, three tracks
+    openAlbum(tracks);
+    startDownload();
+    EXPECT_EQ(speech.last(), "Downloading, 0 of 3 tracks.");
+    finishLast();
+    finishLast();
+    finishLast();
+    EXPECT_EQ(trackIdsRequested(), (std::vector<std::string>{"t1", "t2", "t3"})) << "t1 is not fetched a second time";
+    EXPECT_EQ(speech.last(), "Download finished, Weather.");
+    EXPECT_EQ(idsOf(store().load(albumSource("al1")).tracks), (std::vector<std::string>{"t1", "t2", "t3"}));
+}
+
+TEST_F(DownloadTest, ADamagedManifestLeavesNoOrphanedFilesWhenTheListIsDownloadedAgain) {
+    TrackCache c = store();
+    seedWeather(c, {{"t1", true}});
+    touch(c.listFolder(albumSource("al1")) / "old.flac");
+    touch(c.listFolder(albumSource("al1")) / "t2.mp3.part"); // a transfer that may be running
+    touch(c.listFolder(albumSource("al2")) / "other.flac");  // another list
+    std::ofstream(c.manifestFile(albumSource("al1")), std::ios::trunc) << "garbage\n";
+    openAlbum();
+    startDownload();
+    finishLast();
+    EXPECT_EQ(idsOf(c.load(albumSource("al1")).tracks), (std::vector<std::string>{"t1"})) << "readable again";
+    EXPECT_FALSE(fs::exists(c.listFolder(albumSource("al1")) / "old.flac")) << "not listed by anything: gone";
+    EXPECT_FALSE(fs::exists(c.listFolder(albumSource("al1")) / "t2.mp3")) << "(t2 is fetched again anyway)";
+    EXPECT_TRUE(fs::exists(c.listFolder(albumSource("al1")) / "t2.mp3.part")) << "never a .part";
+    EXPECT_TRUE(fs::exists(c.listFolder(albumSource("al2")) / "other.flac")) << "never another folder";
+}
+
+TEST_F(DownloadTest, ANextTrackThatGotCachedWhileItsStreamWasPreOpenedDropsTheStream) {
+    openAlbum();
+    startDownload();
+    finishLast(); // t1 whole, t2 on its way
+    ASSERT_TRUE(app->playRemote("Other", {{"z1", "Zed", "Band", "Other", 100, 1}, {"t2", "Rain", "Band", "Weather", 180, 2}}, 0));
+    player.pos = player.length - 5;
+    app->tick();
+    ASSERT_EQ(player.preloaded, "fake://stream/t2");
+    finishLast(); // t2 is a file now
+    app->tick();
+    EXPECT_FALSE(player.preloaded) << "no stream is kept open for a track that plays from its file";
 }
 
 TEST_F(DownloadTest, AnAlbumThatIsAllDownloadedStartsNothing) {
@@ -4019,15 +4114,20 @@ TEST_F(DownloadTest, ATrackWithoutATitleIsNamedByItsNumber) {
     EXPECT_EQ(speech.last(), "Cannot download track 1. Server not reachable.");
 }
 
-TEST_F(DownloadTest, AFinishedFileOfTheWrongSizeFailsAndIsNotKept) {
+TEST_F(DownloadTest, TheListedSizeGoesToTheDownloaderWhichJudgesCompleteness) {
     openAlbum();
     startDownload();
-    ASSERT_TRUE(downloader.finish(downloader.lastRequest().id, Result::Ok, true, "audi")); // 4 of 5 bytes
+    EXPECT_EQ(downloader.lastRequest().expectedSize, 5);
+}
+
+TEST_F(DownloadTest, AFinishedFileIsKeptWhateverItsSizeBecauseTheDownloaderSaidOk) {
+    openAlbum(); // the server lists 5 bytes; a stale size or a transcode gives another length
+    startDownload();
+    ASSERT_TRUE(downloader.finish(downloader.lastRequest().id, Result::Ok, true, "audi"));
     app->tick();
-    EXPECT_EQ(speech.last(), "Cannot download Storm Front. The file is incomplete.");
-    EXPECT_TRUE(store().load(albumSource("al1")).tracks.empty());
-    EXPECT_FALSE(fs::exists(store().listFolder(albumSource("al1")) / "t1.flac")) << "so the retry starts it again";
-    EXPECT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.requests.size(), 2u) << "on to the next track, no failure";
+    EXPECT_EQ(store().load(albumSource("al1")).tracks.size(), 1u);
+    EXPECT_TRUE(fs::exists(store().listFolder(albumSource("al1")) / "t1.flac"));
 }
 
 TEST_F(DownloadTest, ATrackOfUnknownSizeIsAcceptedWhateverItsLength) {
@@ -4199,7 +4299,7 @@ TEST_F(DownloadedTest, TheListMatchesTheManifestsByName) {
     seed(albumSource("al2"), "Autumn", "", {{"a1", "Leaves"}});
     seed(albumSource("al3"), "Half", "Band", {{"h1", "Only a part", false}}); // nothing whole: not listed
     seed(albumSource("al4"), "Mixed", "Band", {{"m1", "Here"}, {"m2", "Gone", false}});
-    TrackCache elsewhere(cache, "https://other.example", "bob");
+    TrackCache elsewhere(diskFiles(), cache, "https://other.example", "bob");
     seed(albumSource("al5"), "Other server", "", {{"o1", "X"}}, elsewhere);
     openDownloaded();
     EXPECT_EQ(labels(), (std::vector<std::string>{"Autumn", "Mixed", "Road songs", "weather"}));
@@ -4822,13 +4922,13 @@ TEST_F(AutoCacheTest, AFailedFetchIsSilentAndNotTriedAgainDuringThatPlay) {
     EXPECT_TRUE(player.playing()) << "the music goes on";
 }
 
-TEST_F(AutoCacheTest, AFileOfTheWrongSizeIsRemovedAndNotListed) {
+TEST_F(AutoCacheTest, TheListedSizeGoesToTheDownloaderAndItsOkIsTrusted) {
     playSized();
     listen(11s);
+    EXPECT_EQ(downloader.lastRequest().expectedSize, 5);
     ASSERT_TRUE(downloader.finish(downloader.lastRequest().id, Result::Ok, true, "short!!"));
     app->tick();
-    EXPECT_FALSE(cached("t1"));
-    EXPECT_FALSE(fs::exists(weatherFolderFile("t1.flac")));
+    EXPECT_TRUE(cached("t1"));
 }
 
 TEST_F(AutoCacheTest, TheTrackPlaysFromItsFileTheNextTimeAndIsNotStreamed) {
@@ -5110,7 +5210,7 @@ TEST_F(AutoCacheLimitTest, TheSizeIsSavedAndKeptAcrossARestart) {
     Settings reloaded{&configFile};
     reloaded.load();
     EXPECT_EQ(reloaded.getInt("cache.limit_gb", 1), 4);
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, reloaded, state, clock, root, music, cache);
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, reloaded, state, clock, root, music, cache, &diskFiles());
     app->start();
     open("Settings");
     open("Cache size");
@@ -5120,7 +5220,7 @@ TEST_F(AutoCacheLimitTest, TheSizeIsSavedAndKeptAcrossARestart) {
     app.reset();
     Settings off{&configFile};
     off.load();
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, off, state, clock, root, music, cache);
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, off, state, clock, root, music, cache, &diskFiles());
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1")));
     listen(60s);

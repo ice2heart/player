@@ -237,10 +237,12 @@ MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn) {
 
 App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
          Downloader& downloader, Settings& config, Settings& state, Clock& clock, std::filesystem::path libraryRoot,
-         std::filesystem::path musicRoot, std::filesystem::path cacheRoot)
+         std::filesystem::path musicRoot, std::filesystem::path cacheRoot, TextFiles* files)
     : tts_(speech), player_(player), earcons_(sounds), volume_(volume), server_(server), downloader_(downloader), config_(config), state_(state),
       savedState_(state.values()), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)),
-      freeSpace_(spaceOnDisk), lastActivity_(clock.now()) {}
+      freeSpace_(spaceOnDisk), lastActivity_(clock.now()) {
+    textFiles_ = files;
+}
 
 // ---------------------------------------------------------------- lifecycle
 
@@ -1079,14 +1081,16 @@ std::vector<MenuItem> App::albumItems(const std::vector<RemoteAlbum>& albums, bo
 // tracks: OK on one plays from it to the end, like Music.
 std::vector<MenuItem> App::trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
                                       const std::string& playAll, const RemoteSource& source,
-                                      const std::string& artist) {
+                                      const std::string& artist, std::optional<MenuItem> second) {
     if (tracks.empty()) return {};
     auto list = std::make_shared<const std::vector<RemoteTrack>>(tracks); // one copy for all the items
     std::vector<MenuItem> items;
     MenuItem all = action(playAll, [this, title, list, source, artist] { playRemote(title, *list, 0, source, 0, artist); });
     all.value = [n = tracks.size()] { return countValue(n, "track"); };
     items.push_back(all);
-    if (canDownload()) {
+    if (second) {
+        items.push_back(std::move(*second));
+    } else if (canDownload()) {
         const char* what = source.kind == RemoteSource::Kind::Album ? "Download album" : "Download playlist";
         items.push_back(action(what, [this, title, artist, list, source] { startDownload(title, artist, *list, source); }));
     }
@@ -1124,7 +1128,7 @@ std::vector<RemoteTrack> App::completeTracks(const TrackCache& store, const Remo
 }
 
 bool App::hasDownloads() const {
-    TrackCache store = trackCache();
+    const TrackCache& store = trackCache();
     return store.enabled() && !store.lists(true).empty();
 }
 
@@ -1144,30 +1148,22 @@ std::vector<MenuItem> App::downloadedMenu() {
 }
 
 // The tracks of a downloaded list that are whole on disk: "Play album" first, then
-// "Delete download", then the tracks. They play from their files like any list.
+// "Delete download", then the tracks (trackItems(), with Delete in place of Download). They play from their files like any list.
 std::vector<MenuItem> App::downloadedListMenu(const RemoteSource& source) {
-    TrackCache store = trackCache();
+    const TrackCache& store = trackCache();
     CachedList list = store.load(source);
-    auto tracks = std::make_shared<std::vector<RemoteTrack>>(completeTracks(store, source, list));
-    if (tracks->empty()) return {action("No tracks", [this] { say("The tracks of this download are gone from the disk."); })};
+    std::vector<RemoteTrack> tracks = completeTracks(store, source, list);
+    if (tracks.empty()) return {action("No tracks", [this] { say("The tracks of this download are gone from the disk."); })};
     std::string title = downloadedName(list);
-    std::vector<MenuItem> items;
-    MenuItem all = action(source.kind == RemoteSource::Kind::Album ? "Play album" : "Play playlist",
-                          [this, title, tracks, source, artist = list.artist] { playRemote(title, *tracks, 0, source, 0, artist); });
-    all.value = [n = tracks->size()] { return countValue(n, "track"); };
-    items.push_back(all);
     // A dangerous action: behind a list that opens on Cancel.
-    items.push_back(submenu("Delete download", [this, source, title] {
+    MenuItem del = submenu("Delete download", [this, source, title] {
         return std::vector<MenuItem>{
             action("Cancel", [this] { back(); }),
             action("Yes, delete", [this, source, title] { deleteDownload(source, title); }),
         };
-    }));
-    for (size_t i = 0; i < tracks->size(); ++i) {
-        std::string label = (*tracks)[i].title.empty() ? "Track " + std::to_string(i + 1) : (*tracks)[i].title;
-        items.push_back(action(label, [this, title, tracks, i, source, artist = list.artist] { playRemote(title, *tracks, i, source, 0, artist); }));
-    }
-    return items;
+    });
+    return trackItems(title, tracks, source.kind == RemoteSource::Kind::Album ? "Play album" : "Play playlist", source,
+                      list.artist, std::move(del));
 }
 
 // Removes the list's folder. The list that is loaded in the player is refused (its
@@ -1268,7 +1264,7 @@ void App::resumeStream() {
     auto place = savedStream();
     if (!place) return;
     cancelResume();
-    TrackCache store = trackCache();
+    const TrackCache& store = trackCache();
     CachedList cached = store.enabled() ? store.load(place->source) : CachedList{};
     std::vector<RemoteTrack> onDisk = completeTracks(store, place->source, cached);
     bool wholeDownload = !cached.tracks.empty() && onDisk.size() == cached.tracks.size() &&
@@ -1887,18 +1883,16 @@ void App::checkReadAhead() {
         // A new track, or the quality changed since: pre-open the stream that will be opened.
         size_t next = fileIndex_ + 1;
         const std::string id = book_->files[next].string();
-        if (readAhead_ && readAhead_->trackId == id && readAhead_->bitrate == streamingBitrate()) return;
-        if (cachedFile(id)) { // a file on disk opens at once: nothing to read ahead
+        if (cachedFile(id)) { // a file on disk opens at once: nothing to read ahead, and a stream pre-opened before it was cached is dropped
             if (readAhead_) {
                 player_.cancelPreload();
                 readAhead_.reset();
             }
             return;
         }
-        if (!readAhead_ || readAhead_->trackId != id || readAhead_->bitrate != streamingBitrate()) {
-            readAhead_ = ReadAhead{id, streamingBitrate(), newStream(next)};
-            player_.preload(readAhead_->stream.url);
-        }
+        if (readAhead_ && readAhead_->trackId == id && readAhead_->bitrate == streamingBitrate()) return;
+        readAhead_ = ReadAhead{id, streamingBitrate(), newStream(next)};
+        player_.preload(readAhead_->stream.url);
     } else if (readAhead_) {
         player_.cancelPreload();
         readAhead_.reset();
@@ -1947,25 +1941,39 @@ void App::checkScrobble(TimePoint now) {
 // server in the config and has one.
 std::optional<std::filesystem::path> App::cachedFile(const std::string& id, bool verify) const {
     if (cacheRoot_.empty()) return std::nullopt;
-    TrackCache store = trackCache();
+    const TrackCache& store = trackCache();
     if (!store.enabled()) return std::nullopt;
-    if (!cacheIndex_ || cacheIndex_->server != store.serverFolder().filename().string())
-        cacheIndex_ = CacheIndex{store.serverFolder().filename().string(), store.index()};
-    auto it = cacheIndex_->files.find(id);
-    if (it == cacheIndex_->files.end()) return std::nullopt;
+    if (!cacheIndex_) cacheIndex_ = store.index();
+    auto it = cacheIndex_->find(id);
+    if (it == cacheIndex_->end()) return std::nullopt;
     if (verify) {
         std::error_code ec;
         auto size = std::filesystem::file_size(it->second, ec);
         if (ec || size == 0) { // gone or emptied since the index was made
-            cacheIndex_->files.erase(it);
+            cacheIndex_->erase(it);
             return std::nullopt;
         }
     }
     return it->second;
 }
 
-TrackCache App::trackCache() const {
-    return TrackCache(cacheRoot_, config_.getString(kServerUrl), config_.getString(kServerUser));
+namespace {
+// For an App given no TextFiles: reads nothing and writes nothing, so its cache is never enabled.
+class NoTextFiles : public TextFiles {
+public:
+    std::optional<std::string> read(const std::filesystem::path&) override { return std::nullopt; }
+    bool writeAtomically(const std::filesystem::path&, const std::string&) override { return false; }
+};
+} // namespace
+
+// The server in the config is set up before the player starts and no menu changes it (a factory
+// reset keeps it), so the cache is made once.
+const TrackCache& App::trackCache() const {
+    static NoTextFiles none;
+    if (!trackCache_)
+        trackCache_.emplace(textFiles_ ? *textFiles_ : none, textFiles_ ? cacheRoot_ : std::filesystem::path(),
+                            config_.getString(kServerUrl), config_.getString(kServerUser));
+    return *trackCache_;
 }
 
 // ---------------------------------------------------------------- downloads
@@ -1986,7 +1994,37 @@ std::string downloadFileName(const RemoteTrack& track) {
     if (!track.suffix.empty()) name += "." + TrackCache::safeName(track.suffix);
     return name;
 }
+
+// Puts a list's manifest in the order the server has the list now: the tracks it still
+// lists come first in its order, then what it no longer lists. Of those, a download the
+// user asked for (pinned) is dropped, and its file is deleted by the caller; a track the
+// automatic cache holds stays, as a copy of a track that exists that the LRU limit will
+// evict. Returns whether the manifest changed, and the dropped entries.
+std::pair<bool, std::vector<CachedTrack>> followServerOrder(CachedList& cached, const std::vector<std::string>& order) {
+    std::vector<CachedTrack> before = cached.tracks, kept, dropped, extra;
+    auto listed = [&](const std::string& id) { return std::find(order.begin(), order.end(), id) != order.end(); };
+    for (const std::string& id : order) {
+        auto it = std::find_if(before.begin(), before.end(), [&](const CachedTrack& t) { return t.id == id; });
+        if (it != before.end()) kept.push_back(*it);
+    }
+    for (const CachedTrack& t : before)
+        if (!listed(t.id)) (t.pinned ? dropped : extra).push_back(t);
+    kept.insert(kept.end(), extra.begin(), extra.end());
+    bool changed = kept.size() != before.size();
+    for (size_t i = 0; !changed && i < kept.size(); ++i) changed = kept[i].id != before[i].id;
+    cached.tracks = std::move(kept);
+    return {changed, std::move(dropped)};
+}
 } // namespace
+
+void App::deleteDropped(const RemoteSource& source, const std::vector<CachedTrack>& dropped) {
+    const TrackCache& store = trackCache();
+    for (const CachedTrack& t : dropped) {
+        std::error_code ec;
+        std::filesystem::remove(store.listFolder(source) / t.file, ec);
+        if (cacheIndex_) cacheIndex_->erase(t.id);
+    }
+}
 
 // OK on a Download item. While that list downloads it says how far it is. A
 // download that failed has been dropped, so OK goes on with what is missing:
@@ -1994,11 +2032,11 @@ std::string downloadFileName(const RemoteTrack& track) {
 void App::startDownload(const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
                         const RemoteSource& source) {
     if (download_) {
-        if (download_->source.kind == source.kind && download_->source.id == source.id) say(downloadProgress() + ".");
+        if (sameList(download_->source, source)) say(downloadProgress() + ".");
         else say("Another download is running.");
         return;
     }
-    TrackCache store = trackCache();
+    const TrackCache& store = trackCache();
     if (!store.enabled()) return;
     CachedList cached = store.load(source);
     std::vector<CachedTrack>& manifest = cached.tracks;
@@ -2006,10 +2044,12 @@ void App::startDownload(const std::string& title, const std::string& artist, con
     job.source = source;
     job.title = title;
     job.artist = artist;
-    job.total = tracks.size();
     bool pinned = false; // a track the automatic cache kept now belongs to the user
     std::uintmax_t needed = 0;
     for (size_t i = 0; i < tracks.size(); ++i) {
+        // A track listed twice is one file: fetched and counted once.
+        if (std::find(job.order.begin(), job.order.end(), tracks[i].id) != job.order.end()) continue;
+        job.order.push_back(tracks[i].id);
         auto entry = std::find_if(manifest.begin(), manifest.end(),
                                   [&](const CachedTrack& t) { return t.id == tracks[i].id; });
         if (entry != manifest.end() && store.completeFile(source, *entry)) {
@@ -2020,14 +2060,17 @@ void App::startDownload(const std::string& title, const std::string& artist, con
         job.todo.push_back({tracks[i], i + 1});
         if (tracks[i].size > 0) needed += std::uintmax_t(tracks[i].size);
     }
+    job.total = job.order.size();
     cached.source = source;
     cached.name = title;
     cached.artist = artist;
-    if (pinned && !store.save(cached)) {
+    auto [reordered, dropped] = followServerOrder(cached, job.order);
+    if ((pinned || reordered || !dropped.empty()) && !store.save(cached)) {
         earcons_.play(Earcon::Error);
         say("Cannot write the download.");
         return;
     }
+    deleteDropped(source, dropped);
     if (job.todo.empty()) {
         say("Already downloaded.");
         return;
@@ -2050,7 +2093,7 @@ void App::fetchNextTrack() {
     Download& job = *download_;
     const RemoteTrack& track = job.todo[job.next].track;
     std::string dest = (trackCache().listFolder(job.source) / downloadFileName(track)).string();
-    job.request = downloader_.download(track.id, dest, {}, [this](Downloader::Result result) { onTrackDownloaded(result); });
+    job.request = downloader_.download(track.id, dest, track.size, {}, [this](Downloader::Result result) { onTrackDownloaded(result); });
 }
 
 void App::onTrackDownloaded(Downloader::Result result) {
@@ -2059,7 +2102,7 @@ void App::onTrackDownloaded(Downloader::Result result) {
     job.request = 0;
     const Download::Item item = job.todo[job.next];
     const RemoteTrack& track = item.track;
-    TrackCache store = trackCache();
+    const TrackCache& store = trackCache();
     std::string fileName = downloadFileName(track);
     std::filesystem::path file = store.listFolder(job.source) / fileName;
     switch (result) {
@@ -2068,13 +2111,6 @@ void App::onTrackDownloaded(Downloader::Result result) {
     case Downloader::Result::Unreachable: failDownload(track, item.number, "Server not reachable"); return;
     case Downloader::Result::Server: failDownload(track, item.number, "Server error"); return;
     case Downloader::Result::Disk: failDownload(track, item.number, "Cannot write the file"); return;
-    }
-    // A body that ended early without saying so looks whole to the downloader.
-    std::error_code ec;
-    if (track.size > 0 && std::filesystem::file_size(file, ec) != std::uintmax_t(track.size)) {
-        std::filesystem::remove(file, ec); // the next try starts it again
-        failDownload(track, item.number, "The file is incomplete");
-        return;
     }
     CachedList cached = store.load(job.source);
     std::vector<CachedTrack>& manifest = cached.tracks;
@@ -2089,12 +2125,14 @@ void App::onTrackDownloaded(Downloader::Result result) {
     } else {
         manifest.push_back(entry);
     }
+    // New entries were appended: the manifest follows the order of the list as it was fetched.
+    auto dropped = followServerOrder(cached, job.order).second;
     if (!store.save(cached)) {
         failDownload(track, item.number, "Cannot write the file");
         return;
     }
-    if (cacheIndex_ && cacheIndex_->server == store.serverFolder().filename().string())
-        cacheIndex_->files[track.id] = file;
+    deleteDropped(job.source, dropped);
+    if (cacheIndex_) (*cacheIndex_)[track.id] = file;
     job.finished++;
     if (++job.next < job.todo.size()) fetchNextTrack();
     else finishDownload();
@@ -2157,7 +2195,7 @@ void App::pumpAutoCache() {
     autoJob_ = std::move(autoQueue_.front());
     autoQueue_.pop_front();
     std::string dest = (trackCache().listFolder(autoJob_->source) / downloadFileName(autoJob_->track)).string();
-    autoRequest_ = downloader_.download(autoJob_->track.id, dest, {}, [this](Downloader::Result r) { onAutoCached(r); });
+    autoRequest_ = downloader_.download(autoJob_->track.id, dest, autoJob_->track.size, {}, [this](Downloader::Result r) { onAutoCached(r); });
 }
 
 // The transfer in flight stops (its .part stays) and is the next one when the download is over.
@@ -2176,23 +2214,17 @@ void App::dropAutoCache(const RemoteSource& list) {
     }
 }
 
-// Silent, whatever happens. A failure leaves its .part, which the next try of that track
-// continues; a file of the wrong size is removed.
+// Silent, whatever happens. A failure leaves its .part, which the next try of that track continues.
 void App::onAutoCached(Downloader::Result result) {
     autoRequest_ = 0;
     if (!autoJob_) return;
     AutoCache job = std::move(*autoJob_);
     autoJob_.reset();
     if (result != Downloader::Result::Ok) return;
-    TrackCache store = trackCache();
+    const TrackCache& store = trackCache();
     if (!store.enabled()) return;
     std::string fileName = downloadFileName(job.track);
     std::filesystem::path file = store.listFolder(job.source) / fileName;
-    std::error_code ec;
-    if (job.track.size > 0 && std::filesystem::file_size(file, ec) != std::uintmax_t(job.track.size)) {
-        std::filesystem::remove(file, ec);
-        return;
-    }
     CachedList cached = store.load(job.source);
     cached.source = job.source;
     if (cached.name.empty()) { // a list the user downloaded keeps its name
@@ -2210,18 +2242,18 @@ void App::onAutoCached(Downloader::Result result) {
         cached.tracks.push_back(entry);
     }
     if (!store.save(cached)) {
+        std::error_code ec;
         std::filesystem::remove(file, ec);
         return;
     }
-    if (cacheIndex_ && cacheIndex_->server == store.serverFolder().filename().string())
-        cacheIndex_->files[job.track.id] = file;
+    if (cacheIndex_) (*cacheIndex_)[job.track.id] = file;
     trimCache();
 }
 
 // The plays recorded in memory go into the manifests, and what is over the limit is deleted.
 // Scans the manifests once: called when a track was cached and on exit, never from a key or a tick.
 void App::trimCache() {
-    TrackCache store = trackCache();
+    const TrackCache& store = trackCache();
     if (cacheRoot_.empty() || !store.enabled()) return;
     std::vector<std::filesystem::path> keep; // the file the player has open
     if (book_ && book_->remote && fileIndex_ < book_->files.size() && player_.isOpen())

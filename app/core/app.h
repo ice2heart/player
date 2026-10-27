@@ -43,11 +43,12 @@ public:
     // `server` gives the stream URLs of remote tracks; a front end without one
     // passes a server that is not configured. `downloader` fetches tracks of
     // that server into the cache (Download album / playlist). `cacheRoot` is the folder of
-    // downloaded tracks (empty: none); it is left out of Library and Music
+    // downloaded tracks (empty: none, and none without `files` either, which reads and
+    // writes their manifests); it is left out of Library and Music
     // when it lies inside them.
     App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
         Downloader& downloader, Settings& config, Settings& state, Clock& clock, std::filesystem::path libraryRoot,
-        std::filesystem::path musicRoot, std::filesystem::path cacheRoot = {});
+        std::filesystem::path musicRoot, std::filesystem::path cacheRoot = {}, TextFiles* files = nullptr);
 
     // How much room is left on the disk of a folder, in bytes; none if that cannot
     // be told. Downloads check it before they start. The default asks
@@ -171,7 +172,7 @@ private:
     std::vector<MenuItem> albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist);
     std::vector<MenuItem> trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
                                      const std::string& playAll, const RemoteSource& source,
-                                     const std::string& artist);
+                                     const std::string& artist, std::optional<MenuItem> second = std::nullopt);
 
     // Downloads (docs/streaming.md, step 3.4). One album or playlist at a time, its
     // tracks one after the other, each into its list folder in the cache; the
@@ -184,9 +185,10 @@ private:
         };
         RemoteSource source;
         std::string title, artist; // of the list, kept in its manifest
+        std::vector<std::string> order; // the ids of the list as the server has it, without repeats
         std::vector<Item> todo; // what is left to fetch, in list order
         size_t next = 0;        // the item being fetched
-        size_t total = 0;       // tracks in the list
+        size_t total = 0;       // tracks in the list (a track listed twice counts once)
         size_t finished = 0;    // of those, whole in the cache
         Downloader::RequestId request = 0;
     };
@@ -195,10 +197,11 @@ private:
                        const RemoteSource& source);
     void fetchNextTrack();
     void onTrackDownloaded(Downloader::Result result);
+    void deleteDropped(const RemoteSource& source, const std::vector<CachedTrack>& dropped); // their files, after the manifest was saved
     void failDownload(const RemoteTrack& track, size_t number, const std::string& reason);
     void finishDownload();
     std::string downloadProgress() const; // "Downloading, 3 of 9 tracks", empty when none runs
-    TrackCache trackCache() const;        // of the server in the config
+    const TrackCache& trackCache() const; // of the server in the config, made at the first call (the server cannot change while the player runs)
     std::vector<MenuItem> downloadedMenu();                               // Streaming > Downloaded
     std::vector<MenuItem> downloadedListMenu(const RemoteSource& source); // one downloaded album or playlist
     static std::vector<RemoteTrack> completeTracks(const TrackCache& store, const RemoteSource& source, const CachedList& list);
@@ -346,12 +349,9 @@ private:
     // to the manifests by trimCache(): on exit, on sleep and after a track was cached.
     std::map<std::string, std::int64_t> played_;
     // The complete files of the server in the config, by track id (TrackCache::index()).
-    // `server` is the folder name it was made for; another server in the config rebuilds it.
-    struct CacheIndex {
-        std::string server;
-        std::map<std::string, std::filesystem::path> files;
-    };
-    mutable std::optional<CacheIndex> cacheIndex_;
+    mutable std::optional<std::map<std::string, std::filesystem::path>> cacheIndex_;
+    mutable std::optional<TrackCache> trackCache_;
+    TextFiles* textFiles_ = nullptr;
     bool sleeping_ = false;
     bool settingsChanged_ = false; // changed with Left / Right, not yet written to disk
     bool volumeChanged_ = false;   // changed in the player, written on exit

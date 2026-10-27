@@ -407,6 +407,28 @@ A lowered size takes effect on the next exit or cached track. Downloaded lists o
 what the user downloaded (a list with at least one pinned track); the automatic cache's
 tracks still play from their files whenever they are met in a server list or on resume.
 
+Review fixes for 3.1 to 3.6 as built:
+- Core does no file I/O: manifests go through `TextFiles` (`services.h`), implemented by
+  `DiskTextFiles` (`app/config/`, `fsync` before the rename). `App` takes it after the
+  cache root; with none the cache is off.
+- A manifest that is there but not valid is replaced on the next save, and the files in
+  that folder the new manifest does not list are deleted (a `.part` never; another folder
+  never), so no orphan is left that nothing lists or deletes. One that cannot be read at
+  all (an I/O error) is not replaced: the save fails and nothing is deleted.
+- `HttpDownloader::cancel()` waits for the file operation in flight (one write at most)
+  and the job then creates no folder or file, so Delete download can remove the folder
+  at once.
+- Completeness is the downloader's: the server's `Content-Length`, or the total of
+  `Content-Range` for a continued `.part`, is authoritative (a short body is
+  `Unreachable`). Only a server that sends no length is compared with the size passed to
+  `download()` (`RemoteTrack.size`; 0 accepts anything): a shorter body is cut short
+  (`Unreachable`, the `.part` is kept), a longer one is taken as a stale size. `App` no longer checks sizes itself, also not for the automatic cache.
+- Downloading a list again makes its manifest follow the server's order; pinned tracks the
+  server no longer lists are dropped with their files, and unpinned (automatically cached)
+  ones stay after the others until the LRU limit evicts them. A track listed twice is
+  fetched and counted once.
+- A pre-opened stream is cancelled when the next track turns out to be cached.
+
 **Device check (manual):** download an album, pull the Wi-Fi, and it still plays
 from Streaming → Downloaded and from "Now playing" after a restart. "Where am I?"
 during a download says the progress. A streamed album plays offline the second time.

@@ -2,6 +2,7 @@
 // with no window. Buttons come from evdev input devices, from the terminal
 // (handy over SSH) or from --script; everything spoken is also printed to stdout.
 
+#include "config/disk_text_files.h"
 #include "config/settings_files.h"
 #include "core/app.h"
 #include "core/earcons.h"
@@ -153,7 +154,9 @@ int main(int argc, char** argv) {
     SettingsFiles settings(config, state);
     std::unique_ptr<MusicServer> server = makeMusicServer(settings.config());
     std::unique_ptr<Downloader> downloader = makeDownloader(settings.config());
-    App app(tts, player, earcons, mixer, *server, *downloader, settings.config(), settings.state(), clock, library, music, cache);
+    DiskTextFiles manifests; // the cache's manifests, written atomically
+    App app(tts, player, earcons, mixer, *server, *downloader, settings.config(), settings.state(), clock, library, music, cache,
+            &manifests);
 
     EvdevInput evdev;
     if (useEvdev && evdev.open(evdevDevice) == 0)

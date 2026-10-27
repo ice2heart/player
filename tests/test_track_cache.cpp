@@ -1,9 +1,11 @@
 #include "core/track_cache.h"
+#include "fakes.h"
 #include "temp_dir.h"
 
 #include <gtest/gtest.h>
 
 #include <fstream>
+#include <map>
 #include <string>
 #include <tuple>
 
@@ -11,6 +13,7 @@ using oap::CachedList;
 using oap::CachedTrack;
 using oap::RemoteSource;
 using oap::TrackCache;
+using oap::test::diskFiles;
 using oap::test::testTempDir;
 namespace fs = std::filesystem;
 
@@ -46,7 +49,7 @@ protected:
         fs::remove_all(root);
     }
     void TearDown() override { fs::remove_all(root); }
-    TrackCache cache() { return TrackCache(root, "https://music.example.com/", "anna"); }
+    TrackCache cache() { return TrackCache(diskFiles(), root, "https://music.example.com/", "anna"); }
     fs::path root;
 };
 
@@ -87,6 +90,75 @@ TEST_F(TrackCacheTest, SaveReplacesTheManifestAndLeavesNoTemporaryFile) {
         ++files;
     }
     EXPECT_EQ(files, 1);
+}
+
+TEST_F(TrackCacheTest, ManifestsGoThroughTheTextFilesInterfaceAndNeverTouchTheDisk) {
+    class MemoryFiles : public oap::TextFiles {
+    public:
+        std::optional<std::string> read(const fs::path& file) override {
+            auto it = files.find(file);
+            return it == files.end() ? std::nullopt : std::optional<std::string>(it->second);
+        }
+        bool writeAtomically(const fs::path& file, const std::string& contents) override {
+            files[file] = contents;
+            return true;
+        }
+        std::map<fs::path, std::string> files;
+    } memory;
+    TrackCache c(memory, root, "https://music.example.com/", "anna");
+    ASSERT_TRUE(c.save(listOf(album("al1"), {track("s1", "01.flac")})));
+    EXPECT_EQ(memory.files.size(), 1u);
+    EXPECT_TRUE(memory.files.count(c.manifestFile(album("al1"))));
+    EXPECT_FALSE(fs::exists(root)) << "core wrote no file itself";
+    CachedList loaded = c.load(album("al1"));
+    ASSERT_EQ(loaded.tracks.size(), 1u);
+    EXPECT_EQ(loaded.tracks[0].id, "s1");
+}
+
+TEST_F(TrackCacheTest, SavingOverAManifestThatCannotBeReadDeletesTheFilesItNoLongerLists) {
+    ASSERT_TRUE(cache().save(listOf(album("al1"), {track("s1", "01.flac"), track("s2", "02.flac")})));
+    fs::path folder = cache().listFolder(album("al1"));
+    for (const char* name : {"01.flac", "02.flac", "03.flac", "03.flac.part", "notes.txt"}) writeFile(folder / name, "x");
+    writeFile(cache().listFolder(album("al2")) / "other.flac", "x");
+    writeFile(cache().manifestFile(album("al1")), "not a manifest\n");
+    ASSERT_TRUE(cache().load(album("al1")).tracks.empty());
+    ASSERT_TRUE(cache().save(listOf(album("al1"), {track("s3", "03.flac")})));
+    EXPECT_TRUE(fs::exists(folder / "03.flac")) << "listed";
+    EXPECT_TRUE(fs::exists(folder / "03.flac.part")) << "a .part may belong to a running transfer";
+    EXPECT_FALSE(fs::exists(folder / "01.flac"));
+    EXPECT_FALSE(fs::exists(folder / "02.flac"));
+    EXPECT_FALSE(fs::exists(folder / "notes.txt"));
+    EXPECT_TRUE(fs::exists(cache().listFolder(album("al2")) / "other.flac")) << "another list is not touched";
+    EXPECT_EQ(cache().load(album("al1")).tracks.size(), 1u);
+}
+
+TEST_F(TrackCacheTest, AManifestThatCannotBeReadIsNotReplacedAndNothingIsDeleted) {
+    ASSERT_TRUE(cache().save(listOf(album("al1"), {track("s1", "01.flac")})));
+    fs::path folder = cache().listFolder(album("al1"));
+    writeFile(folder / "01.flac", "x");
+    class Unreadable : public oap::TextFiles {
+    public:
+        std::optional<std::string> read(const fs::path&) override { return std::nullopt; } // an I/O error
+        bool writeAtomically(const fs::path& file, const std::string& contents) override {
+            return oap::test::diskFiles().writeAtomically(file, contents);
+        }
+    } broken;
+    TrackCache c(broken, root, "https://music.example.com/", "anna");
+    EXPECT_FALSE(c.save(listOf(album("al1"), {track("s2", "02.flac")}))) << "what could not be read is not overwritten";
+    EXPECT_TRUE(fs::exists(folder / "01.flac"));
+    EXPECT_EQ(cache().load(album("al1")).tracks.at(0).id, "s1") << "the manifest is as it was";
+}
+
+TEST_F(TrackCacheTest, SavingOverAReadableOrMissingManifestKeepsUnlistedFiles) {
+    ASSERT_TRUE(cache().save(listOf(album("al1"), {track("s1", "01.flac")})));
+    fs::path folder = cache().listFolder(album("al1"));
+    writeFile(folder / "02.flac", "x");
+    ASSERT_TRUE(cache().save(listOf(album("al1"), {track("s1", "01.flac")})));
+    EXPECT_TRUE(fs::exists(folder / "02.flac")) << "the manifest was fine: not this function's business";
+    ASSERT_TRUE(cache().remove(album("al1")));
+    writeFile(folder / "02.flac", "x");
+    ASSERT_TRUE(cache().save(listOf(album("al1"), {track("s1", "01.flac")})));
+    EXPECT_TRUE(fs::exists(folder / "02.flac")) << "there was no manifest to lose";
 }
 
 TEST_F(TrackCacheTest, FailedSaveKeepsTheOldManifest) {
@@ -137,7 +209,7 @@ TEST_F(TrackCacheTest, IndexHoldsTheCompleteFilesOfAllListsAndOnlyThose) {
     ASSERT_TRUE(c.save(listOf(playlist("pl2"), {track("s9", "x.mp3")})));
     EXPECT_EQ(c.index(), (std::map<std::string, fs::path>{{"s1", c.listFolder(album("al1")) / "01.flac"},
                                                            {"s9", c.listFolder(playlist("pl2")) / "x.mp3"}}));
-    EXPECT_TRUE(TrackCache(root, "", "anna").index().empty());
+    EXPECT_TRUE(TrackCache(diskFiles(), root, "", "anna").index().empty());
 }
 
 TEST_F(TrackCacheTest, FileOnDiskWithoutManifestEntryIsNotFound) {
@@ -250,7 +322,7 @@ TEST_F(TrackCacheTest, RemoveDeletesOnlyThatListsFolder) {
     writeFile(c.listFolder(playlist("a1")) / "y.flac", "audio");
     ASSERT_TRUE(c.save(listOf(album("a1"), {track("s1", "x.flac")})));
     ASSERT_TRUE(c.save(listOf(playlist("a1"), {track("s2", "y.flac")})));
-    TrackCache other(root, "https://other.example", "anna");
+    TrackCache other(diskFiles(), root, "https://other.example", "anna");
     writeFile(other.listFolder(album("a1")) / "x.flac", "audio");
     EXPECT_TRUE(c.remove(album("a1")));
     EXPECT_FALSE(fs::exists(c.listFolder(album("a1"))));
@@ -270,11 +342,11 @@ TEST_F(TrackCacheTest, RemoveNeverLeavesTheServerFolder) {
         EXPECT_TRUE(fs::exists(root / "keep" / "f")) << s.id;
     }
     ASSERT_TRUE(fs::exists(root / "keep" / "f"));
-    EXPECT_FALSE(TrackCache(root, "", "anna").remove(album("a1")));
+    EXPECT_FALSE(TrackCache(diskFiles(), root, "", "anna").remove(album("a1")));
 }
 
 TEST_F(TrackCacheTest, AnEmptyServerUrlStoresNothing) {
-    TrackCache c(root, "", "anna");
+    TrackCache c(diskFiles(), root, "", "anna");
     EXPECT_FALSE(c.enabled());
     EXPECT_FALSE(c.save(listOf(album("al1"), {track("s1", "01.flac")})));
     EXPECT_TRUE(c.load(album("al1")).tracks.empty());
@@ -283,7 +355,7 @@ TEST_F(TrackCacheTest, AnEmptyServerUrlStoresNothing) {
 }
 
 TEST_F(TrackCacheTest, AnEmptyRootStoresNothing) {
-    TrackCache c("", "https://music.example.com", "anna");
+    TrackCache c(diskFiles(), "", "https://music.example.com", "anna");
     EXPECT_FALSE(c.enabled());
     EXPECT_FALSE(c.save(listOf(album("al1"), {track("s1", "01.flac")})));
 }
@@ -417,7 +489,7 @@ TEST_F(TrackCacheTest, TrimRemovesAListFolderLeftEmptyButNotOneWithAPartFile) {
 
 TEST_F(TrackCacheTest, TrimLeavesAnotherServersFilesAlone) {
     TrackCache c = cache();
-    TrackCache other(root, "https://other.example", "anna");
+    TrackCache other(diskFiles(), root, "https://other.example", "anna");
     seedFiles(c, album("a"), 10, {{"mine", false, 1}});
     seedFiles(other, album("a"), 10, {{"theirs", false, 1}});
     c.trim(0, {}, {});

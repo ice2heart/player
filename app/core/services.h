@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <ctime>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <string>
@@ -25,6 +26,20 @@ class SystemClock : public Clock {
 public:
     TimePoint now() const override { return std::chrono::steady_clock::now(); }
     std::time_t wallTime() const override { return std::time(nullptr); }
+};
+
+// Whole text files on disk, for what core keeps outside Settings (the manifests
+// of the track cache). Core does no file I/O of its own: app/config/ has the
+// real implementation (DiskTextFiles), tests use a real one on a temp folder.
+class TextFiles {
+public:
+    virtual ~TextFiles() = default;
+    // The whole file; none if it does not exist or cannot be read.
+    virtual std::optional<std::string> read(const std::filesystem::path& file) = 0;
+    // Replaces the file all at once: the old contents or the new ones are left
+    // after a crash or a power cut, never half of either. Creates the folder.
+    // False if it could not be written (the old file is then untouched).
+    virtual bool writeAtomically(const std::filesystem::path& file, const std::string& contents) = 0;
 };
 
 // Text to speech. stop() cancels both queued and currently playing speech.
@@ -210,12 +225,19 @@ public:
 // server cannot continue it. Only a complete file is renamed to `dest`, so
 // `dest` exists only when it is whole. A failure or cancel keeps the `.part`.
 // Folders above `dest` are created. A `dest` that exists is replaced.
+//
+// Whole means: the length the server sends (Content-Length, or the total of
+// Content-Range for a continued `.part`) is authoritative; a body that ends before
+// it is Unreachable. Only when the server sends no length is the file compared
+// with `expectedSize` (0: not known, anything is accepted); a shorter body is
+// Unreachable too, and the `.part` stays; a longer one is taken (the size was stale). After cancel() returns the downloader
+// creates no folder or file for that request any more.
 class Downloader {
 public:
     enum class Result {
         Ok,
         NotConfigured, // no server to fetch from
-        Unreachable,   // no answer, or the connection broke off: the `.part` can be continued
+        Unreachable,   // no answer, or the connection broke off or ended early: the `.part` can be continued
         Server,        // the server refused (an HTTP error status, or an error instead of audio)
         Disk,          // the file or its folder could not be written
     };
@@ -229,8 +251,8 @@ public:
     virtual ~Downloader() = default;
     virtual bool configured() const = 0;
     // `progress` may be empty. `done` runs once, unless the request is cancelled.
-    virtual RequestId download(const std::string& trackId, const std::string& dest, Progress progress,
-                               Done done) = 0;
+    virtual RequestId download(const std::string& trackId, const std::string& dest, long long expectedSize,
+                               Progress progress, Done done) = 0;
     virtual void cancel(RequestId id) = 0; // unknown ids are ignored
     virtual void poll() = 0;               // UI thread: run the callbacks
 };

@@ -13,7 +13,8 @@ namespace oap {
 class NoDownloader : public Downloader {
 public:
     bool configured() const override { return false; }
-    RequestId download(const std::string& trackId, const std::string& dest, Progress progress, Done done) override;
+    RequestId download(const std::string& trackId, const std::string& dest, long long expectedSize, Progress progress,
+                      Done done) override;
     void cancel(RequestId id) override;
     void poll() override;
 

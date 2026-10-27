@@ -22,6 +22,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -237,9 +238,9 @@ protected:
         return true;
     }
     // Runs one download to its result.
-    Result fetch(const std::string& trackId, const fs::path& dest) {
+    Result fetch(const std::string& trackId, const fs::path& dest, long long expectedSize = 0) {
         Outcome outcome;
-        downloader->download(trackId, dest.string(), outcome.progress(), outcome.done());
+        downloader->download(trackId, dest.string(), expectedSize, outcome.progress(), outcome.done());
         EXPECT_TRUE(pump([&] { return outcome.doneCalls > 0; }));
         return outcome.result;
     }
@@ -278,7 +279,7 @@ TEST_F(HttpDownloaderTest, ThePartGrowsAndDestAppearsOnlyWhenTheFileIsComplete) 
     use(server);
     fs::path dest = dir / "t1.flac", part = dir / "t1.flac.part";
     Outcome outcome;
-    downloader->download("t1", dest.string(), outcome.progress(), outcome.done());
+    downloader->download("t1", dest.string(), 0, outcome.progress(), outcome.done());
     ASSERT_TRUE(waitFor([&] { return fs::exists(part) && fs::file_size(part) == first.size(); }));
     EXPECT_FALSE(fs::exists(dest)) << "half a file is not the file";
     ASSERT_TRUE(pump([&] { return outcome.progressCalls > 0; }));
@@ -296,7 +297,7 @@ TEST_F(HttpDownloaderTest, TheResultIsReportedOnlyFromPoll) {
     TestServer server([](const std::string&) { return whole("song"); });
     use(server);
     Outcome outcome;
-    downloader->download("t1", (dir / "t1.flac").string(), nullptr, outcome.done());
+    downloader->download("t1", (dir / "t1.flac").string(), 0, nullptr, outcome.done());
     ASSERT_TRUE(waitFor([&] { return fs::exists(dir / "t1.flac"); }));
     std::this_thread::sleep_for(kQuiet);
     EXPECT_EQ(outcome.doneCalls, 0);
@@ -314,7 +315,7 @@ TEST_F(HttpDownloaderTest, APartialPartIsContinuedWithARangeRequest) {
     fs::path dest = dir / "t1.flac";
     spit(dir / "t1.flac.part", "abcd");
     Outcome outcome;
-    downloader->download("t1", dest.string(), outcome.progress(), outcome.done());
+    downloader->download("t1", dest.string(), 0, outcome.progress(), outcome.done());
     ASSERT_TRUE(pump([&] { return outcome.doneCalls > 0; }));
     EXPECT_EQ(outcome.result, Result::Ok);
     ASSERT_EQ(server.requestCount(), 1u);
@@ -330,7 +331,7 @@ TEST_F(HttpDownloaderTest, ProgressOfAContinuedPartCountsTheBytesItAlreadyHad) {
     use(server);
     spit(dir / "t1.flac.part", "abcd");
     Outcome outcome;
-    downloader->download("t1", (dir / "t1.flac").string(), outcome.progress(), outcome.done());
+    downloader->download("t1", (dir / "t1.flac").string(), 0, outcome.progress(), outcome.done());
     ASSERT_TRUE(pump([&] { return outcome.progressCalls > 0; }));
     EXPECT_EQ(outcome.bytes, 6);
     EXPECT_EQ(outcome.total, 10);
@@ -436,7 +437,7 @@ TEST_F(HttpDownloaderTest, ACancelledDownloadNeverCallsBackAndTheTransferStops) 
     TestServer server([](const std::string&) { return Answer{head(200, 10) + "12345", "67890", /*hold=*/true}; });
     use(server);
     Outcome cancelled, next;
-    auto id = downloader->download("t1", (dir / "t1.flac").string(), cancelled.progress(), cancelled.done());
+    auto id = downloader->download("t1", (dir / "t1.flac").string(), 0, cancelled.progress(), cancelled.done());
     ASSERT_TRUE(waitFor([&] { return fs::exists(dir / "t1.flac.part") && fs::file_size(dir / "t1.flac.part") == 5; }));
     downloader->cancel(id);
     server.release(); // the rest comes now; without the cancel the file would finish
@@ -446,9 +447,157 @@ TEST_F(HttpDownloaderTest, ACancelledDownloadNeverCallsBackAndTheTransferStops) 
     EXPECT_FALSE(fs::exists(dir / "t1.flac"));
     EXPECT_EQ(slurp(dir / "t1.flac.part"), "12345") << "the transfer stopped and the part is kept";
     // The worker is free again.
-    downloader->download("t2", (dir / "t2.flac").string(), nullptr, next.done());
+    downloader->download("t2", (dir / "t2.flac").string(), 0, nullptr, next.done());
     ASSERT_TRUE(pump([&] { return next.doneCalls > 0; }));
     EXPECT_EQ(cancelled.doneCalls, 0);
+}
+
+namespace {
+// Every file and folder below `root`, as relative names.
+std::set<std::string> listing(const fs::path& root) {
+    std::set<std::string> names;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec))
+        names.insert(fs::relative(it->path(), root).string());
+    return names;
+}
+} // namespace
+
+// A worker that is slow to get to its next file operation, as a busy disk makes it: the test holds
+// it before (`holdingFiles` false) or inside the operation until it says go.
+struct FileStepGate {
+    explicit FileStepGate(bool inside) : inside(inside) {}
+    HttpDownloader::Options options() {
+        HttpDownloader::Options o;
+        o.onFileStep = [this](bool holding) {
+            if (holding != inside) return;
+            std::unique_lock lock(mutex);
+            if (++reached == 1) {
+                changed.notify_all();
+                changed.wait(lock, [this] { return go; });
+            }
+        };
+        return o;
+    }
+    bool waitForWorker() {
+        std::unique_lock lock(mutex);
+        return changed.wait_for(lock, kPatience, [this] { return reached > 0; });
+    }
+    void release() {
+        {
+            std::lock_guard lock(mutex);
+            go = true;
+        }
+        changed.notify_all();
+    }
+    bool inside;
+    std::mutex mutex;
+    std::condition_variable changed;
+    int reached = 0;
+    bool go = false;
+};
+
+TEST_F(HttpDownloaderTest, ADownloadCancelledWhileTheWorkerIsAboutToCreateItsFolderNeverCreatesIt) {
+    TestServer server([](const std::string&) { return whole("song"); });
+    FileStepGate gate(/*inside=*/false);
+    use(server, gate.options());
+    auto id = downloader->download("t1", (dir / "album" / "t1.flac").string(), 0, nullptr, nullptr);
+    ASSERT_TRUE(gate.waitForWorker());
+    downloader->cancel(id); // the caller deletes the folder now, or has no use for it
+    gate.release();
+    Outcome next; // the worker is done with the cancelled job when it finishes this one
+    downloader->download("t2", (dir / "t2.flac").string(), 0, nullptr, next.done());
+    ASSERT_TRUE(pump([&] { return next.doneCalls > 0; }));
+    EXPECT_FALSE(fs::exists(dir / "album")) << "no folder after cancel() returned";
+    EXPECT_EQ(server.requestCount(), 1u) << "and no request for the cancelled one";
+}
+
+TEST_F(HttpDownloaderTest, ADownloadCancelledWhileTheWorkerIsAboutToOpenItsPartNeverOpensIt) {
+    TestServer server([](const std::string&) { return Answer{head(200, 10), "1234567890", /*hold=*/true}; });
+    FileStepGate gate(/*inside=*/false);
+    HttpDownloader::Options options = gate.options();
+    auto inner = options.onFileStep;
+    std::atomic<int> steps{0};
+    options.onFileStep = [&](bool holding) { // let the folder be made, hold the second step: the open of the part
+        if (!holding && steps++ == 0) return;
+        inner(holding);
+    };
+    use(server, options);
+    auto id = downloader->download("t1", (dir / "t1.flac").string(), 0, nullptr, nullptr);
+    ASSERT_TRUE(waitFor([&] { return server.requestCount() == 1; }));
+    server.release(); // the body comes: the worker is about to open the part
+    ASSERT_TRUE(gate.waitForWorker());
+    downloader->cancel(id);
+    gate.release();
+    std::this_thread::sleep_for(kQuiet);
+    EXPECT_FALSE(fs::exists(dir / "t1.flac.part")) << "nothing is opened after cancel() returned";
+    EXPECT_FALSE(fs::exists(dir / "t1.flac"));
+}
+
+TEST_F(HttpDownloaderTest, CancelWaitsForTheFileOperationInFlightAndNothingFollowsIt) {
+    TestServer server([](const std::string&) { return whole("song"); });
+    FileStepGate gate(/*inside=*/true);
+    use(server, gate.options());
+    auto id = downloader->download("t1", (dir / "album" / "t1.flac").string(), 0, nullptr, nullptr);
+    ASSERT_TRUE(gate.waitForWorker()); // inside the creation of the folder
+    std::atomic<bool> returned{false};
+    std::thread canceller([&] {
+        downloader->cancel(id);
+        returned = true;
+    });
+    std::this_thread::sleep_for(kQuiet);
+    EXPECT_FALSE(returned) << "the operation is still running";
+    gate.release();
+    canceller.join();
+    EXPECT_TRUE(returned);
+    std::set<std::string> atCancel = listing(dir);
+    std::this_thread::sleep_for(kQuiet);
+    EXPECT_EQ(listing(dir), atCancel) << "nothing is created once cancel() has returned";
+    EXPECT_EQ(server.requestCount(), 0u) << "the transfer never began";
+}
+
+TEST_F(HttpDownloaderTest, TheLengthTheServerSendsDecidesNotTheExpectedSize) {
+    TestServer server([](const std::string&) { return whole("abc"); });
+    use(server);
+    EXPECT_EQ(fetch("t1", dir / "a.flac", 100), Result::Ok) << "a stale size in the listing";
+    EXPECT_EQ(slurp(dir / "a.flac"), "abc");
+    EXPECT_EQ(fetch("t1", dir / "b.flac", 2), Result::Ok);
+}
+
+TEST_F(HttpDownloaderTest, ABodyOfUnknownLengthIsComparedWithTheExpectedSize) {
+    TestServer server([](const std::string&) {
+        return Answer{"HTTP/1.1 200 X\r\nContent-Type: audio/flac\r\nConnection: close\r\n\r\nabc", "", false};
+    });
+    use(server);
+    EXPECT_EQ(fetch("t1", dir / "short.flac", 10), Result::Unreachable) << "cut short";
+    EXPECT_FALSE(fs::exists(dir / "short.flac"));
+    EXPECT_EQ(slurp(dir / "short.flac.part"), "abc") << "kept to be continued";
+    EXPECT_EQ(fetch("t2", dir / "exact.flac", 3), Result::Ok);
+    EXPECT_EQ(slurp(dir / "exact.flac"), "abc");
+    EXPECT_EQ(fetch("t3", dir / "unknown.flac", 0), Result::Ok) << "no size to compare with: accepted";
+    EXPECT_EQ(fetch("t4", dir / "stale.flac", 2), Result::Ok) << "longer than listed cannot be a cut one";
+    EXPECT_EQ(slurp(dir / "stale.flac"), "abc");
+}
+
+TEST_F(HttpDownloaderTest, AContentRangeTotalOfZeroIsNotTakenForTheSize) {
+    TestServer server([](const std::string&) {
+        return Answer{head(206, 2, "audio/flac", "Content-Range: bytes 4-5/0\r\n") + "ef", "", false};
+    });
+    use(server);
+    spit(dir / "t1.flac.part", "abcd");
+    EXPECT_EQ(fetch("t1", dir / "t1.flac"), Result::Ok) << "a total of 0 is nonsense: the Content-Length decides";
+    EXPECT_EQ(slurp(dir / "t1.flac"), "abcdef");
+}
+
+TEST_F(HttpDownloaderTest, TheTotalOfContentRangeDecidesForAContinuedPart) {
+    TestServer server([](const std::string&) {
+        return Answer{head(206, 2, "audio/flac", "Content-Range: bytes 4-5/10\r\n") + "ef", "", false};
+    });
+    use(server);
+    spit(dir / "t1.flac.part", "abcd");
+    EXPECT_EQ(fetch("t1", dir / "t1.flac", 6), Result::Unreachable) << "6 bytes of 10; the expected 6 does not matter";
+    EXPECT_FALSE(fs::exists(dir / "t1.flac"));
+    EXPECT_EQ(slurp(dir / "t1.flac.part"), "abcdef");
 }
 
 TEST_F(HttpDownloaderTest, ADownloadCancelledBeforeItStartedNeverRuns) {
@@ -458,9 +607,9 @@ TEST_F(HttpDownloaderTest, ADownloadCancelledBeforeItStartedNeverRuns) {
     });
     use(server);
     Outcome first, second, third;
-    downloader->download("t1", (dir / "t1.flac").string(), nullptr, first.done()); // holds the worker
-    auto queued = downloader->download("t2", (dir / "t2.flac").string(), nullptr, second.done());
-    downloader->download("t3", (dir / "t3.flac").string(), nullptr, third.done());
+    downloader->download("t1", (dir / "t1.flac").string(), 0, nullptr, first.done()); // holds the worker
+    auto queued = downloader->download("t2", (dir / "t2.flac").string(), 0, nullptr, second.done());
+    downloader->download("t3", (dir / "t3.flac").string(), 0, nullptr, third.done());
     ASSERT_TRUE(waitFor([&] { return server.requestCount() == 1; }));
     downloader->cancel(queued);
     server.release();
@@ -480,9 +629,9 @@ TEST_F(HttpDownloaderTest, DownloadsRunOneAfterAnotherInTheOrderQueued) {
     std::vector<std::string> order;
     auto note = [&](std::string name) { return [&order, name](Result) { order.push_back(name); }; };
     auto start = Clock::now();
-    downloader->download("t1", (dir / "1.flac").string(), nullptr, note("t1"));
-    downloader->download("t2", (dir / "2.flac").string(), nullptr, note("t2"));
-    downloader->download("t3", (dir / "3.flac").string(), nullptr, note("t3"));
+    downloader->download("t1", (dir / "1.flac").string(), 0, nullptr, note("t1"));
+    downloader->download("t2", (dir / "2.flac").string(), 0, nullptr, note("t2"));
+    downloader->download("t3", (dir / "3.flac").string(), 0, nullptr, note("t3"));
     EXPECT_LT(Clock::now() - start, 1s) << "download() does not wait for the transfer";
     ASSERT_TRUE(waitFor([&] { return server.requestCount() == 1; }));
     std::this_thread::sleep_for(kQuiet);
@@ -496,7 +645,7 @@ TEST_F(HttpDownloaderTest, TheDestructorDoesNotWaitForAStuckTransfer) {
     TestServer server([](const std::string&) { return Answer{head(200, 10) + "12345", "67890", /*hold=*/true}; });
     use(server);
     Outcome outcome;
-    downloader->download("t1", (dir / "t1.flac").string(), nullptr, outcome.done());
+    downloader->download("t1", (dir / "t1.flac").string(), 0, nullptr, outcome.done());
     ASSERT_TRUE(waitFor([&] { return server.requestCount() == 1; }));
     auto start = Clock::now();
     downloader.reset();
@@ -517,11 +666,11 @@ TEST_F(HttpDownloaderTest, ACallbackThatCancelsAnotherDownloadStopsItsCallback) 
     Downloader::RequestId secondId = 0;
     int firstCalls = 0;
     // Both finish before one poll() sees them; the first one's callback cancels the second.
-    downloader->download("t1", (dir / "1.flac").string(), nullptr, [&](Result) {
+    downloader->download("t1", (dir / "1.flac").string(), 0, nullptr, [&](Result) {
         ++firstCalls;
         downloader->cancel(secondId);
     });
-    secondId = downloader->download("t2", (dir / "2.flac").string(), nullptr, second.done());
+    secondId = downloader->download("t2", (dir / "2.flac").string(), 0, nullptr, second.done());
     ASSERT_TRUE(waitFor([&] { return fs::exists(dir / "2.flac"); }));
     std::this_thread::sleep_for(kQuiet); // both results are waiting for the poll
     ASSERT_TRUE(pump([&] { return firstCalls > 0; }));

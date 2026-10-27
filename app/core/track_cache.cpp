@@ -4,7 +4,6 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <set>
 #include <sstream>
 #include <tuple>
@@ -132,20 +131,18 @@ bool parseListLine(const std::string& line, CachedList& list) {
            !list.source.id.empty();
 }
 
-// A manifest file; a list with an empty id if it is missing or any line is wrong.
-CachedList readManifest(const fs::path& file) {
+// The text of a manifest; a list with an empty id if any line is wrong.
+CachedList parseManifest(const std::string& text) {
     CachedList list;
-    std::ifstream in(file, std::ios::binary);
+    std::istringstream in(text);
     std::string line;
-    if (!in || !std::getline(in, line) || line != kManifestHeader || !std::getline(in, line) ||
-        !parseListLine(line, list))
+    if (!std::getline(in, line) || line != kManifestHeader || !std::getline(in, line) || !parseListLine(line, list))
         return {};
     while (std::getline(in, line)) {
         CachedTrack track;
         if (!parseLine(line, track)) return {};
         list.tracks.push_back(std::move(track));
     }
-    if (in.bad()) return {};
     return list;
 }
 
@@ -155,7 +152,8 @@ std::string lowerCase(std::string s) {
 }
 } // namespace
 
-TrackCache::TrackCache(fs::path root, const std::string& serverUrl, const std::string& user) {
+TrackCache::TrackCache(TextFiles& files, fs::path root, const std::string& serverUrl, const std::string& user)
+    : files_(&files) {
     std::string key = serverKey(serverUrl, user);
     if (!key.empty() && !root.empty()) serverDir_ = root / key;
 }
@@ -201,10 +199,15 @@ fs::path TrackCache::manifestFile(const RemoteSource& list) const {
     return enabled() ? listFolder(list) / kManifestName : fs::path();
 }
 
-CachedList TrackCache::readFolder(const fs::path& folder) const {
-    CachedList list = readManifest(folder / kManifestName);
+CachedList TrackCache::parseFolder(const fs::path& folder, const std::string& text) const {
+    CachedList list = parseManifest(text);
     if (list.source.id.empty() || listFolder(list.source).filename() != folder.filename()) return {};
     return list;
+}
+
+CachedList TrackCache::readFolder(const fs::path& folder) const {
+    auto text = files_->read(folder / kManifestName);
+    return text ? parseFolder(folder, *text) : CachedList();
 }
 
 CachedList TrackCache::load(const RemoteSource& list) const {
@@ -213,37 +216,44 @@ CachedList TrackCache::load(const RemoteSource& list) const {
 
 bool TrackCache::save(const CachedList& list) const {
     if (!enabled() || list.source.id.empty()) return false;
-    const std::vector<CachedTrack>& tracks = list.tracks;
+    const fs::path folder = listFolder(list.source);
     std::error_code ec;
-    fs::create_directories(listFolder(list.source), ec);
-    if (ec) return false;
-    fs::path file = manifestFile(list.source);
-    fs::path tmp = file;
-    tmp += ".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        out << kManifestHeader << '\n';
-        out << kListTag << '\t' << kindName(list.source.kind) << '\t' << escape(list.source.id) << '\t'
-            << escape(list.name) << '\t' << escape(list.artist) << '\n';
-        for (const CachedTrack& t : tracks) {
-            char duration[32];
-            std::snprintf(duration, sizeof duration, "%.3f", t.duration);
-            out << escape(t.id) << '\t' << escape(t.file) << '\t' << escape(t.title) << '\t' << duration << '\t'
-                << escape(t.changed) << '\t' << (t.pinned ? '1' : '0') << '\t' << t.lastPlayed << '\n';
-        }
-        out.flush();
-        if (!out) {
-            out.close();
-            fs::remove(tmp, ec);
-            return false;
-        }
+    // A manifest that is there and was read but is not valid: what it listed is lost, so what it
+    // left is cleaned up below. One that could not be read at all (an I/O error, a permission) may be
+    // fine: it is not overwritten, and nothing is deleted.
+    bool damaged = false;
+    if (fs::exists(manifestFile(list.source), ec)) {
+        auto old = files_->read(manifestFile(list.source));
+        if (!old) return false;
+        damaged = parseFolder(folder, *old).source.id.empty();
     }
-    fs::rename(tmp, file, ec);
-    if (ec) {
-        fs::remove(tmp, ec);
-        return false;
+    std::string text;
+    text += kManifestHeader;
+    text += '\n';
+    text += std::string(kListTag) + '\t' + kindName(list.source.kind) + '\t' + escape(list.source.id) + '\t' +
+            escape(list.name) + '\t' + escape(list.artist) + '\n';
+    for (const CachedTrack& t : list.tracks) {
+        char duration[32];
+        std::snprintf(duration, sizeof duration, "%.3f", t.duration);
+        text += escape(t.id) + '\t' + escape(t.file) + '\t' + escape(t.title) + '\t' + duration + '\t' +
+                escape(t.changed) + '\t' + (t.pinned ? '1' : '0') + '\t' + std::to_string(t.lastPlayed) + '\n';
     }
+    if (!files_->writeAtomically(manifestFile(list.source), text)) return false;
+    if (damaged) removeUnlisted(folder, list);
     return true;
+}
+
+// Deletes the regular files of `folder` that the manifest does not name: not the manifest, not a `.part`.
+void TrackCache::removeUnlisted(const fs::path& folder, const CachedList& list) const {
+    std::set<std::string> listed{kManifestName};
+    for (const CachedTrack& t : list.tracks) listed.insert(t.file);
+    std::error_code ec;
+    for (fs::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code entryEc;
+        std::string name = it->path().filename().string();
+        if (listed.count(name) || name.ends_with(kPartSuffix) || name.ends_with(".tmp")) continue;
+        if (it->is_regular_file(entryEc)) fs::remove(it->path(), entryEc); // never follows a link out of the folder
+    }
 }
 
 namespace {

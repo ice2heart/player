@@ -4,7 +4,8 @@
 
 namespace oap {
 
-Downloader::RequestId NoDownloader::download(const std::string&, const std::string&, Progress, Done done) {
+Downloader::RequestId NoDownloader::download(const std::string&, const std::string&, long long, Progress,
+                                          Done done) {
     ready_.emplace_back(++lastId_, std::move(done));
     return lastId_;
 }

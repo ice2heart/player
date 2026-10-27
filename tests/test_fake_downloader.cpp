@@ -27,9 +27,10 @@ std::string slurp(const fs::path& file) {
 TEST(FakeDownloader, CallbackRunsOnlyFromPollAfterFinishAndOnce) {
     FakeDownloader downloader;
     std::vector<Result> results;
-    auto id = downloader.download("t1", "/x/a.flac", nullptr, [&](Result r) { results.push_back(r); });
+    auto id = downloader.download("t1", "/x/a.flac", 1234, nullptr, [&](Result r) { results.push_back(r); });
     EXPECT_EQ(downloader.lastRequest().trackId, "t1");
     EXPECT_EQ(downloader.lastRequest().dest, "/x/a.flac");
+    EXPECT_EQ(downloader.lastRequest().expectedSize, 1234);
     downloader.poll();
     EXPECT_TRUE(results.empty()) << "nothing finishes until the test says so";
     ASSERT_TRUE(downloader.finish(id, Result::Server, false));
@@ -44,7 +45,7 @@ TEST(FakeDownloader, CallbackRunsOnlyFromPollAfterFinishAndOnce) {
 TEST(FakeDownloader, ProgressIsDeliveredFromPoll) {
     FakeDownloader downloader;
     long long bytes = 0, total = 0;
-    auto id = downloader.download("t1", "/x/a", [&](long long b, long long t) { bytes = b, total = t; }, nullptr);
+    auto id = downloader.download("t1", "/x/a", 0, [&](long long b, long long t) { bytes = b, total = t; }, nullptr);
     ASSERT_TRUE(downloader.progress(id, 10, 40));
     EXPECT_EQ(bytes, 0);
     downloader.poll();
@@ -55,7 +56,7 @@ TEST(FakeDownloader, ProgressIsDeliveredFromPoll) {
 TEST(FakeDownloader, ACancelledDownloadNeverCallsBackAndCannotBeFinished) {
     FakeDownloader downloader;
     int calls = 0;
-    auto id = downloader.download("t1", "/x/a", nullptr, [&](Result) { ++calls; });
+    auto id = downloader.download("t1", "/x/a", 0, nullptr, [&](Result) { ++calls; });
     downloader.cancel(id);
     EXPECT_EQ(downloader.cancelled, std::vector<FakeDownloader::RequestId>{id});
     EXPECT_FALSE(downloader.finish(id, Result::Ok, false));
@@ -66,7 +67,7 @@ TEST(FakeDownloader, ACancelledDownloadNeverCallsBackAndCannotBeFinished) {
 TEST(FakeDownloader, AFinishedDownloadCancelledBeforeThePollNeverCallsBack) {
     FakeDownloader downloader;
     int calls = 0;
-    auto id = downloader.download("t1", "/x/a", nullptr, [&](Result) { ++calls; });
+    auto id = downloader.download("t1", "/x/a", 0, nullptr, [&](Result) { ++calls; });
     ASSERT_TRUE(downloader.finish(id, Result::Ok, false));
     downloader.cancel(id);
     downloader.poll();
@@ -77,8 +78,8 @@ TEST(FakeDownloader, OkWritesTheFileAndAFailureLeavesThePart) {
     fs::path dir = oap::test::testTempDir();
     fs::remove_all(dir);
     FakeDownloader downloader;
-    auto ok = downloader.download("t1", (dir / "al1" / "01.flac").string(), nullptr, nullptr);
-    auto bad = downloader.download("t2", (dir / "al1" / "02.flac").string(), nullptr, nullptr);
+    auto ok = downloader.download("t1", (dir / "al1" / "01.flac").string(), 0, nullptr, nullptr);
+    auto bad = downloader.download("t2", (dir / "al1" / "02.flac").string(), 0, nullptr, nullptr);
     ASSERT_TRUE(downloader.finish(ok, Result::Ok, true, "song"));
     ASSERT_TRUE(downloader.finish(bad, Result::Unreachable, true, "song", "so"));
     EXPECT_EQ(slurp(dir / "al1" / "01.flac"), "song");
@@ -91,7 +92,7 @@ TEST(FakeDownloader, NotConfiguredFinishesWithNotConfiguredOnTheNextPoll) {
     FakeDownloader downloader;
     downloader.isConfigured = false;
     Result result = Result::Ok;
-    downloader.download("t1", "/x/a", nullptr, [&](Result r) { result = r; });
+    downloader.download("t1", "/x/a", 0, nullptr, [&](Result r) { result = r; });
     downloader.poll();
     EXPECT_EQ(result, Result::NotConfigured);
 }

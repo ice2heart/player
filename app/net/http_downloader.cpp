@@ -3,6 +3,8 @@
 #include <curl/curl.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -36,6 +38,15 @@ bool isErrorDocument(const std::string& contentType) {
            startsWith(contentType, "application/xml");
 }
 
+// "bytes 100-999/1000" -> 1000; -1 for "*" or anything else.
+long long contentRangeTotal(const std::string& value) {
+    auto slash = value.rfind('/');
+    if (slash == std::string::npos) return -1;
+    char* end = nullptr;
+    long long total = std::strtoll(value.c_str() + slash + 1, &end, 10);
+    return end == value.c_str() + slash + 1 ? -1 : total;
+}
+
 long long existingSize(const fs::path& file) {
     std::error_code ec;
     auto size = fs::file_size(file, ec);
@@ -59,9 +70,25 @@ struct HttpDownloader::Fetch {
     bool begun = false;     // the answer's status is known and the file is open (if it is audio)
     bool accepted = false;  // audio that is written
     bool diskError = false;
+    bool halted = false;   // cancel or the destructor: no file is touched any more
     long status = 0;
     long long written = 0; // bytes of the file so far
-    long long total = 0;
+    long long total = 0;   // the whole file, if the server said (lengthKnown), else 0
+    bool lengthKnown = false;
+    long long rangeTotal = -1; // Content-Range of the answer being read
+
+    // A header line of the answer (curl calls this for every response of a redirect chain).
+    void onHeader(const std::string& line) {
+        if (startsWith(line, "HTTP/")) {
+            rangeTotal = -1;
+            return;
+        }
+        auto colon = line.find(':');
+        if (colon == std::string::npos) return;
+        std::string name = line.substr(0, colon);
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
+        if (name == "content-range") rangeTotal = contentRangeTotal(line.substr(colon + 1));
+    }
 
     // The first body bytes (or the end of an empty body) have come: look at the status and open the file.
     void begin() {
@@ -76,8 +103,16 @@ struct HttpDownloader::Fetch {
         bool resumed = status == kHttpPartial && offset > 0;
         // 200 to a Range request: the server sends the whole file again.
         written = resumed ? offset : 0;
-        total = length >= 0 ? written + length : 0;
-        out.open(part, std::ios::binary | (resumed ? std::ios::app : std::ios::trunc));
+        lengthKnown = length >= 0;
+        total = lengthKnown ? written + length : 0;
+        if (status == kHttpPartial && rangeTotal > 0) { // the server's own word for the size of the whole file
+            lengthKnown = true;
+            total = rangeTotal;
+        }
+        if (!owner.fileStep([&] { out.open(part, std::ios::binary | (resumed ? std::ios::app : std::ios::trunc)); })) {
+            halted = true;
+            return;
+        }
         if (!out) {
             diskError = true;
             return;
@@ -87,10 +122,15 @@ struct HttpDownloader::Fetch {
 
     std::size_t onData(const char* data, std::size_t bytes) {
         if (!begun) begin();
-        if (diskError) return 0; // curl fails the transfer with a write error
+        if (diskError || halted) return 0; // curl fails the transfer with a write error
         if (!accepted) return bytes; // an error body: dropped
-        out.write(data, static_cast<std::streamsize>(bytes));
-        out.flush(); // what arrived is on disk, whatever happens next
+        if (!owner.fileStep([&] {
+                out.write(data, static_cast<std::streamsize>(bytes));
+                out.flush(); // what arrived is on disk, whatever happens next
+            })) {
+            halted = true;
+            return 0;
+        }
         if (!out) {
             diskError = true;
             return 0;
@@ -121,15 +161,15 @@ HttpDownloader::~HttpDownloader() {
     curl_multi_cleanup(multiOf(multi_));
 }
 
-Downloader::RequestId HttpDownloader::download(const std::string& trackId, const std::string& dest, Progress progress,
-                                               Done done) {
+Downloader::RequestId HttpDownloader::download(const std::string& trackId, const std::string& dest,
+                                               long long expectedSize, Progress progress, Done done) {
     RequestId id = ++lastId_;
     waiting_.emplace(id, Callbacks{std::move(progress), std::move(done)});
     std::string url = urls_(trackId);
     {
         std::lock_guard lock(mutex_);
         if (url.empty()) finished_.emplace_back(id, Result::NotConfigured);
-        else queue_.push_back({id, std::move(url), dest});
+        else queue_.push_back({id, std::move(url), dest, expectedSize});
     }
     wake_.notify_all();
     return id;
@@ -137,13 +177,16 @@ Downloader::RequestId HttpDownloader::download(const std::string& trackId, const
 
 void HttpDownloader::cancel(RequestId id) {
     if (!waiting_.erase(id)) return;
+    bool stopping = false;
     {
         std::lock_guard lock(mutex_);
         std::erase_if(queue_, [id](const Job& job) { return job.id == id; });
         progress_.erase(id);
         if (current_ == id) abort_ = true;
+        stopping = abort_ && current_ == id;
     }
     curl_multi_wakeup(multiOf(multi_));
+    if (stopping) std::lock_guard wait(fileMutex_); // the file operation in flight is over; no new one starts
 }
 
 void HttpDownloader::poll() {
@@ -169,6 +212,15 @@ void HttpDownloader::poll() {
         waiting_.erase(it);
         if (done) done(result);
     }
+}
+
+bool HttpDownloader::fileStep(const std::function<void()>& operation) {
+    if (options_.onFileStep) options_.onFileStep(false);
+    std::lock_guard files(fileMutex_);
+    if (shouldStop()) return false;
+    if (options_.onFileStep) options_.onFileStep(true);
+    operation();
+    return true;
 }
 
 bool HttpDownloader::shouldStop() {
@@ -201,7 +253,7 @@ std::optional<Downloader::Result> HttpDownloader::transfer(const Job& job) {
     part += kPartSuffix;
     std::error_code ec;
     if (dest.has_parent_path()) {
-        fs::create_directories(dest.parent_path(), ec);
+        if (!fileStep([&] { fs::create_directories(dest.parent_path(), ec); })) return std::nullopt;
         if (ec) return Result::Disk;
     }
 
@@ -217,6 +269,12 @@ std::optional<Downloader::Result> HttpDownloader::transfer(const Job& job) {
         curl_easy_setopt(easy, CURLOPT_URL, job.url.c_str());
         curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, writeCallback);
         curl_easy_setopt(easy, CURLOPT_WRITEDATA, &fetch);
+        auto headerCallback = +[](char* data, std::size_t size, std::size_t count, void* user) -> std::size_t {
+            static_cast<Fetch*>(user)->onHeader(std::string(data, size * count));
+            return size * count;
+        };
+        curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, headerCallback);
+        curl_easy_setopt(easy, CURLOPT_HEADERDATA, &fetch);
         curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, long(options_.connectTimeout.count()));
         curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, kLowSpeedBytesPerSecond);
@@ -265,7 +323,7 @@ std::optional<Downloader::Result> HttpDownloader::transfer(const Job& job) {
         bool accepted = fetch.accepted;
         curl_easy_cleanup(easy);
         fetch.easy = nullptr;
-        if (stopped) return std::nullopt;
+        if (stopped || fetch.halted) return std::nullopt;
 
         if (diskError) return Result::Disk;
         if (code != CURLE_OK) return Result::Unreachable;
@@ -273,7 +331,12 @@ std::optional<Downloader::Result> HttpDownloader::transfer(const Job& job) {
         if (!accepted) return Result::Server;
         fetch.out.close();
         if (!fetch.out) return Result::Disk;
-        fs::rename(part, dest, ec);
+        // The server's length is the truth; without one, the size the caller expects.
+        // A body of unknown length that is longer than the expected size is not a cut one: the size is stale.
+        bool incomplete = fetch.lengthKnown ? fetch.written != fetch.total
+                                            : job.expectedSize > 0 && fetch.written < job.expectedSize;
+        if (incomplete) return Result::Unreachable; // the `.part` is continued by the next try
+        if (!fileStep([&] { fs::rename(part, dest, ec); })) return std::nullopt;
         return ec ? Result::Disk : Result::Ok;
     }
 }

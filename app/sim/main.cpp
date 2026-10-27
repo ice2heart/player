@@ -1,6 +1,7 @@
 // Desktop simulator: keyboard, a game controller or the on-screen buttons stand
 // in for the device buttons, and the window visualises the menu stack, playback and speech.
 
+#include "config/disk_text_files.h"
 #include "config/settings_files.h"
 #include "core/app.h"
 #include "core/earcons.h"
@@ -339,7 +340,9 @@ int main(int argc, char** argv) {
     SettingsFiles settings(config, state);
     std::unique_ptr<MusicServer> server = makeMusicServer(settings.config());
     std::unique_ptr<Downloader> downloader = makeDownloader(settings.config());
-    App app(tts, player, earcons, mixer, *server, *downloader, settings.config(), settings.state(), clock, library, music, cache);
+    DiskTextFiles manifests; // the cache's manifests, written atomically
+    App app(tts, player, earcons, mixer, *server, *downloader, settings.config(), settings.state(), clock, library, music, cache,
+            &manifests);
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());

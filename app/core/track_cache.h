@@ -1,6 +1,7 @@
 #pragma once
 
 #include "library.h"
+#include "services.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -41,7 +42,8 @@ struct CachedList {
 class TrackCache {
 public:
     // `serverUrl` and `user` give the folder name; an empty URL makes a cache that stores and finds nothing.
-    TrackCache(std::filesystem::path root, const std::string& serverUrl, const std::string& user);
+    // Manifests are read and written through `files`, which must outlive the cache.
+    TrackCache(TextFiles& files, std::filesystem::path root, const std::string& serverUrl, const std::string& user);
 
     // A folder name for a server: a readable host part and a hash of the URL
     // (without a trailing slash or any login in it) and the user name. It
@@ -61,6 +63,11 @@ public:
     // list without tracks (and without a name): it is never an error and never partly read.
     CachedList load(const RemoteSource& list) const;
     // Replaces the manifest (all-or-nothing: the old one stays if this fails). False on failure.
+    // If the manifest on disk is there but not valid (load() gives an empty list), the
+    // files in the folder that `list` does not name are deleted once it is written, so
+    // earlier downloads are not left behind as orphans nobody lists or deletes. A
+    // `.part` is never deleted (it may belong to a transfer that runs). A manifest that
+    // exists but cannot be read at all is not replaced: false, and nothing is deleted.
     bool save(const CachedList& list) const;
 
     // The lists with a readable manifest, in the order of their names (letter
@@ -102,7 +109,11 @@ public:
 private:
     // The manifest in a list folder of this server; empty if it is not valid or is another list's (a copied folder).
     CachedList readFolder(const std::filesystem::path& folder) const;
+    CachedList parseFolder(const std::filesystem::path& folder, const std::string& text) const;
 
+    void removeUnlisted(const std::filesystem::path& folder, const CachedList& list) const;
+
+    TextFiles* files_;
     std::filesystem::path serverDir_;
 };
 
