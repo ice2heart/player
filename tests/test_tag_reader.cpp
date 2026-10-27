@@ -6,6 +6,10 @@
 
 #include <gtest/gtest.h>
 
+extern "C" {
+#include <libavutil/log.h>
+}
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -289,4 +293,12 @@ TEST_F(TagReaderTest, SeveralThreadsReadAtOnce) {
         EXPECT_EQ(r->title, "Shared");
         EXPECT_EQ(r->track, 5);
     }
+}
+
+TEST(FfmpegTagReaderLogLevel, ConstructingItSilencesWarnings) {
+    const int before = av_log_get_level(); // the level is global: put it back
+    av_log_set_level(AV_LOG_INFO);
+    oap::FfmpegTagReader reader;
+    EXPECT_EQ(av_log_get_level(), AV_LOG_ERROR) << "a junk file must print no FFmpeg warnings";
+    av_log_set_level(before);
 }

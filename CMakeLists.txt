@@ -137,8 +137,9 @@ add_library(oapfrontend STATIC
     app/frontend/no_music_server.cpp
     app/frontend/presses.cpp
     app/frontend/terminal_keys.cpp
+    app/frontend/threaded_scanner.cpp
 )
-target_link_libraries(oapfrontend PUBLIC oapcore)
+target_link_libraries(oapfrontend PUBLIC oapcore Threads::Threads)
 target_compile_options(oapfrontend PRIVATE -Wall -Wextra)
 
 # ---- music server: makeMusicServer(), the server a front end gives App. Subsonic
@@ -274,6 +275,7 @@ if(OAP_BUILD_TESTS)
         tests/test_sqlite_library_store.cpp
         tests/test_terminal_keys.cpp
         tests/test_text.cpp
+        tests/test_threaded_scanner.cpp
         tests/test_track_cache.cpp
     )
     target_link_libraries(oap-tests PRIVATE oapcore oapconfig oaplibrary ${OAP_SQLITE} oapmusicserver oapaudio GTest::gtest_main)

@@ -10,6 +10,9 @@ namespace oap {
 // AVFormatContext).
 class FfmpegTagReader : public TagReader {
 public:
+    // Lowers FFmpeg's log level to errors (it is global, and Player sets the same), so a
+    // file that is not audio prints no warnings while a library is scanned.
+    FfmpegTagReader();
     std::optional<TrackTags> read(const std::filesystem::path& file) override;
 };
 

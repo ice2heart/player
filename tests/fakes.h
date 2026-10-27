@@ -259,6 +259,60 @@ private:
     std::map<std::filesystem::path, int> reads_;
 };
 
+// A scanner that delivers only when the test says so. Every scan() is recorded in
+// `requests` and stays pending until finish(); the callback then runs on the next
+// poll(). cancel() drops a scan whether or not it has finished.
+class FakeLibraryScanner : public LibraryScanner {
+public:
+    struct Request {
+        RequestId id = 0;
+        ScanRequest request;
+    };
+
+    RequestId scan(ScanRequest request, Done done) override {
+        RequestId id = ++lastId_;
+        requests.push_back({id, std::move(request)});
+        pending_.emplace(id, std::move(done));
+        return id;
+    }
+    void cancel(RequestId id) override {
+        cancelled.push_back(id);
+        pending_.erase(id);
+        std::erase_if(ready_, [id](const auto& r) { return r.first == id; });
+    }
+    void poll() override {
+        auto batch = std::move(ready_);
+        ready_.clear();
+        for (auto& [id, run] : batch) run();
+    }
+
+    // Finish a scan with `items`; the callback runs on the next poll(). False if the id is
+    // not pending (cancelled, finished, or never made): that is how a late answer is simulated.
+    bool finish(RequestId id, std::vector<IndexItem> items) {
+        auto it = pending_.find(id);
+        if (it == pending_.end()) return false;
+        ready_.emplace_back(id, [done = std::move(it->second), items = std::move(items)]() mutable {
+            if (done) done(std::move(items));
+        });
+        pending_.erase(it);
+        return true;
+    }
+
+    const Request& lastRequest() const {
+        if (requests.empty()) throw std::logic_error("FakeLibraryScanner: no scan requested");
+        return requests.back();
+    }
+    std::size_t pendingCount() const { return pending_.size(); }
+
+    std::vector<Request> requests;    // every scan(), in order
+    std::vector<RequestId> cancelled; // every cancel() call, in order
+
+private:
+    RequestId lastId_ = 0;
+    std::map<RequestId, Done> pending_;
+    std::vector<std::pair<RequestId, std::function<void()>>> ready_;
+};
+
 // A music server that answers only when the test says so. Every request is
 // recorded and stays pending until the test calls reply() / replyPing() / fail().
 // Even then the callback runs only on the next poll(), as on the real server, so

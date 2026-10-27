@@ -3,6 +3,7 @@
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/dict.h>
+#include <libavutil/log.h>
 }
 
 #include <algorithm>
@@ -82,6 +83,8 @@ struct FormatCloser {
 };
 
 } // namespace
+
+FfmpegTagReader::FfmpegTagReader() { av_log_set_level(AV_LOG_ERROR); }
 
 std::optional<TrackTags> FfmpegTagReader::read(const std::filesystem::path& file) {
     // FFmpeg takes the name for a URL: "file:a.mp3" relative would be a protocol prefix.

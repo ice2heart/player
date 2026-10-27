@@ -34,6 +34,10 @@ struct Book {
     std::string artist;
 };
 
+// Natural order of paths: folder by folder, digits as numbers, case and accents ignored
+// ("cd2/01" before "cd10/01"). The order of the files of a book.
+bool pathLess(const std::filesystem::path& a, const std::filesystem::path& b);
+
 // The books under `root`. A folder `skip` (the cache of downloaded tracks),
 // wherever it lies below `root`, is left out.
 std::vector<Book> scanLibrary(const std::filesystem::path& root, const std::filesystem::path& skip = {});

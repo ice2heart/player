@@ -98,14 +98,6 @@ bool naturalLess(std::string_view a, std::string_view b) {
     return a < b;
 }
 
-// Compares folder by folder, so "cd2/01" and "cd10/01" order by the folder names.
-bool pathLess(const fs::path& a, const fs::path& b) {
-    return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
-                                        [](const fs::path& x, const fs::path& y) {
-                                            return naturalLess(x.string(), y.string());
-                                        });
-}
-
 // The cache folder is not a book.
 bool isSkipped(const fs::path& dir, const fs::path& skip) {
     std::error_code ec;
@@ -127,6 +119,13 @@ void collectAudio(const fs::path& dir, const fs::path& skip, std::vector<fs::pat
     }
 }
 } // namespace
+
+bool pathLess(const fs::path& a, const fs::path& b) {
+    return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
+                                        [](const fs::path& x, const fs::path& y) {
+                                            return naturalLess(x.string(), y.string());
+                                        });
+}
 
 std::vector<Book> scanLibrary(const fs::path& root, const fs::path& skip) {
     std::vector<Book> books;

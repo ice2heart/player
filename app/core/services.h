@@ -115,6 +115,40 @@ public:
     virtual std::optional<TrackTags> read(const std::filesystem::path& file) = 0;
 };
 
+// What a scan of the local files starts from.
+struct ScanRequest {
+    std::filesystem::path libraryRoot; // books: a folder (or a loose file) under it is one book
+    std::filesystem::path musicRoot;   // music, grouped by album tags
+    std::filesystem::path skip;        // the cache of downloaded tracks: never entered
+    // The local items of the last scan. A file listed there whose path, size and file
+    // time have not changed is kept as it was and its tags are not read again.
+    std::vector<IndexItem> previous;
+};
+
+// Lists the local files as index items, in the background. Like MusicServer it never
+// blocks: scan() returns its id at once, and the callback runs later, on the UI thread,
+// from poll(). Once cancel(id) is called that scan's callback never runs.
+//
+// The result is every local item (source Local), complete: items of earlier scans that are
+// not in it are gone. Books keep their folder: one Book item per folder (or loose file)
+// under libraryRoot, titled by the folder name, with a track per audio file. Music is
+// grouped by tags: one Music item per album artist + album (the artist when the file has
+// no album artist), and an album's files in different folders are one item; files without
+// an album tag are grouped by the folder under musicRoot, titled by its name. An unreadable
+// file is listed with its file name as title and no other data. firstSeen and lastPlayed
+// are left 0 (LibraryIndex::replaceSource() fills them in). Ids derive from the path or
+// the tags, so they are the same in every scan: "local:book:<path>", "local:folder:<path>",
+// "local:album:<album artist>\x1f<album>".
+class LibraryScanner {
+public:
+    using RequestId = std::uint64_t; // unique per scanner, never 0
+    using Done = std::function<void(std::vector<IndexItem>)>;
+    virtual ~LibraryScanner() = default;
+    virtual RequestId scan(ScanRequest request, Done done) = 0;
+    virtual void cancel(RequestId id) = 0; // its callback will not run; unknown ids are ignored
+    virtual void poll() = 0;               // UI thread: run the callbacks of finished scans
+};
+
 // Text to speech. stop() cancels both queued and currently playing speech.
 class Speech {
 public:
