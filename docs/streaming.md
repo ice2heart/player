@@ -370,21 +370,30 @@ first. Break it into steps once that interface is decided.
 
 ## Phase 3: local cache and downloads
 
-- **Cache folder** `/data/library/cache/<server>/<album id>/`, with a small
-  manifest (`manifest.tsv`: track id, file, title, duration, server `changed` time)
-  per album.
-- **Download album / playlist** (action in the album menu): a background worker in
-  `app/net/` uses `download?id=`, resumes with Range, and writes to `*.part` and then
-  renames the file. Progress is spoken on demand ("Downloading, 3 of 9 tracks").
-  Wi-Fi-only and storage-limit checks come first.
-- **Where a track plays from:** `track id → cached file if complete, else stream URL`.
-  A streamed album that is fully cached plays offline with no change to the menus.
-- **Automatic cache** of what was streamed, with an LRU limit (setting: 0 / 1 / 4 /
-  16 GB). **Pinned** downloads are never evicted.
-- **Streaming → Downloaded** lists what plays offline. **Delete download** sits
-  behind a list that opens on Cancel (navigation rule).
-- Offline: when the server cannot be reached, lists come from the manifests, so
-  the Streaming menu still shows downloaded albums.
+Goal: albums and playlists play without the network. A downloaded album plays
+offline with no change to the menus, and what was streamed is kept in a cache with a
+size limit.
+
+Decided for this phase: there is no Wi-Fi-only check for now (the device has only
+Wi-Fi). Outside the device the cache folder defaults to `cache/` next to `state.tsv`
+(`--cache DIR` overrides it). The automatic cache downloads a streamed track a second
+time in the background, with a default limit of 1 GB. Download progress is spoken on
+the album's Download item and by "where am I?".
+
+| # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
+|---|------|------|
+| 3.1 | **Cache store in core.** `TrackCache` (plain C++, `std::filesystem`): `<cache>/<server key>/<album or playlist id>/` with an atomic `manifest.tsv` (track id, file, title, duration, server `changed` time, pinned), answering "complete cached file for this track id, or none". Front ends take `--cache DIR` (device: `/data/library/cache`; elsewhere `cache/` next to `state.tsv`). `scanLibrary()` skips the cache folder. `RemoteTrack` gets `suffix` and `size` from the server. | The manifest round-trips. A `.part` or missing file is never returned. A corrupt manifest is ignored without a crash. The cache folder never appears in Library or Music. The JSON fixture gives `suffix` and `size`. |
+| 3.2 | **Play from the cache.** A track resolves to its complete cached file, else its stream URL. A fully cached album plays offline with no change to the menus; read-ahead and scrobble still work. | All tracks cached: files play, no stream URL is opened. Mixed album: each track uses the right source. A cached file deleted on disk falls back to the URL. |
+| 3.3 | **Download worker.** A `Downloader` interface in `services.h`, implemented with libcurl in `app/net/`: one track with `download?id=` into `*.part`, resumed with Range, then renamed. Asynchronous, cancellable, results through `poll()`; the URL is never logged. `FakeDownloader` in `tests/fakes.h`. | Net tests: the URL is right, a partial `.part` resumes with Range, the rename happens only when complete, a failure keeps the `.part`. After cancel the callback does not run. |
+| 3.4 | **Download album / playlist.** A "Download album" item right after "Play album" (and the same for playlists). Core queues the tracks, writes the manifest after each and pins them. Free space is checked first (`std::filesystem::space` against the sum of the track sizes). OK on the item again, and "where am I?", say "Downloading, 3 of 9 tracks". | Tracks are fetched in order and pinned. Not enough space: nothing starts and the reason is spoken. Progress is spoken on the item and by "where am I?". A failed track is spoken and a retry resumes. Leaving the menu does not stop the download. |
+| 3.5 | **Streaming → Downloaded** lists the albums and playlists in the manifests; they play like the server lists. **Delete download** sits in a list that opens on Cancel. | The list matches the manifests. Playing from it opens files. Delete opens on Cancel, removes the folder, and the list updates. An empty list says why. |
+| 3.6 | **Offline.** When the server cannot be reached, Streaming still offers Downloaded, and the error list gets a "Downloaded" item. `last_stream` resumes from the cache with the server down. | Server unreachable: Downloaded works and plays. Resume after a restart with the server down plays the cached album. |
+| 3.7 | **Automatic cache with an LRU limit.** Setting (0 / 1 / 4 / 16 GB, default 1 GB) in Settings, saved in `config.yaml`. A streamed track is queued to the downloader unpinned; above the limit the least recently played unpinned tracks are evicted. | A streamed track ends up cached. Over the limit the least recently played unpinned track goes first; pinned tracks never go. With 0 nothing is cached. The setting persists. |
+| 3.8 | Docs: architecture.md, navigation.md, SPEC where needed, and what phase 3 built differently. | – |
+
+**Device check (manual):** download an album, pull the Wi-Fi, and it still plays
+from Streaming → Downloaded and from "Now playing" after a restart. "Where am I?"
+during a download says the progress. A streamed album plays offline the second time.
 
 ## Phase 4: one library (local files and server)
 
