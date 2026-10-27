@@ -510,7 +510,7 @@ void App::finishRefresh() {
         say(errorText(done.error) + ".");
         return;
     }
-    syncDownloads(); // a merged album counts once; server-only albums are in the library, though Music lists them from 4.9
+    syncDownloads(); // a merged album counts once
     index_.save();
     say("Library updated, " + countValue(mergeAlbums(index_.items()).size(), "album") + ".");
 }
@@ -1105,60 +1105,128 @@ std::vector<MenuItem> App::libraryMenu() {
     return items;
 }
 
-// Music lists the albums that are on the device: local files and downloads, a server album
-// that is one of them as one entry. A server-only album is not listed until it can be opened
-// (4.9). Play all plays what is on the device.
+// Music (docs/navigation.md): Play all, Artists, Albums A to Z, Refresh library. Every list is
+// built from the index when it is opened, so it is a local menu: no "Loading". An album that
+// is on the device (local or downloaded, a server copy merged into it) opens its tracks at
+// once; a server-only album loads its tracks like Streaming does. Play all plays what is on
+// the device.
 std::vector<MenuItem> App::musicMenu() {
     syncDownloads(); // a download made or deleted since the menu was last built
     index_.save();
-    struct Entry {
-        Book book;
-        MergedAlbum merged;
-    };
-    std::vector<Entry> albums;
-    Book all;
-    all.title = "All music";
-    all.path = musicRoot_;
-    for (MergedAlbum& m : mergeAlbums(index_.items())) {
-        if (m.primary->source == IndexItem::Source::Server) continue;
-        albums.push_back({bookOf(*m.primary), m});
-    }
-    std::stable_sort(albums.begin(), albums.end(),
-                     [](const Entry& a, const Entry& b) { return naturalLess(a.book.title, b.book.title); });
-    for (const Entry& e : albums) all.files.insert(all.files.end(), e.book.files.begin(), e.book.files.end()); // in the order listed
-    std::vector<MenuItem> items;
+    std::vector<MergedAlbum> albums = mergeAlbums(index_.items());
     MenuItem refresh = action("Refresh library", [this] { refreshLibrary(); });
-    if (all.files.empty() && scanRequest_) {
+    std::vector<MenuItem> items;
+    if (albums.empty() && scanRequest_) {
         items.push_back(action("Scanning", [this] { say("Looking for music. Try again in a moment."); }));
         items.push_back(refresh);
         return items;
     }
-    if (all.files.empty()) {
+    if (albums.empty()) {
         items.push_back(action("No music", [this] { say("Copy music into " + musicRoot_.string() + ". One folder per album."); }));
         items.push_back(refresh);
         return items;
     }
-
-    auto tracks = [](size_t n) { return [n] { return countValue(n, "track"); }; };
+    std::stable_sort(albums.begin(), albums.end(),
+                     [](const MergedAlbum& a, const MergedAlbum& b) { return naturalLess(a.primary->title, b.primary->title); });
+    Book all;
+    all.title = "All music";
+    all.path = musicRoot_;
+    for (const MergedAlbum& m : albums) { // in the order of Albums A to Z
+        if (m.primary->source == IndexItem::Source::Server) continue;
+        Book b = bookOf(*m.primary);
+        all.files.insert(all.files.end(), b.files.begin(), b.files.end());
+    }
     MenuItem playAll = action("Play all", [this, all] {
+        // Only the server has albums (or the scan has not found the files yet): Play all never plays the server.
+        if (all.files.empty()) return say(scanRequest_ ? "Looking for music. Try again in a moment." : "No music");
         if (playMusic(all, 0)) enterPlayer();
     });
-    playAll.value = tracks(all.files.size());
+    if (!all.files.empty()) playAll.value = [n = all.files.size()] { return countValue(n, "track"); };
     items.push_back(playAll);
-    for (const Entry& e : albums) {
-        const Book& a = e.book;
-        if (a.files.size() == 1 && a.files.front() == a.path) { // a loose track, not a folder
-            items.push_back(action(a.title, [this, a] {
-                if (playMusic(a, 0)) enterPlayer();
-            }));
-        } else {
-            MenuItem album = submenu(a.title, [this, a, info = albumInfoText(e.merged)] { return albumMenu(a, info); });
-            album.value = tracks(a.files.size());
-            items.push_back(album);
-        }
-    }
+    items.push_back(submenu("Artists", [this] { return artistsMenu(); }));
+    items.push_back(submenu("Albums A to Z", [this] { return albumList(mergeAlbums(index_.items())); }));
     items.push_back(refresh);
     return items;
+}
+
+// The artist of an entry: its primary item's, else the first one any of its items names (a
+// local album with no tag that is on the server under an artist is that artist's).
+std::string App::artistOf(const MergedAlbum& album) {
+    for (const IndexItem* item : album.items) // primary first
+        if (!item->artist.empty()) return item->artist;
+    return {};
+}
+
+// Each artist once (names that differ in case or spacing are one), sorted without an article,
+// with the number of albums. Albums with no artist are under "Unknown artist", last.
+std::vector<MenuItem> App::artistsMenu() {
+    struct Artist {
+        std::string name, key;
+        size_t albums = 0;
+    };
+    std::vector<Artist> artists;
+    std::map<std::string, size_t> byKey;
+    for (const MergedAlbum& m : mergeAlbums(index_.items())) {
+        std::string name = artistOf(m);
+        std::string key = artistKey(name);
+        auto [it, fresh] = byKey.emplace(key, artists.size());
+        if (fresh) artists.push_back({name, key, 0});
+        ++artists[it->second].albums;
+    }
+    std::stable_sort(artists.begin(), artists.end(), [](const Artist& a, const Artist& b) {
+        if (a.key.empty() != b.key.empty()) return b.key.empty();
+        return artistLess(a.name, b.name);
+    });
+    std::vector<MenuItem> items;
+    for (const Artist& a : artists) {
+        MenuItem item = submenu(a.key.empty() ? "Unknown artist" : a.name, [this, key = a.key] {
+            std::vector<MergedAlbum> theirs;
+            for (MergedAlbum& m : mergeAlbums(index_.items()))
+                if (artistKey(artistOf(m)) == key) theirs.push_back(std::move(m));
+            return albumList(std::move(theirs));
+        });
+        item.value = [n = a.albums] { return countValue(n, "album"); };
+        items.push_back(item);
+    }
+    return items;
+}
+
+// The albums of `albums` by title, as entries of a list.
+std::vector<MenuItem> App::albumList(std::vector<MergedAlbum> albums) {
+    std::stable_sort(albums.begin(), albums.end(),
+                     [](const MergedAlbum& a, const MergedAlbum& b) { return naturalLess(a.primary->title, b.primary->title); });
+    std::vector<MenuItem> items;
+    for (const MergedAlbum& m : albums) items.push_back(albumEntry(m));
+    // An artist's last album may have gone since the list above was built: never an empty list.
+    if (items.empty()) items.push_back(action("No albums", [this] { say("There are no albums here any more."); }));
+    return items;
+}
+
+// One album of a Music list. The closures keep copies: the index may change before OK.
+MenuItem App::albumEntry(const MergedAlbum& m) {
+    const IndexItem& item = *m.primary;
+    std::string info = albumInfoText(m);
+    if (item.source == IndexItem::Source::Server) {
+        std::string key = catalogueServerKey();
+        std::string ref = LibraryIndex::refOnServer(item.seenOn, key).value_or(item.id);
+        std::string prefix = LibraryIndex::seenRef(key, SeenKind::Album, ""); // `<key>:album:`
+        RemoteAlbum album;
+        album.id = ref.starts_with(prefix) ? ref.substr(prefix.size()) : std::string();
+        album.name = item.title;
+        album.artist = item.artist;
+        MenuItem entry = action(item.title, [this, album, info] { openRemoteAlbum(album, info); });
+        if (int n = trackCountOf(item); n > 0) entry.value = [n] { return countValue(size_t(n), "track"); };
+        return entry;
+    }
+    Book a = bookOf(item);
+    if (a.files.size() == 1 && a.files.front() == a.path) { // a loose track, not a folder
+        return action(a.title, [this, a] {
+            if (playMusic(a, 0)) enterPlayer();
+        });
+    }
+    MenuItem entry = submenu(a.title, [this, a, info] { return albumMenu(a, info); });
+    entry.value = [n = a.files.size()] { return countValue(n, "track"); };
+    return entry;
 }
 
 // The tracks of an album, then "Album info" (where it plays from), which only reports.
@@ -1358,14 +1426,16 @@ void App::openAlbumList(const std::string& title, const std::string& listType, i
                    paged ? pageSize : 0, "No albums", "The server has no music yet. Add music to the server, then come back.");
 }
 
-void App::openRemoteAlbum(const RemoteAlbum& album) {
+void App::openRemoteAlbum(const RemoteAlbum& album, const std::string& info) {
     openRemoteList(album.name,
                    fetchPages<RemoteTrack>(
                        [this, id = album.id](int, MusicServer::Done<RemoteTrack> done) {
                            return server_.albumTracks(id, std::move(done));
                        },
-                       [this, name = album.name, artist = album.artist, id = album.id](const std::vector<RemoteTrack>& tracks) {
-                           return trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id}, artist);
+                       [this, name = album.name, artist = album.artist, id = album.id, info](const std::vector<RemoteTrack>& tracks) {
+                           std::vector<MenuItem> items = trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id}, artist);
+                           if (!items.empty() && !info.empty()) items.push_back(action("Album info", [this, info] { say(info); }));
+                           return items;
                        }),
                    0, "No tracks", "This album has no tracks on the server.");
 }

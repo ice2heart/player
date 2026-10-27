@@ -369,9 +369,11 @@ Home
 ├── Now playing: <book or album>   (when something is loaded, or a stream to resume: `last_stream.*`)
 ├── Library → <books>              (OK plays/resumes)
 ├── Music
-│   ├── Play all                   (every track, albums in order)
-│   ├── <loose track>              (OK plays it)
-│   ├── <album> → <tracks> · Album info (OK plays from that track to the end of the album; Album info says where it plays from)
+│   ├── Play all                   (the files on the device, albums in the order of Albums A to Z; with only server albums it says "No music")
+│   ├── Artists → <artist> → <albums>   (local and server artists once each, sorted without "The"; "Unknown artist" last)
+│   ├── Albums A to Z → <albums>   (every merged entry, server-only ones too)
+│   │   <album on the device> → <tracks> · Album info   (OK plays from that track to the end; a loose track plays at once)
+│   │   <server-only album> → Loading, then Play album · Download album · <tracks> · Album info   (as in Streaming)
 │   └── Refresh library            (rescans the files and syncs the server catalogue, see section 8)
 ├── <server.name, default Server>  (Streaming: lists from the server, see below)
 │   ├── Recently added → <albums>  (one page of 500)
@@ -484,11 +486,25 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   items (id `cached:<ref>`, the track files as locations, `seenOn` the album's reference and a
   track reference per track id, from the manifest). It runs whenever Music is built and before
   Refresh counts, so a download made or deleted meanwhile shows; the reference is kept only while
-  the server item exists (or no server catalogue is known yet). Music lists `mergeAlbums()` entries
-  whose primary is not a server item, by title: a local or downloaded album plays its files,
-  and a server-only album is left out until 4.9 can open it. "Play all" is the files of those
-  entries. A cached album plays as a local `Book` with its titles from the manifest. Album
-  info is the last item of an album's list.
+  the server item exists (or no server catalogue is known yet). A cached album plays as a local `Book`
+  with its titles from the manifest. Album info is the last item of an album's list.
+- **The Music tree (4.9).** `musicMenu()` is Play all, Artists, Albums A to Z, Refresh library
+  (Genres, Recently added and Recently played come in 4.10); an empty index gives "Scanning" or
+  "No music" and Refresh. Every list is a `submenu()` whose builder runs `mergeAlbums()` again,
+  so it is a local menu rebuilt when you come back to it, with no "Loading". `albumList()` sorts
+  merged entries by title and `albumEntry()` makes one item: an album whose primary is local or
+  cached opens `albumMenu()` at once (a loose file plays at once), and a server-only album calls
+  `openRemoteAlbum(album, info)`, the same code as Streaming (`openRemoteList()`: "Loading", the
+  error with "Try again", "Play album" first), with Album info added last; the server's album id
+  is cut from the item's reference `<key>:album:<id>`. A merged album plays from its device files
+  and never asks the server. `artistsMenu()` groups the merged entries by `artistKey()` (case and
+  spacing ignored, so "Band" and "band" are one) and sorts with `artistLess()`: natural,
+  case-insensitive order without a leading "The" (`kIgnoredArticles`; the server's own
+  `ignoredArticles` is not read yet), Cyrillic and other scripts by code point after Latin,
+  entries with no artist last as "Unknown artist". An artist's list is its merged entries. Play
+  all is the files of the entries whose primary is not a server item (a server item holds no
+  tracks) and says "No music" when there are none. Closures keep copies, never pointers into
+  the index.
 - **From item to `Book`.** `App::bookOf()` makes the `Book` that plays: its files are
   the item's tracks in order, with no part titles (a local file is named by its file
   name, as before). A book's `path` is its folder or file, the part of its id after

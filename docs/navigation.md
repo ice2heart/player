@@ -218,13 +218,13 @@ these rules too ([streaming.md](streaming.md) has the plan).
   opens the track again where it stopped. The next track's stream opens in the
   background 10 s before the end, so tracks change without a wait.
 
-## Music and Library (planned for phase 4)
+## Music and Library (phase 4)
 
-Not built yet. Today Music lists the albums of the library index (tags, else the
-folder), Library lists local books, and Streaming is its own Home entry. [streaming.md](streaming.md) phase 4
-builds one library from files and server. Until then the rules above and the
-tree in [architecture.md](architecture.md#current-menu-tree) are what the device
-does. The rules below are the contract for phase 4.
+Music is built (steps 4.9 and on) and Streaming is its own Home entry. Genres, Recently
+added and Recently played below are not built yet (4.10), nor are server books in Library
+(4.11). [streaming.md](streaming.md) phase 4 builds one library from files and server; the
+tree in [architecture.md](architecture.md#current-menu-tree) is what the device does today.
+The rules below are the contract for phase 4.
 
 ```
 Music
@@ -245,7 +245,13 @@ Music
   "Loading" and no "Try again". A scan or sync that finishes meanwhile replaces
   the index silently, and the menu shows it the next time you come back to it
   (the selected item stays). Opening a server album that is not downloaded loads
-  its tracks, so that list follows "Lists from the server".
+  its tracks, so that list follows "Lists from the server": "Loading", the error with "Try again", "Play album" first, Album info last.
+  Offline that album gives the error item and a device album still plays.
+- **Artists** lists each artist once, local and server together, sorted by name without a
+  leading "The" (the server's `ignoredArticles` is not read yet); names in Cyrillic and other
+  scripts come after the Latin ones, and albums with no artist are under "Unknown artist", last.
+  An artist's list holds the albums of both sources. **Albums A to Z** lists every album,
+  server-only ones too.
 - **Play all** plays what is on the device (local and downloaded), never the
   whole server. With nothing on the device it says "No music".
 - **Recently added** is newest first. **Recently played** is the albums you

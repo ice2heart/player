@@ -238,3 +238,22 @@ TEST(AlbumInfoText, LeavesOutWhatIsNotKnown) {
     m.items = {&l};
     EXPECT_EQ(albumInfoText(m), "On the device.");
 }
+
+TEST(ArtistNames, TheSameArtistDiffersOnlyInCaseAndSpacing) {
+    EXPECT_EQ(artistKey("Pink  Floyd "), artistKey("pink floyd"));
+    EXPECT_EQ(artistKey("БИ-2"), artistKey("би-2"));
+    EXPECT_NE(artistKey("Pink Floyd"), artistKey("PinkFloyd"));
+    EXPECT_NE(artistKey("The Band"), artistKey("Band"));
+    EXPECT_EQ(artistKey("  "), "");
+}
+
+TEST(ArtistNames, ArtistsSortWithoutALeadingThe) {
+    EXPECT_TRUE(artistLess("ABBA", "The Beatles"));
+    EXPECT_TRUE(artistLess("The Beatles", "Cher"));
+    EXPECT_FALSE(artistLess("the Beatles", "Band")) << "Beatles after Band, not under T";
+    EXPECT_TRUE(artistLess("Theodor", "Thin Lizzy")) << "only the word The is ignored";
+    EXPECT_TRUE(artistLess("Zed", "Агата Кристи")) << "Latin before Cyrillic";
+    EXPECT_TRUE(artistLess("Агата Кристи", "би-2")) << "Cyrillic ignores case";
+    EXPECT_FALSE(artistLess("Band", "Band"));
+    EXPECT_NE(artistLess("The Band", "Band"), artistLess("Band", "The Band")) << "equal sort names still have an order";
+}

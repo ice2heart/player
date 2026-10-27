@@ -404,6 +404,7 @@ TEST_F(AppTest, ReturningToAListWithRepeatedLabelsKeepsThePlace) {
     touch(music / "Twins" / "02 - Song.mp3");
     start();
     open("Music");
+    open("Albums A to Z");
     open("Twins");
     press(Button::Down);
     press(Button::Ok); // the second "Song"
@@ -520,11 +521,12 @@ TEST_F(AppTest, ATrackThatCannotBeOpenedLeavesWhatWasPlaying) {
     player.pos = 20;
     hold(Button::Home);
     open("Music");
+    open("Albums A to Z");
     player.unopenable = {(music / "Lullaby.mp3").string()};
     open("Lullaby");
     EXPECT_EQ(speech.last(), "Cannot open Lullaby.mp3");
     EXPECT_EQ(app->mode(), App::Mode::Menu);
-    EXPECT_EQ(level().title, "Music");
+    EXPECT_EQ(level().title, "Albums A to Z");
     EXPECT_EQ(player.file, alphaFile(1));
     EXPECT_DOUBLE_EQ(player.pos, 20);
     EXPECT_TRUE(player.playing());
@@ -550,6 +552,7 @@ TEST_F(AppTest, AnUnopenableLastTrackEndsTheAlbum) {
     player.unopenable = {(roadTrip() / "02 - Highway.mp3").string()};
     start();
     open("Music");
+    open("Albums A to Z");
     open("Road Trip");
     open("Sunrise");
     player.atEnd = true;
@@ -801,15 +804,16 @@ TEST_F(AppTest, HomeFromThePlayerMenuReturnsToThePlayer) {
 
 // ---------------------------------------------------------------- music
 
-TEST_F(AppTest, MusicMenuListsPlayAllLooseTracksAndAlbums) {
+TEST_F(AppTest, MusicMenuIsPlayAllArtistsAlbumsAToZAndRefresh) {
     start();
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Refresh library"}));
     EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 4");
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
+    EXPECT_EQ(speech.last(), "Albums A to Z. Lullaby, 1 of 2");
     press(Button::Down);
-    EXPECT_EQ(speech.last(), "Lullaby, 2 of 4");
-    press(Button::Down);
-    EXPECT_EQ(speech.last(), "Road Trip, 2 tracks, 3 of 4");
+    EXPECT_EQ(speech.last(), "Road Trip, 2 tracks, 2 of 2");
     press(Button::Up);
     press(Button::Ok); // a loose track plays straight away
     EXPECT_EQ(app->mode(), App::Mode::Player);
@@ -837,12 +841,14 @@ TEST_F(AppTest, CacheFolderInsideLibraryOrMusicIsNotListed) {
     touch(cache / "server-1" / "al1" / "01.flac");
     start();
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
 }
 
 TEST_F(AppTest, ChoosingATrackPlaysTheRestOfTheAlbum) {
     start();
     open("Music");
+    open("Albums A to Z");
     open("Road Trip");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Sunrise", "Highway", "Album info"}));
     open("Highway");
@@ -873,6 +879,7 @@ TEST_F(AppTest, PlayAllPlaysEveryTrackInOrder) {
 TEST_F(AppTest, MusicTalksAboutTracksNotChapters) {
     start();
     open("Music");
+    open("Albums A to Z");
     open("Road Trip");
     open("Highway");
     player.pos = 100;
@@ -887,6 +894,7 @@ TEST_F(AppTest, MusicTalksAboutTracksNotChapters) {
 TEST_F(AppTest, SleepTimerAtEndOfTrack) {
     start();
     open("Music");
+    open("Albums A to Z");
     open("Road Trip");
     open("Sunrise");
     press(Button::Ok);    // Player menu
@@ -906,6 +914,7 @@ TEST_F(AppTest, SleepTimerAtEndOfTrack) {
 TEST_F(AppTest, SleepTimerAtEndOfALooseTrack) {
     start();
     open("Music");
+    open("Albums A to Z");
     open("Lullaby"); // one file, no chapters: the next "track" is the same one again
     press(Button::Ok); // Player menu
     open("Sleep timer");
@@ -928,6 +937,7 @@ TEST_F(AppTest, MusicDoesNotTakeOverTheBookToResume) {
     player.pos = 20;
     hold(Button::Home);
     open("Music");
+    open("Albums A to Z");
     open("Road Trip");
     open("Sunrise");
     EXPECT_EQ(state.getString("pos:" + alpha().string()), "0:20.0") << "the book's place is kept";
@@ -941,6 +951,7 @@ TEST_F(AppTest, RestartAfterMusicResumesTheBook) {
     player.pos = 20;
     hold(Button::Home);
     open("Music");
+    open("Albums A to Z");
     open("Road Trip");
     open("Sunrise");
     hold(Button::Power);
@@ -984,9 +995,10 @@ TEST_F(AppTest, LibraryAndMusicListTheSavedIndexBeforeTheScanIsDelivered) {
     EXPECT_EQ(speech.last(), "Library. Old Book, 2 parts, 1 of 1");
     press(Button::Home);
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Old Album", "Refresh library"}));
-    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 3");
-    press(Button::Down);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Refresh library"}));
+    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 4");
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Old Album"}));
     press(Button::Ok);
     press(Button::Down);
     press(Button::Ok);
@@ -1072,9 +1084,9 @@ TEST_F(AppTest, TwoFoldersTaggedAsOneAlbumGiveOneAlbum) {
     }
     start();
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Big Album", "Lullaby", "Road Trip", "Refresh library"}));
-    press(Button::Down);
-    EXPECT_EQ(speech.last(), "Big Album, 2 tracks, 2 of 5");
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Big Album", "Lullaby", "Road Trip"}));
+    EXPECT_EQ(speech.last(), "Albums A to Z. Big Album, 2 tracks, 1 of 3");
     press(Button::Ok);
     EXPECT_EQ(labels(), (std::vector<std::string>{"a", "b", "Album info"}));
     press(Button::Down);
@@ -1088,10 +1100,10 @@ TEST_F(AppTest, AFolderOfUntaggedFilesIsOneAlbumWithTheNameOfTheFolder) {
     touch(music / "Mix" / "z.flac");
     start();
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Mix", "Road Trip", "Refresh library"}));
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Mix", "Road Trip"}));
     press(Button::Down);
-    press(Button::Down);
-    EXPECT_EQ(speech.last(), "Mix, 3 tracks, 3 of 5");
+    EXPECT_EQ(speech.last(), "Mix, 3 tracks, 2 of 3");
     press(Button::Ok);
     EXPECT_EQ(labels(), (std::vector<std::string>{"z", "x", "y", "Album info"}));
 }
@@ -1106,7 +1118,8 @@ TEST_F(AppTest, LibraryAndMusicAreSortedByTitleWithNumbersAsNumbers) {
     EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta", "Part 2", "Part 10"}));
     press(Button::Home);
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Vol 2", "Vol 10", "Refresh library"}));
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip", "Vol 2", "Vol 10"}));
 }
 
 TEST_F(AppTest, AScanThatChangesNothingWritesNoIndex) {
@@ -2420,6 +2433,7 @@ TEST_F(ScrobbleTest, LocalFilesAreNeverScrobbled) {
     listen(10min);
     hold(Button::Home);
     open("Music");
+    open("Albums A to Z");
     open("Lullaby");
     listen(10min);
     EXPECT_TRUE(server.scrobbles.empty());
@@ -6085,14 +6099,6 @@ TEST_F(CatalogueTest, AServerThisBuildCannotUseKeepsItsSavedItems) {
     EXPECT_TRUE(indexStore.items.count(ref("al1")));
 }
 
-TEST_F(CatalogueTest, ServerAlbumsAreNotListedInMusicYet) {
-    start();
-    answerVersion("v1");
-    answerAlbums({album("a1", "Only on the server")});
-    open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
-}
-
 TEST_F(CatalogueTest, ShutdownCancelsTheSyncInFlight) {
     start();
     const auto id = lastOf(Kind::CatalogueVersion);
@@ -6324,6 +6330,7 @@ protected:
     // Music > `album` > Album info, and what it said.
     std::string albumInfo(const std::string& name) {
         open("Music");
+        open("Albums A to Z");
         open(name);
         open("Album info");
         std::string said = speech.last();
@@ -6339,7 +6346,8 @@ TEST_F(MergeTest, TheSameAlbumLocalAndOnTheServerIsOneEntryAndPlaysLocalFiles) {
     start();
     sync({roadTripOnServer(), album("other", "Server Only")});
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip", "Server Only"})) << "Road Trip once";
     open("Road Trip");
     open("Highway");
     EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
@@ -6354,7 +6362,8 @@ TEST_F(MergeTest, ASyncAfterTheScanMergesJustAsAScanAfterTheSync) {
     sync({roadTripOnServer()});
     ASSERT_NO_FATAL_FAILURE(deliverScan());
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
     EXPECT_EQ(stored(roadTripId()).seenOn, std::vector<std::string>{ref("rt")});
 }
 
@@ -6391,7 +6400,8 @@ TEST_F(MergeTest, ADownloadedServerAlbumIsCachedPlaysItsFilesAndCarriesTheServer
     EXPECT_EQ(item.tracks[0].seenOn, std::vector<std::string>{LibraryIndex::seenRef(key(), SeenKind::Track, "al1-t1")});
 
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Weather", "Refresh library"}));
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip", "Weather"}));
     open("Weather");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Song 1", "Song 2", "Song 3", "Album info"}));
     open("Song 2");
@@ -6403,7 +6413,8 @@ TEST_F(MergeTest, ADownloadIsListedOnceBeforeTheFirstSyncAndKeepsItsReference) {
     ASSERT_NO_FATAL_FAILURE(download("al1", "Weather"));
     start();
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Weather", "Refresh library"}));
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip", "Weather"}));
     EXPECT_EQ(stored("cached:" + ref("al1")).seenOn, std::vector<std::string>{ref("al1")});
 }
 
@@ -6413,7 +6424,8 @@ TEST_F(MergeTest, ADownloadAndTheLocalCopyAreOneEntryPlayedFromTheLocalFiles) {
     start();
     sync({roadTripOnServer()});
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
     open("Road Trip");
     open("Sunrise");
     EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
@@ -6444,7 +6456,8 @@ TEST_F(MergeTest, AfterAMergeASyncWhereTheServerRenamesTheAlbumKeepsOneEntryMatc
     EXPECT_EQ(stored(ref("rt")).title, "Road Trip (2026 remaster)");
     hold(Button::Home);
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"})) << "still one entry";
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"})) << "still one entry";
     hold(Button::Home);
     EXPECT_EQ(albumInfo("Road Trip"), "On the device. Also on the server. Band. 2 tracks.");
 }
@@ -6464,7 +6477,8 @@ TEST_F(MergeTest, AnAlbumRemovedFromTheServerLeavesTheLocalEntryWithNoReference)
     EXPECT_TRUE(stored(roadTripId()).seenOn.empty());
     hold(Button::Home);
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
     hold(Button::Home);
     EXPECT_EQ(albumInfo("Road Trip"), "On the device. Band. 2 tracks.");
 }
@@ -6499,19 +6513,14 @@ TEST_F(MergeTest, ADeletedDownloadLeavesMusic) {
     ASSERT_NO_FATAL_FAILURE(download("al1", "Weather"));
     start();
     open("Music");
-    ASSERT_EQ(labels().size(), 5u);
+    open("Albums A to Z");
+    ASSERT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip", "Weather"}));
     hold(Button::Home);
     ASSERT_TRUE(store().remove(albumSource("al1")));
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
     EXPECT_FALSE(indexStore.items.count("cached:" + ref("al1")));
-}
-
-TEST_F(MergeTest, ServerOnlyAlbumsAreNotListedInMusicYet) {
-    start();
-    sync({album("x", "Only on the server")});
-    open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
 }
 
 TEST_F(MergeTest, TheSyncStoresTheTrackCountAndTheTimeTheServerAddedTheAlbum) {
@@ -6556,7 +6565,8 @@ TEST_F(MergeTest, ADownloadedPlaylistIsNotAnAlbumInMusic) {
     ASSERT_TRUE(store().save(list));
     start();
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
 }
 
 TEST_F(MergeTest, PlayAllPlaysTheAlbumsInTheOrderTheyAreListed) {
@@ -6565,4 +6575,247 @@ TEST_F(MergeTest, PlayAllPlaysTheAlbumsInTheOrderTheyAreListed) {
     open("Music");
     press(Button::Ok);
     EXPECT_EQ(player.file, (music / "Lullaby.mp3").string());
+}
+
+// ---------------------------------------------------------------- Music tree (docs/streaming.md 4.9)
+
+class MusicTreeTest : public MergeTest {
+protected:
+    // A tagged local album of `artist` in its own folder, one track.
+    void localAlbum(const std::string& folder, const std::string& artist, const std::string& albumName) {
+        touch(music / folder / "1.mp3");
+        TrackTags t;
+        t.album = albumName;
+        t.albumArtist = artist;
+        t.title = "Song";
+        tags.tags[music / folder / "1.mp3"] = t;
+    }
+    static RemoteAlbum byArtist(const std::string& id, const std::string& name, const std::string& artist) {
+        RemoteAlbum a = album(id, name);
+        a.artist = artist;
+        return a;
+    }
+    void answerTracks(std::vector<RemoteTrack> tracks) {
+        ASSERT_TRUE(server.reply(lastOf(Kind::AlbumTracks), std::move(tracks)));
+        app->tick();
+    }
+    // Home > Music > Albums A to Z > `name`.
+    void openAlbum(const std::string& name) {
+        open("Music");
+        open("Albums A to Z");
+        open(name);
+    }
+};
+
+TEST_F(MusicTreeTest, ArtistsListLocalAndServerArtistsOnceEachSortedWithoutArticles) {
+    localAlbum("Abbey", "The Beatles", "Abbey");
+    localAlbum("Ночь", "Агата Кристи", "Ночь");
+    tagRoadTrip(); // Band
+    start();
+    sync({byArtist("s1", "Other", "band"), byArtist("s2", "Voulez", "ABBA"), byArtist("s3", "Тест", "Би-2"),
+          byArtist("s4", "Selected", "Aphex Twin"), byArtist("s5", "Hero", "The Alpha")});
+    open("Music");
+    open("Artists");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"ABBA", "The Alpha", "Aphex Twin", "Band", "The Beatles", "Агата Кристи", "Би-2",
+                                                  "Unknown artist"}))
+        << "Band and band are one, The Alpha sorts under A, Cyrillic after Latin, the album with no artist last";
+    for (int i = 0; i < 3; ++i) press(Button::Down);
+    EXPECT_EQ(speech.last(), "Band, 2 albums, 4 of 8");
+}
+
+TEST_F(MusicTreeTest, AnArtistsAlbumsIncludeBothSources) {
+    tagRoadTrip();
+    start();
+    sync({roadTripOnServer(), byArtist("s1", "Another", "Band"), byArtist("s2", "Not theirs", "Choir")});
+    open("Music");
+    open("Artists");
+    open("Band");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Another", "Road Trip"})) << "the merged Road Trip once, and the server's";
+    EXPECT_EQ(level().title, "Band");
+    open("Road Trip");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Sunrise", "Highway", "Album info"})) << "the device files, at once";
+    EXPECT_EQ(countOf(Kind::AlbumTracks), 0u);
+}
+
+TEST_F(MusicTreeTest, AServerAlbumOfAnArtistLoadsLikeInStreaming) {
+    start();
+    sync({byArtist("s1", "Weather", "Band")});
+    open("Music");
+    open("Artists");
+    open("Band");
+    open("Weather");
+    EXPECT_EQ(speech.last(), "Weather. Loading, 1 of 1");
+    EXPECT_EQ(server.lastRequest().arg, "s1");
+}
+
+TEST_F(MusicTreeTest, ALocalAlbumPlaysAtOnceWithNoRequest) {
+    start();
+    sync({album("s1", "Weather")});
+    const size_t asked = server.requests.size();
+    openAlbum("Road Trip");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Sunrise", "Highway", "Album info"}));
+    EXPECT_EQ(speech.last(), "Road Trip. Sunrise, 1 of 3");
+    press(Button::Ok);
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    EXPECT_EQ(server.requests.size(), asked) << "nothing is asked of the server";
+}
+
+TEST_F(MusicTreeTest, AServerAlbumShowsLoadingThenItsTracks) {
+    start();
+    sync({album("s1", "Weather")});
+    openAlbum("Weather");
+    EXPECT_EQ(speech.last(), "Weather. Loading, 1 of 1");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Loading"}));
+    EXPECT_EQ(server.lastRequest().kind, Kind::AlbumTracks);
+    EXPECT_EQ(server.lastRequest().arg, "s1") << "the server's id, not the reference";
+    ASSERT_NO_FATAL_FAILURE(answerTracks(weather()));
+    EXPECT_EQ(labels().front(), "Play album");
+    EXPECT_EQ(labels().back(), "Album info");
+    EXPECT_NE(std::find(labels().begin(), labels().end(), "Rain"), labels().end());
+    EXPECT_EQ(speech.last(), "Play album, 3 tracks, 1 of " + std::to_string(labels().size()));
+    open("Album info");
+    EXPECT_EQ(speech.last(), "On the server. Band. 10 tracks.");
+    press(Button::Up); // the last track
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(MusicTreeTest, WithTheServerUnreachableAServerAlbumGivesTheErrorAndALocalAlbumStillPlays) {
+    start();
+    sync({album("s1", "Weather")});
+    openAlbum("Weather");
+    ASSERT_NO_FATAL_FAILURE(fail(Kind::AlbumTracks, MusicServer::Error::Unreachable));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again"})) << "no tracks";
+    EXPECT_EQ(speech.last(), "Server not reachable, 1 of 2");
+    press(Button::Down);
+    press(Button::Ok); // Try again
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Loading"}));
+    ASSERT_NO_FATAL_FAILURE(answerTracks(weather()));
+    EXPECT_EQ(labels().front(), "Play album");
+    press(Button::Home);
+    open("Road Trip");
+    open("Highway");
+    EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(MusicTreeTest, AMergedAlbumPlaysItsLocalFilesWithoutAskingTheServer) {
+    tagRoadTrip();
+    start();
+    sync({roadTripOnServer()});
+    openAlbum("Road Trip");
+    open("Sunrise");
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    EXPECT_EQ(countOf(Kind::AlbumTracks), 0u) << "the server is never asked, so it cannot be unreachable";
+}
+
+TEST_F(MusicTreeTest, PlayAllPlaysOnlyDeviceFilesNeverTheServer) {
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Weather"));
+    start();
+    sync({album("s1", "Zeta On The Server")});
+    const size_t asked = server.requests.size();
+    open("Music");
+    EXPECT_EQ(speech.last(), "Music. Play all, 6 tracks, 1 of 4") << "Lullaby, Road Trip and the download: no server album";
+    press(Button::Ok);
+    std::vector<std::string> played{player.file};
+    for (int i = 0; i < 5; ++i) {
+        player.atEnd = true;
+        app->tick();
+        played.push_back(player.file);
+    }
+    for (const std::string& f : played) EXPECT_EQ(f.find("fake://"), std::string::npos) << f;
+    EXPECT_EQ(played.back(), downloadedFile("al1", 3));
+    player.atEnd = true;
+    app->tick();
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(server.requests.size(), asked);
+}
+
+TEST_F(MusicTreeTest, PlayAllWithOnlyServerAlbumsSaysNoMusic) {
+    fs::remove_all(music);
+    start();
+    sync({album("s1", "Weather")});
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Refresh library"}));
+    EXPECT_EQ(speech.last(), "Music. Play all, 1 of 4");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "No music");
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_FALSE(player.isOpen());
+}
+
+TEST_F(MusicTreeTest, HomeWhileAServerAlbumLoadsDropsTheLateAnswerAndSaysNothing) {
+    start();
+    sync({album("s1", "Weather")});
+    openAlbum("Weather");
+    auto id = lastOf(Kind::AlbumTracks);
+    press(Button::Home);
+    EXPECT_EQ(level().title, "Albums A to Z");
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), id), server.cancelled.end());
+    EXPECT_FALSE(server.reply(id, weather())) << "the answer is dropped";
+    speech.said.clear();
+    app->tick();
+    EXPECT_TRUE(speech.said.empty());
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip", "Weather"}));
+}
+
+TEST_F(MusicTreeTest, AListYouComeBackToShowsWhatChangedMeanwhile) {
+    start();
+    open("Music");
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
+    press(Button::Home);
+    sync({album("s1", "Weather")});
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Refresh library"}));
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip", "Weather"}));
+    EXPECT_EQ(level().items[2].value(), "10 tracks");
+}
+
+TEST_F(MusicTreeTest, AnAlbumWithNoArtistTagTakesTheArtistOfItsServerCopy) {
+    for (const char* f : {"01 - Sunrise.mp3", "02 - Highway.mp3"}) {
+        TrackTags t;
+        t.album = "Road Trip";
+        t.title = f;
+        t.musicBrainzAlbumId = "mb-1";
+        tags.tags[roadTrip() / f] = t; // no artist
+    }
+    start();
+    RemoteAlbum a = roadTripOnServer();
+    a.musicBrainzId = "mb-1";
+    sync({a});
+    open("Music");
+    open("Artists");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Band", "Unknown artist"})) << "Road Trip is Band's, Lullaby has none";
+    open("Band");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Road Trip"}));
+}
+
+TEST_F(MusicTreeTest, AnArtistWhoseAlbumsWentWhileTheListWasOpenIsNeverAnEmptyMenu) {
+    start();
+    sync({byArtist("s1", "Weather", "Solo")});
+    open("Music");
+    open("Artists");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Solo", "Unknown artist"}));
+    press(Button::Home);
+    open("Refresh library");
+    open("Artists"); // keys work while it runs
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v2");
+    answerAlbums({}); // Solo's only album left the server
+    press(Button::Ok); // on Solo, which is still listed
+    EXPECT_EQ(level().title, "Solo");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No albums"}));
+}
+
+TEST_F(MusicTreeTest, PlayAllBeforeTheScanFindsFilesSaysTheScanIsRunning) {
+    seedServerAlbum("s1", "Weather");
+    seedVersion("v1");
+    start(false);
+    open("Music");
+    EXPECT_EQ(labels().front(), "Play all");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Looking for music. Try again in a moment.");
+    EXPECT_FALSE(player.isOpen());
 }

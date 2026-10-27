@@ -25,6 +25,13 @@ struct MergedAlbum {
 // alone), in the order of the primary item's id.
 std::vector<MergedAlbum> mergeAlbums(const std::map<std::string, IndexItem>& items);
 
+// Artists. Two names are the same artist when they differ only in case and spacing. An artist
+// sorts by its name without a leading article ("The Band" under B): the server's
+// `ignoredArticles` are not read by the client yet, so this is the default, "The".
+inline constexpr const char* kIgnoredArticles[] = {"the"};
+std::string artistKey(const std::string& name);
+bool artistLess(const std::string& a, const std::string& b); // natural, case-insensitive, articles ignored
+
 // The name rule: two albums are the same when they have the same MusicBrainz album id, or
 // when artist, album and track count are equal with case and spaces ignored. An empty
 // MusicBrainz id, an empty album or an unknown track count never match.

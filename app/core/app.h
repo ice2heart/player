@@ -1,5 +1,6 @@
 #pragma once
 
+#include "album_merge.h"
 #include "buttons.h"
 #include "library.h"
 #include "library_index.h"
@@ -135,6 +136,10 @@ private:
     std::vector<MenuItem> homeMenu();
     std::vector<MenuItem> libraryMenu();
     std::vector<MenuItem> musicMenu();
+    static std::string artistOf(const MergedAlbum& album);
+    std::vector<MenuItem> artistsMenu();
+    std::vector<MenuItem> albumList(std::vector<MergedAlbum> albums);
+    MenuItem albumEntry(const MergedAlbum& album);
     std::vector<MenuItem> albumMenu(const Book& album, const std::string& info = {});
     Book bookOf(const IndexItem& item) const;
     void startScan();
@@ -190,7 +195,7 @@ private:
     void onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<MenuItem> items, bool more);
     void showStatus(std::uint64_t screenId); // Loading, the error, or why it is empty, after the loaded items
     void openAlbumList(const std::string& title, const std::string& listType, int pageSize, bool paged);
-    void openRemoteAlbum(const RemoteAlbum& album);
+    void openRemoteAlbum(const RemoteAlbum& album, const std::string& info = {}); // `info`: Album info, last
     std::vector<MenuItem> albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist);
     std::vector<MenuItem> trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
                                      const std::string& playAll, const RemoteSource& source,

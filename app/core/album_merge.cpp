@@ -1,5 +1,6 @@
 #include "album_merge.h"
 
+#include "library.h"
 #include "library_index.h"
 
 #include <algorithm>
@@ -44,9 +45,11 @@ void append(std::string& out, uint32_t c) {
     }
 }
 
-// The text without spaces and in lower case.
-std::string nameKey(const std::string& text) {
+// The text in lower case: without spaces, or (keepSpaces) with runs of spaces made one and
+// none at either end.
+std::string foldedText(const std::string& text, bool keepSpaces) {
     std::string out;
+    bool pendingSpace = false;
     for (size_t i = 0; i < text.size();) {
         unsigned char b = text[i];
         size_t n = b < 0x80 ? 1 : (b >> 5) == 6 ? 2 : (b >> 4) == 14 ? 3 : (b >> 3) == 30 ? 4 : 1;
@@ -65,10 +68,18 @@ std::string nameKey(const std::string& text) {
             }
         }
         i += n;
-        if (!isSpace(c)) append(out, fold(c));
+        if (isSpace(c)) {
+            pendingSpace = keepSpaces && !out.empty();
+        } else {
+            if (pendingSpace) out += ' ';
+            pendingSpace = false;
+            append(out, fold(c));
+        }
     }
     return out;
 }
+
+std::string nameKey(const std::string& text) { return foldedText(text, false); }
 
 // A local folder with no tags is named by its folder; a download saved without a name has only
 // the placeholder the menus speak, which is not a name to match.
@@ -88,6 +99,22 @@ int rank(IndexItem::Source source) {
 }
 
 } // namespace
+
+std::string artistKey(const std::string& name) { return foldedText(name, true); }
+
+bool artistLess(const std::string& a, const std::string& b) {
+    auto sortName = [](const std::string& name) {
+        std::string key = artistKey(name);
+        for (const char* article : kIgnoredArticles) {
+            std::string prefix = std::string(article) + " ";
+            if (key.size() > prefix.size() && key.starts_with(prefix)) return key.substr(prefix.size());
+        }
+        return key;
+    };
+    std::string x = sortName(a), y = sortName(b);
+    if (x != y) return naturalLess(x, y);
+    return naturalLess(a, b);
+}
 
 int trackCountOf(const IndexItem& item) { return item.trackCount > 0 ? item.trackCount : int(item.tracks.size()); }
 
