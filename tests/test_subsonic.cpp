@@ -300,6 +300,46 @@ TEST(Subsonic, PingReturnsServerTypeAndVersionFromPoll) {
     EXPECT_EQ(result.calls, 1); // only once
 }
 
+TEST(Subsonic, CatalogueVersionAsksGetArtistsAndGivesLastModified) {
+    Server server;
+    int calls = 0;
+    Error error = Error::Server;
+    std::string version;
+    server.subsonic->catalogueVersion([&](Error e, std::string v) { ++calls, error = e, version = std::move(v); });
+    ASSERT_EQ(server.http->calls.size(), 1u);
+    EXPECT_EQ(server.http->url(0), kBase + "getArtists" + kAuth);
+    server.http->answer(0, kOk, subsonicFixture("artists.json"));
+    EXPECT_EQ(calls, 0);
+    server.subsonic->poll();
+    ASSERT_EQ(calls, 1);
+    EXPECT_EQ(error, Error::None);
+    EXPECT_EQ(version, "1729791000000");
+}
+
+TEST(Subsonic, CatalogueVersionErrorsHaveNoVersion) {
+    Server server;
+    Error error = Error::None;
+    std::string version = "stale";
+    auto done = [&](Error e, std::string v) { error = e, version = std::move(v); };
+    server.subsonic->catalogueVersion(done);
+    server.http->unreachable(0);
+    server.subsonic->poll();
+    EXPECT_EQ(error, Error::Unreachable);
+    EXPECT_EQ(version, "");
+    server.subsonic->catalogueVersion(done);
+    server.http->answer(1, kOk, subsonicFixture("error_40_wrong_login.json"));
+    server.subsonic->poll();
+    EXPECT_EQ(error, Error::BadLogin);
+}
+
+TEST(Subsonic, CatalogueVersionOfAServerNotConfiguredIsNotConfigured) {
+    Server server(config(""));
+    Error error = Error::None;
+    server.subsonic->catalogueVersion([&](Error e, std::string) { error = e; });
+    server.subsonic->poll();
+    EXPECT_EQ(error, Error::NotConfigured);
+}
+
 TEST(Subsonic, AlbumWithNonAsciiAndEmojiTitles) {
     Server server;
     ListResult<RemoteAlbum> result;

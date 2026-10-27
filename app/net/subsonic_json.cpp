@@ -103,6 +103,10 @@ RemoteAlbum album(const YAML::Node& node) {
     if (album.name.empty()) album.name = text(node, "title");
     album.artist = text(node, "artist");
     album.songCount = integer(node, "songCount");
+    album.genre = text(node, "genre");
+    album.year = integer(node, "year");
+    album.created = text(node, "created");
+    album.musicBrainzId = text(node, "musicBrainzId");
     return album;
 }
 
@@ -193,6 +197,20 @@ Parsed<RemoteAlbum> parseAlbumList(std::string_view body, int pageSize) {
     auto parsed = parseList<RemoteAlbum>(body, "albumList2", "album", album);
     parsed.more = parsed.error == Error::None && pageSize > 0 && int(parsed.items.size()) >= pageSize;
     return parsed;
+}
+
+VersionResult parseCatalogueVersion(std::string_view body) {
+    VersionResult result;
+    Envelope envelope = open(body);
+    result.error = envelope.error;
+    if (envelope.error != Error::None) return result;
+    try {
+        result.version = text(child(envelope.response, "artists"), "lastModified");
+    } catch (const YAML::Exception&) {
+        result = {};
+        result.error = Error::Server;
+    }
+    return result;
 }
 
 Parsed<RemoteArtist> parseArtists(std::string_view body) {

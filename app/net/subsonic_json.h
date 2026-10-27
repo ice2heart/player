@@ -32,11 +32,18 @@ constexpr int kWrongCredentials = 40;
 // the YAML escape \UXXXXXXXX and a lone surrogate as U+FFFD; nothing else changes.
 std::string jsonForYaml(std::string_view json);
 
+struct VersionResult {
+    Error error = Error::None;
+    std::string version; // empty on an error, or when the answer has no lastModified
+};
+
 PingResult parsePing(std::string_view body);
 // An answer that carries nothing but its status, such as scrobble's.
 Error parseStatus(std::string_view body);
 // getAlbumList2. `more` is true when the page is full (pageSize albums came back).
 Parsed<RemoteAlbum> parseAlbumList(std::string_view body, int pageSize);
+// getArtists: its `lastModified`, as the digits the server sent (empty if missing).
+VersionResult parseCatalogueVersion(std::string_view body);
 Parsed<RemoteArtist> parseArtists(std::string_view body);   // getArtists, all indexes in order
 Parsed<RemoteAlbum> parseArtist(std::string_view body);     // getArtist: the artist's albums
 Parsed<RemoteTrack> parseAlbum(std::string_view body);      // getAlbum: its songs

@@ -72,6 +72,43 @@ TEST(SubsonicJson, AlbumListKeepsNonAsciiAndEmojiTitles) {
     EXPECT_EQ(list.items[2].artist, ""); // JSON null, not "null"
 }
 
+TEST(SubsonicJson, AlbumListReadsGenreYearCreatedAndMusicBrainzId) {
+    auto list = parseAlbumList(subsonicFixture("album_list_unicode.json"), 10);
+    ASSERT_EQ(list.error, Error::None);
+    ASSERT_EQ(list.items.size(), 3u);
+    EXPECT_EQ(list.items[0].genre, "Classical");
+    EXPECT_EQ(list.items[0].year, 1876);
+    EXPECT_EQ(list.items[0].created, "2026-10-20T18:01:44.120Z");
+    EXPECT_EQ(list.items[0].musicBrainzId, "5b2e3a6c-1111-4a9b-8e0d-0123456789ab");
+}
+
+TEST(SubsonicJson, AlbumListFieldsTheServerLeavesOutAreEmpty) {
+    auto list = parseAlbumList(subsonicFixture("album_list_unicode.json"), 10);
+    ASSERT_EQ(list.items.size(), 3u);
+    EXPECT_EQ(list.items[1].created, "2026-10-19T10:00:00Z"); // only the other fields are missing
+    EXPECT_EQ(list.items[1].genre, "");
+    EXPECT_EQ(list.items[1].year, 0);
+    EXPECT_EQ(list.items[1].musicBrainzId, "");
+    EXPECT_EQ(list.items[2].created, "");
+}
+
+TEST(SubsonicJson, CatalogueVersionIsLastModifiedOfGetArtists) {
+    auto result = parseCatalogueVersion(subsonicFixture("artists.json"));
+    EXPECT_EQ(result.error, Error::None);
+    EXPECT_EQ(result.version, "1729791000000");
+}
+
+TEST(SubsonicJson, CatalogueVersionIsEmptyWhenTheServerGivesNone) {
+    auto result = parseCatalogueVersion(subsonicFixture("artists_no_modified.json"));
+    EXPECT_EQ(result.error, Error::None);
+    EXPECT_EQ(result.version, "");
+}
+
+TEST(SubsonicJson, CatalogueVersionErrors) {
+    EXPECT_EQ(parseCatalogueVersion(subsonicFixture("error_40_wrong_login.json")).error, Error::BadLogin);
+    EXPECT_EQ(parseCatalogueVersion(subsonicFixture("not_json.html")).error, Error::Server);
+}
+
 TEST(SubsonicJson, AlbumListHasMoreOnlyWhenThePageIsFull) {
     auto body = subsonicFixture("album_list_unicode.json"); // 3 albums
     EXPECT_TRUE(parseAlbumList(body, 3).more);

@@ -174,6 +174,20 @@ MusicServer::RequestId Subsonic::ping(std::function<void(Error, ServerInfo)> don
         });
 }
 
+MusicServer::RequestId Subsonic::catalogueVersion(std::function<void(Error, std::string)> done) {
+    return request(
+        "getArtists", {},
+        [](const std::string& body) {
+            auto result = subsonic::parseCatalogueVersion(body);
+            return Reply{result.error, std::move(result.version), false};
+        },
+        [done = std::move(done)](Reply reply) {
+            auto* version = std::get_if<std::string>(&reply.data);
+            if (reply.error != Error::None || !version) done(reply.error == Error::None ? Error::Server : reply.error, {});
+            else done(Error::None, std::move(*version));
+        });
+}
+
 MusicServer::RequestId Subsonic::albums(std::string listType, int offset, int size, Done<RemoteAlbum> done) {
     int pageSize = std::clamp(size, 1, kMaxPageSize); // a larger page would come back short and look like the last
     Params params = {{"type", std::move(listType)},

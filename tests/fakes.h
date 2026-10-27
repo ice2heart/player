@@ -327,7 +327,7 @@ private:
 // scrobble() is recorded in `scrobbles`, in order (nothing comes back from it).
 class FakeMusicServer : public MusicServer {
 public:
-    enum class Kind { Ping, Albums, Artists, ArtistAlbums, AlbumTracks, Playlists, PlaylistTracks };
+    enum class Kind { Ping, CatalogueVersion, Albums, Artists, ArtistAlbums, AlbumTracks, Playlists, PlaylistTracks };
     struct Request {
         RequestId id = 0;
         Kind kind = Kind::Ping;
@@ -338,6 +338,9 @@ public:
 
     bool configured() const override { return isConfigured; }
     RequestId ping(std::function<void(Error, ServerInfo)> done) override { return add(std::move(done), Kind::Ping); }
+    RequestId catalogueVersion(std::function<void(Error, std::string)> done) override {
+        return add(std::move(done), Kind::CatalogueVersion);
+    }
     RequestId albums(std::string listType, int offset, int size, Done<RemoteAlbum> done) override {
         return add(std::move(done), Kind::Albums, std::move(listType), offset, size);
     }
@@ -400,6 +403,15 @@ public:
         pending_.erase(it);
         return true;
     }
+    bool replyVersion(RequestId id, std::string version) {
+        auto it = pending_.find(id);
+        if (it == pending_.end()) return false;
+        auto* done = std::get_if<VersionDone>(&it->second);
+        if (!done) throw std::logic_error("FakeMusicServer::replyVersion: not a catalogueVersion request");
+        ready_.emplace_back(id, [cb = std::move(*done), version = std::move(version)] { cb(Error::None, version); });
+        pending_.erase(it);
+        return true;
+    }
     // Answer any request with an error (empty list, more = false).
     bool fail(RequestId id, Error error) {
         if (error == Error::None) throw std::logic_error("FakeMusicServer::fail: Error::None is not a failure");
@@ -432,8 +444,9 @@ public:
 
 private:
     using PingDone = std::function<void(Error, ServerInfo)>;
+    using VersionDone = std::function<void(Error, std::string)>;
     using Callback =
-        std::variant<PingDone, Done<RemoteAlbum>, Done<RemoteArtist>, Done<RemoteTrack>, Done<RemotePlaylist>>;
+        std::variant<PingDone, VersionDone, Done<RemoteAlbum>, Done<RemoteArtist>, Done<RemoteTrack>, Done<RemotePlaylist>>;
 
     template <class F> RequestId add(F done, Kind kind, std::string arg = {}, int offset = 0, int size = 0) {
         RequestId id = ++lastId_;
@@ -456,6 +469,9 @@ private:
         return true;
     }
     static std::function<void()> failure(PingDone cb, Error error) {
+        return [cb = std::move(cb), error] { cb(error, {}); };
+    }
+    static std::function<void()> failure(VersionDone cb, Error error) {
         return [cb = std::move(cb), error] { cb(error, {}); };
     }
     template <class T> static std::function<void()> failure(Done<T> cb, Error error) {

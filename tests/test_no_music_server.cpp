@@ -22,6 +22,10 @@ TEST(NoMusicServer, EveryRequestFinishesWithNotConfiguredOnTheNextPoll) {
     };
     std::vector<MusicServer::RequestId> ids = {
         server.ping([&](Error e, MusicServer::ServerInfo) { errors.push_back(e); }),
+        server.catalogueVersion([&](Error e, std::string version) {
+            EXPECT_TRUE(version.empty());
+            errors.push_back(e);
+        }),
         server.albums("newest", 0, 50, [&](Error e, std::vector<RemoteAlbum> v, bool m) { list(e, v, m); }),
         server.artists([&](Error e, std::vector<RemoteArtist> v, bool m) { list(e, v, m); }),
         server.artistAlbums("a1", [&](Error e, std::vector<RemoteAlbum> v, bool m) { list(e, v, m); }),
@@ -31,13 +35,13 @@ TEST(NoMusicServer, EveryRequestFinishesWithNotConfiguredOnTheNextPoll) {
     };
     EXPECT_TRUE(errors.empty()) << "callbacks run only from poll()";
     server.poll();
-    EXPECT_EQ(errors, std::vector<Error>(7, Error::NotConfigured));
+    EXPECT_EQ(errors, std::vector<Error>(8, Error::NotConfigured));
     for (size_t i = 0; i < ids.size(); ++i) {
         EXPECT_NE(ids[i], 0u);
         for (size_t j = 0; j < i; ++j) EXPECT_NE(ids[i], ids[j]);
     }
     server.poll();
-    EXPECT_EQ(errors.size(), 7u) << "each callback runs once";
+    EXPECT_EQ(errors.size(), 8u) << "each callback runs once";
 }
 
 TEST(NoMusicServer, ACancelledRequestNeverCallsBack) {

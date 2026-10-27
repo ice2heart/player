@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <ctime>
 #include <iterator>
+#include <set>
 #include <limits>
 #include <memory>
 #include <system_error>
@@ -33,6 +34,12 @@ constexpr const char* kAutoSleep = "power.auto_sleep_min";
 constexpr const char* kStreamingBitrate = "streaming.bitrate"; // kbit/s of a transcode; 0: the original file
 constexpr const char* kCacheLimit = "cache.limit_gb"; // automatic cache: gigabytes of unpinned tracks, 0: off
 constexpr const char* kLastBook = "last_book";
+// The catalogue version of the server the index was last synced with (getArtists `lastModified`),
+// and the server key it belongs to. In state.tsv, never in config.yaml.
+constexpr const char* kCatalogueServer = "catalogue.server";
+constexpr const char* kCatalogueVersion = "catalogue.version";
+constexpr int kCataloguePage = 500;          // albums per request (the most getAlbumList2 gives)
+constexpr size_t kCatalogueLimit = 200000;   // a server that never stops paging is an error
 constexpr const char* kServerName = "server.name"; // the Streaming entry on Home
 constexpr const char* kServerUrl = "server.url";
 constexpr const char* kServerUser = "server.user";
@@ -263,6 +270,7 @@ void App::start() {
     earcons_.play(Earcon::Boot);
     say("Ready.");
     startScan(); // the menus use the saved index until it is done
+    startSync(); // silent: the saved server items stay if it fails
 
     // A stream played last: "Now playing" on Home resumes it. Nothing is asked
     // of the server now, and nothing plays until the user chooses it.
@@ -314,6 +322,136 @@ void App::startScan() {
 void App::onScanned(std::vector<IndexItem> items) {
     index_.replaceSource(IndexItem::Source::Local, items, clock_.wallTime());
     index_.save();
+    finishRefresh();
+}
+
+// ---------------------------------------------------------------- server catalogue
+
+std::string App::catalogueServerKey() const {
+    return TrackCache::serverKey(config_.getString(kServerUrl), config_.getString(kServerUser)); // empty: no server set up
+}
+
+namespace {
+std::string keyOfRef(const std::string& ref) { return ref.substr(0, ref.find(':')); }
+} // namespace
+
+// What was seen on another server (or the same one under another user), or on any server once
+// none is set up, is not this server's: its server items and its references go. Items on this
+// device stay.
+void App::dropOtherServers(const std::string& key) {
+    std::set<std::string> others;
+    for (const auto& [id, item] : index_.items()) {
+        for (const auto& ref : item.seenOn) others.insert(keyOfRef(ref));
+        for (const auto& track : item.tracks)
+            for (const auto& ref : track.seenOn) others.insert(keyOfRef(ref));
+    }
+    others.erase(key);
+    for (const auto& other : others) index_.replaceServer(other, {}, clock_.wallTime());
+    index_.save();
+}
+
+void App::startSync() {
+    std::string key = catalogueServerKey();
+    dropOtherServers(key); // with no server set up that is every server
+    if (key.empty() || !server_.configured() || catalogueRequest_) return; // nothing to sync, or a sync is running
+    catalogue_ = {};
+    catalogue_.key = key;
+    catalogueRequest_ = server_.catalogueVersion([this](MusicServer::Error error, std::string version) {
+        catalogueRequest_ = 0;
+        onCatalogueVersion(error, version);
+    });
+}
+
+void App::onCatalogueVersion(MusicServer::Error error, const std::string& version) {
+    if (error != MusicServer::Error::None) return finishSync(error);
+    bool haveItems = false;
+    for (const auto& [id, item] : index_.items())
+        if (item.source == IndexItem::Source::Server && LibraryIndex::refOnServer(item.seenOn, catalogue_.key))
+            haveItems = true;
+    // A server that gives no version cannot be told unchanged. Without server items in the
+    // index (it was lost) the version does not matter either.
+    if (!version.empty() && haveItems && state_.getString(kCatalogueServer) == catalogue_.key &&
+        state_.getString(kCatalogueVersion) == version)
+        return finishSync(MusicServer::Error::None);
+    catalogue_.version = version;
+    fetchCatalogue(0);
+}
+
+void App::fetchCatalogue(int offset) {
+    catalogueRequest_ = server_.albums(
+        "alphabeticalByName", offset, kCataloguePage,
+        [this, offset](MusicServer::Error error, std::vector<RemoteAlbum> albums, bool more) {
+            catalogueRequest_ = 0;
+            if (error != MusicServer::Error::None) return finishSync(error);
+            for (const RemoteAlbum& a : albums) {
+                IndexItem item;
+                item.id = LibraryIndex::seenRef(catalogue_.key, SeenKind::Album, a.id);
+                item.source = IndexItem::Source::Server;
+                item.kind = IndexItem::Kind::Music;
+                item.title = a.name;
+                item.artist = a.artist;
+                item.album = a.name;
+                item.genre = a.genre;
+                item.year = a.year;
+                item.musicBrainzId = a.musicBrainzId;
+                item.seenOn.push_back(item.id);
+                catalogue_.items.push_back(std::move(item));
+            }
+            // A page that is empty ends it however `more` says, and so does a server that never ends.
+            if (more && !albums.empty() && catalogue_.items.size() < kCatalogueLimit)
+                return fetchCatalogue(offset + int(albums.size()));
+            if (more && !albums.empty()) return finishSync(MusicServer::Error::Server);
+            applyCatalogue();
+            finishSync(MusicServer::Error::None);
+        });
+}
+
+// Every page came: the server items of the index become the albums fetched.
+void App::applyCatalogue() {
+    index_.replaceServer(catalogue_.key, catalogue_.items, clock_.wallTime());
+    catalogue_.items.clear();
+    if (index_.save() && !catalogue_.version.empty()) { // else the next start checks again
+        state_.setString(kCatalogueServer, catalogue_.key);
+        state_.setString(kCatalogueVersion, catalogue_.version);
+    }
+}
+
+// The sync is over: with an error the index is as it was.
+void App::finishSync(MusicServer::Error error) {
+    catalogue_.items.clear();
+    refresh_.error = error;
+    finishRefresh();
+}
+
+// Music -> Refresh library: rescans the files and, with a server, checks its catalogue. A scan or
+// sync that is already running (the start-up one) is joined, not started twice.
+void App::refreshLibrary() {
+    if (refresh_.active) {
+        say("Still updating.");
+        return;
+    }
+    refresh_ = {};
+    refresh_.active = true;
+    refresh_.screen = screens_.empty() ? 0 : screens_.back().id;
+    say("Updating the library.");
+    if (!scanRequest_) startScan();
+    if (!catalogueRequest_) startSync();
+}
+
+// Called when a scan or a sync ends: when none is left, a Refresh that waits speaks its result,
+// but only on the screen it started on and while awake (a late result is never spoken).
+void App::finishRefresh() {
+    if (!refresh_.active || scanRequest_ || catalogueRequest_) return;
+    Refresh done = std::exchange(refresh_, {});
+    if (sleeping_ || screens_.empty() || screens_.back().id != done.screen) return;
+    if (done.error != MusicServer::Error::None) {
+        say(errorText(done.error) + ".");
+        return;
+    }
+    size_t albums = 0;
+    for (const auto& [id, item] : index_.items())
+        if (item.kind == IndexItem::Kind::Music) ++albums;
+    say("Library updated, " + countValue(albums, "album") + ".");
 }
 
 void App::shutdown() {
@@ -325,6 +463,8 @@ void App::shutdown() {
     autoJob_.reset();
     autoQueue_.clear();
     if (scanRequest_) scanner_.cancel(std::exchange(scanRequest_, 0));
+    if (catalogueRequest_) server_.cancel(std::exchange(catalogueRequest_, 0));
+    refresh_ = {};
     pendingOpen_.reset();
     player_.cancelPreload();
     player_.close();
@@ -909,13 +1049,21 @@ std::vector<MenuItem> App::musicMenu() {
         albums.push_back(bookOf(*item));
         all.files.insert(all.files.end(), albums.back().files.begin(), albums.back().files.end());
     }
-    if (all.files.empty() && scanRequest_)
-        return {action("Scanning", [this] { say("Looking for music. Try again in a moment."); })};
-    if (all.files.empty())
-        return {action("No music", [this] { say("Copy music into " + musicRoot_.string() + ". One folder per album."); })};
+    // Server albums are in the index but not listed here yet (4.8 and 4.9): Music shows the device.
+    std::vector<MenuItem> items;
+    MenuItem refresh = action("Refresh library", [this] { refreshLibrary(); });
+    if (all.files.empty() && scanRequest_) {
+        items.push_back(action("Scanning", [this] { say("Looking for music. Try again in a moment."); }));
+        items.push_back(refresh);
+        return items;
+    }
+    if (all.files.empty()) {
+        items.push_back(action("No music", [this] { say("Copy music into " + musicRoot_.string() + ". One folder per album."); }));
+        items.push_back(refresh);
+        return items;
+    }
 
     auto tracks = [](size_t n) { return [n] { return countValue(n, "track"); }; };
-    std::vector<MenuItem> items;
     MenuItem playAll = action("Play all", [this, all] {
         if (playMusic(all, 0)) enterPlayer();
     });
@@ -932,6 +1080,7 @@ std::vector<MenuItem> App::musicMenu() {
             items.push_back(album);
         }
     }
+    items.push_back(refresh);
     return items;
 }
 

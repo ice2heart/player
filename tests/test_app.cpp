@@ -129,6 +129,14 @@ protected:
 
     const Screen& level() const { return app->screens().back(); }
 
+    // The requests the App made for what the user did: the catalogue check at start-up is not one.
+    size_t listRequests() const {
+        size_t n = 0;
+        for (const auto& r : server.requests)
+            if (r.kind != FakeMusicServer::Kind::CatalogueVersion) ++n;
+        return n;
+    }
+
     FakeSpeech speech;
     FakePlayer player;
     FakeSounds sounds;
@@ -796,12 +804,12 @@ TEST_F(AppTest, HomeFromThePlayerMenuReturnsToThePlayer) {
 TEST_F(AppTest, MusicMenuListsPlayAllLooseTracksAndAlbums) {
     start();
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip"}));
-    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 3");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 4");
     press(Button::Down);
-    EXPECT_EQ(speech.last(), "Lullaby, 2 of 3");
+    EXPECT_EQ(speech.last(), "Lullaby, 2 of 4");
     press(Button::Down);
-    EXPECT_EQ(speech.last(), "Road Trip, 2 tracks, 3 of 3");
+    EXPECT_EQ(speech.last(), "Road Trip, 2 tracks, 3 of 4");
     press(Button::Up);
     press(Button::Ok); // a loose track plays straight away
     EXPECT_EQ(app->mode(), App::Mode::Player);
@@ -829,7 +837,7 @@ TEST_F(AppTest, CacheFolderInsideLibraryOrMusicIsNotListed) {
     touch(cache / "server-1" / "al1" / "01.flac");
     start();
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
 }
 
 TEST_F(AppTest, ChoosingATrackPlaysTheRestOfTheAlbum) {
@@ -976,8 +984,8 @@ TEST_F(AppTest, LibraryAndMusicListTheSavedIndexBeforeTheScanIsDelivered) {
     EXPECT_EQ(speech.last(), "Library. Old Book, 2 parts, 1 of 1");
     press(Button::Home);
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Old Album"}));
-    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 2");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Old Album", "Refresh library"}));
+    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 3");
     press(Button::Down);
     press(Button::Ok);
     press(Button::Down);
@@ -993,7 +1001,7 @@ TEST_F(AppTest, WithNoIndexYetTheListsSayScanningNotEmptyUntilTheScanIsDone) {
     EXPECT_EQ(speech.last(), "Looking for books. Try again in a moment.");
     press(Button::Home);
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Scanning"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Scanning", "Refresh library"}));
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "Looking for music. Try again in a moment.");
     press(Button::Home);
@@ -1064,9 +1072,9 @@ TEST_F(AppTest, TwoFoldersTaggedAsOneAlbumGiveOneAlbum) {
     }
     start();
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Big Album", "Lullaby", "Road Trip"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Big Album", "Lullaby", "Road Trip", "Refresh library"}));
     press(Button::Down);
-    EXPECT_EQ(speech.last(), "Big Album, 2 tracks, 2 of 4");
+    EXPECT_EQ(speech.last(), "Big Album, 2 tracks, 2 of 5");
     press(Button::Ok);
     EXPECT_EQ(labels(), (std::vector<std::string>{"a", "b"}));
     press(Button::Down);
@@ -1080,10 +1088,10 @@ TEST_F(AppTest, AFolderOfUntaggedFilesIsOneAlbumWithTheNameOfTheFolder) {
     touch(music / "Mix" / "z.flac");
     start();
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Mix", "Road Trip"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Mix", "Road Trip", "Refresh library"}));
     press(Button::Down);
     press(Button::Down);
-    EXPECT_EQ(speech.last(), "Mix, 3 tracks, 3 of 4");
+    EXPECT_EQ(speech.last(), "Mix, 3 tracks, 3 of 5");
     press(Button::Ok);
     EXPECT_EQ(labels(), (std::vector<std::string>{"z", "x", "y"}));
 }
@@ -1098,7 +1106,7 @@ TEST_F(AppTest, LibraryAndMusicAreSortedByTitleWithNumbersAsNumbers) {
     EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta", "Part 2", "Part 10"}));
     press(Button::Home);
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Vol 2", "Vol 10"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Vol 2", "Vol 10", "Refresh library"}));
 }
 
 TEST_F(AppTest, AScanThatChangesNothingWritesNoIndex) {
@@ -3027,7 +3035,7 @@ TEST_F(ResumeStreamTest, PlayWithNothingSavedStillSaysNothingToPlay) {
     start();
     press(Button::PlayPause);
     EXPECT_EQ(speech.last(), "Nothing to play. Choose a book in the library.");
-    EXPECT_TRUE(server.requests.empty());
+    EXPECT_EQ(listRequests(), 0u);
 }
 
 TEST_F(ResumeStreamTest, ASlashAtTheEndOfTheServerUrlIsTheSameServer) {
@@ -4560,7 +4568,7 @@ TEST_F(DownloadedTest, TheServerMenuOffersDownloadedOnlyWithACacheFolder) {
     openServer();
     EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Playlists",
                                                   "Random albums", "Downloaded", "Server status"}));
-    EXPECT_TRUE(server.requests.empty()) << "it is not a list from the server";
+    EXPECT_EQ(listRequests(), 0u) << "it is not a list from the server";
 }
 
 TEST_F(DownloadedTest, NoCacheFolderMeansNoDownloadedItem) {
@@ -4646,7 +4654,7 @@ TEST_F(DownloadedTest, PlayAlbumPlaysTheFilesAndAsksTheServerForNothing) {
     EXPECT_EQ(app->mode(), App::Mode::Player);
     EXPECT_EQ(player.file, fileOf(al, "t1"));
     EXPECT_FALSE(anyStreamOpened());
-    EXPECT_TRUE(server.requests.empty());
+    EXPECT_EQ(listRequests(), 0u);
     EXPECT_FALSE(speech.heard("Loading.")) << "a file opens at once";
     player.atEnd = true;
     app->tick();
@@ -5789,4 +5797,479 @@ TEST_F(AutoCacheLimitTest, TheErrorListDoesNotOfferDownloadedForOnlyAutomaticTra
     ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
     app->tick();
     EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again"}));
+}
+
+// ---------------------------------------------------------------- server catalogue in the index
+
+// The server catalogue (docs/streaming.md 4.7): at start-up, silently, and from Music -> Refresh
+// library, the App compares the server's catalogue version with the stored one and fetches the
+// album list only when it changed. Server items are in the index (the store) but not listed yet.
+class CatalogueTest : public AppTest {
+protected:
+    void SetUp() override {
+        AppTest::SetUp();
+        settings.setString("server.url", "https://music.example");
+        settings.setString("server.user", "ice");
+        settings.setString("server.password", "sesame");
+    }
+
+    std::string key(const std::string& user = "ice") const { return TrackCache::serverKey("https://music.example", user); }
+    std::string ref(const std::string& id, const std::string& serverKey = "") const {
+        return LibraryIndex::seenRef(serverKey.empty() ? key() : serverKey, SeenKind::Album, id);
+    }
+
+    // A server album as an earlier sync saved it.
+    void seedServerAlbum(const std::string& id, const std::string& title, const std::string& serverKey = "") {
+        IndexItem item;
+        item.id = ref(id, serverKey);
+        item.source = IndexItem::Source::Server;
+        item.title = title;
+        item.firstSeen = 100;
+        item.seenOn = {item.id};
+        indexStore.items[item.id] = item;
+    }
+    void seedVersion(const std::string& version) {
+        state.setString("catalogue.server", key());
+        state.setString("catalogue.version", version);
+    }
+
+    // The newest request of `kind`.
+    MusicServer::RequestId lastOf(FakeMusicServer::Kind kind) const {
+        for (auto it = server.requests.rbegin(); it != server.requests.rend(); ++it)
+            if (it->kind == kind) return it->id;
+        ADD_FAILURE() << "no such request";
+        return 0;
+    }
+    size_t countOf(FakeMusicServer::Kind kind) const {
+        return size_t(std::count_if(server.requests.begin(), server.requests.end(),
+                                    [kind](const auto& r) { return r.kind == kind; }));
+    }
+    void answerVersion(const std::string& version) {
+        ASSERT_TRUE(server.replyVersion(lastOf(Kind::CatalogueVersion), version));
+        app->tick();
+    }
+    void answerAlbums(std::vector<RemoteAlbum> albums, bool more = false) {
+        ASSERT_TRUE(server.reply(lastOf(Kind::Albums), std::move(albums), more));
+        app->tick();
+    }
+    void fail(FakeMusicServer::Kind kind, MusicServer::Error error) {
+        ASSERT_TRUE(server.fail(lastOf(kind), error));
+        app->tick();
+    }
+    static RemoteAlbum album(const std::string& id, const std::string& name) {
+        RemoteAlbum a;
+        a.id = id;
+        a.name = name;
+        a.artist = "Band";
+        a.songCount = 10;
+        return a;
+    }
+    void refresh() {
+        open("Music");
+        open("Refresh library");
+    }
+    // True when no saved item holds `text` anywhere.
+    bool storeHolds(const std::string& text) const {
+        for (const auto& [id, item] : indexStore.items) {
+            std::string all = id + item.title + item.artist + item.album + item.genre + item.musicBrainzId;
+            for (const auto& r : item.seenOn) all += r;
+            for (const auto& t : item.tracks) {
+                all += t.location + t.title;
+                for (const auto& r : t.seenOn) all += r;
+            }
+            if (all.find(text) != std::string::npos) return true;
+        }
+        return false;
+    }
+    bool saidAnythingWith(const std::string& text) const {
+        for (const auto& s : speech.said)
+            if (s.find(text) != std::string::npos) return true;
+        return false;
+    }
+    using Kind = FakeMusicServer::Kind;
+};
+
+TEST_F(CatalogueTest, StartUpAsksTheVersionOnceAndNothingElseWhenItIsUnchanged) {
+    seedServerAlbum("al1", "Kept");
+    seedVersion("v1");
+    start();
+    ASSERT_EQ(countOf(Kind::CatalogueVersion), 1u);
+    const int saves = indexStore.saves;
+    answerVersion("v1");
+    EXPECT_EQ(countOf(Kind::Albums), 0u) << "unchanged: no album list";
+    EXPECT_EQ(indexStore.saves, saves) << "and nothing is written";
+    EXPECT_TRUE(indexStore.items.count(ref("al1")));
+}
+
+TEST_F(CatalogueTest, ChangedVersionFetchesAllAlbumsAndReplacesTheServerItems) {
+    seedServerAlbum("al1", "Old name");
+    seedServerAlbum("gone", "Dropped by the server");
+    seedVersion("v1");
+    start();
+    answerVersion("v2");
+    ASSERT_EQ(countOf(Kind::Albums), 1u);
+    EXPECT_EQ(server.lastRequest().arg, "alphabeticalByName");
+    EXPECT_EQ(server.lastRequest().offset, 0);
+    EXPECT_EQ(server.lastRequest().size, 500);
+    RemoteAlbum a = album("al1", "New name");
+    a.genre = "Rock";
+    a.year = 1999;
+    a.musicBrainzId = "mb-1";
+    answerAlbums({a, album("al3", "Fresh")});
+
+    ASSERT_TRUE(indexStore.items.count(ref("al1")));
+    const IndexItem& item = indexStore.items.at(ref("al1"));
+    EXPECT_EQ(item.title, "New name");
+    EXPECT_EQ(item.artist, "Band");
+    EXPECT_EQ(item.genre, "Rock");
+    EXPECT_EQ(item.year, 1999);
+    EXPECT_EQ(item.musicBrainzId, "mb-1");
+    EXPECT_EQ(item.source, IndexItem::Source::Server);
+    EXPECT_EQ(item.kind, IndexItem::Kind::Music);
+    EXPECT_EQ(item.seenOn, std::vector<std::string>{key() + ":album:al1"});
+    EXPECT_EQ(item.firstSeen, 100) << "an album the index knew keeps its first-seen time";
+    EXPECT_TRUE(indexStore.items.count(ref("al3")));
+    EXPECT_FALSE(indexStore.items.count(ref("gone"))) << "an album the server dropped is gone";
+    EXPECT_EQ(state.getString("catalogue.version"), "v2");
+    EXPECT_EQ(state.getString("catalogue.server"), key());
+}
+
+TEST_F(CatalogueTest, AllPagesAreFetchedWhileTheServerHasMore) {
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One"), album("a2", "Two")}, true);
+    ASSERT_EQ(countOf(Kind::Albums), 2u);
+    EXPECT_EQ(server.lastRequest().offset, 2);
+    EXPECT_FALSE(indexStore.items.count(ref("a1"))) << "nothing is replaced until the last page";
+    answerAlbums({album("a3", "Three")});
+    EXPECT_EQ(countOf(Kind::Albums), 2u);
+    EXPECT_TRUE(indexStore.items.count(ref("a1")));
+    EXPECT_TRUE(indexStore.items.count(ref("a2")));
+    EXPECT_TRUE(indexStore.items.count(ref("a3")));
+}
+
+TEST_F(CatalogueTest, AnEmptyPageEndsPagingEvenIfTheServerSaysThereIsMore) {
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One")}, true);
+    answerAlbums({}, true);
+    EXPECT_EQ(countOf(Kind::Albums), 2u) << "no third request";
+    EXPECT_TRUE(indexStore.items.count(ref("a1")));
+    EXPECT_EQ(server.pendingCount(), 0u);
+}
+
+TEST_F(CatalogueTest, AServerThatNeverStopsPagingEndsInAnErrorAndKeepsTheSavedItems) {
+    seedServerAlbum("old", "Old");
+    start();
+    answerVersion("v1");
+    std::vector<RemoteAlbum> page;
+    for (int i = 0; i < 500; ++i) page.push_back(album("x" + std::to_string(i), "X"));
+    for (int i = 0; i < 1000 && server.pendingCount() > 0; ++i) answerAlbums(page, true);
+    EXPECT_EQ(server.pendingCount(), 0u) << "the sync gave up";
+    EXPECT_TRUE(indexStore.items.count(ref("old")));
+    EXPECT_FALSE(indexStore.items.count(ref("x0")));
+    EXPECT_EQ(state.getString("catalogue.version"), "");
+}
+
+TEST_F(CatalogueTest, ASyncErrorAtStartUpSaysNothingAndKeepsTheSavedItems) {
+    seedServerAlbum("al1", "Kept");
+    seedVersion("v1");
+    start();
+    const size_t spoken = speech.said.size();
+    const int saves = indexStore.saves;
+    fail(Kind::CatalogueVersion, MusicServer::Error::Unreachable);
+    EXPECT_EQ(speech.said.size(), spoken);
+    EXPECT_TRUE(indexStore.items.count(ref("al1")));
+    EXPECT_EQ(indexStore.saves, saves);
+}
+
+TEST_F(CatalogueTest, AnAlbumListErrorAtStartUpSaysNothingKeepsTheItemsAndTheOldVersion) {
+    seedServerAlbum("al1", "Kept");
+    seedVersion("v1");
+    start();
+    const size_t spoken = speech.said.size();
+    answerVersion("v2");
+    fail(Kind::Albums, MusicServer::Error::Server);
+    EXPECT_EQ(speech.said.size(), spoken);
+    EXPECT_TRUE(indexStore.items.count(ref("al1")));
+    EXPECT_EQ(state.getString("catalogue.version"), "v1") << "the next start tries again";
+}
+
+TEST_F(CatalogueTest, ASyncThatChangedNothingWritesNothing) {
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One")});
+    app->shutdown();
+    app.reset();
+    const int saves = indexStore.saves;
+    start(); // the version is stored in state, which the test keeps in memory
+    state.setString("catalogue.version", "other"); // a changed version, the same albums
+    answerVersion("v2");
+    answerAlbums({album("a1", "One")});
+    EXPECT_EQ(indexStore.saves, saves);
+}
+
+TEST_F(CatalogueTest, AServerWithoutAVersionIsSyncedEveryTime) {
+    seedServerAlbum("al1", "One");
+    seedVersion("");
+    start();
+    answerVersion("");
+    EXPECT_EQ(countOf(Kind::Albums), 1u);
+}
+
+TEST_F(CatalogueTest, AnIndexWithoutServerItemsIsSyncedEvenIfTheVersionMatches) {
+    seedVersion("v1"); // the library database was lost, state.tsv was not
+    start();
+    answerVersion("v1");
+    EXPECT_EQ(countOf(Kind::Albums), 1u);
+}
+
+TEST_F(CatalogueTest, AFailedSaveDoesNotStoreTheVersion) {
+    start();
+    answerVersion("v1");
+    indexStore.failSaves = true;
+    answerAlbums({album("a1", "One")});
+    EXPECT_EQ(state.getString("catalogue.version"), "");
+}
+
+TEST_F(CatalogueTest, ItemsOfAnotherServerOrUserAreDroppedAtStartUp) {
+    seedServerAlbum("al1", "Of the old user", key("former"));
+    seedServerAlbum("al2", "Of ice");
+    seedVersion("v1");
+    // A local album that was matched to a server album of the other key.
+    IndexItem local = savedItem("local:album:Band\x1fMine", IndexItem::Kind::Music, "Mine", {"/m/1.mp3"});
+    local.seenOn = {ref("al1", key("former"))};
+    indexStore.items[local.id] = local;
+    start(false); // before the scan, which would not find /m/1.mp3
+    EXPECT_FALSE(indexStore.items.count(ref("al1", key("former")))) << "its server item went";
+    ASSERT_TRUE(indexStore.items.count(local.id));
+    EXPECT_TRUE(indexStore.items.at(local.id).seenOn.empty()) << "and so did the reference on the local item";
+    EXPECT_TRUE(indexStore.items.count(ref("al2")));
+    EXPECT_FALSE(storeHolds(key("former")));
+}
+
+TEST_F(CatalogueTest, AStoredVersionOfAnotherServerIsNotThisServers) {
+    seedServerAlbum("al1", "One");
+    seedVersion("v1");
+    state.setString("catalogue.server", key("former"));
+    start();
+    answerVersion("v1");
+    EXPECT_EQ(countOf(Kind::Albums), 1u);
+}
+
+TEST_F(CatalogueTest, ANewServerOnTheSameIndexIsSyncedFromScratch) {
+    seedServerAlbum("al1", "Of the old server", TrackCache::serverKey("https://old.example", "ice"));
+    seedVersion("v1"); // the stored version belongs to the old key below
+    state.setString("catalogue.server", TrackCache::serverKey("https://old.example", "ice"));
+    start();
+    answerVersion("v1");
+    EXPECT_EQ(countOf(Kind::Albums), 1u) << "the same version of another server means nothing";
+    answerAlbums({album("n1", "New")});
+    EXPECT_FALSE(storeHolds("old.example"));
+    EXPECT_TRUE(indexStore.items.count(ref("n1")));
+}
+
+TEST_F(CatalogueTest, WithNoServerNothingIsSyncedAndWhatWasSeenOnAServerIsDropped) {
+    settings.setString("server.url", "");
+    seedServerAlbum("al1", "Of the server that was set up");
+    start(false);
+    EXPECT_TRUE(server.requests.empty());
+    EXPECT_FALSE(indexStore.items.count(ref("al1")));
+}
+
+TEST_F(CatalogueTest, AServerThisBuildCannotUseKeepsItsSavedItems) {
+    seedServerAlbum("al1", "Kept");
+    server.isConfigured = false; // set up in config.yaml, but not as a server the player can reach
+    start();
+    EXPECT_TRUE(server.requests.empty());
+    EXPECT_TRUE(indexStore.items.count(ref("al1")));
+}
+
+TEST_F(CatalogueTest, ServerAlbumsAreNotListedInMusicYet) {
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "Only on the server")});
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+}
+
+TEST_F(CatalogueTest, ShutdownCancelsTheSyncInFlight) {
+    start();
+    const auto id = lastOf(Kind::CatalogueVersion);
+    app->shutdown();
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), id), server.cancelled.end());
+}
+
+TEST_F(CatalogueTest, NothingSpokenOrSavedHoldsTheServerAddressOrPassword) {
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One")});
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v2");
+    answerAlbums({album("a1", "One")});
+    for (const char* secret : {"music.example", "sesame", "https://", "fake://"}) {
+        EXPECT_FALSE(saidAnythingWith(secret)) << secret;
+        EXPECT_FALSE(storeHolds(secret)) << secret;
+        for (const auto& [name, value] : state.values()) {
+            EXPECT_EQ(name.find(secret), std::string::npos) << name;
+            EXPECT_EQ(value.find(secret), std::string::npos) << name;
+        }
+    }
+}
+
+// ---- Music -> Refresh library
+
+TEST_F(CatalogueTest, RefreshIsTheLastItemOfMusic) {
+    start();
+    open("Music");
+    EXPECT_EQ(labels().back(), "Refresh library");
+}
+
+TEST_F(CatalogueTest, RefreshSaysUpdatingThenTheResultOnceTheScanAndTheSyncAreDone) {
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One"), album("a2", "Two")});
+    refresh();
+    EXPECT_EQ(speech.last(), "Updating the library.");
+    EXPECT_EQ(scanner.pendingCount(), 1u) << "Refresh rescans the files";
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    EXPECT_EQ(speech.last(), "Updating the library.") << "the server has not answered yet";
+    answerVersion("v2");
+    EXPECT_EQ(speech.last(), "Updating the library.");
+    answerAlbums({album("a1", "One"), album("a2", "Two"), album("a3", "Three")});
+    EXPECT_EQ(speech.last(), "Library updated, 5 albums.") << "2 on the device and 3 on the server";
+    EXPECT_EQ(level().title, "Music") << "it reports and stays";
+}
+
+TEST_F(CatalogueTest, RefreshWaitsForTheScanEvenWhenTheServerAnsweredFirst) {
+    seedServerAlbum("a1", "One");
+    seedVersion("v1");
+    start();
+    answerVersion("v1");
+    refresh();
+    answerVersion("v1");
+    EXPECT_EQ(speech.last(), "Updating the library.") << "the files are still being scanned";
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    EXPECT_EQ(speech.last(), "Library updated, 3 albums.");
+}
+
+TEST_F(CatalogueTest, RefreshOfAnUnchangedCatalogueFetchesNoAlbumsAndWritesNothing) {
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One")});
+    const int saves = indexStore.saves;
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v1");
+    EXPECT_EQ(countOf(Kind::Albums), 1u);
+    EXPECT_EQ(speech.last(), "Library updated, 3 albums.");
+    EXPECT_EQ(indexStore.saves, saves);
+}
+
+TEST_F(CatalogueTest, RefreshPicksUpAnAlbumAddedOnTheServer) {
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One")});
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v2");
+    answerAlbums({album("a1", "One"), album("a2", "Two")});
+    EXPECT_TRUE(indexStore.items.count(ref("a2")));
+}
+
+TEST_F(CatalogueTest, RefreshSpeaksEachError) {
+    const std::vector<std::pair<MusicServer::Error, std::string>> cases = {
+        {MusicServer::Error::Unreachable, "Server not reachable."},
+        {MusicServer::Error::BadLogin, "Wrong user name or password."},
+        {MusicServer::Error::Server, "Server error."}};
+    for (const auto& [error, text] : cases) {
+        SCOPED_TRACE(text);
+        speech.said.clear();
+        seedServerAlbum("a1", "One");
+        seedVersion("v1");
+        start();
+        answerVersion("v1");
+        refresh();
+        ASSERT_NO_FATAL_FAILURE(deliverScan());
+        fail(Kind::CatalogueVersion, error);
+        EXPECT_EQ(speech.last(), text);
+        EXPECT_TRUE(indexStore.items.count(ref("a1"))) << "the saved items stay";
+        app->shutdown();
+        app.reset();
+    }
+}
+
+TEST_F(CatalogueTest, RefreshSpeaksAnAlbumListError) {
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One")});
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v2");
+    fail(Kind::Albums, MusicServer::Error::Unreachable);
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+}
+
+TEST_F(CatalogueTest, ASecondPressWhileItRunsSaysStillUpdating) {
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One")});
+    refresh();
+    EXPECT_EQ(speech.last(), "Updating the library.");
+    const size_t scans = scanner.requests.size();
+    const size_t versions = countOf(Kind::CatalogueVersion);
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Still updating.");
+    EXPECT_EQ(scanner.requests.size(), scans) << "no second scan";
+    EXPECT_EQ(countOf(Kind::CatalogueVersion), versions) << "and no second sync";
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v1");
+    EXPECT_EQ(speech.last(), "Library updated, 3 albums.");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Updating the library.") << "once it is done, it runs again";
+}
+
+TEST_F(CatalogueTest, RefreshWhileTheStartUpSyncRunsJoinsItAndSpeaksItsResult) {
+    start(false);
+    refresh();
+    EXPECT_EQ(speech.last(), "Updating the library.");
+    EXPECT_EQ(scanner.requests.size(), 1u) << "the start-up scan is joined";
+    EXPECT_EQ(countOf(Kind::CatalogueVersion), 1u);
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    fail(Kind::CatalogueVersion, MusicServer::Error::Unreachable);
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+}
+
+TEST_F(CatalogueTest, ALateResultIsNotSpokenOnAnotherScreen) {
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One")});
+    refresh();
+    press(Button::Home);
+    const size_t spoken = speech.said.size();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v2");
+    answerAlbums({album("a1", "One"), album("a2", "Two")});
+    EXPECT_EQ(speech.said.size(), spoken);
+    EXPECT_TRUE(indexStore.items.count(ref("a2"))) << "but the index is updated";
+}
+
+TEST_F(CatalogueTest, WithNoServerRefreshOnlyRescansTheFiles) {
+    settings.setString("server.url", "");
+    start();
+    refresh();
+    EXPECT_EQ(speech.last(), "Updating the library.");
+    EXPECT_TRUE(server.requests.empty());
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    EXPECT_EQ(speech.last(), "Library updated, 2 albums.");
+}
+
+TEST_F(CatalogueTest, RefreshFindsAFolderAddedOnTheDevice) {
+    settings.setString("server.url", "");
+    start();
+    touch(music / "New Album" / "1.mp3");
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    EXPECT_EQ(speech.last(), "Library updated, 3 albums.");
 }

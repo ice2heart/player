@@ -273,6 +273,11 @@ struct RemoteTrack {
 struct RemoteAlbum {
     std::string id, name, artist;
     int songCount = 0;
+    // Only what the server tells in its album lists; empty / 0 when it does not.
+    std::string genre{};
+    int year = 0;
+    std::string created{};       // when the album was added, as the server writes it (ISO 8601)
+    std::string musicBrainzId{}; // OpenSubsonic
 };
 struct RemoteArtist {
     std::string id, name;
@@ -308,6 +313,9 @@ public:
     virtual ~MusicServer() = default;
     virtual bool configured() const = 0;
     virtual RequestId ping(std::function<void(Error, ServerInfo)> done) = 0;
+    // A token that changes when the server's catalogue changes (Subsonic: `lastModified` of
+    // getArtists, as text). Empty when the server does not say. On an error it is empty too.
+    virtual RequestId catalogueVersion(std::function<void(Error, std::string version)> done) = 0;
     virtual RequestId albums(std::string listType, int offset, int size, Done<RemoteAlbum> done) = 0;
     virtual RequestId artists(Done<RemoteArtist> done) = 0;
     virtual RequestId artistAlbums(std::string artistId, Done<RemoteAlbum> done) = 0;

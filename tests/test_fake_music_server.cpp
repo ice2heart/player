@@ -207,3 +207,27 @@ TEST(FakeMusicServer, ScrobblesAreRecordedInOrderAndMakeNoRequest) {
     EXPECT_TRUE(server.requests.empty());
     EXPECT_EQ(server.pendingCount(), 0u);
 }
+
+TEST(FakeMusicServer, CatalogueVersionIsAnsweredFailedAndCancelledLikeAnyRequest) {
+    FakeMusicServer server;
+    std::vector<std::pair<Server::Error, std::string>> got;
+    auto done = [&](Server::Error e, std::string v) { got.emplace_back(e, std::move(v)); };
+    auto id = server.catalogueVersion(done);
+    EXPECT_EQ(server.lastRequest().kind, Kind::CatalogueVersion);
+    server.poll();
+    EXPECT_TRUE(got.empty());
+    ASSERT_TRUE(server.replyVersion(id, "v1"));
+    server.poll();
+    ASSERT_EQ(got.size(), 1u);
+    EXPECT_EQ(got[0], std::make_pair(Server::Error::None, std::string("v1")));
+    auto failing = server.catalogueVersion(done);
+    ASSERT_TRUE(server.fail(failing, Server::Error::Unreachable));
+    server.poll();
+    ASSERT_EQ(got.size(), 2u);
+    EXPECT_EQ(got[1], std::make_pair(Server::Error::Unreachable, std::string()));
+    auto cancelled = server.catalogueVersion(done);
+    server.cancel(cancelled);
+    EXPECT_FALSE(server.replyVersion(cancelled, "v2"));
+    server.poll();
+    EXPECT_EQ(got.size(), 2u);
+}

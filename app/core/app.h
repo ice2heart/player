@@ -139,6 +139,17 @@ private:
     Book bookOf(const IndexItem& item) const;
     void startScan();
     void onScanned(std::vector<IndexItem> items);
+    // The server catalogue (docs/streaming.md 4.7): checks the version, fetches the albums when
+    // it changed and replaces the server items of the index. Silent unless Refresh library asked.
+    std::string catalogueServerKey() const; // empty: no server to sync with
+    void dropOtherServers(const std::string& key);
+    void startSync();
+    void onCatalogueVersion(MusicServer::Error error, const std::string& version);
+    void fetchCatalogue(int offset);
+    void applyCatalogue();
+    void finishSync(MusicServer::Error error);
+    void refreshLibrary();
+    void finishRefresh();
     std::optional<Book> resumableBook(const std::string& path) const;
     std::vector<MenuItem> streamingMenu();
     std::vector<MenuItem> sleepTimerMenu();
@@ -349,6 +360,19 @@ private:
     LibraryIndex index_;
     LibraryScanner& scanner_;
     LibraryScanner::RequestId scanRequest_ = 0; // 0: none running
+    struct Catalogue {
+        std::string key;     // the server being synced
+        std::string version; // what getArtists said, kept in state when the sync is saved
+        std::vector<IndexItem> items;
+    };
+    MusicServer::RequestId catalogueRequest_ = 0; // 0: no sync running
+    Catalogue catalogue_;
+    struct Refresh { // Music -> Refresh library, while it runs
+        bool active = false;
+        std::uint64_t screen = 0; // the Music screen it was pressed on: the result is spoken only there
+        MusicServer::Error error = MusicServer::Error::None;
+    };
+    Refresh refresh_;
     Settings& config_;
     Settings& state_;
     SettingsMap savedState_; // what state.tsv holds
