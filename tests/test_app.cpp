@@ -5990,6 +5990,17 @@ TEST_F(AutoCacheTest, TheListedSizeGoesToTheDownloaderAndItsOkIsTrusted) {
     EXPECT_TRUE(cached("t1"));
 }
 
+TEST_F(AutoCacheTest, TheSizeAskedForIsThatOfTheTrackThatPlayedNotTheFirstOfTheList) {
+    start();
+    std::vector<RemoteTrack> tracks = sized();
+    tracks[1].size = 7;
+    ASSERT_TRUE(app->playRemote("Weather", tracks, 1, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "t2");
+    EXPECT_EQ(downloader.lastRequest().expectedSize, 7);
+}
+
 TEST_F(AutoCacheTest, TheTrackPlaysFromItsFileTheNextTimeAndIsNotStreamed) {
     playSized();
     listen(11s);
@@ -8905,13 +8916,14 @@ TEST_F(MusicQueueTest, NothingIsPreOpenedWhenTheNextEntryIsLocal) {
     EXPECT_EQ(player.preloads, (std::vector<std::string>{"fake://stream/t3"}));
 }
 
-TEST_F(MusicQueueTest, TheLastEntryPreOpensNothing) {
-    playMixed(1);
+TEST_F(MusicQueueTest, TheLastEntryPreOpensNothingNotEvenTheFirstOne) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {remoteEntry("t1", "Storm Front"), localEntry(alphaFile(2), "Calm"),
+                                         remoteEntry("t3", "Sunshine")}, 2));
     finishOpen();
-    trackEnds(); // Calm, the last
     player.pos = player.length - 5;
     app->tick();
-    EXPECT_TRUE(player.preloads.empty());
+    EXPECT_TRUE(player.preloads.empty()) << "the first entry is remote, but the queue ends here";
 }
 
 TEST_F(MusicQueueTest, ALocalTrackIsNeverScrobbledButAServerTrackInTheSameQueueIs) {
