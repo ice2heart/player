@@ -17,6 +17,8 @@ cmake -S . -B build && cmake --build build -j && ctest --test-dir build --output
 
 Steps that touch the build, dependencies or Docker files also run the Docker targets they affect (`docker build -f docker/Dockerfile --target native .` and/or `--target pi`).
 
+`SUB_MODEL` is the model every agent you spawn runs on: one tier below your own model on the ladder `fable` → `opus` → `sonnet` → `haiku` (you on Opus → agents on `sonnet`; you on Sonnet → `haiku`; you on Haiku → `haiku`). Pass it as the Agent tool's `model` parameter on **every** spawn in this skill (step agents, fix agents, the phase reviewer, manual-check fix agents). `SUB_MODEL_NAME` is its full name with version for the Co-Authored-By line (e.g. `Claude Sonnet 5.5`).
+
 ## 0. Preflight
 
 1. Parse `$ARGUMENTS` (either order, both optional):
@@ -37,11 +39,11 @@ Steps that touch the build, dependencies or Docker files also run the Docker tar
 5. `git status` must be clean. If not, stop and ask.
 6. Record the base commit: `BASE=$(git rev-parse HEAD)`. The phase review diffs against it.
 7. List the unfinished steps of the phase in order (`N.1`, `N.2`, …). Finished steps are skipped.
-8. Tell the user in one short block: the plan file, the phase, the steps you will run, how you read `MARK`, and the base commit. Then start. Don't wait for confirmation.
+8. Tell the user in one short block: the plan file, the phase, the steps you will run, how you read `MARK`, the base commit, and `SUB_MODEL`. Then start. Don't wait for confirmation.
 
 ## 1. One agent per step (sequential)
 
-For each unfinished step, in order, spawn **one** `general-purpose` agent with `run_in_background: false`. Never run two step agents at once: each step builds on the previous commit.
+For each unfinished step, in order, spawn **one** `general-purpose` agent with `model: SUB_MODEL` and `run_in_background: false`. Never run two step agents at once: each step builds on the previous commit.
 
 Fill in this prompt (keep the placeholders' content specific, not a summary of the whole plan):
 
@@ -65,19 +67,18 @@ Do, in this order:
 7. Verify the step's Tests column and goal. Anything that needs a human (listening to audio, real buttons, the Pi, a real server, Wi-Fi) can't be verified by you: list it as a manual check, don't claim it.
 8. Mark the step done in {PLAN}: {MARK}. If the step changed a build or run command, update CLAUDE.md's "Build and test" section. Update docs/architecture.md if the step changed what it describes.
 9. Commit everything to main (no branch) with message `{N.M}: <short summary>` in the style of `git log` (plain sentence, capitalised, no trailing period); add a body when the change needs explaining, and end with the line:
-   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+   Co-Authored-By: {SUB_MODEL_NAME} <noreply@anthropic.com>
    Don't push.
 
 Stop instead of guessing if: the code and docs disagree, the step contradicts the Decisions section or CLAUDE.md, it depends on an undecided open question, or you can't make the check pass. In that case commit nothing, leave the tree as is, and report BLOCKED with the reason.
 
-Final report (this is all the orchestrator sees), in this format:
-STATUS: DONE | BLOCKED
+Final report (this is all the orchestrator sees). Keep it terse, no prose outside these lines:
+STATUS: DONE | BLOCKED <reason if blocked>
 COMMIT: <sha or none>
-SUMMARY: <what was built, 2–4 lines, with key file paths>
-TESTS: <one per line: Suite.Name — the sabotage that broke it>
-REVIEW: <only findings you didn't fix or that caused problems, each with why. Omit this line if every finding was fixed cleanly>
-MANUAL CHECKS: <one per line: how to set it up (command, e.g. ./build/oap-sim library, keys to press) → what you should hear. Or "none">
-NOTES FOR NEXT STEPS: <anything later steps must know, or "none">
+SUMMARY: <one line>
+REVIEW: <only unfixed findings, one line each with why. Omit if none>
+MANUAL CHECKS: <one per line: setup → what you should hear. Omit if none>
+NOTES: <only what later steps must know. Omit if none>
 ```
 
 ### After each agent returns
@@ -87,16 +88,15 @@ NOTES FOR NEXT STEPS: <anything later steps must know, or "none">
    - `git status` is clean and `git log -1` is the reported commit with the `N.M:` prefix.
    - The step is marked done in the plan.
    - `git show --stat HEAD` touches `tests/` when it touches logic.
-   - Every new test has a sabotage listed in TESTS.
    If anything is off, send the same agent a follow-up (SendMessage with its id) to fix it. If it still isn't right, stop and ask the user.
-3. Post one short progress line to the user (`1.3 done: <summary> (abc1234)`) and keep the agent's TESTS, MANUAL CHECKS and NOTES for later.
+3. Post one short progress line to the user (`1.3 done: <summary> (abc1234)`) and keep the agent's MANUAL CHECKS and NOTES for later.
 
 ## 2. Phase review
 
 When every step is committed:
 
 1. Run `CHECK` yourself. If it fails, spawn a fix agent with the failure output before going on.
-2. Spawn a **fresh** `general-purpose` agent (not one of the step agents) to review the whole phase:
+2. Spawn a **fresh** `general-purpose` agent with `model: SUB_MODEL` (not one of the step agents) to review the whole phase:
 
 ```
 Review phase {N} of {PLAN} in /Users/ice/hobby/deafbot: the diff `git diff {BASE}..HEAD` (commits: `git log --oneline {BASE}..HEAD`).
@@ -104,9 +104,9 @@ Read CLAUDE.md, the phase and Decisions sections of {PLAN}, and the docs/archite
 Look especially for problems that only show up across steps: interfaces in app/core/services.h that one side implements differently, fakes in tests/fakes.h that behave unlike the real implementation, callbacks that can arrive after a menu or player was left, edge cases at step boundaries, duplicated helpers, layering violations, constants that ended up hard-coded, docs (architecture.md, navigation.md, help texts) that no longer match, tests that don't pin the behaviour, gaps against the phase's goal and device check.
 Then fix every real finding: tests first for bugs (red, then green), sabotage-check new tests as CLAUDE.md describes, and the full check passes (cmake --build build -j && ctest --test-dir build --output-on-failure).
 Commit to main as `Phase {N} review fixes` with a body listing each fix as a `- ` bullet (see `git show f5fa32d` for the style), ending with:
-Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Co-Authored-By: {SUB_MODEL_NAME} <noreply@anthropic.com>
 If there is nothing worth fixing, commit nothing.
-Report: COMMIT (sha or none), TESTS (Suite.Name — sabotage, per new test), UNRESOLVED (only findings not fixed or that caused problems, each with why; omit if none), MANUAL CHECKS.
+Report tersely, no prose: COMMIT (sha or none), UNRESOLVED (only unfixed findings, one line each with why; omit if none), MANUAL CHECKS (omit if none).
 ```
 
 3. Verify as in section 1 (clean tree, commit message, `CHECK` green).
@@ -123,7 +123,6 @@ Report: COMMIT (sha or none), TESTS (Suite.Name — sabotage, per new test), UNR
 4. Final report to the user, in this order:
    - Commits of the phase (`git log --oneline {BASE}..HEAD`).
    - One line per step, plus the review fixes commit (if any).
-   - Every test added, with the sabotage that broke it (CLAUDE.md requires this).
    - Anything left unverified, skipped or unresolved (including any REVIEW / UNRESOLVED items), stated plainly.
    - **Last, so it's what the user sees at the bottom:** a `## Manual checks` section with the list from item 3 as `- [ ]` checkboxes, numbered, and a closing line asking the user to run them and reply with the numbers that failed and what they heard.
 5. Don't push and don't start the next phase. The phase is closed only once the user confirms the manual checks.
@@ -131,4 +130,4 @@ Report: COMMIT (sha or none), TESTS (Suite.Name — sabotage, per new test), UNR
 ## 4. When the user reports manual check results
 
 - All pass: say the phase is closed. Nothing else to do.
-- Some fail: for each failure, spawn one `general-purpose` agent (one at a time) with the failing check, what the user heard, and the related step's commit. It reproduces the problem in a test where possible (red first), fixes it, sabotage-checks, runs the full check, and commits to main as `Phase {N} manual-check fixes: <summary>` with the Co-Authored-By line. Verify as in section 1, then show the user **only the checks that need re-testing** in the same `## Manual checks` format, again at the end of the message.
+- Some fail: for each failure, spawn one `general-purpose` agent with `model: SUB_MODEL` (one at a time) with the failing check, what the user heard, and the related step's commit. It reproduces the problem in a test where possible (red first), fixes it, sabotage-checks, runs the full check, and commits to main as `Phase {N} manual-check fixes: <summary>` with the `Co-Authored-By: {SUB_MODEL_NAME}` line. Verify as in section 1, then show the user **only the checks that need re-testing** in the same `## Manual checks` format, again at the end of the message.
