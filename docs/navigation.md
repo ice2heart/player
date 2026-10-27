@@ -1,8 +1,12 @@
 # Navigation guidelines
 
-> Status: this file is the **target contract** of [queue.md](queue.md) phase 1 and 2.
-> Where it differs from [architecture.md](architecture.md) (one player), the code is not built to it yet; each
-> step of queue.md brings it closer and step 1.6 / 2.10 update architecture.md.
+> Status: the parts of this contract that [queue.md](queue.md) phase 1 covers are **built**: the
+> volume and Options buttons (Options only says "No options" until phase 2), the step unit,
+> Left / Right in menus, settings changed only in their list, and the two players. The
+> **queue** parts are the target of phase 2 and are **not built**: the queue and the Queue list,
+> Shuffle and Repeat, the actions behind Options, Save as playlist, and the saved queue (see
+> [The queue](#the-queue)). Where the build differs from the text, a note says so;
+> [architecture.md](architecture.md) describes the code.
 
 Users can't see the menu, so they learn it from what each key does. A key that
 does one thing in one menu and something else in the next menu breaks that.
@@ -44,7 +48,7 @@ Sleep in it closes the menu first, so the device wakes where you were.
    by opening it with OK: its list opens on the current value, and choosing a
    value with OK saves it and goes back. You hear the new speech rate straight
    away. The file is written at once; the volume, changed with its own keys, is
-   kept in memory and written on exit. Streaming quality is the one exception: a stream that plays
+   kept in memory and written on exit and sleep. Streaming quality is the one exception: a stream that plays
    would have to open again, so the new quality starts with the next track.
 7. **In a program, Left / Right are that program's own keys.** In a player
    they skip back and forward by the step unit, and holding them or pressing
@@ -142,12 +146,12 @@ Options pressed inside an Options list says "No options": it does not open a sec
 ### Volume
 
 - **Volume up / down change the content volume** on every screen, menus included.
-  Speech keeps its own level. At 0 and 100 % the edge sound plays.
+  Speech keeps its own level. At 0 and 100 % the edge sound plays once per press, not on each repeat.
 - **Holding a volume key repeats the step** (about every 150 ms, after a short 400 ms
   delay so a slow tap steps once) until it is let go.
   `GestureDetector` gets a repeat event for these two keys; the other keys keep
   short / long / deep.
-- The volume is kept in memory and written to `config.yaml` only on exit.
+- The volume is kept in memory and written to `config.yaml` only on exit and sleep.
 
 ### The step unit (Up / Down in a player)
 
@@ -167,8 +171,10 @@ edge sound plays at the first and last unit; holding Up or Down does not jump.
 - The unit is kept per player and saved in `state.tsv` (`unit.music`, `unit.book`),
   written on sleep and exit like the rest of the state, so it is the same after a wake
   or a restart.
-- Until the queue exists, the Album unit moves within the loaded list (Play all and an
-  artist span albums); in a one-album list it plays the edge sound.
+- Until the queue exists, the Album unit moves within the loaded list. Only Play all spans
+  albums (it marks where each starts, and the unit moves to the first track of the previous
+  / next one, speaking its title); every other list, an artist's albums included, is one
+  album, where the unit plays the edge sound and says "First album." or "Last album."
 
 ### Left and Right in menus
 
@@ -188,7 +194,8 @@ Settings no longer change in place with Left / Right (rule 6). Left / Right in m
   Library the server's audiobooks follow the local books, so the letters start again there.
 - In other lists they go 10 items back or forward, and stop at the first or last item.
 - At the first or last item (Right on the last, Left on the first) the edge sound plays;
-  with Menu wrap around it wraps, as Up / Down do.
+  with Menu wrap around (the default) it wraps instead, as Up / Down do: to the first item, or from the start to the first item of
+  the last letter in a list by letter, and to the last item in one that jumps by 10.
 - A list says by itself whether it is sorted by name (a flag on the list); a new list
   that is not marked jumps by 10.
 - This does not repeat what OK and Home do, so each action keeps one key.
@@ -196,6 +203,10 @@ Settings no longer change in place with Left / Right (rule 6). Left / Right in m
   open question 1).
 
 ### Options
+
+**As built (phase 1):** the Options button exists and works on every screen, but no item has
+actions yet, so it always plays the edge sound and says "No options". The rest of this
+section is the target of queue.md phase 2.
 
 - **Options on a menu item** opens "Options, Weather": a short list of what can be done
   with that item. **Options in a player** gives the actions for the playing track.
@@ -222,12 +233,17 @@ Settings no longer change in place with Left / Right (rule 6). Left / Right in m
 
 - **The music player** plays the queue. **The book player** plays one book, with its
   position kept per book and `last_book`. Podcasts will use the book player.
-- They share one `MediaPlayer`. Starting one pauses the other and keeps its place, so
-  going back to it resumes where it stopped.
+- They share one `MediaPlayer`. Starting one pauses the other and keeps its place (in
+  memory), so going back to it resumes where it stopped.
+- **After a restart** a book resumes from `last_book` and the music player from the album
+  or playlist of the server that played last (`last_stream.*`); `last_player` in
+  `state.tsv` says which was last. **Local music is not resumed** across a restart, and a
+  parked place is kept only in memory: the saved queue in phase 2 fixes local music.
 - Each is its own program: `Screen::Kind::MusicPlayer` and `Screen::Kind::BookPlayer`,
   each with its own Player menu.
 - **Home:** "Now playing, <album or book>" for the player used last, and "Continue,
-  <the other>" below it when the other player has something loaded.
+  <the other>" below it when the other player has something: loaded, parked, or saved for
+  a restart. Each is left out when it has nothing.
 - The book player has no queue, shuffle or repeat. Its step units are Skip · Chapter ·
   10 minutes, the music player's are Skip · Track · Album.
 
@@ -278,9 +294,11 @@ Player menu (music player)
 - The queue is saved on sleep and exit and is back after a restart; nothing plays until
   the user chooses it.
 
-Until the queue is built (queue.md phase 2) the music player holds one list, its Player
-menu keeps "Tracks", and the rules above for Options actions, Shuffle, Repeat and the
-Queue list do not apply yet.
+**As built (phase 1):** the music player holds one list (an album, a playlist, or Play
+all), its Player menu is Tracks · Sleep timer · Album info · Go to first track, Options
+says "No options" everywhere, and the rules above for OK on a track replacing a queue,
+Options actions, Shuffle, Repeat and the Queue list do not apply yet. OK on a track plays
+from there to the end of its list, as before.
 
 ## Lists
 
@@ -480,7 +498,7 @@ Music
   chapters are the tracks, and the place is kept and resumed like a local book. A book that is
   both on the device and on the server is listed twice, once for each; they are not merged.
   While their tracks load, the "Loading" rules apply. After a restart "Now playing" on Home resumes the
-  book that played last (it is the last played unless a stream played after it); a downloaded book plays from
+  book when the book player was used last (otherwise it is "Continue"); a downloaded book plays from
   its files at once, otherwise with the server down "Server not reachable." is said and Home stays.
 - **Streaming stays a separate Home entry.** It keeps its own lists as above.
 

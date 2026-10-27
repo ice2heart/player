@@ -1,7 +1,9 @@
 # Software Architecture
 
 > Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end,
-> streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)). Last updated: 2026-10-27.
+> streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)),
+> plus phase 1 of [queue.md](queue.md): volume and Options buttons, the step unit, menus that jump, and separate music and book players.
+> The queue itself (queue.md phase 2) is not built. Last updated: 2026-10-27.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -75,8 +77,8 @@ The unit tests wire in fakes instead (section 12).
 |------|----------|
 | `CMakeLists.txt` | Builds `oapcore`, `oapconfig`, `oapfrontend`, `oaplibrary` (SQLite from the system, else the amalgamation is fetched), `oapnet` (`OAP_BUILD_NET`, libcurl via pkg-config; on by default when a front end is built), `oapmusicserver` (`makeMusicServer()`, linking `oapnet` when it is built), `oapmedia`, `oapaudio` (backends from `OAP_AUDIO_BACKENDS`), `imgui` and `oap-sim` (`OAP_BUILD_SIM`), `oap-headless` (`OAP_BUILD_HEADLESS`, Linux), plus `oap-tests`, `oap-net-tests` (with `OAP_BUILD_NET`) and `oap-media-tests` (with a front end) (`OAP_BUILD_TESTS`). ImGui and GoogleTest are fetched at configure time, and yaml-cpp and SQLite too when the system has none. |
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
-| `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
-| `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
+| `app/core/buttons.{h,cpp}` | `Button`, `Gesture` (`Short`, `Long`, `Deep`, `Repeat`), `GestureDetector` (with `kRepeatDelay` 400 ms and `kRepeatInterval` 150 ms for the volume keys). |
+| `app/core/menu.h` | `MenuItem` (no `adjust` part: a value is changed only in its list), `ListOrder` (`None`, `ByName`, `ByArtist`: how a list is sorted, for the letter jump), `Screen` data model. |
 | `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), `TextFiles` (whole text files for the cache manifests: `read()` and `writeAtomically()`, which leaves the old or the new contents after a crash; core does no file I/O of its own), `TagReader` (tags and length of a local audio file, `TrackTags`, none if unreadable; callable from any thread; `FfmpegTagReader` in `app/media/`, whose constructor lowers FFmpeg's log level to errors), `LibraryScanner` (`ScanRequest` in, local `IndexItem`s out, asynchronous like `MusicServer`: `scan()` / `cancel()` / `poll()`; `ThreadedScanner` in `app/frontend/`), and `Downloader` (queues a track download into `<dest>.part`, renamed when complete; the same `RequestId` / `poll()` / `cancel()` contract as `MusicServer`, results `Ok` / `NotConfigured` / `Unreachable` / `Server` / `Disk`; `App` takes one for Download album / playlist), and `MusicServer` (with `musicFolders(done)` and `albums(..., musicFolderId)`, and `catalogueVersion(done)`: a token that changes when the server's catalogue does, empty when it says none) with its `RemoteTrack` (with the original's `suffix` and `size`) / `RemoteAlbum` (with `genre`, `year`, `created`, `musicBrainzId`) / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&`: the Streaming menu asks it for lists, `tick()` calls its `poll()`, and opening a remote track asks it for `stream(id, maxBitRate)`: the URL, and for a transcode a `Transcoded` (offset URL, and the length `App` fills in from the listing) that `MediaPlayer::open()` takes. |
 | `app/net/http_client.{h,cpp}` | `Http`: asynchronous GET whose handler runs on the client's thread (tests use a fake). `HttpClient`: libcurl multi on one worker thread; 10 s connect timeout, 10 s without data or 60 s in all ends a request, answers over 16 MB fail; cancellable; the destructor aborts transfers and never waits on a socket. |
 | `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `stream()`: the original file with no `format` / `maxBitRate`, or an MP3 transcode (`format=mp3&maxBitRate=<kbps>`) whose offset URL adds `&timeOffset=` once `getOpenSubsonicExtensions` (asked with the first transcode) lists `transcodeOffset`. `catalogueVersion()` sends `getArtists` and gives its `lastModified` as text. `scrobble()` sends `scrobble?id=&submission=` and only logs a failure to stderr (by its kind, never the URL). `downloadUrls(Config)` gives the `download?id=` URL of a track for `HttpDownloader`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
@@ -89,7 +91,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
-| `app/core/library.{h,cpp}` | `Book` (also a remote list or, with `serverBook`, an audiobook of the server: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set), `scanLibrary(root, skip)`, which leaves out the cache folder `skip`. |
+| `app/core/library.{h,cpp}` | `Book` (also a remote list or, with `serverBook`, an audiobook of the server: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set; `albums` marks where each album of Play all starts, which the Album step unit uses), `scanLibrary(root, skip)`, which leaves out the cache folder `skip`, `naturalLess()` and `nameGroup()` (the letter group of a name, for the menu jump). |
 | `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<kind>%3A<list id>/`, where a list is an album or a playlist (the kind in the folder name keeps an album and a playlist with one id apart). Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 2`, then a line `list<TAB>album|playlist<TAB>id<TAB>name<TAB>artist`, then per track tab-separated: id, file, title, duration, a reserved `changed` column (always empty: a download is never compared with the server), pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), read and written through the `TextFiles` interface of `services.h` (core does no file I/O of its own; `DiskTextFiles` in `app/config/` writes with `writeFileAtomically()`: temp file, `fsync`, rename, mode 0600; tests use the same on a temp folder). If `save()` finds a manifest that is there but not valid, it deletes the files in the folder that the new manifest does not name (never a `.part`, never another folder), so a damaged manifest leaves no orphans; a manifest that cannot be read at all (an I/O error) is not replaced (`save()` fails). A missing or corrupt manifest reads as empty, and so does a manifest of format 1 (it had no list line; no device ever held one) or one whose list line does not match its folder (a copied folder). `lists()` gives the lists with at least one complete track, sorted by name (`lists(true)`: only those with a complete pinned track, for Streaming > Downloaded); `trim(limit, played, keep, info)` writes play times into `lastPlayed` (the latest play replaces the old time; a time before `kEarliestPlayTime`, 2020-01-01, is a clock that was never set and is ignored) and evicts unpinned tracks and `.part` files (a `.part` first, then least recently played first), above the limit; `info` gives the evicted ids and the bytes left (section 5, "Automatic cache"); `remove()` deletes one list folder, only ever a direct child of the server's folder. `find(trackId)` returns the complete file of a track from any list (`index()` does it for every track in one pass, `completeFile()` for one manifest entry), never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
 | `app/frontend/threaded_scanner.{h,cpp}` | `ThreadedScanner : LibraryScanner` (both front ends construct it with an `FfmpegTagReader` and pass it to `App`): one worker thread runs `scan(ScanRequest, Done)` jobs in order. A `ScanRequest` holds the library root, the music root, the cache folder to skip and the `previous` local items. The worker lists the roots with `scanLibrary()` (the same files the menus show, cache folder skipped), keeps the track of a file whose path, size and file time (`stat`, whole seconds) equal an entry in `previous` (same kind), and reads tags through `TagReader` only for the others; a file that is not a regular file is never opened (a FIFO would block). Output, all `Source::Local`, `firstSeen` and `lastPlayed` 0: a `Book` item per folder or loose file under the library root, id `local:book:<path>`, titled by the folder, a track per file (title from the tags, else the file name); `Music` items grouped by tags: id `local:album:<album artist or artist>\x1f<album>` (an album in several folders is one item), and files without an album tag by the folder under the music root, id `local:folder:<path>`, titled by the folder name. A file whose tags cannot be read is listed with its file name as title. A book's tracks are in file order (`pathLess`); an album's are ordered by folder, then track number (none: last), then file name (the disc number is not stored). A scan that throws (the reader or an allocation) delivers nothing and the worker goes on. A file with a tag edit that keeps both size and whole-second time is not noticed; the books' files are probed too, once. Results are delivered from `poll()`; `cancel(id)` never waits (a queued scan is dropped, a running one stops after the file it reads) and the callback never runs; the destructor does the same and joins, so a read stuck on a hung mount can delay it. `FakeLibraryScanner` (tests/fakes.h) records requests and delivers only on `finish()` + `poll()`. |
 | `app/core/library_index.{h,cpp}` | `LibraryIndex` (owned by `App`, built on the `LibraryStore` it is given; see section 8): the library in memory, `IndexItem` (id, source local/server/cached, kind book/music/podcast, title, artist, album, genre, year, MusicBrainz id, first-seen and last-played wall times, tracks, `seenOn`) with `IndexTrack` (location, title, artist, number, duration, size, file time, `seenOn`). `seenOn` holds server references `<server key>:<album\|playlist\|track>:<id>` (`seenRef()`; `refOnServer()` finds the one for a server key), each at most once. Lookups by id, by track location, and by reference. `upsert()` merges (keeps first-seen, later last-played, and the references already there), `replaceSource()` is a scan, `replaceServer()` a sync of one server key. It loads and saves through `LibraryStore` in `services.h` (`load()`; `save(changed, removed)`), and `save()` hands over only the items that changed and the ones removed, nothing when none did. The SQLite store is `SqliteLibraryStore` in `app/library/`. |
@@ -108,7 +110,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/platform/audio_alsa.cpp` | ALSA PCM (`default` or `alsa:DEVICE`), 50 ms latency. |
 | `app/platform/audio_null.cpp` | No device: consumes audio in real time. |
 | `app/frontend/presses.{h,cpp}` | `PressSequencer` (timed presses), `parseScript()`, `deepOf()`. |
-| `app/frontend/terminal_keys.{h,cpp}` | `TerminalKeyDecoder`: terminal bytes → presses. Keeps an escape sequence split across reads; a lone Esc is Home only after `kEscTimeout` (200 ms) without more bytes, checked by `poll(now)`. |
+| `app/frontend/terminal_keys.{h,cpp}` | `TerminalKeyDecoder`: terminal bytes → presses (`+` / `=` and `-` volume, `o` Options). Keeps an escape sequence split across reads; a lone Esc is Home only after `kEscTimeout` (200 ms) without more bytes, checked by `poll(now)`. |
 | `app/frontend/held_buttons.{h,cpp}` | `HeldButtons`: counts the inputs holding each button, so App gets `keyUp` only when the last one lets go. |
 | `app/frontend/no_music_server.{h,cpp}` | `NoMusicServer`: the `MusicServer` the front ends give `App` when `config.yaml` sets up no server they can use (no `server.url`, a `server.type` other than `subsonic`, or a build without `OAP_BUILD_NET`); every request finishes with `NotConfigured` on the next `poll()`. |
 | `app/frontend/no_downloader.{h,cpp}` | `NoDownloader`: the `Downloader` for the same cases; every download finishes with `NotConfigured` on the next `poll()` and writes nothing. |
@@ -285,6 +287,15 @@ key / GPIO ─► App::keyDown(b) ─► GestureDetector.press   ─► Deep ─
   they are let go. They have no long press and the release says nothing. `App` plays the
   edge sound once per press at a volume limit, not on each repeat, and a repeat never wakes
   the device or speaks in the key describer. A key that wakes the device stays quiet until let go.
+- **Step unit:** Up / Down in a player call `changeStepUnit()`, and a light press of Left / Right
+  calls `stepByUnit()` (`stepUnit()` reads the unit of the loaded player). The units are an index:
+  0 Skip (`skip()`, the Settings skip), 1 Track (music) or Chapter (book), 2 Album (music,
+  `stepAlbum()`: the first track of the previous / next entry of `Book::albums`, which only
+  Play all fills, so any other list is one album and gives the edge sound and "Last album.") or
+  10 minutes (book, `skip()` by `kLargeBookStep`, 600 s). Down moves to the next unit and Up to
+  the previous, speaking it; past the first or last unit the edge sound plays and the unit is
+  spoken again. `Deep` and `Long` on Left / Right go to the previous / next track or chapter
+  whatever the unit. The unit is kept in memory in `state` as `unit.music` / `unit.book` (section 9).
 - **Hold switch** (`App::setHold`) blocks every button except Power and says "Locked".
   A key that is already down when Hold goes on is ignored until it is let go:
   no long press while held, no short press on release.
@@ -301,17 +312,17 @@ The rules behind this table, and the checklist for new menus, are in
 | Button | Anywhere | Menu | Player screen |
 |--------|----------|------|---------------|
 | Play/Pause short | play / pause | | |
-| Play/Pause long | "Where am I?" | menu path + item | book, chapter, time left |
+| Play/Pause long | "Where am I?" | menu path + item | book or album, chapter or track, time left |
 | Up / Down short | | previous / next item (wraps) | previous / next step unit (edge sound at the ends) |
-| Up / Down long | | first / last item | the same, once |
+| Up / Down long | | first / last item | the same, once (no repeat) |
 | Left / Right short | | jump: previous / next letter in a list sorted by name, else 10 items | move back / forward by the step unit (skip, track or chapter, album or 10 minutes) |
-| Left / Right long or deep | | the same jump, once | previous / next chapter |
+| Left / Right long or deep | | the same jump, once | previous / next chapter or track, whatever the step unit |
 | OK short | | open / activate | player menu |
 | OK long | | previous screen | previous screen |
 | Home short | | previous screen | previous screen |
 | Home long | | home menu | home menu |
-| Volume up / down | volume ± 5 %, held repeats; edge sound at 0 and 100 % | | |
-| Options | "No options." with the edge sound (no item has options yet) | | |
+| Volume up / down | content volume ± 5 % (`kVolumeStep`) on every screen, held repeats; edge sound once per press at 0 and 100 % | | |
+| Options | "No options." with the edge sound, in menus and players (no item has options yet) | | |
 | Talk | "not available yet" | | |
 | Power short | sleep | | |
 | Power long | power menu | | |
@@ -324,9 +335,10 @@ does and does nothing else. Holding Home leaves the mode. The same texts
 ## 7. App state machine
 
 ```
- start(): [Home]  or, with a last book, [Home, Player]
+ start(): [Home]  or, with a last local book, [Home, Book player]
           (also starts the background scan of the local files, see section 8)
-          a stream played last: [Home], "Now playing" first, nothing loaded
+          a stream or a server book played last: [Home], "Now playing" first, nothing loaded
+          (a local book resumes into its player, unless the music player was used last and a stream is saved)
 
  screens_:  Home ─► Library ─► Book player ─► Player menu ─► Chapters
             ◄────────── Home / hold OK pops one ─────────────
@@ -347,7 +359,10 @@ does and does nothing else. Holding Home leaves the mode. The same texts
   `parked_`, if the open fails or is dropped). `continueParked()` (Home "Continue", or Play with
   nothing loaded) opens the parked book again at its place and plays it. Each player has its own
   Player menu (`musicPlayerMenu()` keeps "Tracks" until queue.md step 2.7; `bookPlayerMenu()` has
-  Chapters, Speed and Add bookmark). A parked place is not kept across a restart except what
+  Chapters, Speed and Add bookmark). Home (`homeMenu()`) lists the player used last as "Now
+  playing" and the other as "Continue", each when it has something: `playerTitle()` gives the
+  title of the loaded book, the parked one, or what is saved for a restart (the stream, or
+  `last_book`); `openPlayer()` enters, continues or resumes it. A parked place is not kept across a restart except what
   state.tsv holds: the book (`pos:` + `last_book`) and a remote music list (`last_stream.*`); local
   music is not resumed.
 - `mode()` is derived from the stack: `Player` when the top screen is a
@@ -445,13 +460,19 @@ Home
     ├── Buttons →        one item per button; OK describes it
     └── Key describer
 
-Player menu (OK on player screen; music: Tracks / Album info / Go to first track)
+Player menu of the book player (OK on its screen; `bookPlayerMenu()`)
 ├── Chapters → <chapters>          (opens on the current chapter)
 ├── Sleep timer → …
 ├── Book info
 ├── Go to start of book
 ├── Speed                          (placeholder)
 └── Add bookmark                   (placeholder)
+
+Player menu of the music player (`musicPlayerMenu()`; "Tracks" until the queue, queue.md step 2.7)
+├── Tracks → <tracks>              (opens on the current track)
+├── Sleep timer → …
+├── Album info
+└── Go to first track
 
 Power menu (hold Power): Sleep · Power off · Restart · Cancel
 ```
@@ -529,7 +550,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   item is a book, so a downloaded book stays out of Music.
 - **Resume a server book (4.12).** Once a server book plays (not before: a failed open changes
   nothing), `playServerBook()` sets `last_book` to its item id (`<server key>:album:<id>`, no URL; a
-  local book's `last_book` is its absolute path, so the two cannot be mixed up) and removes
+  local book's `last_book` is its absolute path, so the two cannot be mixed up) and
   leaves `last_stream.*` alone (the music player keeps its own place). `savedServerBook()` is the index item (`Source::Server`,
   `Kind::Book`) of the server set up now that `last_book` names; none when `last_book` is a local path,
   another server's id or a book that left the index (then `last_book` is not resumed). `start()` does not
@@ -822,11 +843,11 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 | File | Store | Keys |
 |------|-------|------|
 | `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` (kbps, 0 = the original file), `cache.limit_gb` (0, 1, 4 or 16; default 1), and `server.*` (see [streaming.md](streaming.md)) |
-| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_player`: `music` or `book`, the player used last; `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.server` / `catalogue.version`: the server key and catalogue version of the last server sync; `catalogue.folder`: `server.audiobook_folder` at the last server sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); `last_stream.server` / `.user` (the `server.url` without a trailing slash and `server.user`, never the password or a stream URL), `.kind` (`album` / `playlist`), `.id`, `.title`, `.track` (index), `.track_id`, `.pos` (seconds): the remote list that played last |
+| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_player`: `music` or `book`, the player used last; `unit.music` / `unit.book`: the step unit of each player (0 Skip, 1 Track / Chapter, 2 Album / 10 minutes); `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.server` / `catalogue.version`: the server key and catalogue version of the last server sync; `catalogue.folder`: `server.audiobook_folder` at the last server sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); `last_stream.server` / `.user` (the `server.url` without a trailing slash and `server.user`, never the password or a stream URL), `.kind` (`album` / `playlist`), `.id`, `.title`, `.track` (index), `.track_id`, `.pos` (seconds): the remote list that played last |
 
 - `config.yaml` is nested YAML (`speech: {rate: 220}` is `speech.rate`). It is
-  written only when a setting is chosen in its list (at once), and on exit if the
-  player volume changed.
+  written only when a setting is chosen in its list (at once), on exit and sleep if the
+  volume changed (the volume keys), and by Factory reset.
   Writing drops comments; the file gets a header naming the keys, and keys in a
   fixed order. Numbers are written plain and everything else quoted, the password
   always. A file that does not parse, or is there but cannot be read, is reported
@@ -864,7 +885,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   "Now playing". With none on disk the error is spoken as in step 2.6. A whole
   download is not compared with the server, so a list changed there is not seen until
   it is played from a server list.
-- The volume keys change the volume in memory; it is written on exit. The step unit of each player (`unit.music`, `unit.book`: 0 Skip, 1 Track / Chapter, 2 Album / 10 minutes) is kept in `state.tsv`, written on sleep and exit; Play all's `Book::albums` marks where each album starts.
+- The volume keys change the volume in memory (`volumeChanged_`); it is written on exit and sleep, with the state. The step unit of each player is kept in memory and written to `state.tsv` with the rest of the state. Factory reset also writes `config.yaml` (server keys kept).
 - **Factory reset** clears both, but keeps the `server.*` keys, and restarts
   without saving the position first, so it does not come back.
 - Every write is atomic (`writeFileAtomically`): `FILE.tmp` created with mode 0600,

@@ -201,9 +201,9 @@ quality setting, `streaming.bitrate`, replaces them, and they are not read.)
   changed in the Settings menu (on leaving the item, navigation rule 6), with keys in
   a fixed order and a header comment that names the keys. Server keys are never
   changed by the device, so they are written back as read.
-- **Volume from the player is not a config write.** Today `App::changeVolume` saves
-  on every press. Up / Down in the player now change the volume in memory only, and
-  it is written on exit together with the state. Otherwise every volume press would
+- **Volume from the player is not a config write.** `App::changeVolume` used to save
+  on every press. The volume keys (Volume up / down, on every screen) now change the
+  volume in memory only, and it is written on exit and sleep together with the state. Otherwise every volume press would
   rewrite `config.yaml`.
 - **Every write is atomic.** Write `file.tmp`, `fsync`, then `rename` over the old
   file, and keep mode 0600 (create the temp file with that mode, not the umask).
@@ -534,7 +534,7 @@ Decided for this phase:
 | ✅ 4.9 | **Music → Artists and Albums A to Z across sources.** Music becomes: Play all, Artists → albums, Albums A to Z, then the later items. A server album opens with "Loading" and its tracks, as in Streaming (same errors, same "Play album" first item). Offline, a server-only album says "Server not reachable", and its tracks are not listed. Artists are sorted by name, ignoring the server's `ignoredArticles` ("The"), and include Cyrillic and other non-Latin names. | Artists list local and server artists once each, sorted. An artist's albums include both sources. A local album plays at once; a server album shows Loading, then its tracks. Server unreachable: a server album gives the error item, a local album still plays. Play all plays only device files. The Music tests from 4.6 are rewritten for the new tree. |
 | ✅ 4.10 | **Genres, Recently added, Recently played.** Genres from tags and from the server's album genre. Recently added is newest first: the first-seen time for local albums, `created` for server albums. Recently played is the last-played time an album gets when it plays, kept in memory and written with the index on exit and sleep, like the state. | A genre lists albums from both sources. Recently added orders a new local album and a new server album by time. Playing an album puts it first in Recently played after a restart. Playing writes nothing to disk until exit or sleep. A wall time before 2020-01-01 is ignored, as in the cache. |
 | ✅ 4.11 | **Audiobooks from the server.** `MusicServer::musicFolders(done)` (`getMusicFolders`) and a `musicFolderId` on the album list. `server.audiobook_folder` in `config.yaml` names a folder, and sync gives its albums `kind: book`. They are listed in Library after the local books (with "on the server" as the value), not in Music. They open as books: chapters are the tracks, the place is kept per server key + album id in `state`, and it is resumed when the book is opened again. Fetched with "Loading", as in 4.9. | Net tests: the folders are parsed, and the album list URL carries `musicFolderId`. With the folder set, its albums are in Library and not in Music; without it nothing changes. Opening a server book says "Chapter", and pause, another book, then this book again resume the place. No `pos:` key is ever made from a URL, and nothing spoken or saved contains one. |
-| ✅ 4.12 | **Resume a server book.** `last_book` can name a server book, so "Now playing" on Home and a restart resume it like a local book. With the server down, a downloaded book plays from its files; otherwise "Server not reachable." is said and Home stays. Opening a server book removes `last_stream.*`, as a local book does today. | Exit and restart resume the server book at its chapter and place. Server down: a downloaded book plays offline, and one that is not downloaded gives the error. A local `last_book` and a `last_stream` still resume as before. |
+| ✅ 4.12 | **Resume a server book.** `last_book` can name a server book, so "Now playing" on Home and a restart resume it like a local book. With the server down, a downloaded book plays from its files; otherwise "Server not reachable." is said and Home stays. Opening a server book removed `last_stream.*` (queue.md step 1.5 stopped that: the players keep their places apart). | Exit and restart resume the server book at its chapter and place. Server down: a downloaded book plays offline, and one that is not downloaded gives the error. A local `last_book` and a `last_stream` still resume as before. |
 | ✅ 4.13 | Docs: architecture.md (index, scanner, tag reader, sync, merged views, server books), navigation.md where the build differs from 4.1, SPEC, and what phase 4 built differently. | – |
 
 **Device check (manual):** with the test server set up, the first start lists Music
@@ -594,8 +594,8 @@ The plan above is kept as it was written. Where the code differs, the code is ri
   "on the server", never in Music and never merged with a local or downloaded copy (a book
   that is on both is listed twice). The place is `pos:<server key>:album:<id>`, with no URL.
 - **Resume a server book.** `last_book` is the book's item id `<server key>:album:<id>` and is
-  set only once the book plays (a failed open changes nothing), with `last_stream.*` removed at that
-  point, not at the open. A book that is whole on disk plays at once, with no "Loading." and
+  set only once the book plays (a failed open changes nothing). `last_stream.*` stays (queue.md step 1.5:
+  the music player keeps its own place, and `last_player` says which player was last). A book that is whole on disk plays at once, with no "Loading." and
   also offline. Any other says "Loading." and asks the server; with it down "Server not
   reachable." is said and Home stays. Unlike a stream, a partly downloaded book does not fall
   back to the files on disk, since its chapter numbers would shift.

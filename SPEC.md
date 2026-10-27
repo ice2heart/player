@@ -377,7 +377,7 @@ Home
 | Back / Forward long or deep | previous / next chapter or track; announces chapter name |
 | Up / Down             | choose the step unit for Back / Forward; speaks it ("Track") |
 | Volume up / down      | content volume, held repeats; earcon pitch indicates level, edge sound at the limits |
-| Options               | actions for the playing track (Go to album, Album info, Star) |
+| Options               | actions for the playing track (Go to album, Album info, Star); until the queue is built it says "No options" |
 | Play long             | "Chapter 7 of 22, 'The Storm'. 14 minutes left in chapter, 6 hours 3 minutes left in book." |
 | OK                    | player menu: speed, bookmark add, sleep timer, chapters, info |
 | Talk                  | voice command |

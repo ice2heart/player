@@ -1,14 +1,16 @@
 # Music queue, new buttons and separate players: plan
 
-> Status: **a plan, nothing built.** The rules it changes are in [navigation.md](navigation.md),
+> Status: **phase 1 is built** (steps 1.1 to 1.6: volume and Options buttons, the step unit, menus that jump,
+> separate music and book players); **phase 2, the queue, is a plan.** The rules it changes are in [navigation.md](navigation.md),
 > which is updated first (step 1.1), before any code. The code as it is now is described in
 > [architecture.md](architecture.md); streaming is in [streaming.md](streaming.md).
 > Last updated: 2026-10-27.
 
-Today the device has no queue. `App` holds one `book_`: the book, the local album or
-"Play all" list, or the album or playlist from the server. Choosing a track replaces
-it. Music and books share one player, told apart by `music_`. Volume sits on Up /
-Down in the player, and an item has no actions beyond OK.
+The device had no queue, and still has none. `App` holds one `book_`: the book, the local album or
+"Play all" list, or the album or playlist from the server. Choosing a track replaces it. Before
+phase 1, music and books shared one player and volume sat on Up / Down in the player; now they are
+two players (one `MediaPlayer`, the other parked) and volume has its own keys. An item still has no
+actions beyond OK.
 
 This plan adds:
 
@@ -271,7 +273,7 @@ and books are separate players that each keep their place.
 | ✅ 1.3 | **Up / Down in a player choose the step unit.** Units per player as in [the table above](#up--down-in-a-player-the-step-unit); Left / Right move by the unit; deep and hold still change track or chapter. Up / Down no longer change the volume. Until the queue (phase 2), the Album unit moves within the loaded list (Play all and an artist span albums); in a one-album list it plays the edge sound. The unit is saved per player in `state.tsv` (`unit.music`, `unit.book`). Existing tests that press Up / Down for volume are rewritten for the volume keys, each checked with a sabotage. | Down from Skip says "Track", and Right then starts the next track; Up from Skip plays the edge sound. Album unit goes to the first track of the next album of Play all. Book: 10 minutes moves 600 s. Deep press changes track whatever the unit. Edge sound past the last unit. Sleep, wake and a restart keep each player's unit. |
 | ✅ 1.4 | **Menus: settings change only in their list; Left / Right jump.** Left / Right no longer change a setting in place (OK opens its list on the current value). In lists sorted by name (Albums A to Z, Artists, Library, Music) Left / Right go to the first item of the previous / next letter and speak "D. Dune, 41 of 500"; in other lists they move 10 items; edge sound at the ends, or wrap with Menu wrap around. Existing tests that press Right to change a setting are rewritten, each checked with a sabotage. | A setting is no longer changed by Right. Right in Albums A to Z goes to the first album of the next letter and speaks the letter; Left goes back a letter. In an unsorted list Right moves 10. Edge sound at the end; with wrap on it wraps. |
 | ✅ 1.5 | **Separate music and book players.** Book state (book, file, position, `last_book`) and music state apart; `Screen::Kind::MusicPlayer` / `BookPlayer`; each its own Player menu (the music one keeps "Tracks" until 2.7); starting one pauses the other and keeps its place; Home "Now playing, <last used>" and "Continue, <the other>". | A book, then music, then the book again: the book resumes where it was and music where it was. Home lists both, the last used first. Each Player menu has its own items. The existing book and music tests (as rewritten in 1.3 and 1.4) pass. |
-| 1.6 | **Docs for phase 1 as built:** architecture.md (new buttons, the gesture repeat, the step unit, two players, `unit.*` in `state.tsv`), navigation.md where the build differs from 1.1, SPEC. | – |
+| ✅ 1.6 | **Docs for phase 1 as built:** architecture.md (new buttons, the gesture repeat, the step unit, two players, `unit.*` in `state.tsv`), navigation.md where the build differs from 1.1, SPEC. | – |
 
 **Device check (manual), with blind users:** the volume and Options keys can be found
 by touch. Holding a volume key ramps smoothly and stops on release. Left / Right
