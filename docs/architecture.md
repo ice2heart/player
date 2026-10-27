@@ -78,7 +78,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
 | `app/core/library.{h,cpp}` | `Book` (also a remote list: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set), `scanLibrary(root, skip)`, which leaves out the cache folder `skip`. |
-| `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<kind>%3A<list id>/`, where a list is an album or a playlist (the kind in the folder name keeps an album and a playlist with one id apart). Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 2`, then a line `list<TAB>album|playlist<TAB>id<TAB>name<TAB>artist`, then per track tab-separated: id, file, title, duration, server `changed` time, pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), read and written through the `TextFiles` interface of `services.h` (core does no file I/O of its own; `DiskTextFiles` in `app/config/` writes with `writeFileAtomically()`: temp file, `fsync`, rename, mode 0600; tests use the same on a temp folder). If `save()` finds a manifest that is there but not valid, it deletes the files in the folder that the new manifest does not name (never a `.part`, never another folder), so a damaged manifest leaves no orphans; a manifest that cannot be read at all (an I/O error) is not replaced (`save()` fails). A missing or corrupt manifest reads as empty, and so does a manifest of format 1 (it had no list line; no device ever held one) or one whose list line does not match its folder (a copied folder). `lists()` gives the lists with at least one complete track, sorted by name (`lists(true)`: only those with a complete pinned track, for Streaming > Downloaded); `trim(limit, played, keep)` writes play times into `lastPlayed` and evicts unpinned tracks, least recently played first, above the limit (section 5, "Automatic cache"); `remove()` deletes one list folder, only ever a direct child of the server's folder. `find(trackId)` returns the complete file of a track from any list (`index()` does it for every track in one pass, `completeFile()` for one manifest entry), never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
+| `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<kind>%3A<list id>/`, where a list is an album or a playlist (the kind in the folder name keeps an album and a playlist with one id apart). Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 2`, then a line `list<TAB>album|playlist<TAB>id<TAB>name<TAB>artist`, then per track tab-separated: id, file, title, duration, server `changed` time, pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), read and written through the `TextFiles` interface of `services.h` (core does no file I/O of its own; `DiskTextFiles` in `app/config/` writes with `writeFileAtomically()`: temp file, `fsync`, rename, mode 0600; tests use the same on a temp folder). If `save()` finds a manifest that is there but not valid, it deletes the files in the folder that the new manifest does not name (never a `.part`, never another folder), so a damaged manifest leaves no orphans; a manifest that cannot be read at all (an I/O error) is not replaced (`save()` fails). A missing or corrupt manifest reads as empty, and so does a manifest of format 1 (it had no list line; no device ever held one) or one whose list line does not match its folder (a copied folder). `lists()` gives the lists with at least one complete track, sorted by name (`lists(true)`: only those with a complete pinned track, for Streaming > Downloaded); `trim(limit, played, keep, info)` writes play times into `lastPlayed` (the latest play replaces the old time; a time before `kEarliestPlayTime`, 2020-01-01, is a clock that was never set and is ignored) and evicts unpinned tracks and `.part` files (a `.part` first, then least recently played first), above the limit; `info` gives the evicted ids and the bytes left (section 5, "Automatic cache"); `remove()` deletes one list folder, only ever a direct child of the server's folder. `find(trackId)` returns the complete file of a track from any list (`index()` does it for every track in one pass, `completeFile()` for one manifest entry), never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
 | `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `serverConfigured()`. |
 | `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys) and `TsvStore` (`state.tsv`). |
 | `app/config/atomic_file.{h,cpp}` | `writeFileAtomically()`: temp file with mode 0600, `fsync`, `rename`. |
@@ -382,7 +382,7 @@ Home
 │   ├── Menu wrap around on / off
 │   ├── Auto sleep       1–30 min / never
 │   ├── Streaming quality original file / 320 / 192 / 128 kbps (an MP3 transcode for a slow link; from the next track)
-│   ├── Cache size       off / 1 / 4 / 16 GB (automatic cache of streamed tracks; default 1 GB; a lower size is applied on the next exit)
+│   ├── Cache size       off / 1 / 4 / 16 GB (automatic cache of streamed tracks; default 1 GB; a lower size is applied on the next exit; off keeps what is cached and caches nothing new)
 │   └── Sleep timer →    Off · 1 · 15 · 30 · 45 min · 1 hour · End of chapter/track (only when something is loaded; opens on the timer that is set)
 ├── System
 │   ├── Status           battery (simulated), free space, Wi-Fi, time
@@ -547,8 +547,14 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   The job holds the list's `RemoteSource`, name and artist (`Book::artist`) and the
   track's title, length, `suffix` and `size` (`Book::suffixes`, `sizes`, set by
   `playRemote()`). `pumpAutoCache()` starts one transfer at a time into the list's
-  folder, only while no explicit `download_` runs and the downloader works, and drops
-  jobs for tracks that are on disk by then. `startDownload()` calls `pauseAutoCache()`:
+  folder, only while no explicit `download_` runs, the downloader works and the device
+  is awake, and drops jobs for tracks that are on disk by then. A track bigger than the
+  limit is never queued (it would be evicted at once and fetched at every play), and a
+  track that would leave less than `kAutoCacheReserve` (256 MiB: state, config and
+  manifest writes on a small card, with margin for an unlisted size) free is skipped
+  silently (`setFreeSpace()` as for explicit downloads). `sleep()` cancels the running
+  transfer like an explicit download does (it goes back to the queue head and continues
+  from its `.part` after the wake). `startDownload()` calls `pauseAutoCache()`:
   the running transfer is cancelled (its `.part` stays and continues later), its job
   goes back to the head of the queue, and the queue waits until `download_` is gone.
   Download progress ("Downloading, 3 of 9 tracks") counts only the download's own list
@@ -556,22 +562,35 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   earcon, a failed transfer is forgotten (not retried during that play). `onAutoCached()`
   adds the track to the list's manifest **unpinned** with
   `lastPlayed` = the time the play began (an existing list keeps its name, a pinned
-  entry stays pinned), updates `cacheIndex_` and calls `trimCache()`. Deleting a list
+  entry stays pinned), updates `cacheIndex_` and calls `trimCache(false)` (evict only); the merge is
+  `addToManifest()`, shared with `onTrackDownloaded()`, and the destination is
+  `trackDestination()`, shared with `fetchNextTrack()`. Deleting a list
   drops its queued and running jobs.
   **LRU:** `trimCache()` calls `TrackCache::trim()` with `cache.limit_gb` times
   `cacheGigabyte_` (1 GiB; a test sets a small one). It evicts the unpinned complete
   files, least recently played first (never played counts as oldest), until they add up
-  to at most the limit; **pinned tracks never go and are not counted**. The file the
-  player has open is kept. A list left with no tracks loses its folder, unless a `.part`
-  is in it. It runs after a track was cached and in `saveOnExit()` (exit and sleep), so
-  a lowered size takes effect then, not while the user steps through the values in
-  Settings. It scans the manifests once, never from a key or a tick. After an eviction
-  `cacheIndex_` is reset.
+  to at most the limit; **pinned tracks never go and are not counted**. `.part` files
+  count and go first, except those of the running and waiting transfers (`partsInUse()`:
+  the explicit download's rest, the auto job and queue), so a `.part` left by a failed or
+  dropped transfer is cleaned when the cache is over the limit. The file the player has
+  open is kept. A list left with no tracks loses its folder, unless a kept `.part` is in
+  it. **Off (0) evicts nothing**: what is cached stays and only nothing new is cached
+  (plays are still written to the manifests). It runs after a track was cached and in
+  `saveOnExit()` (exit and sleep), so a lowered size takes effect then, not while the
+  user steps through the values in Settings. It scans the manifests once, never from a
+  key or a tick, and only when there is a reason: plays to write, `trimDirty_` (a
+  transfer was abandoned), or `cacheBytes_` (the bytes after the last scan plus the
+  tracks cached since) unknown or over the limit. Evicted ids are erased from
+  `cacheIndex_`, which is not rebuilt. The second `saveOnExit()` at power off (the front
+  end's `shutdown()`) finds nothing to do.
   **lastPlayed:** `startTrackPlay()` records the wall time (`clock_.wallTime()`) of a
   cached track that starts in the in-memory `played_` map; a newly cached track gets the
   time its play began. `trim()` writes `played_` into the manifests, and only where it
-  changed, so the flash is written when a track was cached and on exit or sleep, never at
-  a play.
+  changed, so the flash is written when a track was cached (its own list) and on exit or
+  sleep, never at a play. The latest play replaces `lastPlayed` (it is not a maximum, so one play with a
+  clock that was ahead cannot pin a track). A wall time before 2020-01-01 is a clock
+  that was not set: not recorded (a track cached then has `lastPlayed` 0, "never
+  played", and goes first).
 - **Downloads (3.4):** `trackItems()` adds "Download album" / "Download playlist"
   after the Play item when `canDownload()`. `startDownload()` reads the list's
   manifest, skips (and pins) the tracks whose files are whole, checks the free

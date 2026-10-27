@@ -155,7 +155,7 @@ power:
 streaming:
   bitrate: 0                # Streaming quality: 0 = the original file, or 320 / 192 / 128 kbps MP3
 cache:
-  limit_gb: 1               # Cache size: gigabytes of automatically cached tracks (0, 1, 4 or 16); 0 = off
+  limit_gb: 1               # Cache size: gigabytes of automatically cached tracks (0, 1, 4 or 16); 0 = off: caches nothing new, evicts nothing
 
 server:
   type: subsonic            # first type; others (e.g. audiobookshelf) later
@@ -401,11 +401,28 @@ transfer, which waits and continues after it; the progress speech counts only th
 download's own list. The automatic cache is silent and ignores failures. Eviction is
 LRU over the unpinned tracks only: pinned tracks never go and do not count toward the
 limit (setting "Cache size", `cache.limit_gb`, 0 / 1 / 4 / 16 GB, default 1; 0 caches
-nothing new). The file the player has open is kept. `lastPlayed` is kept in memory and
-written to the manifests with a cached track, on exit and on sleep, not at every play.
+nothing new and evicts nothing). The file the player has open is kept. `lastPlayed` is kept in memory and
+written to the manifests on exit and on sleep (a newly cached track has its play time in its entry), not at every play.
 A lowered size takes effect on the next exit or cached track. Downloaded lists only
 what the user downloaded (a list with at least one pinned track); the automatic cache's
 tracks still play from their files whenever they are met in a server list or on resume.
+
+Review fixes for 3.7 as built:
+- The automatic cache never fills the card: a track that would leave less than
+  `kAutoCacheReserve` (256 MiB, room for state, config and manifest writes) free is
+  skipped silently. A track bigger than the limit is not cached at all.
+- A `.part` left by an abandoned automatic transfer counts toward the limit and is
+  evicted first; the `.part` of a running or waiting transfer is never touched.
+- The `.part` of the explicit download that failed last is kept in this session (OK on
+  Download continues it); after a restart it is an abandoned `.part` like the others.
+- The latest play replaces `lastPlayed` (not the maximum); a wall time before
+  2020-01-01 (a clock never set) is not recorded as a play.
+- Cache size "off" keeps what is cached: nothing new is cached and nothing is evicted.
+- Nothing is fetched while the device sleeps: sleep cancels the running transfer, which
+  continues from its `.part` after the wake.
+- Trimming scans the manifests only when needed (plays to write, an abandoned transfer,
+  or the counted bytes over the limit), keeps the cache index up to date instead of
+  rebuilding it, and runs once at power off.
 
 Review fixes for 3.1 to 3.6 as built:
 - Core does no file I/O: manifests go through `TextFiles` (`services.h`), implemented by

@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <ctime>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <system_error>
 #include <utility>
@@ -76,6 +77,11 @@ const std::vector<std::pair<int, std::string>> kStreamingQualities = {{kOriginal
 // Automatic cache: a streamed track is fetched a second time into the cache once it
 // has been heard this long, so a track that is skipped costs no bandwidth.
 constexpr std::chrono::seconds kAutoCacheAfter{10};
+// Free space the automatic cache never uses: room for state.tsv, the config, the manifests (each
+// written through a temporary copy) and the logs, on a small card that the cache must not fill.
+// Those are a few kilobytes; 256 MiB also leaves a margin for a track whose size the server did
+// not list and for the file system's own overhead.
+constexpr std::uintmax_t kAutoCacheReserve = std::uintmax_t(256) << 20;
 constexpr int kDefaultCacheGigabytes = 1;
 // Read-ahead: while a remote track plays its last this long, the next one's stream
 // opens in the background (MediaPlayer::preload()), so the next track starts
@@ -714,7 +720,7 @@ void App::saveOnExit() {
     rememberPosition();
     if (settingsChanged_ || volumeChanged_) saveConfig();
     saveState();
-    trimCache(); // the manifests are written on exit too, not at every play
+    trimCache(true); // the manifests are written on exit too, not at every play (a second call at power off usually finds nothing to do)
 }
 
 // Power off writes, and then the front end's shutdown() would write the same again.
@@ -1904,6 +1910,7 @@ void App::startTrackPlay() {
     scrobble_->trackId = book_->files[fileIndex_].string();
     scrobble_->startedAt = clock_.wallTime();
     // A cached track that plays is kept longer: the time goes to its manifest with the next trimCache().
+    // (trimCache() ignores a time before kEarliestPlayTime: a clock that was not set.)
     if (cachedFile(scrobble_->trackId)) played_[scrobble_->trackId] = scrobble_->startedAt;
 }
 
@@ -2021,9 +2028,57 @@ void App::deleteDropped(const RemoteSource& source, const std::vector<CachedTrac
     const TrackCache& store = trackCache();
     for (const CachedTrack& t : dropped) {
         std::error_code ec;
-        std::filesystem::remove(store.listFolder(source) / t.file, ec);
-        if (cacheIndex_) cacheIndex_->erase(t.id);
+        std::filesystem::path file = store.listFolder(source) / t.file;
+        std::filesystem::remove(file, ec);
+        forgetCached(t.id, file);
     }
+}
+
+std::string App::trackDestination(const RemoteSource& source, const RemoteTrack& track) const {
+    return (trackCache().listFolder(source) / downloadFileName(track)).string();
+}
+
+// The index has one file per track id, and a track can be in two lists (an album and a playlist).
+void App::forgetCached(const std::string& id, const std::filesystem::path& file) {
+    if (!cacheIndex_) return;
+    auto it = cacheIndex_->find(id);
+    if (it == cacheIndex_->end() || it->second != file) return;
+    cacheIndex_->erase(it);
+    if (auto other = trackCache().find(id)) (*cacheIndex_)[id] = *other;
+}
+
+// A fetched track goes into its list's manifest: the entry is added or replaced, keeping what the
+// manifest knows of it (a pinned flag stays; lastPlayed stays unless `playedAt` is a real time, then
+// the latest play wins). `pinned`: a download the user asked for. `order`, for a download: the
+// list as the server has it, which the manifest then follows (the pinned tracks it drops are
+// deleted). `replaceName`: the list is called `title` even if the manifest has another name, else
+// a list that has a name keeps it (a list the user downloaded). False if the manifest cannot be written.
+bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, const ManifestUpdate& update) {
+    const TrackCache& store = trackCache();
+    if (!store.enabled()) return false;
+    CachedList cached = store.load(source);
+    cached.source = source;
+    if (update.replaceName || cached.name.empty()) {
+        cached.name = update.title;
+        cached.artist = update.artist;
+    }
+    std::string fileName = downloadFileName(track);
+    CachedTrack entry{track.id, fileName, track.title, track.duration, "", update.pinned,
+                      update.playedAt >= kEarliestPlayTime ? update.playedAt : 0};
+    auto old = std::find_if(cached.tracks.begin(), cached.tracks.end(), [&](const CachedTrack& t) { return t.id == track.id; });
+    if (old != cached.tracks.end()) {
+        entry.pinned = entry.pinned || old->pinned;
+        if (entry.lastPlayed == 0) entry.lastPlayed = old->lastPlayed;
+        *old = entry;
+    } else {
+        cached.tracks.push_back(entry); // appended: a download's manifest then follows the order below
+    }
+    std::vector<CachedTrack> dropped;
+    if (update.order) dropped = followServerOrder(cached, *update.order).second;
+    if (!store.save(cached)) return false;
+    deleteDropped(source, dropped);
+    if (cacheIndex_) (*cacheIndex_)[track.id] = store.listFolder(source) / fileName;
+    return true;
 }
 
 // OK on a Download item. While that list downloads it says how far it is. A
@@ -2092,8 +2147,7 @@ void App::startDownload(const std::string& title, const std::string& artist, con
 void App::fetchNextTrack() {
     Download& job = *download_;
     const RemoteTrack& track = job.todo[job.next].track;
-    std::string dest = (trackCache().listFolder(job.source) / downloadFileName(track)).string();
-    job.request = downloader_.download(track.id, dest, track.size, {}, [this](Downloader::Result result) { onTrackDownloaded(result); });
+    job.request = downloader_.download(track.id, trackDestination(job.source, track), track.size, {}, [this](Downloader::Result result) { onTrackDownloaded(result); });
 }
 
 void App::onTrackDownloaded(Downloader::Result result) {
@@ -2102,9 +2156,6 @@ void App::onTrackDownloaded(Downloader::Result result) {
     job.request = 0;
     const Download::Item item = job.todo[job.next];
     const RemoteTrack& track = item.track;
-    const TrackCache& store = trackCache();
-    std::string fileName = downloadFileName(track);
-    std::filesystem::path file = store.listFolder(job.source) / fileName;
     switch (result) {
     case Downloader::Result::Ok: break;
     case Downloader::Result::NotConfigured: failDownload(track, item.number, "No server set up"); return;
@@ -2112,27 +2163,10 @@ void App::onTrackDownloaded(Downloader::Result result) {
     case Downloader::Result::Server: failDownload(track, item.number, "Server error"); return;
     case Downloader::Result::Disk: failDownload(track, item.number, "Cannot write the file"); return;
     }
-    CachedList cached = store.load(job.source);
-    std::vector<CachedTrack>& manifest = cached.tracks;
-    cached.source = job.source;
-    cached.name = job.title;
-    cached.artist = job.artist;
-    CachedTrack entry{track.id, fileName, track.title, track.duration, "", true, 0};
-    auto old = std::find_if(manifest.begin(), manifest.end(), [&](const CachedTrack& t) { return t.id == track.id; });
-    if (old != manifest.end()) {
-        entry.lastPlayed = old->lastPlayed;
-        *old = entry;
-    } else {
-        manifest.push_back(entry);
-    }
-    // New entries were appended: the manifest follows the order of the list as it was fetched.
-    auto dropped = followServerOrder(cached, job.order).second;
-    if (!store.save(cached)) {
+    if (!addToManifest(job.source, track, {job.title, job.artist, true, true, 0, &job.order})) {
         failDownload(track, item.number, "Cannot write the file");
         return;
     }
-    deleteDropped(job.source, dropped);
-    if (cacheIndex_) (*cacheIndex_)[track.id] = file;
     job.finished++;
     if (++job.next < job.todo.size()) fetchNextTrack();
     else finishDownload();
@@ -2140,6 +2174,7 @@ void App::onTrackDownloaded(Downloader::Result result) {
 
 // Spoken once; the download is dropped. OK on Download again tries what is missing.
 void App::failDownload(const RemoteTrack& track, size_t number, const std::string& reason) {
+    if (download_) failedPart_ = trackDestination(download_->source, track) + ".part";
     download_.reset();
     if (sleeping_) return;
     earcons_.play(Earcon::Error);
@@ -2169,7 +2204,8 @@ void App::checkAutoCache() {
     if (!book_ || !book_->remote || !book_->source || fileIndex_ >= book_->files.size() ||
         book_->files[fileIndex_].string() != scrobble_->trackId)
         return;
-    if (cacheLimit() == 0) return; // (pumpAutoCache() skips what is cached, and asks about the downloader)
+    std::uintmax_t limit = cacheLimit();
+    if (limit == 0) return; // (pumpAutoCache() skips what is cached, and asks about the downloader)
     AutoCache job;
     job.source = *book_->source;
     job.title = book_->title;
@@ -2180,25 +2216,38 @@ void App::checkAutoCache() {
     if (fileIndex_ < book_->durations.size()) job.track.duration = book_->durations[fileIndex_];
     if (fileIndex_ < book_->suffixes.size()) job.track.suffix = book_->suffixes[fileIndex_];
     if (fileIndex_ < book_->sizes.size()) job.track.size = book_->sizes[fileIndex_];
+    if (job.track.size > 0 && std::uintmax_t(job.track.size) > limit) return; // would be evicted at once: fetched at every play
     autoQueue_.push_back(std::move(job));
 }
 
 void App::pumpAutoCache() {
-    if (autoRequest_ || download_ || autoQueue_.empty()) return;
+    if (autoRequest_ || download_ || sleeping_ || autoQueue_.empty()) return;
     if (cacheLimit() == 0 || !canDownload()) { // switched off since, or no server
         autoQueue_.clear();
+        trimDirty_ = true; // a .part of the dropped jobs may be left
         return;
     }
     // A download has fetched it meanwhile.
     while (!autoQueue_.empty() && cachedFile(autoQueue_.front().track.id, true)) autoQueue_.pop_front();
     if (autoQueue_.empty()) return;
+    // Never fill the card: a track that leaves less than the reserve is skipped, silently, and
+    // nothing else starts in this tick (the next one looks at the next track).
+    std::error_code ec;
+    std::filesystem::create_directories(cacheRoot_, ec);
+    std::optional<std::uintmax_t> room = freeSpace_(cacheRoot_);
+    std::uintmax_t size = autoQueue_.front().track.size > 0 ? std::uintmax_t(autoQueue_.front().track.size) : 0;
+    if (room && *room < size + kAutoCacheReserve) {
+        autoQueue_.pop_front();
+        return;
+    }
     autoJob_ = std::move(autoQueue_.front());
     autoQueue_.pop_front();
-    std::string dest = (trackCache().listFolder(autoJob_->source) / downloadFileName(autoJob_->track)).string();
-    autoRequest_ = downloader_.download(autoJob_->track.id, dest, autoJob_->track.size, {}, [this](Downloader::Result r) { onAutoCached(r); });
+    autoRequest_ = downloader_.download(autoJob_->track.id, trackDestination(autoJob_->source, autoJob_->track),
+                                        autoJob_->track.size, {}, [this](Downloader::Result r) { onAutoCached(r); });
 }
 
-// The transfer in flight stops (its .part stays) and is the next one when the download is over.
+// The transfer in flight stops (its .part stays) and is the next one when the download is over
+// or the device wakes.
 void App::pauseAutoCache() {
     if (!autoRequest_) return;
     downloader_.cancel(std::exchange(autoRequest_, 0));
@@ -2211,6 +2260,7 @@ void App::dropAutoCache(const RemoteSource& list) {
     if (autoRequest_ && sameList(autoJob_->source, list)) {
         downloader_.cancel(std::exchange(autoRequest_, 0));
         autoJob_.reset();
+        trimDirty_ = true; // its .part is abandoned
     }
 }
 
@@ -2220,47 +2270,61 @@ void App::onAutoCached(Downloader::Result result) {
     if (!autoJob_) return;
     AutoCache job = std::move(*autoJob_);
     autoJob_.reset();
-    if (result != Downloader::Result::Ok) return;
+    if (result != Downloader::Result::Ok) {
+        trimDirty_ = true; // the .part is abandoned unless the track is heard again
+        return;
+    }
     const TrackCache& store = trackCache();
     if (!store.enabled()) return;
-    std::string fileName = downloadFileName(job.track);
-    std::filesystem::path file = store.listFolder(job.source) / fileName;
-    CachedList cached = store.load(job.source);
-    cached.source = job.source;
-    if (cached.name.empty()) { // a list the user downloaded keeps its name
-        cached.name = job.title;
-        cached.artist = job.artist;
-    }
-    CachedTrack entry{job.track.id, fileName, job.track.title, job.track.duration, "", false, job.playedAt};
-    auto old = std::find_if(cached.tracks.begin(), cached.tracks.end(),
-                            [&](const CachedTrack& t) { return t.id == job.track.id; });
-    if (old != cached.tracks.end()) {
-        entry.pinned = old->pinned;
-        entry.lastPlayed = std::max(entry.lastPlayed, old->lastPlayed);
-        *old = entry;
-    } else {
-        cached.tracks.push_back(entry);
-    }
-    if (!store.save(cached)) {
+    std::filesystem::path file = store.listFolder(job.source) / downloadFileName(job.track);
+    if (!addToManifest(job.source, job.track, {job.title, job.artist, false, false, job.playedAt, nullptr})) {
         std::error_code ec;
         std::filesystem::remove(file, ec);
         return;
     }
-    if (cacheIndex_) (*cacheIndex_)[job.track.id] = file;
-    trimCache();
+    if (cacheBytes_) {
+        std::error_code ec;
+        auto size = std::filesystem::file_size(file, ec);
+        if (!ec) *cacheBytes_ += size;
+    }
+    trimCache(false);
 }
 
-// The plays recorded in memory go into the manifests, and what is over the limit is deleted.
-// Scans the manifests once: called when a track was cached and on exit, never from a key or a tick.
-void App::trimCache() {
+// The .part files that belong to a transfer that runs or waits: a trim must not touch them.
+std::vector<std::filesystem::path> App::partsInUse() const {
+    std::vector<std::filesystem::path> parts;
+    if (!failedPart_.empty()) parts.push_back(failedPart_);
+    auto add = [&](const RemoteSource& source, const RemoteTrack& track) {
+        parts.push_back(trackDestination(source, track) + ".part");
+    };
+    if (download_)
+        for (size_t i = download_->next; i < download_->todo.size(); ++i) add(download_->source, download_->todo[i].track);
+    if (autoJob_) add(autoJob_->source, autoJob_->track);
+    for (const AutoCache& job : autoQueue_) add(job.source, job.track);
+    return parts;
+}
+
+// Evicts what is over the limit; with `flushPlays`, also writes the plays recorded in memory
+// into the manifests. Scans the manifests once, and only if there is a reason: the plays to write,
+// or the unpinned bytes (counted at the last scan, plus the tracks cached since) are or may be
+// over the limit. Called when a track was cached and on exit and sleep, never from a key or a tick.
+// A limit of 0 (off) evicts nothing: what is cached stays, only nothing new is added.
+void App::trimCache(bool flushPlays) {
     const TrackCache& store = trackCache();
     if (cacheRoot_.empty() || !store.enabled()) return;
-    std::vector<std::filesystem::path> keep; // the file the player has open
+    std::uintmax_t limit = cacheLimit();
+    bool over = limit > 0 && (trimDirty_ || !cacheBytes_ || *cacheBytes_ > limit);
+    if (!over && !(flushPlays && !played_.empty())) return;
+    std::vector<std::filesystem::path> keep = partsInUse(); // and the file the player has open
     if (book_ && book_->remote && fileIndex_ < book_->files.size() && player_.isOpen())
         if (auto open = cachedFile(book_->files[fileIndex_].string())) keep.push_back(*open);
-    size_t removed = store.trim(cacheLimit(), played_, keep);
+    TrackCache::TrimInfo info;
+    store.trim(limit > 0 ? limit : std::numeric_limits<std::uintmax_t>::max(), played_, keep, &info);
     played_.clear();
-    if (removed > 0) cacheIndex_.reset(); // its files are gone: the index is made again
+    trimDirty_ = false;
+    cacheBytes_ = info.remaining;
+    if (cacheIndex_)
+        for (const auto& [id, file] : info.evicted) forgetCached(id, file);
 }
 
 int App::streamingBitrate() const { return std::max(kOriginalQuality, config_.getInt(kStreamingBitrate, kOriginalQuality)); }
@@ -2361,6 +2425,7 @@ void App::sleep(const std::string& announcement) {
     cancelResume();
     dropPendingOpen(); // nothing may start playing while the device sleeps
     pause(false);
+    pauseAutoCache(); // no transfer while asleep: it goes on from its .part after the wake
     saveOnExit(); // sleep on the device may end in the power being cut
     sleepDeadline_.reset();
     sleepAtChapterEnd_ = -1;

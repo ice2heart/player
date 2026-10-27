@@ -205,7 +205,7 @@ private:
     std::vector<MenuItem> downloadedMenu();                               // Streaming > Downloaded
     std::vector<MenuItem> downloadedListMenu(const RemoteSource& source); // one downloaded album or playlist
     static std::vector<RemoteTrack> completeTracks(const TrackCache& store, const RemoteSource& source, const CachedList& list);
-    bool hasDownloads() const; // some list has a track on disk: the error lists offer Downloaded
+    bool hasDownloads() const; // some list has a complete pinned track (a download of the user's): the error lists offer Downloaded
     void deleteDownload(const RemoteSource& source, const std::string& title);
     void checkServer(); // Server status
 
@@ -291,7 +291,20 @@ private:
     void pauseAutoCache();       // an explicit download starts: the running transfer waits
     void dropAutoCache(const RemoteSource& list); // a list is deleted: nothing of it is fetched
     void onAutoCached(Downloader::Result result);
-    void trimCache();            // lastPlayed to the manifests, then evicts over the limit
+    void trimCache(bool flushPlays); // evicts over the limit; flushPlays: the plays in memory to the manifests
+    std::vector<std::filesystem::path> partsInUse() const; // .part files of the running and waiting transfers
+    std::string trackDestination(const RemoteSource& source, const RemoteTrack& track) const; // where a track is downloaded to
+    // A fetched track into its list's manifest and the index (shared by both kinds of download).
+    struct ManifestUpdate {
+        std::string title, artist;  // of the list
+        bool replaceName = false;   // the list is called `title` even if its manifest has a name
+        bool pinned = false;        // a download the user asked for
+        std::int64_t playedAt = 0;  // wall time of the play that caused it, 0: none
+        const std::vector<std::string>* order = nullptr; // a download: the list's order on the server
+    };
+    bool addToManifest(const RemoteSource& source, const RemoteTrack& track, const ManifestUpdate& update);
+    void forgetCached(const std::string& id, const std::filesystem::path& file); // its file is gone: the index finds another copy, if any
+    std::filesystem::path failedPart_; // the .part of the explicit download that failed last: OK on Download continues it, so a trim leaves it
     std::uintmax_t cacheLimit() const; // bytes the unpinned tracks may take, 0: no automatic cache
     // The downloaded file of remote track `id` (TrackCache::find()), none if there is none.
     // Looks in an index kept in memory (built at the first call, kept up to date by
@@ -346,8 +359,12 @@ private:
     Downloader::RequestId autoRequest_ = 0;
     std::uintmax_t cacheGigabyte_ = std::uintmax_t(1) << 30;
     // When cached tracks last played (track id -> wall time), kept in memory and written
-    // to the manifests by trimCache(): on exit, on sleep and after a track was cached.
+    // to the manifests by trimCache(): on exit and on sleep.
     std::map<std::string, std::int64_t> played_;
+    // Bytes of unpinned tracks and .part files at the last trim, plus the tracks cached since: while
+    // it is known and within the limit, caching a track does not scan the manifests again.
+    std::optional<std::uintmax_t> cacheBytes_;
+    bool trimDirty_ = false; // a transfer was abandoned (.part left): the next trim looks even if cacheBytes_ is low
     // The complete files of the server in the config, by track id (TrackCache::index()).
     mutable std::optional<std::map<std::string, std::filesystem::path>> cacheIndex_;
     mutable std::optional<TrackCache> trackCache_;

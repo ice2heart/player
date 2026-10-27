@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <tuple>
@@ -257,14 +258,22 @@ void TrackCache::removeUnlisted(const fs::path& folder, const CachedList& list) 
 }
 
 namespace {
-// The path of a manifest entry if its file is complete: not a `.part`, present and not empty.
-std::optional<fs::path> completeIn(const fs::path& folder, const CachedTrack& t) {
+struct CompleteFile {
+    fs::path path;
+    std::uintmax_t size;
+};
+// The file of a manifest entry if it is complete: not a `.part`, present and not empty. One stat.
+std::optional<CompleteFile> completeInfo(const fs::path& folder, const CachedTrack& t) {
     if (t.file.ends_with(kPartSuffix)) return std::nullopt;
     fs::path path = folder / t.file;
     std::error_code ec;
     auto size = fs::file_size(path, ec); // fails for a missing file and for a folder
     if (ec || size == 0) return std::nullopt;
-    return path;
+    return CompleteFile{std::move(path), size};
+}
+std::optional<fs::path> completeIn(const fs::path& folder, const CachedTrack& t) {
+    if (auto info = completeInfo(folder, t)) return std::move(info->path);
+    return std::nullopt;
 }
 } // namespace
 
@@ -327,16 +336,22 @@ bool hasPartFile(const fs::path& folder) {
 } // namespace
 
 size_t TrackCache::trim(std::uintmax_t limitBytes, const std::map<std::string, int64_t>& played,
-                        const std::vector<fs::path>& keep) const {
+                        const std::vector<fs::path>& keep, TrimInfo* info) const {
     if (!enabled()) return 0;
     struct Folder {
         fs::path path;
         CachedList list;
         bool changed = false;
     };
+    // A complete unpinned track (`track` is its index in the manifest) or a `.part`
+    // (`track` == kPart): an abandoned transfer, which is evicted before any track.
+    constexpr size_t kPart = std::numeric_limits<size_t>::max();
     struct Candidate {
         size_t folder, track;
+        fs::path file;
         std::uintmax_t size;
+        int64_t lastPlayed;
+        std::string id;
     };
     std::vector<Folder> folders;
     std::vector<Candidate> candidates;
@@ -346,40 +361,53 @@ size_t TrackCache::trim(std::uintmax_t limitBytes, const std::map<std::string, i
         std::error_code entryEc;
         if (!it->is_directory(entryEc)) continue;
         Folder folder{it->path(), readFolder(it->path()), false};
-        if (folder.list.source.id.empty()) continue;
+        const size_t first = candidates.size();
         for (size_t i = 0; i < folder.list.tracks.size(); ++i) {
             CachedTrack& t = folder.list.tracks[i];
-            if (auto at = played.find(t.id); at != played.end() && at->second > t.lastPlayed) {
+            // The latest play wins, also over a later time a wrong clock once wrote. A time
+            // before kEarliestPlayTime is a clock that was not set: ignored.
+            if (auto at = played.find(t.id);
+                at != played.end() && at->second >= kEarliestPlayTime && at->second != t.lastPlayed) {
                 t.lastPlayed = at->second;
                 folder.changed = true;
             }
-            if (t.pinned || !completeIn(folder.path, t)) continue;
+            if (t.pinned) continue;
+            if (auto file = completeInfo(folder.path, t)) {
+                candidates.push_back({folders.size(), i, file->path, file->size, t.lastPlayed, t.id});
+                total += file->size;
+            }
+        }
+        std::error_code partEc;
+        for (fs::directory_iterator part(folder.path, partEc), partEnd; !partEc && part != partEnd; part.increment(partEc)) {
+            std::string name = part->path().filename().string();
             std::error_code sizeEc;
-            auto size = fs::file_size(folder.path / t.file, sizeEc);
+            if (!name.ends_with(kPartSuffix) || !part->is_regular_file(sizeEc)) continue;
+            auto size = part->file_size(sizeEc);
             if (sizeEc) continue;
-            candidates.push_back({folders.size(), i, size});
+            candidates.push_back({folders.size(), kPart, part->path(), size, std::numeric_limits<int64_t>::min(), name});
             total += size;
         }
-        folders.push_back(std::move(folder));
+        // A folder without a valid manifest matters only for the parts in it.
+        if (!folder.list.source.id.empty() || candidates.size() > first) folders.push_back(std::move(folder));
     }
     std::sort(candidates.begin(), candidates.end(), [&](const Candidate& a, const Candidate& b) {
-        const CachedTrack& x = folders[a.folder].list.tracks[a.track];
-        const CachedTrack& y = folders[b.folder].list.tracks[b.track];
-        return std::tuple(x.lastPlayed, folders[a.folder].path.filename().string(), x.id) <
-               std::tuple(y.lastPlayed, folders[b.folder].path.filename().string(), y.id);
+        return std::tuple(a.lastPlayed, folders[a.folder].path.filename().string(), a.id) <
+               std::tuple(b.lastPlayed, folders[b.folder].path.filename().string(), b.id);
     });
     std::set<std::pair<size_t, size_t>> gone;
+    std::vector<std::pair<std::string, fs::path>> evicted;
     for (const Candidate& c : candidates) {
         if (total <= limitBytes) break;
-        Folder& folder = folders[c.folder];
-        fs::path file = folder.path / folder.list.tracks[c.track].file;
-        if (std::find(keep.begin(), keep.end(), file) != keep.end()) continue;
+        if (std::find(keep.begin(), keep.end(), c.file) != keep.end()) continue;
         std::error_code removeEc;
-        fs::remove(file, removeEc);
-        if (fs::exists(file, removeEc)) continue; // still there: keep its entry
+        fs::remove(c.file, removeEc);
+        if (fs::exists(c.file, removeEc)) continue; // still there: keep its entry
         total -= c.size;
-        gone.emplace(c.folder, c.track);
-        folder.changed = true;
+        folders[c.folder].changed = true;
+        if (c.track != kPart) {
+            gone.emplace(c.folder, c.track);
+            evicted.emplace_back(c.id, c.file);
+        }
     }
     for (size_t f = 0; f < folders.size(); ++f) {
         Folder& folder = folders[f];
@@ -388,9 +416,16 @@ size_t TrackCache::trim(std::uintmax_t limitBytes, const std::map<std::string, i
         for (size_t i = 0; i < folder.list.tracks.size(); ++i)
             if (!gone.count({f, i})) left.push_back(std::move(folder.list.tracks[i]));
         folder.list.tracks = std::move(left);
-        if (folder.list.tracks.empty() && !hasPartFile(folder.path)) remove(folder.list.source);
-        else save(folder.list);
+        if (folder.list.source.id.empty()) {
+            std::error_code removeEc;
+            fs::remove(folder.path, removeEc); // only parts were in it: empty now, else it stays
+        } else if (folder.list.tracks.empty() && !hasPartFile(folder.path)) {
+            remove(folder.list.source);
+        } else {
+            save(folder.list);
+        }
     }
+    if (info) *info = {std::move(evicted), total};
     return gone.size();
 }
 

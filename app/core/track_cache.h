@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace oap {
@@ -23,6 +24,10 @@ struct CachedTrack {
     bool pinned = false;      // a download the user asked for; the automatic cache evicts only unpinned tracks
     int64_t lastPlayed = 0;   // wall time (seconds since 1970) it last played, 0: never; for eviction
 };
+
+// Wall times before this (2020-01-01 UTC) are a clock that was never set (a Pi without an RTC
+// before NTP): they are not recorded as a play, so a wrong clock cannot pin or doom a track.
+constexpr int64_t kEarliestPlayTime = 1577836800;
 
 // An album or a playlist in the cache: what it is, what to call it, and its tracks.
 struct CachedList {
@@ -89,18 +94,28 @@ public:
     // The file of a manifest entry of `list` if it is complete (the rules of find()).
     std::optional<std::filesystem::path> completeFile(const RemoteSource& list, const CachedTrack& track) const;
 
+    // What trim() did besides its count.
+    struct TrimInfo {
+        std::vector<std::pair<std::string, std::filesystem::path>> evicted; // id and file of each track deleted
+        std::uintmax_t remaining = 0;     // bytes of unpinned tracks and `.part` files left
+    };
+
     // Maintenance of the automatic cache, in one pass over the manifests. First
     // `played` (track id -> wall time it played) is written into the tracks'
-    // `lastPlayed` where it is later than what the manifest has. Then, while the
-    // complete files of unpinned tracks add up to more than `limitBytes`, the
-    // least recently played of them (ties: list folder, then track id) are
-    // deleted with their manifest entries. Pinned tracks never go and do not
-    // count; a file in `keep` (the one the player has open) is not deleted. A list
-    // left with no tracks loses its folder, unless a `.part` is in it (a transfer
-    // that may be resumed), then only its manifest is emptied. Returns the number
-    // of tracks deleted. Manifests are rewritten only where something changed.
+    // `lastPlayed`: the latest play replaces what the manifest has (not the maximum, so
+    // a time a wrong clock once wrote does not pin a track), except a time before
+    // kEarliestPlayTime, which is ignored. Then, while the complete files of unpinned
+    // tracks and all `.part` files add up to more than `limitBytes`, the least recently
+    // played of them (ties: list folder, then track id) are deleted, a track with its
+    // manifest entry; a `.part` goes before any track (an abandoned transfer: the caller
+    // lists the ones it still wants in `keep`). Pinned tracks never go and do not count;
+    // a file in `keep` (the one the player has open, a transfer to resume) is not
+    // deleted. A list left with no tracks loses its folder, unless a `.part` is in it,
+    // then only its manifest is emptied; a folder without a manifest that held only
+    // parts is removed once they are gone. Returns the number of tracks deleted.
+    // Manifests are rewritten only where something changed.
     size_t trim(std::uintmax_t limitBytes, const std::map<std::string, int64_t>& played,
-                const std::vector<std::filesystem::path>& keep) const;
+                const std::vector<std::filesystem::path>& keep, TrimInfo* info = nullptr) const;
 
     // Every track find() would return, by track id, from one pass over the
     // manifests: for a caller that asks often and keeps the answer in memory.

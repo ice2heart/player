@@ -5129,8 +5129,7 @@ TEST_F(AutoCacheLimitTest, AnEvictedTrackIsStreamedAgainAndTheNewOneIsPlayedFrom
 TEST_F(AutoCacheLimitTest, TheFileThePlayerHasOpenIsKeptWhateverTheLimit) {
     cacheTrack("a", false, 100);
     cacheTrack("b", false, 200);
-    settings.setInt("cache.limit_gb", 0);
-    start();
+    startSmall(1);
     ASSERT_TRUE(app->playRemote("Weather", {{"a", "A", "Band", "Weather", 100, 1}, {"b", "B", "Band", "Weather", 100, 2}}, 0, albumSource("al1")));
     ASSERT_EQ(player.file, weatherFolderFile("a.mp3"));
     app->shutdown();
@@ -5141,8 +5140,7 @@ TEST_F(AutoCacheLimitTest, TheFileThePlayerHasOpenIsKeptWhateverTheLimit) {
 TEST_F(AutoCacheLimitTest, TheLimitIsAppliedOnExitWhenItWasLowered) {
     cacheTrack("a", false, 100);
     cacheTrack("pin", true, 100);
-    settings.setInt("cache.limit_gb", 0);
-    start();
+    startSmall(1);
     EXPECT_TRUE(cached("a")) << "nothing is deleted while the user steps through the values";
     app->shutdown();
     EXPECT_FALSE(cached("a"));
@@ -5152,8 +5150,7 @@ TEST_F(AutoCacheLimitTest, TheLimitIsAppliedOnExitWhenItWasLowered) {
 
 TEST_F(AutoCacheLimitTest, TheLimitIsAppliedOnSleepToo) {
     cacheTrack("a", false, 100);
-    settings.setInt("cache.limit_gb", 0);
-    start();
+    startSmall(1);
     press(Button::Power);
     ASSERT_EQ(app->mode(), App::Mode::Sleeping);
     EXPECT_FALSE(cached("a"));
@@ -5187,6 +5184,269 @@ TEST_F(AutoCacheLimitTest, APlayedCachedTrackOutlivesOneThatWasNotWhenTheLimitBi
     ASSERT_EQ(app->mode(), App::Mode::Sleeping);
     EXPECT_FALSE(cached("b")) << "a was played after b";
     EXPECT_TRUE(cached("a"));
+}
+
+// ---- review fixes for 3.7
+
+namespace {
+// Counts the manifests read: a scan of the whole cache shows as one read per list.
+class CountingFiles : public TextFiles {
+public:
+    std::optional<std::string> read(const fs::path& path) override {
+        reads++;
+        return diskFiles().read(path);
+    }
+    bool writeAtomically(const fs::path& path, const std::string& text) override { return diskFiles().writeAtomically(path, text); }
+    int reads = 0;
+};
+constexpr std::uintmax_t kReserve = std::uintmax_t(256) << 20; // App's kAutoCacheReserve
+} // namespace
+
+TEST_F(AutoCacheLimitTest, ATrackThatWouldLeaveLessThanTheReserveFreeIsNotFetched) {
+    std::uintmax_t room = kReserve + 5 - 1;
+    start();
+    app->setFreeSpace([&](const fs::path&) -> std::optional<std::uintmax_t> { return room; });
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    size_t said = speech.said.size(), played = sounds.played.size();
+    listen(11s);
+    EXPECT_TRUE(downloader.requests.empty()) << "5 bytes would leave 1 byte under the reserve";
+    EXPECT_EQ(speech.said.size(), said) << "skipped silently";
+    EXPECT_EQ(sounds.played.size(), played);
+    room = kReserve + 5; // exactly enough
+    hold(Button::Forward);
+    listen(11s);
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "t2") << "the skipped track is not tried again";
+}
+
+TEST_F(AutoCacheLimitTest, AnAbandonedPartFileCountsTowardTheLimitAndGoesBeforeAnyTrack) {
+    cacheTrack("a", false, kNow);
+    std::string part = weatherFolderFile("gone.flac.part");
+    std::ofstream(part, std::ios::binary) << std::string(10, 'p');
+    startSmall(12); // a (5) + the part (10) are over
+    app->shutdown();
+    EXPECT_FALSE(fs::exists(part));
+    EXPECT_TRUE(cached("a"));
+}
+
+TEST_F(AutoCacheLimitTest, ThePartFileOfARunningOrWaitingTransferIsNeverTouched) {
+    startSmall(5);
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    hold(Button::Forward);
+    listen(11s); // t1 runs, t2 waits
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    fs::create_directories(store().listFolder(albumSource("al1")));
+    std::string running = weatherFolderFile("t1.flac.part"), waiting = weatherFolderFile("t2.mp3.part");
+    std::ofstream(running, std::ios::binary) << std::string(10, 'p');
+    std::ofstream(waiting, std::ios::binary) << std::string(10, 'p');
+    app->shutdown();
+    EXPECT_TRUE(fs::exists(running));
+    EXPECT_TRUE(fs::exists(waiting));
+}
+
+TEST_F(AutoCacheLimitTest, TheFolderOfAnAbandonedTransferGoesWithItsPartWhenOverTheLimit) {
+    startSmall(5);
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    ASSERT_TRUE(downloader.finish(downloader.lastRequest().id, Result::Unreachable, true, "", "halfhalf"));
+    app->tick(); // failed: the .part is left, nobody resumes it
+    ASSERT_TRUE(fs::exists(weatherFolderFile("t1.flac.part")));
+    hold(Button::Forward); // the play moves on
+    app->shutdown();       // (t2 is queued and its folder is the same one)
+    EXPECT_FALSE(fs::exists(weatherFolderFile("t1.flac.part")));
+}
+
+TEST_F(AutoCacheLimitTest, ANewPlayReplacesALastPlayedThatAWrongClockWroteInTheFuture) {
+    cacheTrack("t1", false, kNow + 9'000'000);
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    app->shutdown();
+    EXPECT_EQ(store().load(albumSource("al1")).tracks[0].lastPlayed, kNow);
+}
+
+TEST_F(AutoCacheLimitTest, AClockThatIsNotSetDoesNotRecordAPlay) {
+    cacheTrack("t1", false, kNow - 1000);
+    clock.setWallTime(5);
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    app->shutdown();
+    EXPECT_EQ(store().load(albumSource("al1")).tracks[0].lastPlayed, kNow - 1000);
+}
+
+TEST_F(AutoCacheLimitTest, ATrackBiggerThanTheLimitIsNotFetched) {
+    startSmall(4); // the tracks have 5 bytes
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(30s);
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(AutoCacheLimitTest, ATrackExactlyTheLimitIsFetched) {
+    startSmall(5);
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    EXPECT_EQ(downloader.requests.size(), 1u);
+}
+
+TEST_F(AutoCacheLimitTest, WithTheCacheOffWhatIsCachedStaysOnExitAndSleep) {
+    cacheTrack("a", false, 100);
+    cacheTrack("b", false, 200);
+    settings.setInt("cache.limit_gb", 0);
+    start();
+    press(Button::Power);
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_TRUE(cached("a"));
+    app->shutdown();
+    EXPECT_TRUE(cached("a"));
+    EXPECT_TRUE(cached("b"));
+    EXPECT_TRUE(fs::exists(weatherFolderFile("a.mp3")));
+}
+
+TEST_F(AutoCacheLimitTest, WithTheCacheOffPlaysAreStillRecordedForWhenItIsSwitchedOn) {
+    cacheTrack("t1", false, 100);
+    cacheTrack("other", false, 100);
+    settings.setInt("cache.limit_gb", 0);
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    app->shutdown();
+    EXPECT_EQ(store().load(albumSource("al1")).tracks[0].lastPlayed, kNow);
+    EXPECT_TRUE(cached("other")) << "writing the plays evicts nothing";
+}
+
+TEST_F(AutoCacheLimitTest, TheTransferStopsWhenTheDeviceSleepsAndContinuesAfterTheWake) {
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    auto first = downloader.lastRequest().id;
+    press(Button::Power);
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_NE(std::find(downloader.cancelled.begin(), downloader.cancelled.end(), first), downloader.cancelled.end());
+    listen(30s);
+    EXPECT_EQ(downloader.requests.size(), 1u) << "nothing starts while asleep";
+    press(Button::Ok); // wake
+    ASSERT_NE(app->mode(), App::Mode::Sleeping);
+    listen(1s);
+    ASSERT_EQ(downloader.requests.size(), 2u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "t1") << "the same track, from its .part";
+}
+
+TEST_F(AutoCacheLimitTest, ATrackCachedWhileTheClockIsNotSetHasNoPlayTime) {
+    clock.setWallTime(5);
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    finishLast();
+    ASSERT_TRUE(cached("t1"));
+    EXPECT_EQ(store().load(albumSource("al1")).tracks[0].lastPlayed, 0);
+}
+
+TEST_F(AutoCacheLimitTest, CachingATrackDoesNotScanTheManifestsAgainWhileTheCacheIsUnderTheLimit) {
+    cacheTrack("x", false, 100, 5, albumSource("other1"), "One");
+    cacheTrack("y", false, 100, 5, albumSource("other2"), "Two");
+    CountingFiles counting;
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache, &counting);
+    app->start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    int before = counting.reads;
+    finishLast();
+    int first = counting.reads - before;
+    EXPECT_GE(first, 4) << "its own list (read to load and to save) and a scan of the two others";
+    hold(Button::Forward);
+    listen(11s);
+    before = counting.reads;
+    finishLast();
+    EXPECT_EQ(counting.reads - before, 2) << "only its own list, to load and to save: no scan";
+    app.reset();
+}
+
+TEST_F(AutoCacheLimitTest, TracksCachedAfterTheFirstScanAreCountedToTheLimitWithoutAScan) {
+    cacheTrack("a", false, 100);
+    startSmall(12);
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    finishLast(); // 10 bytes: the scan
+    ASSERT_TRUE(cached("a"));
+    hold(Button::Forward);
+    listen(11s);
+    finishLast(); // 15 bytes
+    EXPECT_FALSE(cached("a"));
+    EXPECT_TRUE(cached("t1"));
+    EXPECT_TRUE(cached("t2"));
+}
+
+TEST_F(AutoCacheLimitTest, ATransferThatFailsAfterTheFirstScanLeavesAPartThatIsStillCleanedOnExit) {
+    cacheTrack("a", false, 100);
+    startSmall(12);
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    finishLast(); // 10 bytes: the scan; within the limit
+    hold(Button::Forward);
+    listen(11s);
+    ASSERT_TRUE(downloader.finish(downloader.lastRequest().id, Result::Unreachable, true, "", "halfhalf"));
+    app->tick();
+    hold(Button::Forward); // nothing waits for t2's part any more
+    ASSERT_TRUE(fs::exists(weatherFolderFile("t2.mp3.part")));
+    app->shutdown();
+    EXPECT_FALSE(fs::exists(weatherFolderFile("t2.mp3.part"))) << "10 + 8 bytes are over 12";
+}
+
+TEST_F(AutoCacheLimitTest, EvictingOneCopyOfATrackKeepsTheOtherOneFindable) {
+    cacheTrack("dup", false, 100, 5, albumSource("album"), "Album");
+    cacheTrack("dup", true, 200, 5, albumSource("list"), "List"); // a pinned copy in another list
+    startSmall(1);
+    ASSERT_TRUE(cached("dup"));
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band")); // builds the index
+    std::vector<RemoteTrack> tracks = {{"dup", "Dup", "Band", "Weather", 100, 1}};
+    app->shutdown(); // the unpinned copy goes
+    ASSERT_FALSE(fs::exists(store().listFolder(albumSource("album")) / "dup.mp3"));
+    ASSERT_TRUE(app->playRemote("Dup", tracks, 0, albumSource("list")));
+    EXPECT_EQ(player.file, (store().listFolder(albumSource("list")) / "dup.mp3").string()) << "plays from the pinned copy, not the stream";
+}
+
+TEST_F(AutoCacheLimitTest, ThePartOfAFailedExplicitDownloadIsKeptForTheNextTry) {
+    cacheTrack("a", false, 100);
+    openAlbum(); // (starts the app)
+    app->setCacheGigabyte(5);
+    startDownload();
+    ASSERT_TRUE(downloader.finish(downloader.lastRequest().id, Result::Unreachable, true, "", "0123456789"));
+    app->tick();
+    ASSERT_TRUE(fs::exists(weatherFolderFile("t1.flac.part")));
+    app->shutdown(); // 15 bytes with the part: over the limit of 5
+    EXPECT_TRUE(fs::exists(weatherFolderFile("t1.flac.part"))) << "OK on Download continues from it";
+}
+
+TEST_F(AutoCacheLimitTest, EvictionDoesNotMakeTheNextLookupScanTheManifestsAgain) {
+    cacheTrack("a", false, 100, 5, albumSource("other1"), "One");
+    cacheTrack("b", false, 100, 5, albumSource("other2"), "Two");
+    CountingFiles counting;
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache, &counting);
+    app->setCacheGigabyte(10);
+    app->start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    finishLast(); // 15 bytes: "a" goes
+    ASSERT_FALSE(cached("a"));
+    int before = counting.reads;
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 1, albumSource("al1"), 0, "Band"));
+    EXPECT_EQ(counting.reads - before, 0) << "the index was updated, not made again";
+    app.reset();
+}
+
+TEST_F(AutoCacheLimitTest, PoweringOffTrimsOnce) {
+    cacheTrack("t1", false, 100); // its play is written to the manifest on exit
+    cacheTrack("a", false, 100, 5, albumSource("other1"), "One");
+    cacheTrack("b", false, 100, 5, albumSource("other2"), "Two");
+    CountingFiles counting;
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache, &counting);
+    app->start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    app->shutdown(); // the first exit scans, and the plays go to the manifests
+    int before = counting.reads;
+    app->shutdown();
+    EXPECT_EQ(counting.reads - before, 0) << "the second saveOnExit finds nothing to do";
+    app.reset();
 }
 
 // ---- the setting

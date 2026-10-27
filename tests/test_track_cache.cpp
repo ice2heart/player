@@ -399,6 +399,8 @@ TEST_F(TrackCacheTest, SafeNameNeverLeavesTheFolder) {
 // ------------------------------------------------------- automatic cache: trim()
 
 namespace {
+constexpr int64_t kNow = 1'800'000'000; // a real wall time (after kEarliestPlayTime)
+
 // A list of `n`-byte files with these (id, pinned, lastPlayed); the files exist.
 CachedList seedFiles(const TrackCache& c, RemoteSource source, size_t bytes,
                      std::vector<std::tuple<std::string, bool, int64_t>> tracks) {
@@ -461,19 +463,68 @@ TEST_F(TrackCacheTest, TrimKeepsTheFileInKeepAndTakesTheNextOne) {
 
 TEST_F(TrackCacheTest, TrimWritesPlayedTimesAndUsesThemForTheOrder) {
     TrackCache c = cache();
-    seedFiles(c, album("a"), 10, {{"x", false, 100}, {"y", false, 200}});
-    // x played after y: y is now the older one. A time older than the manifest's is ignored.
-    EXPECT_EQ(c.trim(10, {{"x", 300}, {"y", 150}}, {}), 1u);
+    const int64_t t = kNow;
+    seedFiles(c, album("a"), 10, {{"x", false, t + 100}, {"y", false, t + 200}});
+    // x played after y: y is now the older one.
+    EXPECT_EQ(c.trim(10, {{"x", t + 300}}, {}), 1u);
     EXPECT_TRUE(c.find("x"));
     EXPECT_FALSE(c.find("y"));
-    EXPECT_EQ(c.load(album("a")).tracks[0].lastPlayed, 300);
+    EXPECT_EQ(c.load(album("a")).tracks[0].lastPlayed, t + 300);
+}
+
+TEST_F(TrackCacheTest, TheLatestPlayReplacesLastPlayedEvenWhenItIsEarlier) {
+    TrackCache c = cache();
+    // A wrong clock (ahead) once wrote a far future time for x: a later real play must replace it.
+    seedFiles(c, album("a"), 10, {{"x", false, kNow + 5'000'000}, {"y", false, kNow + 1000}});
+    EXPECT_EQ(c.trim(10, {{"x", kNow + 200}}, {}), 1u);
+    EXPECT_FALSE(c.find("x")) << "its real play is older than y's";
+    EXPECT_TRUE(c.find("y"));
+}
+
+TEST_F(TrackCacheTest, AUnsetClockIsNotRecordedAsAPlay) {
+    TrackCache c = cache();
+    seedFiles(c, album("a"), 10, {{"x", false, kNow}});
+    EXPECT_EQ(c.trim(1000, {{"x", 5}}, {}), 0u); // 1970: the Pi had no time yet
+    EXPECT_EQ(c.load(album("a")).tracks[0].lastPlayed, kNow);
+}
+
+TEST_F(TrackCacheTest, AnAbandonedPartFileIsEvictedFirstButNotOneInKeep) {
+    TrackCache c = cache();
+    seedFiles(c, album("a"), 10, {{"x", false, kNow}});
+    writeFile(c.listFolder(album("a")) / "old.mp3.part", std::string(10, 'p'));
+    writeFile(c.listFolder(album("a")) / "next.mp3.part", std::string(10, 'p'));
+    TrackCache::TrimInfo info;
+    EXPECT_EQ(c.trim(20, {}, {c.listFolder(album("a")) / "next.mp3.part"}, &info), 0u);
+    EXPECT_FALSE(fs::exists(c.listFolder(album("a")) / "old.mp3.part")) << "nobody resumes it";
+    EXPECT_TRUE(fs::exists(c.listFolder(album("a")) / "next.mp3.part")) << "a transfer that waits stays";
+    EXPECT_TRUE(c.find("x")) << "the part goes before a track";
+    EXPECT_EQ(info.remaining, 20u);
+}
+
+TEST_F(TrackCacheTest, AFolderOfOnlyAnAbandonedPartIsRemovedWhenItGoes) {
+    TrackCache c = cache();
+    fs::create_directories(c.listFolder(album("new")));
+    writeFile(c.listFolder(album("new")) / "t.mp3.part", "half");
+    c.trim(0, {}, {});
+    EXPECT_FALSE(fs::exists(c.listFolder(album("new"))));
+}
+
+TEST_F(TrackCacheTest, TrimReportsTheEvictedIdsAndWhatIsLeft) {
+    TrackCache c = cache();
+    seedFiles(c, album("a"), 10, {{"x", false, kNow + 1}, {"y", false, kNow + 2}});
+    TrackCache::TrimInfo info;
+    c.trim(10, {}, {}, &info);
+    ASSERT_EQ(info.evicted.size(), 1u);
+    EXPECT_EQ(info.evicted[0].first, "x");
+    EXPECT_EQ(info.evicted[0].second, c.listFolder(album("a")) / "x.mp3");
+    EXPECT_EQ(info.remaining, 10u);
 }
 
 TEST_F(TrackCacheTest, TrimWritesAPlayedTimeEvenWhenNothingIsDeleted) {
     TrackCache c = cache();
     seedFiles(c, album("a"), 10, {{"x", false, 100}});
-    EXPECT_EQ(c.trim(1000, {{"x", 777}, {"unknown", 5}}, {}), 0u);
-    EXPECT_EQ(c.load(album("a")).tracks[0].lastPlayed, 777);
+    EXPECT_EQ(c.trim(1000, {{"x", kNow + 777}, {"unknown", kNow}}, {}), 0u);
+    EXPECT_EQ(c.load(album("a")).tracks[0].lastPlayed, kNow + 777);
 }
 
 TEST_F(TrackCacheTest, TrimRemovesAListFolderLeftEmptyButNotOneWithAPartFile) {
@@ -481,7 +532,7 @@ TEST_F(TrackCacheTest, TrimRemovesAListFolderLeftEmptyButNotOneWithAPartFile) {
     seedFiles(c, album("gone"), 10, {{"g", false, 1}});
     seedFiles(c, album("resume"), 10, {{"r", false, 2}});
     writeFile(c.listFolder(album("resume")) / "next.mp3.part", "half");
-    EXPECT_EQ(c.trim(0, {}, {}), 2u);
+    EXPECT_EQ(c.trim(0, {}, {c.listFolder(album("resume")) / "next.mp3.part"}), 2u);
     EXPECT_FALSE(fs::exists(c.listFolder(album("gone")))) << "an empty list is removed";
     EXPECT_TRUE(fs::exists(c.listFolder(album("resume")) / "next.mp3.part")) << "a transfer to resume stays";
     EXPECT_TRUE(c.load(album("resume")).tracks.empty());
@@ -509,9 +560,9 @@ TEST_F(TrackCacheTest, ListsPinnedOnlyLeavesOutListsOfAutomaticTracks) {
 
 TEST_F(TrackCacheTest, TrimRewritesNoManifestWhenNothingChanged) {
     TrackCache c = cache();
-    seedFiles(c, album("a"), 10, {{"x", false, 100}});
+    seedFiles(c, album("a"), 10, {{"x", false, kNow + 100}});
     auto longAgo = fs::file_time_type::clock::now() - std::chrono::hours(24 * 365);
     fs::last_write_time(c.manifestFile(album("a")), longAgo);
-    EXPECT_EQ(c.trim(1000, {{"x", 50}, {"unknown", 5}}, {}), 0u);
+    EXPECT_EQ(c.trim(1000, {{"x", kNow + 100}, {"unknown", kNow}}, {}), 0u); // the same time again
     EXPECT_EQ(fs::last_write_time(c.manifestFile(album("a"))), longAgo) << "flash is spared";
 }
