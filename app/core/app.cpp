@@ -40,6 +40,10 @@ constexpr const char* kAutoSleep = "power.auto_sleep_min";
 constexpr const char* kStreamingBitrate = "streaming.bitrate"; // kbit/s of a transcode; 0: the original file
 constexpr const char* kCacheLimit = "cache.limit_gb"; // automatic cache: gigabytes of unpinned tracks, 0: off
 constexpr const char* kLastBook = "last_book";
+// The player used last, "music" or "book": which one Home lists first and start() resumes.
+constexpr const char* kLastPlayer = "last_player";
+constexpr const char* kPlayerMusic = "music";
+constexpr const char* kPlayerBook = "book";
 // The step unit (Up / Down in a player) of each player, in state.tsv: an index into the units below.
 constexpr const char* kUnitMusic = "unit.music";
 constexpr const char* kUnitBook = "unit.book";
@@ -65,7 +69,6 @@ constexpr const char* kServerUser = "server.user";
 // The remote list that played last, resumed by "Now playing" after a restart.
 // The server is named by its url and user (never the password, nor a stream
 // URL, which holds the login), so a place on another server is not resumed.
-constexpr const char* kLastStream = "last_stream.";
 constexpr const char* kLastStreamServer = "last_stream.server";
 constexpr const char* kLastStreamUser = "last_stream.user";
 constexpr const char* kLastStreamKind = "last_stream.kind"; // "album" or "playlist"
@@ -211,7 +214,9 @@ Screen menuScreen(std::string title, std::function<std::vector<MenuItem>()> buil
     return {Screen::Kind::Menu, std::move(title), std::move(items), std::move(build)};
 }
 
-Screen playerScreen() { return {Screen::Kind::Player, "Now playing", {}, {}}; }
+Screen playerScreen(bool music) {
+    return {music ? Screen::Kind::MusicPlayer : Screen::Kind::BookPlayer, "Now playing", {}, {}};
+}
 
 // Room left on the disk of `folder`, which must exist.
 std::optional<std::uintmax_t> spaceOnDisk(const std::filesystem::path& folder) {
@@ -295,19 +300,20 @@ void App::start() {
     startScan(); // the menus use the saved index until it is done
     startSync(); // silent: the saved server items stay if it fails
 
-    // A stream played last: "Now playing" on Home resumes it. Nothing is asked
+    // A stream played last (the music player): "Now playing" on Home resumes it. Nothing is asked
     // of the server now, and nothing plays until the user chooses it.
     // A server book played last (`last_book` is its item id, `<server key>:album:<id>`, which no local
     // book is, as a local path is absolute) is resumed from Home the same way, and is not looked for on disk.
+    // Whichever player was used first is the one listed as "Now playing"; the other is "Continue".
     std::string last = state_.getString(kLastBook);
-    if (savedStream() || isServerBookId(last)) {
+    if ((lastPlayerIsMusic() && savedStream()) || isServerBookId(last)) {
         goHome();
         return;
     }
     if (auto b = resumableBook(last); b && openBook(*b, false)) {
         closeScreens(0);
         pushScreen(menuScreen("Home", [this] { return homeMenu(); }));
-        pushScreen(playerScreen());
+        pushScreen(playerScreen(false));
         say(b->title + ", paused. Press play to continue.");
         return;
     }
@@ -633,7 +639,7 @@ void App::setHold(bool on) {
 
 App::Mode App::mode() const {
     if (sleeping_) return Mode::Sleeping;
-    return !screens_.empty() && screens_.back().kind == Screen::Kind::Player ? Mode::Player : Mode::Menu;
+    return !screens_.empty() && screens_.back().isPlayer() ? Mode::Player : Mode::Menu;
 }
 
 void App::tick() {
@@ -998,14 +1004,14 @@ void App::back() {
     popScreen();
     earcons_.play(Earcon::Close);
     const Screen& screen = screens_.back();
-    say(screen.kind == Screen::Kind::Player ? nowPlayingSpeech() : itemSpeech(screen));
+    say(screen.isPlayer() ? nowPlayingSpeech() : itemSpeech(screen));
 }
 
 void App::popScreen() {
     if (screens_.size() <= 1) return; // Home stays
     closeScreens(screens_.size() - 1);
     Screen& screen = screens_.back();
-    if (screen.kind == Screen::Kind::Player || !screen.build) return; // a list from the server keeps what loaded
+    if (screen.isPlayer() || !screen.build) return; // a list from the server keeps what loaded
     // Rebuild, so a list shows what changed meanwhile (e.g. "Now playing" on Home), and stay on the same item.
     std::string label = screen.items.empty() ? "" : screen.items[screen.index].label;
     screen.items = screen.build();
@@ -1027,7 +1033,8 @@ void App::goHome() {
     openMenu("Home", [this] { return homeMenu(); });
 }
 
-// There is only one player screen: return to it if it is on the stack, else push it.
+// Return to the player screen if it is on the stack, else push the screen of the loaded player.
+// Only the loaded player has a screen on the stack: a different player is started from a menu.
 void App::enterPlayer() {
     if (!book_) {
         goHome();
@@ -1037,15 +1044,14 @@ void App::enterPlayer() {
         closeScreens(*player + 1);
         earcons_.play(Earcon::Close);
     } else {
-        pushScreen(playerScreen());
+        pushScreen(playerScreen(music_));
         earcons_.play(Earcon::Open);
     }
     say(nowPlayingSpeech());
 }
 
 std::optional<size_t> App::playerScreenIndex() const {
-    auto player = std::find_if(screens_.begin(), screens_.end(),
-                               [](const Screen& s) { return s.kind == Screen::Kind::Player; });
+    auto player = std::find_if(screens_.begin(), screens_.end(), [](const Screen& s) { return s.isPlayer(); });
     return player == screens_.end() ? std::nullopt : std::optional(size_t(player - screens_.begin()));
 }
 
@@ -1127,28 +1133,18 @@ MenuItem App::choice(const std::string& label, const std::string& key,
     return item;
 }
 
+// Home lists the player used last as "Now playing" and the other as "Continue", each when it
+// has something: loaded, parked behind the other, or saved for after a restart.
 std::vector<MenuItem> App::homeMenu() {
     std::vector<MenuItem> items;
-    if (book_) {
-        MenuItem now = action("Now playing", [this] { enterPlayer(); });
-        now.value = [this] { return book_ ? book_->title : std::string("nothing"); };
-        items.push_back(now);
-    } else if (auto stream = savedStream()) {
-        // Home is not rebuilt while the resumed track opens: then this goes to the player.
-        MenuItem now = action("Now playing", [this] {
-            if (book_) enterPlayer();
-            else resumeStream();
-        });
-        now.value = [this, title = stream->title] { return book_ ? book_->title : title; };
-        items.push_back(now);
-    } else if (const IndexItem* saved = savedServerBook()) {
-        // Likewise for the server book played last: loaded now, or played from its files if it is downloaded.
-        MenuItem now = action("Now playing", [this] {
-            if (book_) enterPlayer();
-            else resumeServerBook();
-        });
-        now.value = [this, title = saved->title] { return book_ ? book_->title : title; };
-        items.push_back(now);
+    bool musicFirst = book_ ? music_ : lastPlayerIsMusic();
+    for (bool music : {musicFirst, !musicFirst}) {
+        std::optional<std::string> title = playerTitle(music);
+        if (!title) continue;
+        // Home is not rebuilt while a resumed track opens: the item then goes to the player.
+        MenuItem item = action(items.empty() ? "Now playing" : "Continue", [this, music] { openPlayer(music); });
+        item.value = [title = *title] { return title; };
+        items.push_back(item);
     }
     items.push_back(submenu("Library", [this] { return libraryMenu(); }, ListOrder::ByName));
     items.push_back(submenu("Music", [this] { return musicMenu(); }));
@@ -2044,23 +2040,34 @@ std::vector<MenuItem> App::helpMenu() {
     return items;
 }
 
-std::vector<MenuItem> App::playerMenu() {
+std::vector<MenuItem> App::playerMenu() { return music_ ? musicPlayerMenu() : bookPlayerMenu(); }
+
+// What both Player menus have: the parts of the book or album, the sleep timer, its info and its start.
+std::vector<MenuItem> App::playerMenuBase(const std::string& parts, const std::string& info, const std::string& start) {
     std::vector<MenuItem> items;
-    MenuItem parts = submenu(music_ ? "Tracks" : "Chapters", [this] { return chaptersMenu(); });
-    parts.selected = [this] { return size_t(currentChapter()); };
-    items.push_back(parts);
+    MenuItem list = submenu(parts, [this] { return chaptersMenu(); });
+    list.selected = [this] { return size_t(currentChapter()); };
+    items.push_back(list);
     MenuItem timer = submenu("Sleep timer", [this] { return sleepTimerMenu(); });
     timer.selected = [this] { return sleepTimerIndex(); };
     items.push_back(timer);
-    items.push_back(action(music_ ? "Album info" : "Book info", [this] {
+    items.push_back(action(info, [this] {
         if (!book_) return;
         auto ch = chapters();
         say(book_->title + ". " + std::to_string(ch.size()) + " " + unit() + "s. " + playerStatus());
     }));
-    items.push_back(action(music_ ? "Go to first track" : "Go to start of book", [this] {
+    items.push_back(action(start, [this] {
         // Once it is open; if it fails, the error is said and the user stays in the menu.
         loadFile(0, 0, willPlay(), Origin::Menu, [this, screen = screens_.back().id] { enterPlayerFrom(screen); });
     }));
+    return items;
+}
+
+// The music player: "Tracks" lists the album until the queue (queue.md, step 2.7) takes its place.
+std::vector<MenuItem> App::musicPlayerMenu() { return playerMenuBase("Tracks", "Album info", "Go to first track"); }
+
+std::vector<MenuItem> App::bookPlayerMenu() {
+    std::vector<MenuItem> items = playerMenuBase("Chapters", "Book info", "Go to start of book");
     items.push_back(action("Speed", [this] { say("Speed control is coming later."); }));
     items.push_back(action("Add bookmark", [this] { say("Bookmarks are coming later."); }));
     return items;
@@ -2101,8 +2108,6 @@ bool App::openBook(const Book& book, bool autoplay) {
     if (book_) rememberPosition();
     auto [file, pos] = savedPlace(book);
     if (switchTo(book, false, file, pos, autoplay) == OpenResult::Failed) return false; // a local book opens at once
-    state_.setString(kLastBook, book.path.string());
-    state_.clearPrefix(kLastStream); // the book played last: start() resumes it, not the stream
     sleepAtChapterEnd_ = -1;
     return true;
 }
@@ -2157,7 +2162,7 @@ Book App::serverBookOf(const std::string& ref, const std::string& title, const s
 // (as a resumed download does). Any other is "Loading." while its tracks come, and with the server
 // down "Server not reachable." is said and the user stays where they were. The request is the one
 // of resumeStream(): a new screen, sleep or power off drops it. Once it plays, the book is
-// `last_book` and `last_stream` is removed, as for a local book. Its place is a file index of the
+// `last_book`, as for a local book; the music player keeps its own place (`last_stream`). Its place is a file index of the
 // list as the server gives it now: a list shorter than the saved index starts at the first chapter.
 void App::openServerBook(const IndexItem& item) {
     std::string key = catalogueServerKey();
@@ -2204,12 +2209,10 @@ void App::openServerBook(const IndexItem& item) {
     });
 }
 
-// playMusic() for a book: its chapters are the tracks (music_ stays false) and it keeps its place.
+// playMusic() for a book: its chapters are the tracks (the book player) and it keeps its place.
 bool App::playServerBook(const Book& book, size_t file, double position, Then opened) {
     if (book_) rememberPosition();
-    auto playing = [this, path = book.path.string(), opened = std::move(opened)] {
-        state_.setString(kLastBook, path); // start() and "Now playing" resume it, not a stream
-        state_.clearPrefix(kLastStream);
+    auto playing = [this, opened = std::move(opened)] {
         sleepAtChapterEnd_ = -1;
         pausedAt_.reset();
         if (opened) opened();
@@ -2254,19 +2257,24 @@ bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& t
     return playMusic(list, index, [this, screen] { enterPlayerFrom(screen); }, position);
 }
 
-// Loads `book` from `file`. If none of its files from there on opens, what was
-// loaded before stays loaded, at the same place, so the user is where they were.
+// Loads `book` into the music player (`music`) or the book player from `file`. If none of its
+// files from there on opens, what was loaded before stays loaded, at the same place, so the user
+// is where they were. The other player's book is parked with its place, so Continue brings it
+// back; a book of the same kind replaces the loaded one and leaves the parked one alone.
 App::OpenResult App::switchTo(const Book& book, bool music, size_t file, double position, bool autoplay,
                               Then opened) {
     dropPendingOpen(); // a failure goes back to what was loaded before it
     size_t wasFile = fileIndex_;
     bool wasOpen = player_.isOpen(), wasPlaying = player_.playing();
     double wasAt = player_.position();
+    std::optional<Parked> wasParked = parked_;
+    if (book_ && music_ != music) parked_ = Parked{*book_, music_, fileIndex_, place()};
     auto undo = [this, previous = std::exchange(book_, book), wasMusic = std::exchange(music_, music), wasFile,
-                 wasOpen, wasPlaying, wasAt, remote = book.remote] {
+                 wasOpen, wasPlaying, wasAt, wasParked = std::move(wasParked), remote = book.remote] {
         book_ = previous;
         music_ = wasMusic;
         fileIndex_ = wasFile;
+        parked_ = wasParked;
         if (!book_ || !wasOpen) return;
         if (book_->remote && remote) {
             reopenAt_ = wasAt; // its server is likely gone too: open it on Play, not now
@@ -2280,7 +2288,14 @@ App::OpenResult App::switchTo(const Book& book, bool music, size_t file, double 
             book_.reset(), music_ = false;
         }
     };
-    return openFile(file, position, autoplay, Origin::Menu, std::move(opened), std::move(undo));
+    // The player used last: a music list that cannot be resumed later (local files) does not count.
+    bool resumable = !music || (book.remote && book.source);
+    auto playing = [this, music, resumable, path = book.path.string(), opened = std::move(opened)] {
+        if (resumable) state_.setString(kLastPlayer, music ? kPlayerMusic : kPlayerBook);
+        if (!music) state_.setString(kLastBook, path); // start() and "Now playing" resume it
+        if (opened) opened();
+    };
+    return openFile(file, position, autoplay, Origin::Menu, std::move(playing), std::move(undo));
 }
 
 // Moves to `file` of the loaded book. If a remote track does not open, the
@@ -2432,20 +2447,85 @@ void App::play() {
         openFile(fileIndex_, at, true, Origin::Resume, [this] { if (player_.playing()) earcons_.play(Earcon::Play); }, {});
         return;
     }
-    if (!book_ && savedStream()) { // after a restart: like "Now playing" on Home
-        resumeStream();
+    if (!book_) { // after a restart: like "Now playing" on Home
+        if (parked_) continueParked();
+        else if (!resumePlayer(lastPlayerIsMusic()) && !resumePlayer(!lastPlayerIsMusic())) nothingToPlay();
         return;
     }
-    if (!book_ && resumeServerBook()) return;
-    if (!book_ || !player_.isOpen()) {
-        earcons_.play(Earcon::Error);
-        say("Nothing to play. Choose a book in the library.");
+    if (!player_.isOpen()) {
+        nothingToPlay();
         return;
     }
     if (rewinds) player_.seek(player_.position() - rewind);
     pausedAt_.reset();
     player_.play();
     earcons_.play(Earcon::Play);
+}
+
+void App::nothingToPlay() {
+    earcons_.play(Earcon::Error);
+    say("Nothing to play. Choose a book in the library.");
+}
+
+// The player used last, from state.tsv. Without a record (an older state.tsv) it is the music
+// player when a stream is saved, as that was the one that played last then.
+bool App::lastPlayerIsMusic() const {
+    std::string last = state_.getString(kLastPlayer);
+    return last == kPlayerMusic || (last.empty() && savedStream());
+}
+
+// What the player of that kind has for Home: its loaded or parked book, else the one saved for
+// after a restart (the stream of the music player, `last_book` of the book player).
+std::optional<std::string> App::playerTitle(bool music) const {
+    if (book_ && music_ == music) return book_->title;
+    if (parked_ && parked_->music == music) return parked_->book.title;
+    if (music) {
+        if (auto stream = savedStream()) return stream->title;
+        return std::nullopt;
+    }
+    if (const IndexItem* saved = savedServerBook()) return saved->title;
+    // A local book the index knows: Home is rebuilt often, so it never scans the disk for one.
+    const std::string last = state_.getString(kLastBook);
+    if (!last.empty() && index_.find(kLocalBookPrefix + last))
+        if (auto local = resumableBook(last)) return local->title;
+    return std::nullopt;
+}
+
+// Home: the loaded player is entered, a parked one brought back, a saved one resumed.
+void App::openPlayer(bool music) {
+    if (book_ && music_ == music) enterPlayer();
+    else if (parked_ && parked_->music == music) continueParked();
+    else resumePlayer(music);
+}
+
+// Loads the place that player has saved after a restart. False if it has none.
+bool App::resumePlayer(bool music) {
+    if (music) {
+        if (!savedStream()) return false;
+        resumeStream();
+        return true;
+    }
+    if (resumeServerBook()) return true;
+    auto local = resumableBook(state_.getString(kLastBook));
+    if (!local) return false;
+    std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
+    if (!openBook(*local, true)) return false; // the error is said; the other player may do
+    enterPlayerFrom(screen);
+    return true;
+}
+
+// Continue: the parked player plays again from the place it stopped at, and the loaded one is
+// parked in its turn. There is one audio output, so its file is opened again.
+void App::continueParked() {
+    if (!parked_) return;
+    Parked target = *parked_;
+    if (book_) rememberPosition();
+    std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
+    switchTo(target.book, target.music, target.file, target.position, true, [this, screen] {
+        sleepAtChapterEnd_ = -1;
+        pausedAt_.reset();
+        enterPlayerFrom(screen);
+    });
 }
 
 void App::pause(bool announce) {
@@ -3273,6 +3353,7 @@ void App::restart(bool saveFirst) {
     pendingOpen_.reset();
     player_.close();
     book_.reset();
+    parked_.reset();
     music_ = false;
     closeScreens(0);
     sleepDeadline_.reset();

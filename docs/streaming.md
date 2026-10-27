@@ -348,9 +348,9 @@ a stream after a restart.
 Step 2.6 as built: the place is the `last_stream.*` keys of `state.tsv` (server url and
 user, `album` or `playlist` and its id, title, track index and id, seconds), kept in
 memory on pause and list change and written only on exit and sleep, like `last_book`.
-Whichever played last resumes: opening a local book removes `last_stream.*`, and a
-stream played after a book is resumed instead of it (the book keeps its place in
-Library). Local music changes neither. At boot nothing is asked of the server and
+Whichever player played last resumes (queue.md step 1.5 changed this: opening a book no
+longer removes `last_stream.*`; `last_player` says which was last, and the other is
+"Continue" on Home). Local music changes neither. At boot nothing is asked of the server and
 nothing plays: Home opens with "Now playing, Weather" first, and OK on it (or Play)
 says "Loading.", loads the list again, finds the track by its id (if it is gone, the
 track now at its index from its start, else the first track) and opens it at its

@@ -29,10 +29,11 @@ struct MenuItem {
     std::function<void()> action;
 };
 
-// One entry of the screen stack: a spoken list, or a program such as the player.
+// One entry of the screen stack: a spoken list, or a program such as a player (the
+// music player and the book player are two programs, each with its own Player menu).
 // OK pushes a screen, Home pops one.
 struct Screen {
-    enum class Kind { Menu, Player };
+    enum class Kind { Menu, MusicPlayer, BookPlayer };
     Kind kind = Kind::Menu;
     std::string title;
     std::vector<MenuItem> items;                  // Menu only
@@ -40,6 +41,8 @@ struct Screen {
     size_t index = 0;
     std::uint64_t id = 0; // unique per App: how an answer from the server finds its screen
     ListOrder order = ListOrder::None; // Menu only
+
+    bool isPlayer() const { return kind != Kind::Menu; }
 };
 
 } // namespace oap

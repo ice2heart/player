@@ -27,6 +27,7 @@ void touch(const fs::path& p) {
     fs::create_directories(p.parent_path());
     std::ofstream(p) << "x";
 }
+std::string valueOf(const MenuItem& item) { return item.value ? item.value() : std::string(); }
 } // namespace
 
 // Library used by every test:
@@ -1479,6 +1480,120 @@ TEST_F(AppTest, RestartAfterMusicResumesTheBook) {
     EXPECT_DOUBLE_EQ(player.pos, 20);
     EXPECT_FALSE(player.playing());
     EXPECT_EQ(speech.last(), "Alpha, paused. Press play to continue.");
+}
+
+// ---------------------------------------------------------------- two players
+
+TEST_F(AppTest, ABookThenMusicThenTheBookAgainEachResumeWhereTheyWere) {
+    playAlpha();
+    player.pos = 20;
+    EXPECT_EQ(app->screens().back().kind, Screen::Kind::BookPlayer);
+    hold(Button::Home);
+    open("Music");
+    open("Play all");
+    EXPECT_EQ(app->screens().back().kind, Screen::Kind::MusicPlayer);
+    const std::string musicFile = player.file;
+    ASSERT_NE(musicFile, alphaFile(1));
+    player.pos = 33;
+    hold(Button::Home);
+    ASSERT_EQ(labels()[0], "Now playing");
+    ASSERT_EQ(labels()[1], "Continue");
+    EXPECT_EQ(valueOf(level().items[1]), "Alpha") << "the book is the other player";
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(app->screens().back().kind, Screen::Kind::BookPlayer);
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_DOUBLE_EQ(player.pos, 20);
+    EXPECT_TRUE(player.playing());
+    hold(Button::Home);
+    EXPECT_EQ(valueOf(level().items[0]), "Alpha") << "the player used last comes first";
+    EXPECT_EQ(labels()[1], "Continue");
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(app->screens().back().kind, Screen::Kind::MusicPlayer);
+    EXPECT_EQ(player.file, musicFile);
+    EXPECT_DOUBLE_EQ(player.pos, 33);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(AppTest, HomeHasNoContinueWhileOnlyOnePlayerWasUsed) {
+    playAlpha();
+    hold(Button::Home);
+    EXPECT_EQ(labels()[0], "Now playing");
+    EXPECT_EQ(labels()[1], "Library");
+}
+
+TEST_F(AppTest, NowPlayingOnHomeEntersThePlayerThatIsLoaded) {
+    playAlpha();
+    hold(Button::Home);
+    open("Music");
+    open("Play all");
+    const std::string musicFile = player.file;
+    hold(Button::Home);
+    press(Button::Ok); // Now playing: the music, which is loaded
+    EXPECT_EQ(app->screens().back().kind, Screen::Kind::MusicPlayer);
+    EXPECT_EQ(player.file, musicFile);
+    EXPECT_EQ(player.opened.size(), 2u) << "entering the loaded player opens nothing";
+}
+
+TEST_F(AppTest, EachPlayerHasItsOwnMenu) {
+    playAlpha();
+    press(Button::Ok);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Chapters", "Sleep timer", "Book info", "Go to start of book", "Speed",
+                                                  "Add bookmark"}));
+    hold(Button::Home);
+    open("Music");
+    open("Play all");
+    press(Button::Ok);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Tracks", "Sleep timer", "Album info", "Go to first track"}));
+}
+
+TEST_F(AppTest, ContinueThatCannotOpenKeepsThePlayerThatWasLoaded) {
+    playAlpha();
+    player.pos = 20;
+    hold(Button::Home);
+    open("Music");
+    open("Play all");
+    const std::string musicFile = player.file;
+    hold(Button::Home);
+    player.unopenable = {alphaFile(1), alphaFile(2)};
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_TRUE(speech.heard("Cannot open 01 - Storm.mp3"));
+    EXPECT_EQ(player.file, musicFile) << "the music is loaded again";
+    EXPECT_EQ(labels()[0], "Now playing");
+    EXPECT_EQ(valueOf(level().items[0]), "All music") << "still the music player";
+    EXPECT_EQ(labels()[1], "Continue");
+    EXPECT_EQ(valueOf(level().items[1]), "Alpha") << "and the book still parked";
+}
+
+TEST_F(AppTest, RestartForgetsThePlayerThatWasParked) {
+    start();
+    open("Music");
+    open("Play all");
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    player.pos = 20;
+    hold(Button::Home);
+    ASSERT_EQ(labels()[1], "Continue") << "the music is parked";
+    hold(Button::Power);
+    open("Restart");
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    hold(Button::Home);
+    EXPECT_EQ(labels()[0], "Now playing");
+    EXPECT_EQ(valueOf(level().items[0]), "Alpha");
+    EXPECT_EQ(labels()[1], "Library") << "local music is not kept across a restart";
+}
+
+TEST_F(AppTest, LocalMusicPlayedLastDoesNotTakeTheRestartFromTheBook) {
+    playAlpha();
+    hold(Button::Home);
+    open("Music");
+    open("Play all");
+    press(Button::Power);
+    EXPECT_EQ(stateFile.onDisk("last_player"), "book");
 }
 
 // ---------------------------------------------------------------- library index
@@ -3831,7 +3946,10 @@ TEST_F(ResumeStreamTest, ALocalBookPlayedAfterTheStreamIsResumedInstead) {
     EXPECT_EQ(player.file, alphaFile(1));
     EXPECT_DOUBLE_EQ(player.pos, 20);
     EXPECT_EQ(speech.last(), "Alpha, paused. Press play to continue.");
-    for (const auto& [key, value] : stateFile.file) EXPECT_NE(key.rfind("last_stream.", 0), 0u) << key;
+    EXPECT_EQ(stateFile.onDisk("last_stream.id"), "al1") << "the stream keeps its place";
+    press(Button::Home);
+    EXPECT_EQ(labels()[1], "Continue") << "the stream is the other player";
+    EXPECT_EQ(speech.last(), "Now playing, Alpha, 1 of 9");
 }
 
 TEST_F(ResumeStreamTest, AStreamPlayedAfterABookIsResumedAndTheBookKeepsItsPlace) {
@@ -3850,11 +3968,136 @@ TEST_F(ResumeStreamTest, AStreamPlayedAfterABookIsResumedAndTheBookKeepsItsPlace
     EXPECT_EQ(stateFile.onDisk("last_book"), alpha().string());
     ASSERT_EQ(app->mode(), App::Mode::Menu) << "the book is not resumed: the stream played last";
     EXPECT_EQ(labels().front(), "Now playing");
-    EXPECT_EQ(speech.last(), "Home. Now playing, Weather, 1 of 8");
+    EXPECT_EQ(speech.last(), "Home. Now playing, Weather, 1 of 9");
+    EXPECT_EQ(labels()[1], "Continue") << "the book played before it";
     open("Library");
     open("Alpha");
     EXPECT_EQ(player.file, alphaFile(1));
     EXPECT_DOUBLE_EQ(player.pos, 20);
+}
+
+TEST_F(ResumeStreamTest, AParkedStreamComesBackAtItsTrackAndPlace) {
+    playFromAlbum("Rain");
+    player.pos = 42;
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    hold(Button::Home);
+    ASSERT_EQ(labels()[1], "Continue");
+    EXPECT_EQ(valueOf(level().items[1]), "Weather");
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->screens().back().kind, Screen::Kind::MusicPlayer);
+}
+
+TEST_F(ResumeStreamTest, TheStreamKeepsItsPlaceWhileABookPlaysAndAfterARestart) {
+    playFromAlbum("Rain");
+    player.pos = 42;
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    reboot();
+    EXPECT_EQ(stateFile.onDisk("last_player"), "book");
+    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "42.0");
+    ASSERT_EQ(app->mode(), App::Mode::Player) << "the book played last";
+    hold(Button::Home);
+    EXPECT_EQ(valueOf(level().items[1]), "Weather");
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Loading.");
+    answer(weather());
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+}
+
+TEST_F(ResumeStreamTest, ContinueWhileTheSavedStreamLoadsDropsItsLateAnswer) {
+    start();
+    open("Library");
+    open("Alpha");
+    player.pos = 20;
+    hold(Button::Home);
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(weather());
+    open("Rain");
+    reboot();
+    ASSERT_EQ(labels()[1], "Continue");
+    press(Button::Ok); // Now playing: loads the stream
+    auto id = server.lastRequest().id;
+    press(Button::Down);
+    press(Button::Ok); // Continue: the book
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), id), server.cancelled.end());
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_EQ(app->screens().back().kind, Screen::Kind::BookPlayer);
+    EXPECT_FALSE(server.reply(id, weather())) << "the late answer finds nobody";
+    app->tick();
+    EXPECT_EQ(player.file, alphaFile(1));
+}
+
+TEST_F(ResumeStreamTest, APendingOpenThatIsDroppedBringsBackTheParkedPlayer) {
+    playFromAlbum("Rain");
+    player.pos = 42;
+    hold(Button::Home);
+    open("Library");
+    open("Alpha"); // the book is loaded, the stream parked
+    hold(Button::Home);
+    player.holdStreams = true;
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(weather());
+    open("Sunshine"); // opening: the book is parked in its place
+    hold(Button::Home); // leaves the menu: the open is dropped, the book is back
+    EXPECT_EQ(valueOf(level().items[0]), "Alpha");
+    ASSERT_EQ(labels()[1], "Continue") << "the stream that was parked is still there";
+    EXPECT_EQ(valueOf(level().items[1]), "Weather");
+    player.holdStreams = false;
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "fake://stream/t2") << "at the track it was parked on";
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+}
+
+TEST_F(ResumeStreamTest, PlayWithNothingLoadedResumesThePlayerUsedLast) {
+    start();
+    open("Library");
+    open("Alpha");
+    hold(Button::Home);
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(weather());
+    open("Rain");
+    reboot();
+    ASSERT_EQ(app->mode(), App::Mode::Menu);
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Loading.");
+    EXPECT_EQ(server.lastRequest().kind, Kind::AlbumTracks) << "the stream, not the book";
+}
+
+TEST_F(ResumeStreamTest, PlayFallsBackToTheOtherPlayerWhenTheLastOneCannotOpen) {
+    playFromAlbum("Rain");
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    app->shutdown();
+    app.reset();
+    state = Settings(&stateFile);
+    state.load();
+    player = FakePlayer{};
+    player.unopenable = {alphaFile(1), alphaFile(2)};
+    speech.said.clear();
+    start();
+    ASSERT_EQ(app->mode(), App::Mode::Menu) << "the book did not open";
+    press(Button::PlayPause);
+    EXPECT_EQ(server.lastRequest().kind, Kind::AlbumTracks) << "the stream is tried after the book";
 }
 
 TEST_F(ResumeStreamTest, AStreamFromAnotherServerIsNotResumed) {
@@ -7952,6 +8195,21 @@ TEST_F(ServerBookResumeTest, ExitAndRestartResumeTheServerBookAtItsChapterAndPla
     EXPECT_EQ(speech.last(), "Now playing. Dune.");
 }
 
+TEST_F(ServerBookResumeTest, ContinueOnAParkedServerBookMakesItTheBookToResumeAfterARestart) {
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncWithFolder({dune()}, {dune()}));
+    ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
+    hold(Button::Home);
+    open("Music");
+    open("Play all"); // the music player takes over, Dune is parked
+    hold(Button::Home);
+    ASSERT_EQ(level().items[1].label, "Continue");
+    state.setString("last_book", "/somewhere/else"); // as if another book had played meanwhile
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(state.getString("last_book"), ref("b1"));
+}
+
 TEST_F(ServerBookResumeTest, PlayWithNothingLoadedAfterARestartResumesTheServerBook) {
     ASSERT_NO_FATAL_FAILURE(playDuneThenRestart());
     ASSERT_NO_FATAL_FAILURE(answerVersion("v1"));
@@ -8033,7 +8291,7 @@ TEST_F(ServerBookResumeTest, ADownloadedBookOpenedFromLibraryPlaysItsFilesWithou
     EXPECT_EQ(state.getString("last_book"), ref("b1"));
 }
 
-TEST_F(ServerBookResumeTest, OpeningAServerBookRemovesTheLastStream) {
+TEST_F(ServerBookResumeTest, OpeningAServerBookKeepsTheMusicPlayersPlace) {
     state.setString("last_stream.server", "https://music.example");
     state.setString("last_stream.user", "ice");
     state.setString("last_stream.kind", "album");
@@ -8043,8 +8301,10 @@ TEST_F(ServerBookResumeTest, OpeningAServerBookRemovesTheLastStream) {
     start();
     ASSERT_NO_FATAL_FAILURE(syncWithFolder({dune()}, {dune()}));
     ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
-    for (const auto& [k, v] : state.values()) EXPECT_NE(k.rfind("last_stream.", 0), 0u) << k;
+    EXPECT_EQ(state.getString("last_stream.id"), "al1") << "the music player keeps its own place";
+    EXPECT_EQ(state.getString("last_stream.title"), "Weather");
     EXPECT_EQ(state.getString("last_book"), ref("b1"));
+    EXPECT_EQ(state.getString("last_player"), "book");
 }
 
 TEST_F(ServerBookResumeTest, AServerBookThatFailsToOpenChangesNeitherLastBookNorLastStream) {

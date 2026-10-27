@@ -328,7 +328,7 @@ does and does nothing else. Holding Home leaves the mode. The same texts
           (also starts the background scan of the local files, see section 8)
           a stream played last: [Home], "Now playing" first, nothing loaded
 
- screens_:  Home ─► Library ─► Player ─► Player menu ─► Chapters
+ screens_:  Home ─► Library ─► Book player ─► Player menu ─► Chapters
             ◄────────── Home / hold OK pops one ─────────────
             hold Home: back to [Home]
 
@@ -336,11 +336,21 @@ does and does nothing else. Holding Home leaves the mode. The same texts
 ```
 
 - `App` keeps a **stack of `Screen`s**. A screen is a menu (`title`, `items`,
-  `index`, `build`) or a program (`Screen::Kind::Player`). OK pushes and Home
-  pops. Home is always at the bottom. Popping back to a menu rebuilds it with
-  `build`, keeping the selected label. There is at most one player screen:
+  `index`, `build`) or a program (`Screen::Kind::MusicPlayer` or `BookPlayer`; `Screen::isPlayer()`).
+  OK pushes and Home pops. Home is always at the bottom. Popping back to a menu rebuilds it with
+  `build`, keeping the selected label. There is at most one player screen, of the loaded player:
   `enterPlayer()` returns to it if it is on the stack.
-- `mode()` is derived from the stack: `Player` when the top screen is the
+- **Two players.** `book_` / `music_` / `fileIndex_` are the loaded player: the music player (the
+  album, playlist or "Play all" list) or the book player (a local or server book). There is one
+  `MediaPlayer`, so the other player is **parked** in `parked_` (its `Book`, file and seconds), and
+  starting a player of the other kind parks the loaded one in `switchTo()` (undone, with the old
+  `parked_`, if the open fails or is dropped). `continueParked()` (Home "Continue", or Play with
+  nothing loaded) opens the parked book again at its place and plays it. Each player has its own
+  Player menu (`musicPlayerMenu()` keeps "Tracks" until queue.md step 2.7; `bookPlayerMenu()` has
+  Chapters, Speed and Add bookmark). A parked place is not kept across a restart except what
+  state.tsv holds: the book (`pos:` + `last_book`) and a remote music list (`last_stream.*`); local
+  music is not resumed.
+- `mode()` is derived from the stack: `Player` when the top screen is a
   player, `Menu` otherwise, and `Sleeping` while asleep. Playback continues
   in the background on any screen.
 - **Sleeping** simulates suspend: playback is paused, a stream open or resume
@@ -383,7 +393,8 @@ is added only at Beginner.
 
 ```
 Home
-├── Now playing: <book or album>   (when something is loaded, or a stream to resume: `last_stream.*`, or a server book: `last_book`)
+├── Now playing: <book or album>   (the player used last: loaded, parked, or saved for a restart: a stream `last_stream.*`, a book `last_book`)
+├── Continue: <book or album>      (the other player, when it has something)
 ├── Library → <books>              (OK plays/resumes; then the books of the server's audiobook folder, value "on the server": "Loading.", then they play; "Scanning" while the first scan runs)
 ├── Music
 │   ├── Play all                   (the files on the device, albums in the order of Albums A to Z; with only server albums it says "No music")
@@ -519,7 +530,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
 - **Resume a server book (4.12).** Once a server book plays (not before: a failed open changes
   nothing), `playServerBook()` sets `last_book` to its item id (`<server key>:album:<id>`, no URL; a
   local book's `last_book` is its absolute path, so the two cannot be mixed up) and removes
-  `last_stream.*`, as `openBook()` does. `savedServerBook()` is the index item (`Source::Server`,
+  leaves `last_stream.*` alone (the music player keeps its own place). `savedServerBook()` is the index item (`Source::Server`,
   `Kind::Book`) of the server set up now that `last_book` names; none when `last_book` is a local path,
   another server's id or a book that left the index (then `last_book` is not resumed). `start()` does not
   look for a server book on disk and loads nothing: it opens Home, where "Now playing" (shown after the
@@ -811,7 +822,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 | File | Store | Keys |
 |------|-------|------|
 | `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` (kbps, 0 = the original file), `cache.limit_gb` (0, 1, 4 or 16; default 1), and `server.*` (see [streaming.md](streaming.md)) |
-| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.server` / `catalogue.version`: the server key and catalogue version of the last server sync; `catalogue.folder`: `server.audiobook_folder` at the last server sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); `last_stream.server` / `.user` (the `server.url` without a trailing slash and `server.user`, never the password or a stream URL), `.kind` (`album` / `playlist`), `.id`, `.title`, `.track` (index), `.track_id`, `.pos` (seconds): the remote list that played last |
+| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_player`: `music` or `book`, the player used last; `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.server` / `catalogue.version`: the server key and catalogue version of the last server sync; `catalogue.folder`: `server.audiobook_folder` at the last server sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); `last_stream.server` / `.user` (the `server.url` without a trailing slash and `server.user`, never the password or a stream URL), `.kind` (`album` / `playlist`), `.id`, `.title`, `.track` (index), `.track_id`, `.pos` (seconds): the remote list that played last |
 
 - `config.yaml` is nested YAML (`speech: {rate: 220}` is `speech.rate`). It is
   written only when a setting is chosen in its list (at once), and on exit if the
@@ -830,11 +841,13 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   power loss loses the place since the last exit.
 - **Which place start() resumes:** the one that played last. `rememberPosition()`
   keeps the place of a remote list from the Streaming menus (`Book::source`, the
-  album or playlist id) in `last_stream.*`; `openBook()` removes those keys, since a
-  local book is then the last played. Local music changes neither. If
-  `savedStream()` finds a place for the server set up now (same url and user, and
-  `MusicServer::configured()`), `start()` opens Home with "Now playing" first and
-  loads nothing; otherwise `last_book` resumes as before. OK on it, or Play with
+  album or playlist id) in `last_stream.*`, and the books keep theirs in `pos:` + `last_book`;
+  neither removes the other. `last_player` (`music` or `book`, set when a player starts, not
+  for local music) says which was used last; without it (an older state.tsv) the music player
+  counts as last when a stream is saved. If `savedStream()` finds a place for the server set up
+  now (same url and user, and `MusicServer::configured()`) and the music player was last, `start()`
+  opens Home with "Now playing" first and loads nothing; otherwise `last_book` resumes as before,
+  and the stream is "Continue" on Home. OK on it, or Play with
   nothing loaded, runs `resumeStream()`: "Loading.", `albumTracks` /
   `playlistTracks` (`resume_`; a new screen, sleep, Power off and `shutdown()` cancel it), then
   `playRemote(..., source, position)` with the track found by id (`playResumed()`).

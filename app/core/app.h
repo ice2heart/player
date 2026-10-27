@@ -128,7 +128,13 @@ private:
     void back();
     void popScreen(); // back() without a sound or speech
     void goHome();
-    void enterPlayer();
+    void enterPlayer();                                 // the screen of the loaded player
+    bool lastPlayerIsMusic() const;                     // the player used last
+    std::optional<std::string> playerTitle(bool music) const; // loaded, parked or saved for a restart; none if it has nothing
+    void openPlayer(bool music);                        // a Home item: enter, continue or resume that player
+    bool resumePlayer(bool music);                      // its saved place after a restart; false if none
+    void continueParked();                              // the parked player plays again, the loaded one is parked
+    void nothingToPlay();
     std::optional<size_t> playerScreenIndex() const; // its index in screens_, if it is on the stack
     void openPowerMenu();
     void saveConfig();
@@ -181,6 +187,9 @@ private:
     std::vector<MenuItem> powerMenu();
     std::vector<MenuItem> helpMenu();
     std::vector<MenuItem> playerMenu();
+    std::vector<MenuItem> playerMenuBase(const std::string& parts, const std::string& info, const std::string& start);
+    std::vector<MenuItem> musicPlayerMenu();
+    std::vector<MenuItem> bookPlayerMenu();
     std::vector<MenuItem> chaptersMenu();
     MenuItem choice(const std::string& label, const std::string& key,
                     std::vector<std::pair<int, std::string>> options, int fallback,
@@ -442,9 +451,20 @@ private:
     bool sleeping_ = false;
     bool volumeChanged_ = false;   // changed with the volume keys, written on exit
     bool volumeEdgeHeard_ = false; // a held volume key already played the edge sound at its limit
-    std::optional<Book> book_; // the loaded book, or the album / playlist when music_
-    bool music_ = false;
+    // The loaded player: its book (or the album / playlist when music_), the player it is, and
+    // its file. There is one MediaPlayer, so only this one is open.
+    std::optional<Book> book_;
+    bool music_ = false; // the music player, else the book player
     size_t fileIndex_ = 0;
+    // The other player's book, paused where it stopped (a remote one opens again on Continue). It
+    // is of the other kind than book_ (when one is loaded); none until the other player has been used.
+    struct Parked {
+        Book book;
+        bool music = false;
+        size_t file = 0;
+        double position = 0;
+    };
+    std::optional<Parked> parked_;
     // Set while a remote track is loaded but closed: after a failed open (opening
     // it again at once would wait on the same dead server) or at the end of the
     // list. play() opens it at this position.

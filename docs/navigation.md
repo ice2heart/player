@@ -385,7 +385,8 @@ these rules too ([streaming.md](streaming.md) has the plan).
   ("Server not reachable.") and Home stays. OK on "Now playing" again while the track opens goes to the player; if
   the track then does not open, or sleep drops it, Home comes back instead of an
   empty player.
-  A local book played after the stream is resumed instead, as before.
+  A local book played after the stream is resumed instead (the book player was used last), and the
+  stream is "Continue" on Home.
 - **The player does not change.** A streamed track has the same keys, Player
   menu and "where am I?" as a local music track. Because opening a stream can
   take a few seconds, the device says "Loading." before it opens a track the

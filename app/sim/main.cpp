@@ -149,7 +149,7 @@ void drawMenu(const App& app) {
         ImGui::BeginChild(ImGui::GetID((void*)(intptr_t)(i + 1)), ImVec2(250, 0), ImGuiChildFlags_Borders);
         ImGui::TextColored(kSelected, "%s", level.title.c_str());
         ImGui::Separator();
-        if (level.kind == Screen::Kind::Player) {
+        if (level.isPlayer()) {
             ImGui::TextWrapped(
                 "PLAYER\n\n"
                 "Space: play / pause\nhold Space: where am I\n"
