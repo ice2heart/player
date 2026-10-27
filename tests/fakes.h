@@ -12,6 +12,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <ostream>
 #include <stdexcept>
@@ -225,6 +226,37 @@ public:
     std::vector<std::string> savedIds;   // every item written, in order
     std::vector<std::string> removedIds; // every item deleted, in order
     bool failSaves = false;
+};
+
+// Tags by path. A path that is not in `tags` cannot be read. Counts reads per path.
+// Thread-safe, as TagReader says, so a test may read from a worker thread.
+class FakeTagReader : public TagReader {
+public:
+    std::optional<TrackTags> read(const std::filesystem::path& file) override {
+        std::lock_guard lock(mutex_);
+        ++reads_[file];
+        auto it = tags.find(file);
+        if (it == tags.end()) return std::nullopt;
+        return it->second;
+    }
+    // How many times `file` was read, found or not.
+    int reads(const std::filesystem::path& file) const {
+        std::lock_guard lock(mutex_);
+        auto it = reads_.find(file);
+        return it == reads_.end() ? 0 : it->second;
+    }
+    int totalReads() const {
+        std::lock_guard lock(mutex_);
+        int total = 0;
+        for (const auto& [path, n] : reads_) total += n;
+        return total;
+    }
+
+    std::map<std::filesystem::path, TrackTags> tags; // set before reading starts
+
+private:
+    mutable std::mutex mutex_;
+    std::map<std::filesystem::path, int> reads_;
 };
 
 // A music server that answers only when the test says so. Every request is

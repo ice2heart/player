@@ -169,6 +169,7 @@ if(OAP_BUILD_SIM OR OAP_BUILD_HEADLESS)
     # ---- media: FFmpeg decoding and eSpeak NG speech, implementing core's interfaces
     add_library(oapmedia STATIC
         app/media/player.cpp
+        app/media/tag_reader.cpp
         app/media/tts.cpp
     )
     target_link_libraries(oapmedia PUBLIC oapcore PkgConfig::FFMPEG PkgConfig::ESPEAK)
@@ -311,7 +312,7 @@ if(OAP_BUILD_TESTS)
 
     # ---- media tests: the FFmpeg Player on files written by the tests
     if(TARGET oapmedia)
-        add_executable(oap-media-tests tests/test_player.cpp)
+        add_executable(oap-media-tests tests/test_player.cpp tests/test_tag_reader.cpp)
         target_link_libraries(oap-media-tests PRIVATE oapmedia GTest::gtest_main)
         target_compile_options(oap-media-tests PRIVATE -Wall -Wextra)
         gtest_discover_tests(oap-media-tests ${OAP_MEDIA_TEST_TIMEOUTS})

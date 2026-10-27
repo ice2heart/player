@@ -88,6 +88,33 @@ public:
     virtual bool save(const std::vector<IndexItem>& changed, const std::vector<std::string>& removed) = 0;
 };
 
+// What the tags of a local audio file say. A text field the file does not have is
+// empty and a number it does not have is 0.
+struct TrackTags {
+    std::string title;
+    std::string artist;
+    std::string albumArtist;
+    std::string album;
+    std::string genre;
+    std::string musicBrainzAlbumId;
+    int track = 0;       // 0: unknown ("3/12" gives 3)
+    int disc = 0;        // 0: unknown
+    int year = 0;        // 0: unknown
+    double duration = 0; // seconds, 0 if unknown
+    bool operator==(const TrackTags&) const = default;
+};
+
+// Reads the tags and the length of a local audio file (implemented with FFmpeg in
+// app/media/). Slow: it opens the file, so callers use it off the UI thread.
+class TagReader {
+public:
+    virtual ~TagReader() = default;
+    // None for a file that cannot be read or has no audio. A file without tags gives
+    // its duration and empty fields. Implementations must be safe to call from any
+    // thread, also from several at once.
+    virtual std::optional<TrackTags> read(const std::filesystem::path& file) = 0;
+};
+
 // Text to speech. stop() cancels both queued and currently playing speech.
 class Speech {
 public:
