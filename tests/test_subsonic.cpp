@@ -17,6 +17,7 @@
 using oap::Http;
 using oap::RemoteAlbum;
 using oap::RemoteArtist;
+using oap::RemoteFolder;
 using oap::RemotePlaylist;
 using oap::RemoteTrack;
 using oap::Subsonic;
@@ -171,6 +172,33 @@ TEST(Subsonic, EachRequestAsksForItsMethod) {
     EXPECT_EQ(server.http->url(3), kBase + "getAlbum" + kAuth + "&id=al1");
     EXPECT_EQ(server.http->url(4), kBase + "getPlaylists" + kAuth);
     EXPECT_EQ(server.http->url(5), kBase + "getPlaylist" + kAuth + "&id=p1");
+}
+
+TEST(Subsonic, TheAlbumListAsksForOneMusicFolderWhenGivenAndForAllOtherwise) {
+    Server server;
+    ListResult<RemoteAlbum> result;
+    server.subsonic->albums("alphabeticalByName", 0, 500, result.callback(), "2");
+    server.subsonic->albums("alphabeticalByName", 0, 500, result.callback());
+    EXPECT_EQ(server.http->url(0),
+              kBase + "getAlbumList2" + kAuth + "&type=alphabeticalByName&size=500&offset=0&musicFolderId=2");
+    EXPECT_EQ(server.http->url(1).find("musicFolderId"), std::string::npos);
+}
+
+TEST(Subsonic, MusicFoldersAreParsedWithNumberAndTextIds) {
+    Server server;
+    ListResult<RemoteFolder> result;
+    server.subsonic->musicFolders(result.callback());
+    EXPECT_EQ(server.http->url(0), kBase + "getMusicFolders" + kAuth);
+    server.http->answer(0, kOk, subsonicFixture("music_folders.json"));
+    server.subsonic->poll();
+    ASSERT_EQ(result.calls, 1);
+    EXPECT_EQ(result.error, Error::None);
+    ASSERT_EQ(result.items.size(), 2u);
+    EXPECT_EQ(result.items[0].id, "1");
+    EXPECT_EQ(result.items[0].name, "Music");
+    EXPECT_EQ(result.items[1].id, "2");
+    EXPECT_EQ(result.items[1].name, "Аудиокниги");
+    EXPECT_FALSE(result.more);
 }
 
 TEST(Subsonic, APageLargerThanTheServerAllowsIsCappedSoMoreStillWorks) {

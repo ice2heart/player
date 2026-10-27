@@ -34,7 +34,8 @@ const char* const kHeader =
     "# Keys: speech.rate, volume, verbosity, skip.back, skip.forward, rewind_on_resume,\n"
     "#   buttons.long_press_ms, menu.wrap, power.auto_sleep_min, streaming.bitrate (kbps,\n"
     "#   0 for the original file), cache.limit_gb (gigabytes of automatically cached tracks,\n"
-    "#   0 for none), and server: type, name, url, user, password (quote it).\n";
+    "#   0 for none), and server: type, name, url, user, password (quote it),\n"
+    "#   audiobook_folder (the name of the server's music folder that holds audiobooks; you set it, the player never writes it).\n";
 
 void flatten(const YAML::Node& node, const std::string& key, SettingsMap& out) {
     auto child = [&key](const std::string& name) { return key.empty() ? name : key + "." + name; };

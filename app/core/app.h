@@ -16,6 +16,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 
 namespace oap {
@@ -147,6 +148,8 @@ private:
     MenuItem albumEntry(const MergedAlbum& album);
     std::vector<MenuItem> albumMenu(const Book& album, const std::string& info = {}, const std::string& playedId = {});
     Book bookOf(const IndexItem& item) const;
+    void openServerBook(const IndexItem& item); // Library: loads its tracks ("Loading."), then plays it from its saved place
+    std::string audiobookFolder() const;
     void startScan();
     void syncDownloads();   // the pinned albums of the cache as Cached items (docs/streaming.md 4.8)
     void linkToServer();    // local items with no reference that are a server album by the name rule
@@ -157,6 +160,8 @@ private:
     void dropOtherServers(const std::string& key);
     void startSync();
     void onCatalogueVersion(MusicServer::Error error, const std::string& version);
+    void fetchBookFolder();
+    void fetchBookIds(const std::string& folderId, int offset);
     void fetchCatalogue(int offset);
     void applyCatalogue();
     void finishSync(MusicServer::Error error);
@@ -277,6 +282,9 @@ private:
     };
     using Then = std::function<void()>;
     bool openBook(const Book& book, bool autoplay); // false if it cannot be opened
+    // The saved place `pos:` + book.path: the file and the seconds, none (0, 0) when unknown or out of range.
+    std::pair<size_t, double> savedPlace(const Book& book) const;
+    bool playServerBook(const Book& book, size_t file, double position, Then opened);
     bool playMusic(const Book& album, size_t track, Then opened = {},
                    double position = 0); // false if it failed at once
     OpenResult switchTo(const Book& book, bool music, size_t file, double position, bool autoplay, Then opened = {});
@@ -377,6 +385,8 @@ private:
     struct Catalogue {
         std::string key;     // the server being synced
         std::string version; // what getArtists said, kept in state when the sync is saved
+        std::string folder;  // server.audiobook_folder at the start, kept in state with the version
+        std::set<std::string> bookIds; // the server album ids in that folder
         std::vector<IndexItem> items;
     };
     MusicServer::RequestId catalogueRequest_ = 0; // 0: no sync running
@@ -402,6 +412,7 @@ private:
     std::map<std::uint64_t, RemoteList> remoteLists_; // by Screen::id, while the screen is on the stack
     MusicServer::RequestId ping_ = 0;                 // Server status, while it waits; cancelled when the user moves on
     std::uint64_t pingScreen_ = 0;                    // the screen it was asked from
+    std::uint64_t resumeScreen_ = 0;    // the Library screen a server book loads for (resume_), 0: none or not tied to a screen
     MusicServer::RequestId resume_ = 0; // resumeStream(): the list being loaded, 0 when none; a new screen cancels it
     std::optional<Download> download_;
     std::deque<AutoCache> autoQueue_;

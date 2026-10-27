@@ -44,6 +44,7 @@ Error parseStatus(std::string_view body);
 Parsed<RemoteAlbum> parseAlbumList(std::string_view body, int pageSize);
 // getArtists: its `lastModified`, as the digits the server sent (empty if missing).
 VersionResult parseCatalogueVersion(std::string_view body);
+Parsed<RemoteFolder> parseMusicFolders(std::string_view body); // getMusicFolders
 Parsed<RemoteArtist> parseArtists(std::string_view body);   // getArtists, all indexes in order
 Parsed<RemoteAlbum> parseArtist(std::string_view body);     // getArtist: the artist's albums
 Parsed<RemoteTrack> parseAlbum(std::string_view body);      // getAlbum: its songs

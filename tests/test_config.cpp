@@ -81,6 +81,16 @@ TEST_F(ConfigTest, TheCacheSizeIsWrittenAfterStreamingBeforeTheServerAndNamedInT
     EXPECT_EQ(flattenYaml(text).at("cache.limit_gb"), "4");
 }
 
+TEST_F(ConfigTest, TheAudiobookFolderIsKeptInTheServerSectionAfterThePasswordAndNamedInTheHeader) {
+    std::string text = nestYaml({{"server.audiobook_folder", "Books"}, {"server.password", "x"}, {"server.url", "https://music.example"}});
+    EXPECT_NE(text.find("audiobook_folder (the name"), std::string::npos) << "the header names the key";
+    EXPECT_EQ(text.substr(text.find("\nserver:") + 1), "server:\n"
+                                                       "  url: \"https://music.example\"\n"
+                                                       "  password: \"x\"\n"
+                                                       "  audiobook_folder: \"Books\"\n");
+    EXPECT_EQ(flattenYaml(text).at("server.audiobook_folder"), "Books");
+}
+
 TEST_F(ConfigTest, KeysSurviveARoundTrip) {
     SettingsMap values{{"speech.rate", "250"},     {"menu.wrap", "0"},           {"server.name", "Home: server #1"},
                        {"server.user", "ice"},     {"streaming.bitrate", "0"},   {"server.type", "subsonic"},

@@ -327,13 +327,14 @@ private:
 // scrobble() is recorded in `scrobbles`, in order (nothing comes back from it).
 class FakeMusicServer : public MusicServer {
 public:
-    enum class Kind { Ping, CatalogueVersion, Albums, Artists, ArtistAlbums, AlbumTracks, Playlists, PlaylistTracks };
+    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Playlists, PlaylistTracks };
     struct Request {
         RequestId id = 0;
         Kind kind = Kind::Ping;
         std::string arg; // listType, artist, album or playlist id; empty otherwise
         int offset = 0;  // Albums only
         int size = 0;    // Albums only
+        std::string folder; // Albums only: the musicFolderId, empty for all
     };
 
     bool configured() const override { return isConfigured; }
@@ -341,9 +342,11 @@ public:
     RequestId catalogueVersion(std::function<void(Error, std::string)> done) override {
         return add(std::move(done), Kind::CatalogueVersion);
     }
-    RequestId albums(std::string listType, int offset, int size, Done<RemoteAlbum> done) override {
-        return add(std::move(done), Kind::Albums, std::move(listType), offset, size);
+    RequestId albums(std::string listType, int offset, int size, Done<RemoteAlbum> done,
+                     std::string musicFolderId = {}) override {
+        return add(std::move(done), Kind::Albums, std::move(listType), offset, size, std::move(musicFolderId));
     }
+    RequestId musicFolders(Done<RemoteFolder> done) override { return add(std::move(done), Kind::MusicFolders); }
     RequestId artists(Done<RemoteArtist> done) override { return add(std::move(done), Kind::Artists); }
     RequestId artistAlbums(std::string artistId, Done<RemoteAlbum> done) override {
         return add(std::move(done), Kind::ArtistAlbums, std::move(artistId));
@@ -389,6 +392,9 @@ public:
         return deliver(id, std::move(items), more);
     }
     bool reply(RequestId id, std::vector<RemoteTrack> items, bool more = false) {
+        return deliver(id, std::move(items), more);
+    }
+    bool reply(RequestId id, std::vector<RemoteFolder> items, bool more = false) {
         return deliver(id, std::move(items), more);
     }
     bool reply(RequestId id, std::vector<RemotePlaylist> items, bool more = false) {
@@ -446,11 +452,12 @@ private:
     using PingDone = std::function<void(Error, ServerInfo)>;
     using VersionDone = std::function<void(Error, std::string)>;
     using Callback =
-        std::variant<PingDone, VersionDone, Done<RemoteAlbum>, Done<RemoteArtist>, Done<RemoteTrack>, Done<RemotePlaylist>>;
+        std::variant<PingDone, VersionDone, Done<RemoteAlbum>, Done<RemoteFolder>, Done<RemoteArtist>, Done<RemoteTrack>,
+                 Done<RemotePlaylist>>;
 
-    template <class F> RequestId add(F done, Kind kind, std::string arg = {}, int offset = 0, int size = 0) {
+    template <class F> RequestId add(F done, Kind kind, std::string arg = {}, int offset = 0, int size = 0, std::string folder = {}) {
         RequestId id = ++lastId_;
-        requests.push_back({id, kind, std::move(arg), offset, size});
+        requests.push_back({id, kind, std::move(arg), offset, size, std::move(folder)});
         if (isConfigured)
             pending_.emplace(id, Callback(std::in_place_type<F>, std::move(done)));
         else

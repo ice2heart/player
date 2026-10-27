@@ -131,6 +131,13 @@ RemoteArtist artist(const YAML::Node& node) {
     return artist;
 }
 
+RemoteFolder musicFolder(const YAML::Node& node) {
+    RemoteFolder folder;
+    folder.id = text(node, "id");
+    folder.name = text(node, "name");
+    return folder;
+}
+
 RemotePlaylist playlist(const YAML::Node& node) {
     RemotePlaylist playlist;
     playlist.id = text(node, "id");
@@ -227,6 +234,9 @@ Parsed<RemoteArtist> parseArtists(std::string_view body) {
     return parsed;
 }
 
+Parsed<RemoteFolder> parseMusicFolders(std::string_view body) {
+    return parseList<RemoteFolder>(body, "musicFolders", "musicFolder", musicFolder);
+}
 Parsed<RemoteAlbum> parseArtist(std::string_view body) { return parseList<RemoteAlbum>(body, "artist", "album", album); }
 Parsed<RemoteTrack> parseAlbum(std::string_view body) { return parseList<RemoteTrack>(body, "album", "song", track); }
 Parsed<RemotePlaylist> parsePlaylists(std::string_view body) {

@@ -285,6 +285,10 @@ struct RemoteArtist {
     std::string id, name;
     int albumCount = 0;
 };
+// A music folder of the server (Subsonic: a library), which it may keep audiobooks in.
+struct RemoteFolder {
+    std::string id, name;
+};
 struct RemotePlaylist {
     std::string id, name;
     int songCount = 0;
@@ -318,7 +322,11 @@ public:
     // A token that changes when the server's catalogue changes (Subsonic: `lastModified` of
     // getArtists, as text). Empty when the server does not say. On an error it is empty too.
     virtual RequestId catalogueVersion(std::function<void(Error, std::string version)> done) = 0;
-    virtual RequestId albums(std::string listType, int offset, int size, Done<RemoteAlbum> done) = 0;
+    // `musicFolderId`: only the albums of that music folder (see musicFolders()); empty: all of them.
+    virtual RequestId albums(std::string listType, int offset, int size, Done<RemoteAlbum> done,
+                             std::string musicFolderId = {}) = 0;
+    // The server's music folders (Subsonic: getMusicFolders). `more` is always false.
+    virtual RequestId musicFolders(Done<RemoteFolder> done) = 0;
     virtual RequestId artists(Done<RemoteArtist> done) = 0;
     virtual RequestId artistAlbums(std::string artistId, Done<RemoteAlbum> done) = 0;
     virtual RequestId albumTracks(std::string albumId, Done<RemoteTrack> done) = 0;

@@ -53,7 +53,9 @@ public:
     bool configured() const override;
     RequestId ping(std::function<void(Error, ServerInfo)> done) override;
     RequestId catalogueVersion(std::function<void(Error, std::string)> done) override;
-    RequestId albums(std::string listType, int offset, int size, Done<RemoteAlbum> done) override;
+    RequestId albums(std::string listType, int offset, int size, Done<RemoteAlbum> done,
+                     std::string musicFolderId = {}) override;
+    RequestId musicFolders(Done<RemoteFolder> done) override;
     RequestId artists(Done<RemoteArtist> done) override;
     RequestId artistAlbums(std::string artistId, Done<RemoteAlbum> done) override;
     RequestId albumTracks(std::string albumId, Done<RemoteTrack> done) override;
@@ -81,7 +83,8 @@ private:
     struct Reply {
         Error error = Error::None;
         std::variant<std::monostate, ServerInfo, std::vector<RemoteAlbum>, std::vector<RemoteArtist>,
-                     std::vector<RemoteTrack>, std::vector<RemotePlaylist>, std::vector<std::string>, std::string>
+                     std::vector<RemoteTrack>, std::vector<RemotePlaylist>, std::vector<RemoteFolder>,
+                     std::vector<std::string>, std::string>
             data;
         bool more = false;
     };

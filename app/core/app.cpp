@@ -40,6 +40,10 @@ constexpr const char* kLastBook = "last_book";
 // and the server key it belongs to. In state.tsv, never in config.yaml.
 constexpr const char* kCatalogueServer = "catalogue.server";
 constexpr const char* kCatalogueVersion = "catalogue.version";
+// The audiobook folder the server items were sorted with (kCatalogueVersion alone would not
+// change when the setting does), and the setting itself: config.yaml's, never written by the device.
+constexpr const char* kCatalogueFolder = "catalogue.folder";
+constexpr const char* kAudiobookFolder = "server.audiobook_folder";
 constexpr size_t kRecentAlbums = 50; // the most albums Recently added and Recently played list
 constexpr int kCataloguePage = 500;          // albums per request (the most getAlbumList2 gives)
 constexpr size_t kCatalogueLimit = 200000;   // a server that never stops paging is an error
@@ -430,10 +434,44 @@ void App::onCatalogueVersion(MusicServer::Error error, const std::string& versio
     // A server that gives no version cannot be told unchanged. Without server items in the
     // index (it was lost) the version does not matter either.
     if (!version.empty() && haveItems && state_.getString(kCatalogueServer) == catalogue_.key &&
-        state_.getString(kCatalogueVersion) == version)
+        state_.getString(kCatalogueVersion) == version && state_.getString(kCatalogueFolder) == audiobookFolder())
         return finishSync(MusicServer::Error::None);
     catalogue_.version = version;
-    fetchCatalogue(0);
+    catalogue_.folder = audiobookFolder();
+    if (catalogue_.folder.empty()) fetchCatalogue(0);
+    else fetchBookFolder();
+}
+
+std::string App::audiobookFolder() const { return config_.getString(kAudiobookFolder); }
+
+// server.audiobook_folder names a music folder: its albums are the audiobooks. The ids of its
+// albums are fetched first, then the whole catalogue, and the ones in the folder become books.
+// A folder the server does not have makes no books, and the sync is not remembered (the name may be
+// a typo, and the next start asks again).
+void App::fetchBookFolder() {
+    catalogueRequest_ = server_.musicFolders([this](MusicServer::Error error, std::vector<RemoteFolder> folders, bool) {
+        catalogueRequest_ = 0;
+        if (error != MusicServer::Error::None) return finishSync(error);
+        for (const RemoteFolder& f : folders)
+            if (f.name == catalogue_.folder) return fetchBookIds(f.id, 0);
+        catalogue_.version.clear(); // applyCatalogue() then stores neither the version nor the folder
+        fetchCatalogue(0);
+    });
+}
+
+void App::fetchBookIds(const std::string& folderId, int offset) {
+    catalogueRequest_ = server_.albums(
+        "alphabeticalByName", offset, kCataloguePage,
+        [this, folderId, offset](MusicServer::Error error, std::vector<RemoteAlbum> albums, bool more) {
+            catalogueRequest_ = 0;
+            if (error != MusicServer::Error::None) return finishSync(error);
+            for (const RemoteAlbum& a : albums) catalogue_.bookIds.insert(a.id);
+            if (more && !albums.empty() && catalogue_.bookIds.size() < kCatalogueLimit)
+                return fetchBookIds(folderId, offset + int(albums.size()));
+            if (more && !albums.empty()) return finishSync(MusicServer::Error::Server);
+            fetchCatalogue(0);
+        },
+        folderId);
 }
 
 void App::fetchCatalogue(int offset) {
@@ -446,7 +484,7 @@ void App::fetchCatalogue(int offset) {
                 IndexItem item;
                 item.id = LibraryIndex::seenRef(catalogue_.key, SeenKind::Album, a.id);
                 item.source = IndexItem::Source::Server;
-                item.kind = IndexItem::Kind::Music;
+                item.kind = catalogue_.bookIds.count(a.id) ? IndexItem::Kind::Book : IndexItem::Kind::Music;
                 item.title = a.name;
                 item.artist = a.artist;
                 item.album = a.name;
@@ -471,17 +509,21 @@ void App::fetchCatalogue(int offset) {
 void App::applyCatalogue() {
     index_.replaceServer(catalogue_.key, catalogue_.items, clock_.wallTime());
     catalogue_.items.clear();
+    catalogue_.bookIds.clear();
     syncDownloads(); // a download of an album the server dropped loses its reference
     linkToServer();
     if (index_.save() && !catalogue_.version.empty()) { // else the next start checks again
         state_.setString(kCatalogueServer, catalogue_.key);
         state_.setString(kCatalogueVersion, catalogue_.version);
+        if (catalogue_.folder.empty()) state_.clearPrefix(kCatalogueFolder); // as before this setting
+        else state_.setString(kCatalogueFolder, catalogue_.folder);
     }
 }
 
 // The sync is over: with an error the index is as it was.
 void App::finishSync(MusicServer::Error error) {
     catalogue_.items.clear();
+    catalogue_.bookIds.clear();
     refresh_.error = error;
     finishRefresh();
 }
@@ -821,6 +863,7 @@ void App::closeScreens(size_t keep) {
             remoteLists_.erase(list);
         }
         if (ping_ && pingScreen_ == id) server_.cancel(std::exchange(ping_, 0));
+        if (resume_ && resumeScreen_ == id) cancelResume(); // a server book still loading for this screen
         bool drop = pendingOpen_ && pendingOpen_->screen == id;
         screens_.pop_back();
         if (drop) dropPendingOpen(); // after the pop: it may close more screens (leaveEmptyPlayer())
@@ -1097,6 +1140,18 @@ std::vector<MenuItem> App::libraryMenu() {
             entry.value = [n] { return std::to_string(n) + " parts"; };
         }
         items.push_back(entry);
+    }
+    // The audiobooks of this server (server.audiobook_folder), after the local ones. Only what is
+    // in the index: with the server down they are listed and say "Server not reachable" on OK.
+    // (startSync() has dropped what was seen on other servers.)
+    std::vector<const IndexItem*> remote;
+    for (const auto& [id, item] : index_.items())
+        if (item.source == IndexItem::Source::Server && item.kind == IndexItem::Kind::Book) remote.push_back(&item);
+    std::stable_sort(remote.begin(), remote.end(), [](const IndexItem* x, const IndexItem* y) { return naturalLess(x->title, y->title); });
+    for (const IndexItem* item : remote) {
+        MenuItem entry = action(item->title, [this, copy = *item] { openServerBook(copy); });
+        entry.value = [] { return std::string("on the server"); };
+        items.push_back(std::move(entry));
     }
     if (items.empty() && scanRequest_) // a first start has no index until the scan is done: do not call it empty
         items.push_back(action("Scanning", [this] { say("Looking for books. Try again in a moment."); }));
@@ -1789,6 +1844,7 @@ void App::resumeStream() {
 
 void App::cancelResume() {
     if (resume_) server_.cancel(std::exchange(resume_, 0));
+    resumeScreen_ = 0;
 }
 
 // The entry of sleepTimerMenu() that is set now.
@@ -1946,8 +2002,7 @@ std::vector<MenuItem> App::chaptersMenu() {
 
 // ---------------------------------------------------------------- playback
 
-bool App::openBook(const Book& book, bool autoplay) {
-    if (book_) rememberPosition();
+std::pair<size_t, double> App::savedPlace(const Book& book) const {
     size_t file = 0;
     double pos = 0;
     std::string saved = state_.getString("pos:" + book.path.string());
@@ -1961,11 +2016,79 @@ bool App::openBook(const Book& book, bool autoplay) {
         }
         if (file >= book.files.size()) file = 0, pos = 0;
     }
+    return {file, pos};
+}
+
+bool App::openBook(const Book& book, bool autoplay) {
+    if (book_) rememberPosition();
+    auto [file, pos] = savedPlace(book);
     if (switchTo(book, false, file, pos, autoplay) == OpenResult::Failed) return false; // a local book opens at once
     state_.setString(kLastBook, book.path.string());
     state_.clearPrefix(kLastStream); // the book played last: start() resumes it, not the stream
     sleepAtChapterEnd_ = -1;
     return true;
+}
+
+// A book of the server: "Loading." while its tracks come, then it plays from where it was left
+// (`pos:` + the item id: `<server key>:album:<id>`, no URL) and opens the player. The request
+// is the one of resumeStream(): a new screen, sleep or power off drops it. It sets neither
+// `last_book` nor `last_stream` (resuming it after a restart is 4.12).
+void App::openServerBook(const IndexItem& item) {
+    std::string key = catalogueServerKey();
+    std::string ref = LibraryIndex::refOnServer(item.seenOn, key).value_or(item.id);
+    std::string prefix = LibraryIndex::seenRef(key, SeenKind::Album, ""); // `<key>:album:`
+    if (key.empty() || !ref.starts_with(prefix)) {
+        earcons_.play(Earcon::Error);
+        say("Server not reachable.");
+        return;
+    }
+    std::string albumId = ref.substr(prefix.size());
+    cancelResume();
+    say("Loading.");
+    std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
+    resumeScreen_ = screen; // leaving this screen drops the request (closeScreens())
+    resume_ = server_.albumTracks(albumId, [this, screen, ref, title = item.title, albumId](
+                                               MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
+        resume_ = 0; // a new screen or sleep would have cancelled it: the user is still where they asked
+        resumeScreen_ = 0;
+        tts_.stop();
+        if (error != MusicServer::Error::None) {
+            earcons_.play(Earcon::Error);
+            say(errorText(error) + ".");
+            return;
+        }
+        if (tracks.empty()) {
+            earcons_.play(Earcon::Error);
+            say("This book has no chapters on the server.");
+            return;
+        }
+        Book book;
+        book.title = title;
+        book.path = ref;
+        book.remote = true;
+        book.serverBook = true;
+        book.source = RemoteSource{RemoteSource::Kind::Album, albumId};
+        for (const RemoteTrack& t : tracks) {
+            book.suffixes.push_back(t.suffix);
+            book.sizes.push_back(t.size);
+            book.files.emplace_back(t.id);
+            book.titles.push_back(t.title);
+            book.durations.push_back(t.duration);
+        }
+        auto [file, pos] = savedPlace(book);
+        playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
+    });
+}
+
+// playMusic() for a book: its chapters are the tracks (music_ stays false) and it keeps its place.
+bool App::playServerBook(const Book& book, size_t file, double position, Then opened) {
+    if (book_) rememberPosition();
+    auto playing = [this, opened = std::move(opened)] {
+        sleepAtChapterEnd_ = -1;
+        pausedAt_.reset();
+        if (opened) opened();
+    };
+    return switchTo(book, false, file, position, true, std::move(playing)) != OpenResult::Failed;
 }
 
 // Music plays from the chosen track. Local music is never resumed later, so it
@@ -2690,7 +2813,9 @@ std::uintmax_t App::cacheLimit() const {
 void App::checkAutoCache() {
     if (!scrobble_ || scrobble_->cacheAsked || scrobble_->heard < kAutoCacheAfter) return;
     scrobble_->cacheAsked = true;
-    if (!book_ || !book_->remote || !book_->source || fileIndex_ >= book_->files.size() ||
+    // A server book is not cached on its own: its tracks would be listed in Music as an album and
+    // would push the music out of the limit (downloading books for offline is 4.12).
+    if (!book_ || !book_->remote || book_->serverBook || !book_->source || fileIndex_ >= book_->files.size() ||
         book_->files[fileIndex_].string() != scrobble_->trackId)
         return;
     std::uintmax_t limit = cacheLimit();
@@ -2832,6 +2957,11 @@ MusicServer::Stream App::newStream(size_t file) {
 }
 
 void App::rememberPosition() {
+    if (book_ && book_->serverBook) { // its place, like a local book's; no last_stream
+        if (!player_.isOpen() && !pendingOpen_ && !reopenAt_) return;
+        state_.setString("pos:" + book_->path.string(), std::to_string(fileIndex_) + ":" + tenths(place()));
+        return;
+    }
     if (book_ && book_->remote) { // a stream list: resumed after a restart, if it can be loaded again
         if (!book_->source) return;
         state_.setString(kLastStreamServer, serverIdentity(config_.getString(kServerUrl)));

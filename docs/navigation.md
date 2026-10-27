@@ -221,7 +221,8 @@ these rules too ([streaming.md](streaming.md) has the plan).
 ## Music and Library (phase 4)
 
 Music is built (steps 4.9 and 4.10) and Streaming is its own Home entry. Server books in
-Library are not built yet (4.11). [streaming.md](streaming.md) phase 4 builds one library from files and server; the
+Library are built (4.11): after the local books, with the value "on the server", they say "Loading." and play like a book
+from their saved place; resuming one after a restart is 4.12. [streaming.md](streaming.md) phase 4 builds one library from files and server; the
 tree in [architecture.md](architecture.md#current-menu-tree) is what the device does today.
 The rules below are the contract for phase 4.
 

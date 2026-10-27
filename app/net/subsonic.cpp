@@ -188,14 +188,20 @@ MusicServer::RequestId Subsonic::catalogueVersion(std::function<void(Error, std:
         });
 }
 
-MusicServer::RequestId Subsonic::albums(std::string listType, int offset, int size, Done<RemoteAlbum> done) {
+MusicServer::RequestId Subsonic::albums(std::string listType, int offset, int size, Done<RemoteAlbum> done,
+                                        std::string musicFolderId) {
     int pageSize = std::clamp(size, 1, kMaxPageSize); // a larger page would come back short and look like the last
     Params params = {{"type", std::move(listType)},
                      {"size", std::to_string(pageSize)},
                      {"offset", std::to_string(std::max(offset, 0))}};
+    if (!musicFolderId.empty()) params.emplace_back("musicFolderId", std::move(musicFolderId));
     return list<RemoteAlbum>(
         "getAlbumList2", params, [pageSize](const std::string& body) { return subsonic::parseAlbumList(body, pageSize); },
         std::move(done));
+}
+
+MusicServer::RequestId Subsonic::musicFolders(Done<RemoteFolder> done) {
+    return list<RemoteFolder>("getMusicFolders", {}, subsonic::parseMusicFolders, std::move(done));
 }
 
 MusicServer::RequestId Subsonic::artists(Done<RemoteArtist> done) {

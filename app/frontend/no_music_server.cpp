@@ -15,7 +15,10 @@ MusicServer::RequestId NoMusicServer::ping(std::function<void(Error, ServerInfo)
 MusicServer::RequestId NoMusicServer::catalogueVersion(std::function<void(Error, std::string)> done) {
     return add([done = std::move(done)] { done(Error::NotConfigured, {}); });
 }
-MusicServer::RequestId NoMusicServer::albums(std::string, int, int, Done<RemoteAlbum> done) { return fail(std::move(done)); }
+MusicServer::RequestId NoMusicServer::albums(std::string, int, int, Done<RemoteAlbum> done, std::string) {
+    return fail(std::move(done));
+}
+MusicServer::RequestId NoMusicServer::musicFolders(Done<RemoteFolder> done) { return fail(std::move(done)); }
 MusicServer::RequestId NoMusicServer::artists(Done<RemoteArtist> done) { return fail(std::move(done)); }
 MusicServer::RequestId NoMusicServer::artistAlbums(std::string, Done<RemoteAlbum> done) { return fail(std::move(done)); }
 MusicServer::RequestId NoMusicServer::albumTracks(std::string, Done<RemoteTrack> done) { return fail(std::move(done)); }

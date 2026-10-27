@@ -7052,3 +7052,327 @@ TEST_F(RecentMusicTest, EmptyListsSayWhy) {
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "Nothing played yet.");
 }
+
+// ---------------------------------------------------------------- audiobooks from the server (docs/streaming.md 4.11)
+
+class ServerBookTest : public MusicTreeTest {
+protected:
+    void SetUp() override {
+        MusicTreeTest::SetUp();
+        settings.setString("server.audiobook_folder", "Books");
+    }
+    // The start-up sync with the audiobook folder set: the server has the folders Music and Books,
+    // `books` are in Books, and `all` is its whole catalogue.
+    void syncWithFolder(std::vector<RemoteAlbum> books, std::vector<RemoteAlbum> all, const std::string& version = "v1") {
+        answerVersion(version);
+        ASSERT_EQ(server.lastRequest().kind, Kind::MusicFolders);
+        ASSERT_TRUE(server.reply(lastOf(Kind::MusicFolders), std::vector<RemoteFolder>{{"1", "Music"}, {"2", "Books"}}));
+        app->tick();
+        ASSERT_EQ(server.lastRequest().kind, Kind::Albums);
+        EXPECT_EQ(server.lastRequest().folder, "2") << "the albums of the Books folder";
+        answerAlbums(std::move(books));
+        ASSERT_EQ(server.lastRequest().kind, Kind::Albums);
+        EXPECT_EQ(server.lastRequest().folder, "") << "then the whole catalogue";
+        answerAlbums(std::move(all));
+    }
+    static RemoteAlbum dune() { return album("b1", "Dune"); }
+    // Home > Library > `name`, then the server answers with `tracks`.
+    void openServerBook(const std::string& name, std::vector<RemoteTrack> tracks = weather()) {
+        if (level().title != "Home") hold(Button::Home);
+        open("Library");
+        open(name);
+        ASSERT_EQ(server.lastRequest().kind, Kind::AlbumTracks);
+        answerTracks(std::move(tracks));
+    }
+    std::string bookKey(const std::string& id) const { return "pos:" + ref(id); }
+};
+
+TEST_F(ServerBookTest, TheFolderAlbumsAreInLibraryAfterTheLocalBooksAndNotInMusic) {
+    start();
+    syncWithFolder({dune()}, {dune(), album("s1", "Weather")});
+    EXPECT_EQ(indexStore.items.at(ref("b1")).kind, IndexItem::Kind::Book);
+    EXPECT_EQ(indexStore.items.at(ref("s1")).kind, IndexItem::Kind::Music);
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta", "Dune"}));
+    EXPECT_EQ(level().items[0].value ? level().items[0].value() : "", "2 parts");
+    ASSERT_TRUE(level().items[2].value);
+    EXPECT_EQ(level().items[2].value(), "on the server");
+    EXPECT_EQ(speech.last(), "Library. Alpha, 2 parts, 1 of 3");
+    press(Button::Down);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Dune, on the server, 3 of 3");
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip", "Weather"})) << "no Dune";
+    hold(Button::Home);
+    open("Music");
+    open("Artists");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Band", "Unknown artist"}));
+    open("Band");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Weather"})) << "Dune is by Band too, and is not here";
+    hold(Button::Home);
+    open("Music");
+    open("Recently added");
+    for (const auto& label : labels()) EXPECT_NE(label, "Dune");
+    hold(Button::Home);
+    open("Music");
+    open("Refresh library");
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v1");
+    EXPECT_EQ(speech.last(), "Library updated, 3 albums.") << "Lullaby, Road Trip and Weather, not the book";
+}
+
+TEST_F(ServerBookTest, WithoutTheFolderNothingChangesAndTheServerIsNotAskedForFolders) {
+    settings.clearPrefix("server.audiobook_folder");
+    start();
+    sync({dune(), album("s1", "Weather")});
+    EXPECT_EQ(countOf(Kind::MusicFolders), 0u);
+    for (const auto& r : server.requests) EXPECT_EQ(r.folder, "");
+    EXPECT_EQ(indexStore.items.at(ref("b1")).kind, IndexItem::Kind::Music);
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta"}));
+    EXPECT_EQ(state.values().count("catalogue.folder"), 0u) << "nothing new in the state";
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Dune", "Lullaby", "Road Trip", "Weather"}));
+}
+
+TEST_F(ServerBookTest, AFolderTheServerDoesNotHaveMakesNoBooks) {
+    start();
+    answerVersion("v1");
+    ASSERT_TRUE(server.reply(lastOf(Kind::MusicFolders), std::vector<RemoteFolder>{{"1", "Music"}}));
+    app->tick();
+    ASSERT_EQ(server.lastRequest().kind, Kind::Albums);
+    EXPECT_EQ(server.lastRequest().folder, "") << "straight to the whole catalogue";
+    answerAlbums({dune()});
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta"}));
+    EXPECT_EQ(state.getString("catalogue.version"), "") << "not remembered: the next start asks again, in case the name was a typo";
+    EXPECT_EQ(state.values().count("catalogue.folder"), 0u);
+}
+
+TEST_F(ServerBookTest, AFailedFolderListKeepsTheSavedItemsAndSaysNothing) {
+    seedServerAlbum("old", "Old");
+    start();
+    answerVersion("v1");
+    const size_t spoken = speech.said.size();
+    fail(Kind::MusicFolders, MusicServer::Error::Unreachable);
+    EXPECT_EQ(speech.said.size(), spoken);
+    EXPECT_EQ(countOf(Kind::Albums), 0u) << "no album list is taken without knowing which are books";
+    EXPECT_TRUE(indexStore.items.count(ref("old")));
+    EXPECT_EQ(state.getString("catalogue.version"), "");
+}
+
+TEST_F(ServerBookTest, TheFolderIsTakenInPagesLikeTheCatalogue) {
+    start();
+    answerVersion("v1");
+    ASSERT_TRUE(server.reply(lastOf(Kind::MusicFolders), std::vector<RemoteFolder>{{"2", "Books"}}));
+    app->tick();
+    answerAlbums({dune()}, true);
+    ASSERT_EQ(server.lastRequest().kind, Kind::Albums);
+    EXPECT_EQ(server.lastRequest().folder, "2");
+    EXPECT_EQ(server.lastRequest().offset, 1);
+    answerAlbums({album("b2", "Emma")});
+    EXPECT_EQ(server.lastRequest().folder, "");
+    answerAlbums({dune(), album("b2", "Emma")});
+    EXPECT_EQ(indexStore.items.at(ref("b2")).kind, IndexItem::Kind::Book);
+}
+
+TEST_F(ServerBookTest, ChangingTheFolderSyncsAgainEvenWhenTheCatalogueVersionIsTheSame) {
+    seedServerAlbum("b1", "Dune");
+    seedVersion("v1"); // synced before the setting was made
+    start();
+    answerVersion("v1");
+    EXPECT_EQ(server.lastRequest().kind, Kind::MusicFolders);
+}
+
+TEST_F(ServerBookTest, TheSameFolderAndVersionFetchNothing) {
+    seedServerAlbum("b1", "Dune");
+    seedVersion("v1");
+    state.setString("catalogue.folder", "Books");
+    start();
+    answerVersion("v1");
+    EXPECT_EQ(countOf(Kind::MusicFolders), 0u);
+    EXPECT_EQ(countOf(Kind::Albums), 0u);
+}
+
+TEST_F(ServerBookTest, TheFolderIsRememberedInTheStateWithTheVersion) {
+    start();
+    syncWithFolder({dune()}, {dune()});
+    EXPECT_EQ(state.getString("catalogue.folder"), "Books");
+    EXPECT_EQ(state.getString("catalogue.version"), "v1");
+}
+
+TEST_F(ServerBookTest, OpeningABookShowsLoadingThenPlaysItAsChaptersAndSaysChapter) {
+    start();
+    syncWithFolder({dune()}, {dune()});
+    open("Library");
+    open("Dune");
+    EXPECT_EQ(speech.last(), "Loading.");
+    EXPECT_EQ(server.lastRequest().kind, Kind::AlbumTracks);
+    EXPECT_EQ(server.lastRequest().arg, "b1") << "the server's id, not the reference";
+    EXPECT_EQ(level().title, "Library") << "still there while it loads";
+    answerTracks(weather());
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_TRUE(player.playing());
+    player.pos = 5;
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Dune. Chapter 1 of 3, Storm Front. 9 minutes 55 seconds left in chapter. Playing.");
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Rain");
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_EQ(app->nowPlaying().title, "Dune");
+    EXPECT_EQ(app->nowPlaying().chapterCount, 3);
+    press(Button::Ok); // Player menu
+    EXPECT_EQ(level().title, "Player menu");
+    open("Chapters");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Storm Front", "Rain", "Sunshine"}));
+}
+
+TEST_F(ServerBookTest, PauseAnotherBookThenThisBookAgainResumesThePlace) {
+    start();
+    syncWithFolder({dune()}, {dune()});
+    ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
+    hold(Button::Forward);
+    ASSERT_EQ(player.file, "fake://stream/t2");
+    player.pos = 100;
+    press(Button::PlayPause); // pause
+    EXPECT_FALSE(player.playing());
+    hold(Button::Home);
+    open("Library");
+    open("Alpha"); // another book
+    EXPECT_EQ(player.file, alphaFile(1));
+    player.opened.clear();
+    ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t2"}));
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 100);
+    EXPECT_TRUE(player.playing());
+    hold(Button::PlayPause);
+    EXPECT_NE(speech.last().find("Chapter 2 of 3, Rain"), std::string::npos) << speech.last();
+}
+
+TEST_F(ServerBookTest, ThePlaceSurvivesARestart) {
+    start();
+    syncWithFolder({dune()}, {dune()});
+    ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
+    hold(Button::Forward);
+    player.pos = 77.5;
+    app->shutdown();
+    app.reset();
+    start(false);
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v1"); // unchanged
+    open("Library");
+    open("Dune");
+    answerTracks(weather());
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 77.5);
+}
+
+TEST_F(ServerBookTest, ASavedPlaceBeyondTheChaptersStartsAtTheFirstChapter) {
+    state.setString(bookKey("b1"), "9:12.0");
+    start();
+    syncWithFolder({dune()}, {dune()});
+    ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+}
+
+TEST_F(ServerBookTest, TheBooksOfTwoServerIdsKeepSeparatePlaces) {
+    start();
+    syncWithFolder({dune(), album("b2", "Emma")}, {dune(), album("b2", "Emma")});
+    ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
+    hold(Button::Forward);
+    player.pos = 40;
+    press(Button::PlayPause);
+    ASSERT_NO_FATAL_FAILURE(openServerBook("Emma"));
+    EXPECT_EQ(player.file, "fake://stream/t1") << "Emma has no place of its own yet";
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    app->shutdown();
+    EXPECT_EQ(state.getString(bookKey("b1")), "1:40.0");
+    EXPECT_FALSE(state.getString(bookKey("b2")).empty());
+}
+
+TEST_F(ServerBookTest, NoPosKeyIsMadeFromAUrlAndNothingSpokenOrSavedHoldsOne) {
+    start();
+    syncWithFolder({dune()}, {dune()});
+    ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
+    hold(Button::Forward);
+    player.pos = 12;
+    hold(Button::PlayPause);
+    press(Button::PlayPause);
+    app->shutdown();
+    bool anyPos = false;
+    for (const auto& [k, v] : state.values()) {
+        if (k.rfind("pos:", 0) == 0 && k.find("album:b1") != std::string::npos) anyPos = true;
+        for (const std::string& text : {k, v})
+            for (const char* bad : {"http", "://", "t=", "s=", "u=", "sesame", "music.example"})
+                EXPECT_EQ(text.find(bad), std::string::npos) << k << " = " << v << " has " << bad;
+    }
+    EXPECT_TRUE(anyPos);
+    EXPECT_EQ(state.getString("last_book"), "") << "resuming it after a restart is a later step";
+    for (const std::string& said : speech.said)
+        for (const char* bad : {"http", "://", "t=", "s=", "sesame"}) EXPECT_EQ(said.find(bad), std::string::npos) << said;
+    EXPECT_FALSE(storeHolds("://"));
+    EXPECT_FALSE(storeHolds("sesame"));
+    EXPECT_FALSE(storeHolds("t="));
+}
+
+TEST_F(ServerBookTest, WithTheServerDownTheBookSaysServerNotReachableAndStaysInLibrary) {
+    start();
+    syncWithFolder({dune()}, {dune()});
+    open("Library");
+    open("Dune");
+    ASSERT_NO_FATAL_FAILURE(fail(Kind::AlbumTracks, MusicServer::Error::Unreachable));
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    EXPECT_EQ(level().title, "Library");
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(player.file, "");
+}
+
+TEST_F(ServerBookTest, ABookWithNoChaptersOnTheServerSaysSo) {
+    start();
+    syncWithFolder({dune()}, {dune()});
+    open("Library");
+    open("Dune");
+    answerTracks({});
+    EXPECT_EQ(speech.last(), "This book has no chapters on the server.");
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(player.file, "");
+}
+
+TEST_F(ServerBookTest, AServerBookIsNotCachedAutomaticallyAndSoNeverAppearsInMusic) {
+    start();
+    syncWithFolder({dune()}, {dune()});
+    std::vector<RemoteTrack> sized = {{"t1", "One", "Band", "Dune", 200, 1, "mp3", 5}, {"t2", "Two", "Band", "Dune", 180, 2, "mp3", 5}};
+    ASSERT_NO_FATAL_FAILURE(openServerBook("Dune", sized));
+    for (int i = 0; i < 20; ++i) idle(1s);
+    ASSERT_TRUE(player.playing());
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(ServerBookTest, LeavingLibraryWhileABookLoadsDropsTheLateAnswer) {
+    start();
+    syncWithFolder({dune()}, {dune()});
+    open("Library");
+    open("Dune");
+    auto id = lastOf(Kind::AlbumTracks);
+    press(Button::Home);
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), id), server.cancelled.end());
+    EXPECT_FALSE(server.reply(id, weather()));
+    app->tick();
+    EXPECT_EQ(player.file, "");
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+}
+
+TEST_F(ServerBookTest, AServerBookOfAnotherServerIsNotListed) {
+    seedServerAlbum("old", "Elsewhere", key("other"));
+    indexStore.items.at(ref("old", key("other"))).kind = IndexItem::Kind::Book;
+    start();
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta"}));
+}

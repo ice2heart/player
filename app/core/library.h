@@ -27,6 +27,10 @@ struct Book {
     std::vector<std::string> titles; // one per file from the server; empty: titles come from the file names
     std::vector<double> durations;   // one per file from the server (seconds, 0 if unknown); empty for local books
     bool remote = false;             // files are track ids on the server
+    // remote: an audiobook of the server (docs/streaming.md 4.11), not an album. Its chapters are the
+    // tracks, its place is kept under `pos:` + `path` (the library item id, never a URL) and it
+    // is not a `last_stream`.
+    bool serverBook = false;
     std::optional<RemoteSource> source; // remote: where the list came from; none: it is not resumed
     // Remote, for the automatic cache (one per file; may be shorter, then unknown): the original
     // file's type (e.g. "flac") and size in bytes, and the artist of the list (an album's, may be empty).
