@@ -304,8 +304,8 @@ The rules behind this table, and the checklist for new menus, are in
 | Play/Pause long | "Where am I?" | menu path + item | book, chapter, time left |
 | Up / Down short | | previous / next item (wraps) | previous / next step unit (edge sound at the ends) |
 | Up / Down long | | first / last item | the same, once |
-| Left / Right short | | change the value; nothing on other items | move back / forward by the step unit (skip, track or chapter, album or 10 minutes) |
-| Left / Right long or deep | | same as short | previous / next chapter |
+| Left / Right short | | jump: previous / next letter in a list sorted by name, else 10 items | move back / forward by the step unit (skip, track or chapter, album or 10 minutes) |
+| Left / Right long or deep | | the same jump, once | previous / next chapter |
 | OK short | | open / activate | player menu |
 | OK long | | previous screen | previous screen |
 | Home short | | previous screen | previous screen |
@@ -355,9 +355,9 @@ does and does nothing else. Holding Home leaves the mode. The same texts
 struct MenuItem {
     std::string label;                               // always spoken
     std::function<std::string()> value;              // spoken after label: "Volume, 70 percent"
-    std::function<bool(int)> adjust;                 // Left / Right step the value in place
     std::function<std::vector<MenuItem>()> submenu;  // built when opened (fresh data)
     std::function<size_t()> selected;                // submenu opens on this entry
+    ListOrder submenuOrder;                          // how the submenu's list is sorted (see below)
     std::function<void()> action;                    // leaf
 };
 ```
@@ -365,10 +365,15 @@ struct MenuItem {
 Menus are built by `App::*Menu()` functions and created lazily, so a list such
 as Library or Chapters always reflects the current state. `App::choice()`
 builds a setting from a settings key and a list of `(value, spoken name)`
-options. Left / Right step the value and apply it at once. The settings file
-is written when the user leaves the item. OK opens the list of values on the
-current one, which is spoken as "current". Choosing a value there saves it,
-applies it and goes back. The item types are listed in [navigation.md](navigation.md).
+options. OK opens the list of values on the current one, which is spoken as
+"current". Choosing a value there saves it, applies it and goes back. Left / Right
+never change a value; they jump in the list (`App::jump()`): to the first item of the
+previous / next letter when the list's `Screen::order` is `ListOrder::ByName` or
+`ByArtist` (artists ignore a leading "The"), else by `kMenuJump` (10) items. `order` is
+set by the item that opens the list (`MenuItem::submenuOrder`) or by `openRemoteList()`;
+a list that is not marked jumps by 10. The letter comes from `nameGroup()`
+(`library.h`); the status rows of a list from the server and "Unknown artist" are
+groups of their own with no spoken letter. The item types are listed in [navigation.md](navigation.md).
 
 The spoken form of an item is `label[, value][, i of n][. hint]`. The position
 ("i of n") is left out at Expert verbosity, and the hint ("Press OK to open")
@@ -809,8 +814,8 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 | `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.server` / `catalogue.version`: the server key and catalogue version of the last server sync; `catalogue.folder`: `server.audiobook_folder` at the last server sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); `last_stream.server` / `.user` (the `server.url` without a trailing slash and `server.user`, never the password or a stream URL), `.kind` (`album` / `playlist`), `.id`, `.title`, `.track` (index), `.track_id`, `.pos` (seconds): the remote list that played last |
 
 - `config.yaml` is nested YAML (`speech: {rate: 220}` is `speech.rate`). It is
-  written only when a setting changes in the Settings menu (on leaving the item,
-  or at once when chosen from the list), and on exit if the player volume changed.
+  written only when a setting is chosen in its list (at once), and on exit if the
+  player volume changed.
   Writing drops comments; the file gets a header naming the keys, and keys in a
   fixed order. Numbers are written plain and everything else quoted, the password
   always. A file that does not parse, or is there but cannot be read, is reported
@@ -858,7 +863,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 
 - **Window:** SDL2 plus Dear ImGui (v1.91.8, downloaded by CMake into `build/_deps`).
   - Left: the **menu stack as columns**. The selected item is highlighted, `>`
-    marks a submenu and `<>` a value Left / Right can change. On the player screen it
+    marks a submenu. On the player screen it
     shows the player key help instead.
   - Right: clickable **device buttons** (press and hold work), the hold switch,
     **now playing** with a progress bar, a table of **button usage**, and the

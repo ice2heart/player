@@ -314,9 +314,9 @@ Design:
 Hierarchical list navigation, like a screen reader:
 - **Up/Down** move through items, each item is spoken: _"Podcasts, 3 of 6"_.
 - **OK** enters / activates. **Home short** goes up a level. **Home long** goes to root.
-- **OK goes in, Home goes out** of a stack of screens (menus and the player). **Left/Right only
-  change a value in place**. On other items they do nothing. A changed value is saved when the
-  user leaves the item. Full rules: [docs/navigation.md](docs/navigation.md).
+- **OK goes in, Home goes out** of a stack of screens (menus and the player). **Left/Right jump in a long list**
+  (to the next or previous letter in a list sorted by name, else 10 items). A setting is changed
+  in its list, opened with OK. Full rules: [docs/navigation.md](docs/navigation.md).
 - Position info (`n of m`) is configurable.
 - Wrap-around at end of list with a distinct earcon (setting: wrap or stop).
 - **First-letter navigation** via voice: "go to D".

@@ -161,7 +161,6 @@ void drawMenu(const App& app) {
             const MenuItem& item = level.items[j];
             std::string text = item.label;
             if (item.value) text += ": " + item.value();
-            if (item.adjust) text += "  <>";
             if (item.submenu) text += "  >";
             bool selected = j == level.index;
             bool active = i + 1 == stack.size();

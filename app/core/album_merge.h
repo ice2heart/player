@@ -30,6 +30,7 @@ std::vector<MergedAlbum> mergeAlbums(const std::map<std::string, IndexItem>& ite
 // `ignoredArticles` are not read by the client yet, so this is the default, "The".
 inline constexpr const char* kIgnoredArticles[] = {"the"};
 std::string artistKey(const std::string& name);
+std::string artistSortName(const std::string& name); // folded, without a leading article: what artistLess compares
 bool artistLess(const std::string& a, const std::string& b); // natural, case-insensitive, articles ignored
 
 // The name rule: two albums are the same when they have the same MusicBrainz album id, or

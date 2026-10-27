@@ -312,69 +312,94 @@ TEST_F(AppTest, LeavingAValueListChangesNothing) {
     EXPECT_EQ(speech.last(), "Volume, 70 percent, 2 of 12");
 }
 
-TEST_F(AppTest, LeftAndRightChangeASettingInPlace) {
+TEST_F(AppTest, RightInSettingsChangesNoSetting) {
     start();
-    open("Settings"); // Speech rate
+    open("Settings"); // Speech rate, then Volume, ... 12 items in all
     press(Button::Forward);
-    EXPECT_EQ(level().title, "Settings");
-    EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
-    EXPECT_EQ(speech.rate, 250) << "applied at once, so the user hears the new rate";
-    EXPECT_EQ(speech.last(), "250 words per minute");
-    EXPECT_EQ(sounds.last(), Earcon::Move);
-    press(Button::Down); // Volume
-    press(Button::Back);
-    EXPECT_EQ(settings.getInt("volume", 0), 65);
-    EXPECT_FLOAT_EQ(volume.volume, 0.65f);
-}
-
-TEST_F(AppTest, ASettingStopsAtTheEndOfItsRange) {
-    settings.setInt("speech.rate", 460);
-    start();
-    open("Settings");
-    press(Button::Forward);
-    EXPECT_EQ(settings.getInt("speech.rate", 0), 460);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "460 words per minute");
-}
-
-TEST_F(AppTest, AChangedSettingIsWrittenWhenLeavingTheItem) {
-    start();
-    open("Settings"); // Speech rate
-    press(Button::Forward);
-    press(Button::Forward);
-    EXPECT_EQ(configFile.saves, 0) << "not written while still on the item";
     press(Button::Down);
-    EXPECT_EQ(configFile.saves, 1);
-    EXPECT_EQ(configFile.onDisk("speech.rate"), "280");
-    EXPECT_EQ(stateFile.saves, 0) << "a setting is not state";
+    press(Button::Back);
+    press(Button::Forward);
+    EXPECT_EQ(settings.getInt("speech.rate", 220), 220);
+    EXPECT_EQ(settings.getInt("volume", 70), 70);
+    EXPECT_EQ(speech.rate, 220);
+    EXPECT_FLOAT_EQ(volume.volume, 0.7f);
+    press(Button::Down);
+    EXPECT_EQ(configFile.saves, 0) << "nothing was changed, so nothing is written";
+    EXPECT_EQ(stateFile.saves, 0);
 }
 
-TEST_F(AppTest, AChangedSettingIsWrittenWhenTheDeviceSleeps) {
+TEST_F(AppTest, ASettingIsOnlyChangedInItsList) {
     start();
-    open("Settings");
+    open("Settings"); // Speech rate
     press(Button::Forward);
-    idle(6min); // auto sleep, no key pressed
-    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    press(Button::Back);
+    ASSERT_EQ(level().index, 0u) << "Left from 10 is back at the first item";
+    press(Button::Ok);
+    EXPECT_EQ(level().title, "Speech rate");
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
+    EXPECT_EQ(speech.rate, 250);
     EXPECT_EQ(configFile.onDisk("speech.rate"), "250");
 }
 
-TEST_F(AppTest, LeftAndRightDoNothingOnItemsWithoutAValue) {
+TEST_F(AppTest, RightInAListThatIsNotSortedByNameMovesTenItems) {
+    start();
+    open("Settings"); // 12 items
+    press(Button::Forward);
+    EXPECT_EQ(level().index, 10u);
+    EXPECT_EQ(sounds.last(), Earcon::Move);
+    EXPECT_EQ(speech.last(), "Cache size, 1 gigabyte, 11 of 12") << "no letter: the list is not sorted by name";
+    press(Button::Forward);
+    EXPECT_EQ(level().index, 11u) << "stops at the last item";
+    EXPECT_EQ(sounds.last(), Earcon::Move);
+    press(Button::Back);
+    EXPECT_EQ(level().index, 1u);
+    press(Button::Back);
+    EXPECT_EQ(level().index, 0u) << "stops at the first item";
+    EXPECT_EQ(sounds.last(), Earcon::Move);
+}
+
+TEST_F(AppTest, TheTenItemJumpHasEdgesAndWrapsWhenWrapAroundIsOn) {
+    settings.setInt("menu.wrap", 0);
     start();
     open("Settings");
-    hold(Button::Down); // Sleep timer: a value, but nothing to step
+    press(Button::Back);
+    EXPECT_EQ(level().index, 0u);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "Speech rate, 220 words per minute, 1 of 12");
+    hold(Button::Down); // last
+    press(Button::Forward);
+    EXPECT_EQ(level().index, 11u);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 12 of 12");
+
+    hold(Button::Up);
+    open("Menu wrap around"); // turn wrapping on in the list
+    press(Button::Down);
+    press(Button::Ok);
+    ASSERT_EQ(settings.getInt("menu.wrap", 0), 1);
+    hold(Button::Down);
+    press(Button::Forward);
+    EXPECT_EQ(level().index, 0u) << "wrapped to the first item";
+    EXPECT_EQ(sounds.last(), Earcon::Wrap);
+    press(Button::Back);
+    EXPECT_EQ(level().index, 11u) << "and back to the last";
+    EXPECT_EQ(sounds.last(), Earcon::Wrap);
+}
+
+TEST_F(AppTest, LeftAndRightAlwaysMakeASound) {
+    start();
+    open("Podcasts"); // one item that does nothing but speak
+    ASSERT_EQ(level().items.size(), 1u);
     for (Button b : {Button::Back, Button::Forward}) {
-        size_t said = speech.said.size(), played = sounds.played.size();
-        int stops = speech.stops;
+        size_t played = sounds.played.size();
         press(b);
-        EXPECT_EQ(level().title, "Settings");
-        EXPECT_EQ(level().index, 11u);
-        EXPECT_EQ(speech.said.size(), said) << "silent";
-        EXPECT_EQ(sounds.played.size(), played) << "silent";
-        EXPECT_EQ(speech.stops, stops) << "speech goes on";
+        EXPECT_EQ(level().title, "Podcasts");
+        EXPECT_EQ(sounds.played.size(), played + 1) << "no silent key";
+        EXPECT_EQ(sounds.last(), Earcon::Edge);
+        EXPECT_EQ(speech.last(), "No podcasts yet, 1 of 1");
     }
-    press(Button::Home);
-    press(Button::Forward); // Home > Settings: a submenu
-    EXPECT_EQ(level().title, "Home");
 }
 
 TEST_F(AppTest, HomeGoesBackToTheScreenYouCameFrom) {
@@ -414,15 +439,14 @@ TEST_F(AppTest, ReturningToAListWithRepeatedLabelsKeepsThePlace) {
     EXPECT_EQ(speech.last(), "Song, 2 of 3"); // and Album info
 }
 
-TEST_F(AppTest, AStoredValueBetweenOptionsStepsToTheNearestOne) {
+TEST_F(AppTest, AStoredValueBetweenOptionsIsSpokenAndItsListHasNoCurrentOne) {
     settings.setInt("speech.rate", 225); // between 220 and 250
     start();
     open("Settings");
-    press(Button::Forward);
-    EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
-    settings.setInt("speech.rate", 225);
-    press(Button::Back);
-    EXPECT_EQ(settings.getInt("speech.rate", 0), 220);
+    EXPECT_EQ(speech.last(), "Settings. Speech rate, 225, 1 of 12");
+    press(Button::Ok);
+    EXPECT_EQ(level().index, 0u);
+    for (const MenuItem& item : level().items) EXPECT_FALSE(item.value) << item.label << " is not the current value";
 }
 
 TEST_F(AppTest, ThereIsOnlyOnePlayerScreen) {
@@ -464,6 +488,9 @@ TEST_F(AppTest, HelpGettingStartedExplainsTheBasics) {
     open("Getting started");
     EXPECT_EQ(speech.last().rfind("This player has no screen. Up and Down move through a menu.", 0), 0u)
         << speech.last();
+    EXPECT_NE(speech.last().find("Left and Right jump in a long list, to the next letter or ten items on."), std::string::npos)
+        << speech.last();
+    EXPECT_EQ(speech.last().find("change a setting"), std::string::npos) << "Left and Right no longer change settings";
 }
 
 TEST_F(AppTest, HelpButtonsDescribesEachButton) {
@@ -473,9 +500,9 @@ TEST_F(AppTest, HelpButtonsDescribesEachButton) {
     EXPECT_EQ(labels(), (std::vector<std::string>{"Play pause", "Left", "Right", "Up", "Down", "OK", "Home",
                                                   "Volume up", "Volume down", "Options", "Talk", "Power"}));
     open("Left");
-    EXPECT_EQ(speech.last(), "Left. In menus, lowers a setting. In player, moves back by the step unit. Hold, or press deeper, for previous chapter or track.");
+    EXPECT_EQ(speech.last(), "Left. In menus, jumps to the previous letter, or back 10 items. In player, moves back by the step unit. Hold, or press deeper, for previous chapter or track.");
     open("Right");
-    EXPECT_EQ(speech.last(), "Right. In menus, raises a setting. In player, moves forward by the step unit. Hold, or press deeper, for next chapter or track.");
+    EXPECT_EQ(speech.last(), "Right. In menus, jumps to the next letter, or forward 10 items. In player, moves forward by the step unit. Hold, or press deeper, for next chapter or track.");
     EXPECT_FALSE(app->keyDescriber());
 }
 
@@ -1207,26 +1234,38 @@ TEST_F(AppTest, DeepPressJumpsToTheNextChapterAtOnce) {
     EXPECT_EQ(player.pos, 0);
 }
 
-TEST_F(AppTest, PushingDeeperAfterALongPressDoesNotStepAgain) {
+TEST_F(AppTest, PushingDeeperAfterALongPressDoesNotJumpAgain) {
     start();
     open("Settings");
     app->keyDown(Button::Forward);
     clock.advance(700ms);
-    app->tick(); // long press: one step
+    app->tick(); // long press: one jump
     app->keyDown(Button::ForwardDeep);
     app->keyUp(Button::ForwardDeep);
     app->keyUp(Button::Forward);
-    EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
+    EXPECT_EQ(level().index, 10u) << "a second jump would have reached the last item";
 }
 
-TEST_F(AppTest, DeepPressInAMenuStepsTheValueOnce) {
+TEST_F(AppTest, DeepPressInAMenuJumpsOnce) {
     start();
     open("Settings");
     app->keyDown(Button::Forward);
     app->keyDown(Button::ForwardDeep);
     app->keyUp(Button::ForwardDeep);
     app->keyUp(Button::Forward);
-    EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
+    EXPECT_EQ(level().index, 10u);
+}
+
+TEST_F(AppTest, HoldingRightInAMenuJumpsOnceWithNoRepeat) {
+    start();
+    open("Settings");
+    app->keyDown(Button::Forward);
+    clock.advance(700ms);
+    app->tick();
+    clock.advance(5s); // still held
+    app->tick();
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(level().index, 10u);
 }
 
 TEST_F(AppTest, ChaptersListOpensOnTheCurrentChapter) {
@@ -8111,4 +8150,285 @@ TEST_F(ServerBookResumeTest, NothingSpokenOrSavedHoldsAUrlOnTheResumePaths) {
     for (const std::string& said : speech.said) expectNoUrl(said);
     EXPECT_FALSE(storeHolds("://"));
     EXPECT_FALSE(storeHolds("sesame"));
+}
+
+// ---------------------------------------------------------------- Left / Right in menus
+
+// Music with these albums, besides Lullaby and Road Trip: 7 Seconds, Abba Gold, Aria, Beta, Dune,
+// Dusk and Zeta. Albums A to Z is then: 7 Seconds, Abba Gold, Aria, Beta, Dune, Dusk, Lullaby,
+// Road Trip, Zeta. Its letters: # (7 Seconds), A (2), B, D (2), L, R, Z.
+class MenuJumpTest : public MusicTreeTest {
+protected:
+    void SetUp() override {
+        MusicTreeTest::SetUp();
+        for (const char* name : {"7 Seconds", "Abba Gold", "Aria", "Beta", "Dune", "Dusk", "Zeta"})
+            localAlbum(name, "Band", name);
+    }
+    void openAlbums() {
+        start();
+        open("Music");
+        open("Albums A to Z");
+    }
+    void goTo(const std::string& label) { // from the first item
+        hold(Button::Up);
+        for (size_t i = 0; i < level().items.size() && level().items[level().index].label != label; ++i) press(Button::Down);
+        ASSERT_EQ(level().items[level().index].label, label);
+    }
+};
+
+TEST_F(MenuJumpTest, RightGoesToTheFirstItemOfTheNextLetterAndSpeaksIt) {
+    openAlbums();
+    goTo("Abba Gold");
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 4 of 9");
+    EXPECT_EQ(sounds.last(), Earcon::Move);
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "D. Dune, 1 track, 5 of 9");
+    press(Button::Forward);
+    EXPECT_EQ(speech.last().rfind("L. Lullaby", 0), 0u) << "Dusk is the same letter as Dune: " << speech.last();
+}
+
+TEST_F(MenuJumpTest, RightFromTheMiddleOfALetterGoesToTheNextOne) {
+    openAlbums();
+    goTo("Aria");
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 4 of 9");
+    goTo("Dusk");
+    press(Button::Forward);
+    EXPECT_EQ(speech.last().rfind("L. Lullaby", 0), 0u) << speech.last();
+}
+
+TEST_F(MenuJumpTest, LeftGoesToTheFirstItemOfThePreviousLetterAlsoFromTheMiddleOfOne) {
+    openAlbums();
+    goTo("Dusk"); // the middle of D
+    press(Button::Back);
+    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 4 of 9") << "not Dune, the start of its own letter";
+    EXPECT_EQ(sounds.last(), Earcon::Move);
+    press(Button::Back);
+    EXPECT_EQ(speech.last(), "A. Abba Gold, 1 track, 2 of 9") << "the first of A, not Aria";
+    goTo("Dune");
+    press(Button::Back);
+    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 4 of 9");
+}
+
+TEST_F(MenuJumpTest, DigitsAreAGroupBeforeTheLetters) {
+    openAlbums();
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "A. Abba Gold, 1 track, 2 of 9") << "from 7 Seconds";
+    press(Button::Back);
+    EXPECT_EQ(speech.last(), "Number. 7 Seconds, 1 track, 1 of 9");
+}
+
+TEST_F(MenuJumpTest, TheEndsPlayTheEdgeSoundWhenWrappingIsOff) {
+    settings.setInt("menu.wrap", 0);
+    openAlbums();
+    press(Button::Back);
+    EXPECT_EQ(level().index, 0u);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "7 Seconds, 1 track, 1 of 9");
+    goTo("Zeta");
+    press(Button::Forward);
+    EXPECT_EQ(level().index, 8u);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "Zeta, 1 track, 9 of 9");
+    goTo("Road Trip"); // the second to last letter: not an edge
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Z. Zeta, 1 track, 9 of 9");
+    EXPECT_EQ(sounds.last(), Earcon::Move);
+    goTo("Abba Gold");
+    press(Button::Back);
+    EXPECT_EQ(speech.last(), "Number. 7 Seconds, 1 track, 1 of 9") << "the first letter is not an edge";
+    EXPECT_EQ(sounds.last(), Earcon::Move);
+}
+
+TEST_F(MenuJumpTest, WrapAroundWrapsTheJump) {
+    openAlbums(); // menu.wrap is on by default
+    goTo("Zeta");
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Number. 7 Seconds, 1 track, 1 of 9");
+    EXPECT_EQ(sounds.last(), Earcon::Wrap);
+    press(Button::Back);
+    EXPECT_EQ(speech.last(), "Z. Zeta, 1 track, 9 of 9") << "Left from the first letter goes to the first item of the last letter";
+    EXPECT_EQ(sounds.last(), Earcon::Wrap);
+}
+
+TEST_F(MenuJumpTest, ALastLetterWithSeveralItemsWrapsToItsFirst) {
+    localAlbum("Zulu", "Band", "Zulu");
+    openAlbums();
+    goTo("Abba Gold");
+    press(Button::Back); // 7 Seconds
+    press(Button::Back); // wraps
+    EXPECT_EQ(speech.last(), "Z. Zeta, 1 track, 9 of 10") << "the first of Z, not Zulu";
+}
+
+TEST_F(MenuJumpTest, HoldingOrPressingDeeperJumpsOnceAndDoesNotRepeat) {
+    openAlbums();
+    goTo("Abba Gold");
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 4 of 9");
+    size_t said = speech.said.size();
+    app->keyDown(Button::Forward);
+    app->keyDown(Button::ForwardDeep);
+    clock.advance(5s);
+    app->tick();
+    app->keyUp(Button::ForwardDeep);
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(speech.said.size(), said + 1);
+    EXPECT_EQ(speech.last(), "D. Dune, 1 track, 5 of 9");
+}
+
+TEST_F(MenuJumpTest, ExpertVerbosityLeavesOutThePositionButKeepsTheLetter) {
+    settings.setInt("verbosity", 2);
+    openAlbums();
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "A. Abba Gold, 1 track");
+}
+
+TEST_F(MenuJumpTest, TheLibraryJumpsByLetter) {
+    touch(root / "Dune" / "01.mp3");
+    touch(root / "Dust" / "01.mp3");
+    start();
+    open("Library");
+    ASSERT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta", "Dune", "Dust"}));
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "B. Beta, 2 of 4");
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "D. Dune, 3 of 4");
+}
+
+TEST_F(MenuJumpTest, ArtistsJumpByLetterIgnoringArticlesWithOtherScriptsAndUnknownArtistAfterTheLatinOnes) {
+    localAlbum("Abbey", "The Beatles", "Abbey");
+    localAlbum("Ночь", "Агата Кристи", "Ночь");
+    localAlbum("Другой", "Би-2", "Другой");
+    localAlbum("Alone", "The Alpha", "Alone");
+    start();
+    open("Music");
+    open("Artists");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"The Alpha", "Band", "The Beatles", "Агата Кристи", "Би-2", "Unknown artist"}));
+    press(Button::Forward);
+    EXPECT_EQ(speech.last().rfind("B. Band", 0), 0u) << "The Alpha is under A: " << speech.last();
+    press(Button::Forward);
+    EXPECT_EQ(speech.last().rfind("\xD0\xB0. \xD0\x90", 0), 0u) << "the Cyrillic group after B, The Beatles skipped: " << speech.last();
+    press(Button::Forward);
+    EXPECT_EQ(speech.last().rfind("\xD0\xB1. \xD0\x91\xD0\xB8-2", 0), 0u) << speech.last();
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Unknown artist, 2 albums, 6 of 6") << "spoken by name, with no letter";
+    press(Button::Back);
+    EXPECT_EQ(speech.last().rfind("\xD0\xB1. ", 0), 0u) << speech.last();
+    press(Button::Forward);
+    press(Button::Forward);
+    EXPECT_EQ(sounds.last(), Earcon::Wrap);
+    EXPECT_EQ(speech.last().rfind("A. The Alpha", 0), 0u) << speech.last();
+}
+
+TEST_F(MenuJumpTest, AnArtistNamedUnknownArtistHasItsLetterAndOnlyTheRealOneHasNone) {
+    localAlbum("Odd", "Unknown artist", "Odd");
+    start();
+    open("Music");
+    open("Artists");
+    ASSERT_EQ(labels(), (std::vector<std::string>{"Band", "Unknown artist", "Unknown artist"}));
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "U. Unknown artist, 1 album, 2 of 3") << "tagged with that name: sorted and spoken like any artist";
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Unknown artist, 2 albums, 3 of 3") << "the albums with no artist: no letter";
+}
+
+TEST_F(MenuJumpTest, AnArtistsAlbumsAndTheGenresJumpByLetter) {
+    for (const char* name : {"Dune", "Dusk", "Beta", "Zeta"}) {
+        TrackTags t = tags.tags.at(music / name / "1.mp3");
+        t.genre = std::string(name) == "Zeta" ? "Jazz" : "Rock";
+        tags.tags[music / name / "1.mp3"] = t;
+    }
+    start();
+    open("Music");
+    open("Artists");
+    open("Band");
+    press(Button::Forward);
+    EXPECT_EQ(speech.last().rfind("A. Abba Gold", 0), 0u) << "the albums of an artist are sorted by title: " << speech.last();
+    press(Button::Home);
+    press(Button::Home);
+    open("Genres");
+    ASSERT_EQ(labels(), (std::vector<std::string>{"Jazz", "Rock"}));
+    press(Button::Forward);
+    EXPECT_EQ(speech.last().rfind("R. Rock", 0), 0u) << "the genres are sorted by name: " << speech.last();
+    press(Button::Ok);
+    ASSERT_EQ(labels(), (std::vector<std::string>{"Beta", "Dune", "Dusk"}));
+    press(Button::Forward);
+    EXPECT_EQ(speech.last().rfind("D. Dune", 0), 0u) << speech.last();
+    press(Button::Forward);
+    EXPECT_EQ(sounds.last(), Earcon::Wrap) << "Dusk is the same letter as Dune";
+    EXPECT_EQ(speech.last().rfind("B. Beta", 0), 0u) << speech.last();
+}
+
+TEST_F(MenuJumpTest, ARecentlyAddedListIsNotSortedByNameSoItJumpsByTen) {
+    start();
+    open("Music");
+    open("Recently added");
+    ASSERT_GT(level().items.size(), 1u);
+    press(Button::Forward);
+    EXPECT_EQ(level().index, level().items.size() - 1) << "9 albums: to the last, with no letter";
+    EXPECT_EQ(speech.last().find(". "), std::string::npos) << speech.last();
+}
+
+TEST_F(MenuJumpTest, AServerListSortedByNameJumpsByLetterAndALongOneByTen) {
+    start();
+    open("Server");
+    open("Albums A to Z");
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteAlbum>{album("1", "Apple"), album("2", "Avocado"), album("3", "Banana")}));
+    app->tick();
+    ASSERT_EQ(level().index, 0u);
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "B. Banana, Band, 3 of 3");
+    press(Button::Back);
+    EXPECT_EQ(speech.last(), "A. Apple, Band, 1 of 3");
+}
+
+TEST_F(MenuJumpTest, ARemoteArtistsListJumpsByLetterIgnoringArticles) {
+    start();
+    open("Server");
+    open("Artists");
+    RemoteArtist a{"a", "Apple", 1}, b{"b", "The Avocado", 1}, c{"c", "Banana", 1};
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteArtist>{a, b, c}));
+    app->tick();
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "B. Banana, 1 album, 3 of 3") << "The Avocado is under A";
+}
+
+TEST_F(MenuJumpTest, TheStatusRowsOfAServerListThatFailedAreOutsideTheLetters) {
+    start();
+    open("Server");
+    open("Albums A to Z");
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteAlbum>{album("1", "Apple"), album("2", "Banana")}, /*more=*/true));
+    app->tick();
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable)); // the next page
+    app->tick();
+    ASSERT_EQ(labels(), (std::vector<std::string>{"Apple", "Banana", "Server not reachable", "Try again"}));
+    press(Button::Forward);
+    EXPECT_EQ(speech.last().rfind("B. Banana", 0), 0u) << speech.last();
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Server not reachable, 3 of 4") << "no letter on a status row";
+    press(Button::Forward);
+    EXPECT_EQ(sounds.last(), Earcon::Wrap) << "the status rows are one group, the last";
+    EXPECT_EQ(speech.last().rfind("A. Apple", 0), 0u) << speech.last();
+    press(Button::Back);
+    EXPECT_EQ(speech.last(), "Server not reachable, 3 of 4") << "wraps to the first of the last group";
+    press(Button::Back);
+    EXPECT_EQ(speech.last().rfind("B. Banana", 0), 0u) << speech.last();
+}
+
+TEST_F(MenuJumpTest, AServerListThatIsNotSortedByNameJumpsByTenWithNoLetter) {
+    start();
+    open("Server");
+    open("Recently added");
+    std::vector<RemoteAlbum> albums;
+    for (int i = 1; i <= 25; ++i) albums.push_back(album(std::to_string(i), "Album " + std::to_string(i)));
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::move(albums)));
+    app->tick();
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Album 11, Band, 11 of 25");
+    press(Button::Forward);
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Album 25, Band, 25 of 25") << "stops at the last item";
+    press(Button::Back);
+    EXPECT_EQ(speech.last(), "Album 15, Band, 15 of 25");
 }

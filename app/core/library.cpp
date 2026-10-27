@@ -42,7 +42,7 @@ char32_t nextCodePoint(std::string_view s, size_t& i) {
     return cp;
 }
 
-// Folds case for ASCII, Latin-1 and Cyrillic, and drops Latin accents ("Ä" sorts as "a").
+// Folds case for ASCII, Latin-1, Latin Extended-A, Greek and Cyrillic, and drops Latin-1 accents ("Ä" sorts as "a").
 char32_t fold(char32_t c) {
     if (c >= 'A' && c <= 'Z') return c + 0x20;
     if (c >= 0xC0 && c <= 0xFF && c != 0xD7 && c != 0xF7) { // À..ÿ except × and ÷
@@ -50,6 +50,11 @@ char32_t fold(char32_t c) {
                                         "aaaaaaaceeeeiiiidnooooo_ouuuuyty";
         return static_cast<unsigned char>(kBase[c - 0xC0]);
     }
+    if ((c >= 0x100 && c <= 0x137 && c != 0x130 && c != 0x131) || (c >= 0x14A && c <= 0x177)) return c % 2 == 0 ? c + 1 : c; // Latin Extended-A
+    if ((c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E)) return c % 2 == 1 ? c + 1 : c;
+    if (c >= 0x391 && c <= 0x3A9 && c != 0x3A2) return c + 0x20; // Greek
+    if (c == 0x386) return 0x3AC;
+    if (c >= 0x388 && c <= 0x38A) return c + 37;
     if (c >= 0x410 && c <= 0x42F) return c + 0x20; // А..Я
     if (c >= 0x400 && c <= 0x40F) c += 0x50;        // Ѐ..Џ, including Ё
     if (c == 0x451) return 0x435;                   // ё sorts with е
@@ -81,6 +86,29 @@ std::string_view digitRun(std::string_view s, size_t& i) {
 }
 
 } // namespace
+
+std::string nameGroup(std::string_view name) {
+    size_t i = 0;
+    if (name.empty() || (static_cast<unsigned char>(name[0]) < 0x80 && !std::isalnum(static_cast<unsigned char>(name[0])))) return "#";
+    char32_t c = nextKey(name, i);
+    if (c >= '0' && c <= '9') return "#";
+    if (c >= 'a' && c <= 'z') return std::string(1, char(c - 'a' + 'A'));
+    std::string out;
+    if (c < 0x800) {
+        out += char(0xC0 | (c >> 6));
+        out += char(0x80 | (c & 0x3F));
+    } else if (c < 0x10000) {
+        out += char(0xE0 | (c >> 12));
+        out += char(0x80 | ((c >> 6) & 0x3F));
+        out += char(0x80 | (c & 0x3F));
+    } else {
+        out += char(0xF0 | (c >> 18));
+        out += char(0x80 | ((c >> 12) & 0x3F));
+        out += char(0x80 | ((c >> 6) & 0x3F));
+        out += char(0x80 | (c & 0x3F));
+    }
+    return out;
+}
 
 // Natural, case-insensitive order: runs of digits compare as numbers ("3" before "10") and
 // letters compare folded. Names that fold equal fall back to their bytes, so the order is total.

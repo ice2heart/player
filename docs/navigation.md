@@ -1,8 +1,7 @@
 # Navigation guidelines
 
 > Status: this file is the **target contract** of [queue.md](queue.md) phase 1 and 2.
-> Where it differs from [architecture.md](architecture.md) (volume on Up / Down,
-> Left / Right changing values, one player), the code is not built to it yet; each
+> Where it differs from [architecture.md](architecture.md) (one player), the code is not built to it yet; each
 > step of queue.md brings it closer and step 1.6 / 2.10 update architecture.md.
 
 Users can't see the menu, so they learn it from what each key does. A key that
@@ -44,8 +43,8 @@ Sleep in it closes the menu first, so the device wakes where you were.
 6. **A value is changed in its list, and works at once.** A setting is changed
    by opening it with OK: its list opens on the current value, and choosing a
    value with OK saves it and goes back. You hear the new speech rate straight
-   away. The file is written when another key is pressed or the device sleeps
-   or powers off; the volume is the exception, kept in memory and written on exit. Streaming quality is the one exception: a stream that plays
+   away. The file is written at once; the volume, changed with its own keys, is
+   kept in memory and written on exit. Streaming quality is the one exception: a stream that plays
    would have to open again, so the new quality starts with the next track.
 7. **In a program, Left / Right are that program's own keys.** In a player
    they skip back and forward by the step unit, and holding them or pressing
@@ -76,8 +75,7 @@ What an item does depends on which parts of `MenuItem` are set:
 | **Program** | (info) | `action` pushes the program's screen | a book, a track, Now playing |
 | **List from the server** | (info) | `action` opens a list that loads from the server | Recently added, an album on the server |
 
-No type changes its value with Left / Right: the `adjust` part of `MenuItem` goes
-away (queue.md step 1.4). Any item may also have an `options` builder (see
+No type changes its value with Left / Right: `MenuItem` has no `adjust` part. Any item may also have an `options` builder (see
 [Options](#options)).
 
 `choice()` in `app.cpp` builds a *setting with list* from a settings key and
@@ -177,13 +175,17 @@ edge sound plays at the first and last unit; holding Up or Down does not jump.
 Settings no longer change in place with Left / Right (rule 6). Left / Right in menus
 **jump in long lists**:
 
-- In a list sorted by name (Albums A to Z, Artists, Library, Music), Left / Right go to
+- In a list sorted by name (Albums A to Z, Artists, the albums of an artist and Genres
+  on the device, Library; on the server Albums A to Z and Artists), Left / Right go to
   the first item of the previous / next letter and speak it: "D. Dune, 41 of 500". A
   letter is the first letter of the sort name (so "The" is skipped as in Artists);
   names in other scripts and "Unknown artist" form their own groups after the Latin
   ones. Left goes to the first item of the previous letter, also from the middle of a
   letter. The spoken letter is the first letter of the sort name; an item in a
   group of its own ("Unknown artist") is spoken by name without a letter.
+- Names that start with a digit (or no letter) are one group before A, spoken "Number".
+  Only artist names skip "The"; album titles are sorted and grouped as written. In
+  Library the server's audiobooks follow the local books, so the letters start again there.
 - In other lists they go 10 items back or forward, and stop at the first or last item.
 - At the first or last item (Right on the last, Left on the first) the edge sound plays;
   with Menu wrap around it wraps, as Up / Down do.

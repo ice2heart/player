@@ -50,6 +50,13 @@ struct Book {
 // "10"). A total order. The order of the Library and Music lists.
 bool naturalLess(std::string_view a, std::string_view b);
 
+// The group a name falls in for letter jumps in a list sorted by `naturalLess`: its first
+// letter in capitals ("D"), "#" for a digit or ASCII punctuation (or an empty name), or its first
+// character itself for another script (a group of its own, after the Latin ones). Case and
+// Latin-1 accents are ignored. A name starting with ASCII punctuation or a space is "#" too,
+// because that is where naturalLess sorts it: a group is always a run of the sorted list.
+std::string nameGroup(std::string_view name);
+
 // Natural order of paths: folder by folder, digits as numbers, case and accents ignored
 // ("cd2/01" before "cd10/01"). The order of the files of a book.
 bool pathLess(const std::filesystem::path& a, const std::filesystem::path& b);

@@ -26,6 +26,9 @@ constexpr size_t kSpeechLogSize = 100;
 // Setting keys
 constexpr const char* kSpeechRate = "speech.rate";
 constexpr const char* kVolume = "volume";
+constexpr int kMenuJump = 10; // items Left / Right move in a list that is not sorted by name
+constexpr const char* kUnknownArtist = "Unknown artist";
+const std::string kNoLetter = "\x01"; // starts the group of an item that is spoken without a letter
 constexpr int kVolumeStep = 5; // percent per press of a volume key
 constexpr const char* kVerbosity = "verbosity"; // 0 beginner, 1 normal, 2 expert
 constexpr const char* kSkipBack = "skip.back";
@@ -176,8 +179,8 @@ struct ButtonHelp {
 
 const ButtonHelp kButtonHelp[] = {
     {Button::PlayPause, "Play pause", "Starts or pauses playback. Hold to hear where you are."},
-    {Button::Back, "Left", "In menus, lowers a setting. In player, moves back by the step unit. Hold, or press deeper, for previous chapter or track."},
-    {Button::Forward, "Right", "In menus, raises a setting. In player, moves forward by the step unit. Hold, or press deeper, for next chapter or track."},
+    {Button::Back, "Left", "In menus, jumps to the previous letter, or back 10 items. In player, moves back by the step unit. Hold, or press deeper, for previous chapter or track."},
+    {Button::Forward, "Right", "In menus, jumps to the next letter, or forward 10 items. In player, moves forward by the step unit. Hold, or press deeper, for next chapter or track."},
     {Button::Up, "Up", "In menus, previous item. Hold for first item. In player, previous step unit."},
     {Button::Down, "Down", "In menus, next item. Hold for last item. In player, next step unit: skip, track or chapter, album or ten minutes."},
     {Button::Ok, "OK", "Opens the selected item. In player, opens the player menu. Hold to go back, like Home."},
@@ -259,10 +262,11 @@ MenuItem action(std::string label, std::function<void()> fn) {
     return item;
 }
 
-MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn) {
+MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn, ListOrder order = ListOrder::None) {
     MenuItem item;
     item.label = std::move(label);
     item.submenu = std::move(fn);
+    item.submenuOrder = order;
     return item;
 }
 } // namespace
@@ -677,9 +681,6 @@ void App::onButton(ButtonEvent ev) {
     // A held volume key repeats; that never wakes the device or describes a key again.
     if (ev.gesture == Gesture::Repeat && (sleeping_ || keyDescriber_)) return;
 
-    // A value changed with Left / Right is written once the user moves on.
-    if (ev.button != Button::Back && ev.button != Button::Forward) saveChangedSettings();
-
     if (sleeping_) {
         // A key that wakes the device and stays down (a volume key) must not go on to
         // repeat; like a key held when Hold was switched on, it does nothing more.
@@ -687,10 +688,6 @@ void App::onButton(ButtonEvent ev) {
         wake();
         return;
     }
-    // Left / Right on an item without a value do nothing at all, not even stop speech.
-    bool idle = !keyDescriber_ && mode() == Mode::Menu && !screens_.empty() &&
-                (ev.button == Button::Back || ev.button == Button::Forward) && !canAdjust();
-    if (idle) return;
     // Any other key interrupts speech. A repeat does so only when the volume moves (in
     // changeVolume), so "Maximum volume." is not cut off by the repeat that follows it.
     if (ev.gesture != Gesture::Repeat) tts_.stop();
@@ -729,7 +726,7 @@ void App::onButton(ButtonEvent ev) {
     else handleMenu(ev);
 }
 
-// OK goes in, Home goes out, Left / Right change a value (docs/navigation.md).
+// OK goes in, Home goes out, Left / Right jump in a long list (docs/navigation.md).
 void App::handleMenu(ButtonEvent ev) {
     if (screens_.empty()) {
         goHome();
@@ -769,8 +766,8 @@ void App::handleMenu(ButtonEvent ev) {
         return;
     }
     case Button::Back:
-    case Button::Forward: // short, long and deep all step the value once
-        adjust(ev.button == Button::Back ? -1 : 1);
+    case Button::Forward: // short, long and deep all jump once
+        jump(ev.button == Button::Back ? -1 : 1);
         return;
     case Button::Ok:
         if (longPress) back();
@@ -838,9 +835,7 @@ std::string App::itemSpeech(const Screen& screen) const {
     if (verbosity <= Normal)
         text += ", " + std::to_string(screen.index + 1) + " of " + std::to_string(screen.items.size());
     if (verbosity == Beginner) {
-        if (item.adjust && item.submenu) text += ". Use left and right to change, or press OK for the list.";
-        else if (item.adjust) text += ". Use left and right to change.";
-        else if (item.submenu) text += ". Press OK to open.";
+        if (item.submenu) text += ". Press OK to open.";
         else if (item.action) text += ". Press OK to select.";
     }
     return text;
@@ -870,8 +865,10 @@ void App::whereAmI() {
 
 // ---------------------------------------------------------------- screens
 
-void App::openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index) {
+void App::openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index,
+                   ListOrder order) {
     Screen screen = menuScreen(title, std::move(build));
+    screen.order = order;
     screen.index = std::min(index, screen.items.empty() ? 0 : screen.items.size() - 1);
     pushScreen(std::move(screen));
     earcons_.play(Earcon::Open);
@@ -915,7 +912,7 @@ void App::activate() {
     }
     MenuItem item = screen.items[screen.index]; // copy: the action may change the screen stack
     if (item.submenu) {
-        openMenu(item.label, item.submenu, item.selected ? item.selected() : 0);
+        openMenu(item.label, item.submenu, item.selected ? item.selected() : 0, item.submenuOrder);
     } else if (item.action) {
         item.action();
     } else {
@@ -923,18 +920,73 @@ void App::activate() {
     }
 }
 
-// Left / Right only ever change a value. On an item without one they do nothing
-// at all, so they can never be mistaken for "back" or "open".
-bool App::canAdjust() const {
-    const Screen& screen = screens_.back();
-    return !screen.items.empty() && screen.items[screen.index].adjust;
+// The group an item of a list sorted by name falls in, for the jump: its first letter. An item
+// in no letter (the status rows of a list from the server, "Unknown artist") is a group of its
+// own that starts with kNoLetter.
+std::string App::itemGroup(const Screen& screen, size_t i) const {
+    auto list = remoteLists_.find(screen.id);
+    if (list != remoteLists_.end() && i >= list->second.loaded) return kNoLetter + "status";
+    const std::string& label = screen.items[i].label;
+    if (screen.order == ListOrder::ByArtist) {
+        if (screen.items[i].unlettered) return kNoLetter + label;
+        return nameGroup(artistSortName(label));
+    }
+    return nameGroup(label);
 }
 
-void App::adjust(int direction) {
-    if (!canAdjust()) return;
-    MenuItem item = screens_.back().items[screens_.back().index];
-    earcons_.play(item.adjust(direction) ? Earcon::Move : Earcon::Edge);
-    if (item.value) say(item.value());
+// Left / Right in a menu: to the first item of the previous / next letter in a list sorted by
+// name, else kMenuJump items back / forward. The ends play the edge sound, or wrap.
+void App::jump(int direction) {
+    Screen& screen = screens_.back();
+    if (screen.items.empty()) {
+        earcons_.play(Earcon::Edge);
+        say(screen.title + ", empty.");
+        return;
+    }
+    long count = long(screen.items.size());
+    long from = long(screen.index);
+    bool sorted = screen.order != ListOrder::None;
+    long target = from; // stays on the item when there is nowhere to go
+    bool wrapped = false;
+    if (sorted) {
+        auto firstOf = [&](long i) { // the first item of the group of item i
+            std::string group = itemGroup(screen, size_t(i));
+            while (i > 0 && itemGroup(screen, size_t(i - 1)) == group) --i;
+            return i;
+        };
+        if (direction > 0) {
+            std::string group = itemGroup(screen, size_t(from));
+            long next = from;
+            while (next < count && itemGroup(screen, size_t(next)) == group) ++next;
+            if (next < count) target = next;
+        } else if (long start = firstOf(from); start > 0) {
+            target = firstOf(start - 1);
+        }
+        if (target == from && config_.getInt(kMenuWrap, 1) && count > 1) {
+            target = direction > 0 ? 0 : firstOf(count - 1);
+            wrapped = target != from;
+        }
+    } else {
+        target = std::clamp(from + direction * kMenuJump, 0L, count - 1);
+        if (target == from && config_.getInt(kMenuWrap, 1) && count > 1) {
+            target = direction > 0 ? 0 : count - 1;
+            wrapped = true;
+        }
+    }
+    if (target == from) {
+        earcons_.play(Earcon::Edge);
+        say(itemSpeech(screen));
+        return;
+    }
+    screen.index = size_t(target);
+    earcons_.play(wrapped ? Earcon::Wrap : Earcon::Move);
+    std::string text = itemSpeech(screen);
+    if (sorted) {
+        std::string group = itemGroup(screen, screen.index);
+        if (group == "#") group = "Number";
+        if (!group.starts_with(kNoLetter)) text = group + ". " + text;
+    }
+    say(text);
 }
 
 void App::back() {
@@ -1018,12 +1070,7 @@ void App::openPowerMenu() {
     say(menu.title + ". " + itemSpeech(menu));
 }
 
-void App::saveChangedSettings() {
-    if (settingsChanged_) saveConfig();
-}
-
 void App::saveConfig() {
-    settingsChanged_ = false;
     volumeChanged_ = false;
     config_.save();
 }
@@ -1032,7 +1079,7 @@ void App::saveConfig() {
 // to spare the flash. A crash or power loss loses the place since the last exit.
 void App::saveOnExit() {
     rememberPosition();
-    if (settingsChanged_ || volumeChanged_) saveConfig();
+    if (volumeChanged_) saveConfig();
     saveState();
     index_.savePlayTimes(); // the only time play times are written; false: the next exit tries again
     trimCache(true); // the manifests are written on exit too, not at every play (a second call at power off usually finds nothing to do)
@@ -1047,9 +1094,7 @@ void App::saveState() {
 MenuItem App::choice(const std::string& label, const std::string& key,
                      std::vector<std::pair<int, std::string>> options, int fallback,
                      std::function<void(int)> onChange) {
-    // Left / Right step through the options and apply each at once, so the user
-    // hears the new speech rate or volume; the file is written when they move on.
-    // OK opens the whole list, starting on the current value; choosing one saves it and goes back.
+    // OK opens the whole list, starting on the current value; choosing one saves it, applies it and goes back.
     auto current = [this, key, options, fallback]() -> std::optional<size_t> {
         int v = config_.getInt(key, fallback);
         for (size_t i = 0; i < options.size(); ++i)
@@ -1061,26 +1106,6 @@ MenuItem App::choice(const std::string& label, const std::string& key,
     item.value = [this, key, options, fallback, current] {
         auto i = current();
         return i ? options[*i].second : std::to_string(config_.getInt(key, fallback));
-    };
-    item.adjust = [this, key, options, fallback, onChange, current](int dir) {
-        long next = -1;
-        if (auto i = current()) {
-            next = long(*i) + dir;
-        } else { // a stored value that is not an option: step to the nearest option on that side
-            int v = config_.getInt(key, fallback);
-            for (size_t i = 0; i < options.size(); ++i) {
-                int o = options[i].first;
-                bool onSide = dir > 0 ? o > v : o < v;
-                if (onSide && (next < 0 || (dir > 0 ? o < options[size_t(next)].first : o > options[size_t(next)].first)))
-                    next = long(i);
-            }
-        }
-        if (next < 0 || next >= long(options.size())) return false;
-        int v = options[size_t(next)].first;
-        config_.setInt(key, v);
-        settingsChanged_ = true;
-        if (onChange) onChange(v);
-        return true;
     };
     item.selected = [current] { return current().value_or(0); };
     item.submenu = [this, key, options, onChange, current] {
@@ -1125,7 +1150,7 @@ std::vector<MenuItem> App::homeMenu() {
         now.value = [this, title = saved->title] { return book_ ? book_->title : title; };
         items.push_back(now);
     }
-    items.push_back(submenu("Library", [this] { return libraryMenu(); }));
+    items.push_back(submenu("Library", [this] { return libraryMenu(); }, ListOrder::ByName));
     items.push_back(submenu("Music", [this] { return musicMenu(); }));
     std::string server = config_.getString(kServerName);
     items.push_back(submenu(server.empty() ? "Server" : server, [this] { return streamingMenu(); }));
@@ -1241,9 +1266,9 @@ std::vector<MenuItem> App::musicMenu() {
     });
     if (!all.files.empty()) playAll.value = [n = all.files.size()] { return countValue(n, "track"); };
     items.push_back(playAll);
-    items.push_back(submenu("Artists", [this] { return artistsMenu(); }));
-    items.push_back(submenu("Albums A to Z", [this] { return albumList(mergeAlbums(index_.items())); }));
-    items.push_back(submenu("Genres", [this] { return genresMenu(); }));
+    items.push_back(submenu("Artists", [this] { return artistsMenu(); }, ListOrder::ByArtist));
+    items.push_back(submenu("Albums A to Z", [this] { return albumList(mergeAlbums(index_.items())); }, ListOrder::ByName));
+    items.push_back(submenu("Genres", [this] { return genresMenu(); }, ListOrder::ByName));
     items.push_back(submenu("Recently added", [this] { return recentlyAddedMenu(); }));
     items.push_back(submenu("Recently played", [this] { return recentlyPlayedMenu(); }));
     items.push_back(refresh);
@@ -1280,13 +1305,14 @@ std::vector<MenuItem> App::artistsMenu() {
     });
     std::vector<MenuItem> items;
     for (const Artist& a : artists) {
-        MenuItem item = submenu(a.key.empty() ? "Unknown artist" : a.name, [this, key = a.key] {
+        MenuItem item = submenu(a.key.empty() ? kUnknownArtist : a.name, [this, key = a.key] {
             std::vector<MergedAlbum> theirs;
             for (MergedAlbum& m : mergeAlbums(index_.items()))
                 if (artistKey(artistOf(m)) == key) theirs.push_back(std::move(m));
             return albumList(std::move(theirs));
-        });
+        }, ListOrder::ByName);
         item.value = [n = a.albums] { return countValue(n, "album"); };
+        item.unlettered = a.key.empty();
         items.push_back(item);
     }
     return items;
@@ -1354,7 +1380,7 @@ std::vector<MenuItem> App::genresMenu() {
                 for (const auto& g : genresOf(m))
                     if (g.first == key) theirs.push_back(m);
             return albumList(std::move(theirs));
-        });
+        }, ListOrder::ByName);
         item.value = [n = g.albums] { return countValue(n, "album"); };
         items.push_back(item);
     }
@@ -1461,7 +1487,7 @@ std::vector<MenuItem> App::streamingMenu() {
         openAlbumList("Recently added", "newest", kAlbumPageSize, false);
     }));
     items.push_back(action("Albums A to Z", [this] {
-        openAlbumList("Albums A to Z", "alphabeticalByName", kAlbumPageSize, true);
+        openAlbumList("Albums A to Z", "alphabeticalByName", kAlbumPageSize, true, true);
     }));
     items.push_back(action("Artists", [this] {
         auto toItems = [this](const std::vector<RemoteArtist>& artists) {
@@ -1485,7 +1511,8 @@ std::vector<MenuItem> App::streamingMenu() {
                        fetchPages<RemoteArtist>(
                            [this](int, MusicServer::Done<RemoteArtist> done) { return server_.artists(std::move(done)); },
                            toItems),
-                       0, "No artists", "The server has no music yet. Add music to the server, then come back.");
+                       0, "No artists", "The server has no music yet. Add music to the server, then come back.",
+                       ListOrder::ByArtist);
     }));
     items.push_back(action("Playlists", [this] {
         auto toItems = [this](const std::vector<RemotePlaylist>& playlists) {
@@ -1535,8 +1562,9 @@ App::FetchPage App::fetchPages(std::function<MusicServer::RequestId(int offset, 
 // Opens at once with "Loading"; onPage() fills it in. With a page size, the
 // following pages are fetched in the background while the server has more.
 void App::openRemoteList(const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
-                         std::string emptyHelp) {
+                         std::string emptyHelp, ListOrder order) {
     pushScreen({Screen::Kind::Menu, title, {}, {}}); // no build: popScreen() keeps what has loaded
+    screens_.back().order = order;
     std::uint64_t id = screens_.back().id;
     RemoteList& list = remoteLists_[id];
     list.fetch = std::move(fetch);
@@ -1623,14 +1651,15 @@ void App::showStatus(std::uint64_t screenId) {
     screen->index = std::min(screen->index, items.size() - 1);
 }
 
-void App::openAlbumList(const std::string& title, const std::string& listType, int pageSize, bool paged) {
+void App::openAlbumList(const std::string& title, const std::string& listType, int pageSize, bool paged, bool byName) {
     openRemoteList(title,
                    fetchPages<RemoteAlbum>(
                        [this, listType, pageSize](int offset, MusicServer::Done<RemoteAlbum> done) {
                            return server_.albums(listType, offset, pageSize, std::move(done));
                        },
                        [this](const std::vector<RemoteAlbum>& albums) { return albumItems(albums, true); }),
-                   paged ? pageSize : 0, "No albums", "The server has no music yet. Add music to the server, then come back.");
+                   paged ? pageSize : 0, "No albums", "The server has no music yet. Add music to the server, then come back.",
+                   byName ? ListOrder::ByName : ListOrder::None);
 }
 
 void App::openRemoteAlbum(const RemoteAlbum& album, const std::string& info, const std::string& playedId) {
@@ -1994,7 +2023,7 @@ std::vector<MenuItem> App::helpMenu() {
     std::vector<MenuItem> items;
     items.push_back(action("Getting started", [this] {
         say("This player has no screen. Up and Down move through a menu. OK opens the item, Home goes back, "
-            "and holding Home goes to the home menu. Left and Right change a setting. In a player, Up and Down choose the step unit, "
+            "and holding Home goes to the home menu. Left and Right jump in a long list, to the next letter or ten items on. In a player, Up and Down choose the step unit, "
             "and Left and Right move by it. Play pause starts and stops playback, and holding it tells you where you are. The volume keys change the volume "
             "everywhere, and Options shows what can be done with the selected item. "
             "Power puts the player to sleep.");

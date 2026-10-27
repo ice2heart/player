@@ -117,20 +117,20 @@ private:
     void whereAmI();
 
     // Screens and menus
-    void openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index = 0);
+    void openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index = 0,
+                  ListOrder order = ListOrder::None);
     void pushScreen(Screen screen);     // gives it an id
     void closeScreens(size_t keep);     // all but the first `keep`, cancelling their requests
     Screen* findScreen(std::uint64_t id); // nullptr once it has left the stack
     void activate();
-    bool canAdjust() const; // the selected item has a value that Left / Right step
-    void adjust(int direction);
+    void jump(int direction);                              // Left / Right in a menu
+    std::string itemGroup(const Screen& screen, size_t i) const; // the letter group of an item in a list sorted by name
     void back();
     void popScreen(); // back() without a sound or speech
     void goHome();
     void enterPlayer();
     std::optional<size_t> playerScreenIndex() const; // its index in screens_, if it is on the stack
     void openPowerMenu();
-    void saveChangedSettings(); // a value stepped with Left / Right, once the user moves on
     void saveConfig();
     void saveOnExit(); // exit and sleep: the only times state.tsv is written
     void saveState();  // only if it changed since it was loaded or last written
@@ -205,11 +205,11 @@ private:
     static FetchPage fetchPages(std::function<MusicServer::RequestId(int offset, MusicServer::Done<T>)> request,
                                 std::function<std::vector<MenuItem>(const std::vector<T>&)> toItems);
     void openRemoteList(const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
-                        std::string emptyHelp);
+                        std::string emptyHelp, ListOrder order = ListOrder::None);
     void requestPage(std::uint64_t screenId, int offset, bool waiting);
     void onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<MenuItem> items, bool more);
     void showStatus(std::uint64_t screenId); // Loading, the error, or why it is empty, after the loaded items
-    void openAlbumList(const std::string& title, const std::string& listType, int pageSize, bool paged);
+    void openAlbumList(const std::string& title, const std::string& listType, int pageSize, bool paged, bool byName = false);
     // `info`: Album info, last. `playedId`: the index item to mark as played when it plays (Music).
     void openRemoteAlbum(const RemoteAlbum& album, const std::string& info = {}, const std::string& playedId = {});
     std::vector<MenuItem> albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist);
@@ -440,7 +440,6 @@ private:
     mutable std::optional<TrackCache> trackCache_;
     TextFiles* textFiles_ = nullptr;
     bool sleeping_ = false;
-    bool settingsChanged_ = false; // changed with Left / Right, not yet written to disk
     bool volumeChanged_ = false;   // changed with the volume keys, written on exit
     bool volumeEdgeHeard_ = false; // a held volume key already played the edge sound at its limit
     std::optional<Book> book_; // the loaded book, or the album / playlist when music_

@@ -102,16 +102,17 @@ int rank(IndexItem::Source source) {
 
 std::string artistKey(const std::string& name) { return foldedText(name, true); }
 
+std::string artistSortName(const std::string& name) {
+    std::string key = artistKey(name);
+    for (const char* article : kIgnoredArticles) {
+        std::string prefix = std::string(article) + " ";
+        if (key.size() > prefix.size() && key.starts_with(prefix)) return key.substr(prefix.size());
+    }
+    return key;
+}
+
 bool artistLess(const std::string& a, const std::string& b) {
-    auto sortName = [](const std::string& name) {
-        std::string key = artistKey(name);
-        for (const char* article : kIgnoredArticles) {
-            std::string prefix = std::string(article) + " ";
-            if (key.size() > prefix.size() && key.starts_with(prefix)) return key.substr(prefix.size());
-        }
-        return key;
-    };
-    std::string x = sortName(a), y = sortName(b);
+    std::string x = artistSortName(a), y = artistSortName(b);
     if (x != y) return naturalLess(x, y);
     return naturalLess(a, b);
 }
