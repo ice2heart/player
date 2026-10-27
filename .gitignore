@@ -1,5 +1,5 @@
 build*/
-library/
+/library/
 .DS_Store
 music/
 .env

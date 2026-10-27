@@ -43,7 +43,7 @@ add_library(oapcore STATIC
     app/core/buttons.cpp
     app/core/earcons.cpp
     app/core/library.cpp
-app/core/library_index.cpp
+    app/core/library_index.cpp
     app/core/mixer.cpp
     app/core/settings.cpp
     app/core/text.cpp
@@ -81,6 +81,30 @@ add_library(oapconfig STATIC
 )
 target_link_libraries(oapconfig PUBLIC oapcore PRIVATE ${OAP_YAML_CPP})
 target_compile_options(oapconfig PRIVATE -Wall -Wextra)
+
+# ---- library: SqliteLibraryStore, the LibraryStore of the library index (SQLite).
+# SQLite comes from the system if found, else its amalgamation is fetched and built here,
+# so the core-only build and its tests need no system package.
+find_package(SQLite3)
+if(TARGET SQLite::SQLite3)
+    set(OAP_SQLITE SQLite::SQLite3)
+else()
+    FetchContent_Declare(sqlite3
+        URL https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip
+        URL_HASH SHA3_256=f131b68e6ba5fb891cc13ebb5ff9555054c77294cb92d8d1268bad5dba4fa2a1
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(sqlite3)
+    enable_language(C) # sqlite3.c; the project itself is C++ only
+    add_library(oapsqlite3 STATIC ${sqlite3_SOURCE_DIR}/sqlite3.c)
+    target_include_directories(oapsqlite3 SYSTEM PUBLIC ${sqlite3_SOURCE_DIR})
+    target_compile_definitions(oapsqlite3 PRIVATE SQLITE_OMIT_LOAD_EXTENSION SQLITE_THREADSAFE=1)
+    target_link_libraries(oapsqlite3 PUBLIC Threads::Threads m)
+    set(OAP_SQLITE oapsqlite3)
+endif()
+
+add_library(oaplibrary STATIC app/library/sqlite_library_store.cpp)
+target_link_libraries(oaplibrary PUBLIC oapcore PRIVATE ${OAP_SQLITE})
+target_compile_options(oaplibrary PRIVATE -Wall -Wextra)
 
 # ---- net: HttpClient (libcurl, one worker thread) and Subsonic : MusicServer
 # (answers read with yaml-cpp). Only with OAP_BUILD_NET.
@@ -246,11 +270,12 @@ if(OAP_BUILD_TESTS)
         tests/test_no_music_server.cpp
         tests/test_presses.cpp
         tests/test_settings.cpp
+        tests/test_sqlite_library_store.cpp
         tests/test_terminal_keys.cpp
         tests/test_text.cpp
         tests/test_track_cache.cpp
     )
-    target_link_libraries(oap-tests PRIVATE oapcore oapconfig oapmusicserver oapaudio GTest::gtest_main)
+    target_link_libraries(oap-tests PRIVATE oapcore oapconfig oaplibrary ${OAP_SQLITE} oapmusicserver oapaudio GTest::gtest_main)
     if(OAP_BUILD_NET)
         # Set here, not taken from oapmusicserver, so a build that loses OAP_HAVE_NET fails a test.
         target_compile_definitions(oap-tests PRIVATE OAP_TESTS_EXPECT_NET)

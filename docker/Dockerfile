@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build pkgconf ca-certificates git \
         libavformat-dev libavcodec-dev libswresample-dev libavutil-dev \
         libespeak-ng-dev espeak-ng libsdl2-dev libpulse-dev libasound2-dev \
-        libyaml-cpp-dev libcurl4-openssl-dev ffmpeg \
+        libyaml-cpp-dev libcurl4-openssl-dev libsqlite3-dev ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 
@@ -38,7 +38,7 @@ RUN dpkg --add-architecture arm64 && apt-get update && apt-get install -y --no-i
         crossbuild-essential-arm64 qemu-user \
         libavformat-dev:arm64 libavcodec-dev:arm64 libswresample-dev:arm64 libavutil-dev:arm64 \
         libespeak-ng-dev:arm64 libpulse-dev:arm64 libasound2-dev:arm64 libyaml-cpp-dev:arm64 \
-        libcurl4-openssl-dev:arm64 \
+        libcurl4-openssl-dev:arm64 libsqlite3-dev:arm64 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 

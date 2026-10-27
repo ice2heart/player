@@ -300,7 +300,7 @@ int main(int argc, char** argv) {
     std::filesystem::path music = "music";
     const char* home = std::getenv("HOME");
     std::filesystem::path config = std::filesystem::path(home ? home : ".") / ".config/oap-sim/config.yaml";
-    std::filesystem::path state, cache;
+    std::filesystem::path state, cache, libraryDb;
     std::string script, audio = "auto";
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -309,15 +309,17 @@ int main(int argc, char** argv) {
         else if (arg == "--state" && i + 1 < argc) state = argv[++i];
         else if (arg == "--music" && i + 1 < argc) music = argv[++i];
         else if (arg == "--cache" && i + 1 < argc) cache = argv[++i];
+        else if (arg == "--library-db" && i + 1 < argc) libraryDb = argv[++i];
         else if (arg == "--audio" && i + 1 < argc) audio = argv[++i];
         else if (arg == "--help" || arg == "-h") {
             std::string names;
             for (const auto& name : AudioOutput::backends()) names += (names.empty() ? "" : "|") + name;
-            std::printf("usage: oap-sim [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--audio %s] [--script STEPS] "
+            std::printf("usage: oap-sim [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--library-db FILE] [--audio %s] [--script STEPS] "
                         "[LIBRARY_DIR]\n"
                         "  --config FILE  settings and server (default ~/.config/oap-sim/config.yaml)\n"
                         "  --state FILE   positions and the book to resume (default state.tsv next to the config)\n"
-                        "  --cache DIR    downloaded tracks (default cache/ next to the state file)\n",
+                        "  --cache DIR    downloaded tracks (default cache/ next to the state file)\n"
+                        "  --library-db FILE  library index (default library.db next to the state file)\n",
                         names.c_str());
             return 0;
         } else library = arg;
@@ -328,6 +330,10 @@ int main(int argc, char** argv) {
     if (state.empty()) state = defaultStateFile(config);
     if (cache.empty()) cache = state.parent_path() / "cache";
     cache = std::filesystem::absolute(cache).lexically_normal();
+    // The library index file. Nothing opens it yet: App reads the index from step 4.6 on
+    // (docs/streaming.md), which constructs a SqliteLibraryStore on this path.
+    if (libraryDb.empty()) libraryDb = state.parent_path() / "library.db";
+    libraryDb = std::filesystem::absolute(libraryDb).lexically_normal();
 
     Mixer mixer;
     auto output = AudioOutput::open(audio, mixer);
@@ -374,8 +380,8 @@ int main(int argc, char** argv) {
     ImGui_ImplSDLRenderer2_Init(renderer);
 
     printKeys();
-    std::printf("Library: %s\nMusic: %s\nConfig: %s\nState: %s\nCache: %s\n\n", library.c_str(), music.c_str(),
-                config.c_str(), state.c_str(), cache.c_str());
+    std::printf("Library: %s\nMusic: %s\nConfig: %s\nState: %s\nCache: %s\nLibrary index: %s\n\n",
+                library.c_str(), music.c_str(), config.c_str(), state.c_str(), cache.c_str(), libraryDb.c_str());
     app.start();
 
     // Debug aid: OAP_SIM_SNAPSHOT=file.bmp saves the last rendered frame on exit.

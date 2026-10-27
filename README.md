@@ -31,7 +31,7 @@ Debian / Ubuntu, everything (simulator, headless, tests):
 sudo apt install build-essential cmake ninja-build pkgconf ca-certificates git \
     libavformat-dev libavcodec-dev libswresample-dev libavutil-dev \
     libespeak-ng-dev espeak-ng libsdl2-dev libpulse-dev libasound2-dev libyaml-cpp-dev \
-    libcurl4-openssl-dev
+    libcurl4-openssl-dev libsqlite3-dev
 ```
 
 | Package | Needed for |
@@ -43,6 +43,7 @@ sudo apt install build-essential cmake ninja-build pkgconf ca-certificates git \
 | `libsdl2-dev` | `oap-sim` only |
 | `libpulse-dev` / `libasound2-dev` | the `pulse` / `alsa` outputs; drop one by leaving it out of `OAP_AUDIO_BACKENDS` |
 | `libyaml-cpp-dev` | reading `config.yaml`; optional, CMake downloads yaml-cpp without it |
+| `libsqlite3-dev` | the library index (`oaplibrary`); optional, CMake downloads the SQLite amalgamation without it |
 | `libcurl4-openssl-dev` | streaming from a Subsonic server (`OAP_BUILD_NET`: `oapnet`, `oap-net-tests`); without it configure with `-DOAP_BUILD_NET=OFF` |
 
 Only the core and tests (`-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`) need just
@@ -126,7 +127,7 @@ sudo dpkg --add-architecture arm64 && sudo apt update
 sudo apt install crossbuild-essential-arm64 qemu-user cmake ninja-build pkgconf ca-certificates git \
     libavformat-dev:arm64 libavcodec-dev:arm64 libswresample-dev:arm64 libavutil-dev:arm64 \
     libespeak-ng-dev:arm64 libpulse-dev:arm64 libasound2-dev:arm64 libyaml-cpp-dev:arm64 \
-    libcurl4-openssl-dev:arm64
+    libcurl4-openssl-dev:arm64 libsqlite3-dev:arm64
 cmake -S . -B build-pi -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/pi-zero-2w.cmake -DOAP_BUILD_SIM=OFF   # or pi-4.cmake
 cmake --build build-pi && ctest --test-dir build-pi --output-on-failure
 ```

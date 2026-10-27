@@ -18,8 +18,9 @@ docker build -f docker/Dockerfile --target pi --build-arg PI_MODEL=pi-4 .   # th
 ```
 
 `-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF` builds only the core, the config
-library and the tests, without FFmpeg, eSpeak NG, SDL2, audio libraries or libcurl. yaml-cpp
-comes from the system, or CMake downloads it like GoogleTest.
+library, the library index store (`oaplibrary`) and the tests, without FFmpeg, eSpeak NG, SDL2, audio libraries or libcurl. yaml-cpp
+comes from the system, or CMake downloads it like GoogleTest. SQLite (`oaplibrary`) likewise: `libsqlite3-dev`
+from the system, else CMake fetches the amalgamation, so no option or package is needed.
 
 `OAP_BUILD_NET` (streaming: `oapnet`, `oap-net-tests`) needs libcurl and is `ON` by
 default when a front end is built, `OFF` for the core-only build. Add `-DOAP_BUILD_NET=ON`
@@ -34,6 +35,7 @@ build dir between core-only and a front end.
   interfaces in `app/core/services.h` (`Speech`, `MediaPlayer`, `SoundEffects`,
   `VolumeControl`, `Clock`). Do not include `media/` or `platform/` headers from core.
 - `app/media/` holds the FFmpeg `Player` and eSpeak NG `Tts` that implement those interfaces.
+- `app/library/` holds `SqliteLibraryStore : LibraryStore` (SQLite, `library.db`); core never includes it or sqlite3.h.
 - `app/net/` holds `HttpClient` (libcurl), `Subsonic : MusicServer` and `HttpDownloader : Downloader`. A stream
   URL holds the user name and a token that never expires: never speak, log or print it.
 - `app/frontend/` is code shared by the front ends with no dependencies (tested);
