@@ -218,14 +218,12 @@ these rules too ([streaming.md](streaming.md) has the plan).
   opens the track again where it stopped. The next track's stream opens in the
   background 10 s before the end, so tracks change without a wait.
 
-## Music and Library (phase 4)
+## Music and Library
 
-Music is built (steps 4.9 and 4.10) and Streaming is its own Home entry. Server books in
-Library are built (4.11): after the local books, with the value "on the server", they say "Loading." and play like a book
-from their saved place; "Now playing" on Home resumes the last one after a restart (4.12), from its
-files at once if it is downloaded. [streaming.md](streaming.md) phase 4 builds one library from files and server; the
-tree in [architecture.md](architecture.md#current-menu-tree) is what the device does today.
-The rules below are the contract for phase 4.
+Music and Library list one library: the files on the device, the downloads and the albums of the
+server. Streaming is its own Home entry (see below). [streaming.md](streaming.md) phase 4 has the
+plan and what was built; the tree in [architecture.md](architecture.md#current-menu-tree) is the
+same menu with the code behind it.
 
 ```
 Music
@@ -241,7 +239,12 @@ Music
 - **One list for both sources.** An album that is on the device and on the server
   is one entry. It plays from the local files first, then from a download, then
   from the server. Browsing uses the saved index, so it opens at once, works
-  offline and never waits on the network. Start-up does not rescan.
+  offline and never waits on the network. Start-up shows the saved index at once and rescans the files in the background.
+- **While the first scan runs** (a first start, no saved index) an empty Library or Music
+  has the item "Scanning" in place of "Library is empty" / "No music"; OK says "Looking for
+  books. Try again in a moment." or "Looking for music. Try again in a moment.", and so does Play all when it has no
+  files yet. Music keeps "Refresh library" under it. Lists are built when opened, so what the
+  scan finds shows the next time you open them.
 - **Music lists are local menus.** They are not "lists from the server": no
   "Loading" and no "Try again". A scan or sync that finishes meanwhile replaces
   the index silently, and the menu shows it the next time you come back to it
@@ -283,7 +286,8 @@ Music
   nothing.
 - **Server books are in Library**, after the local books, with the value "on the
   server" (spoken after the title). They are never in Music. They open as books:
-  chapters are the tracks, and the place is kept and resumed like a local book.
+  chapters are the tracks, and the place is kept and resumed like a local book. A book that is
+  both on the device and on the server is listed twice, once for each; they are not merged.
   While their tracks load, the "Loading" rules apply. After a restart "Now playing" on Home resumes the
   book that played last (it is the last played unless a stream played after it); a downloaded book plays from
   its files at once, otherwise with the server down "Server not reachable." is said and Home stays.

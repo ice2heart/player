@@ -1,7 +1,7 @@
 # Software Architecture
 
 > Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end,
-> streaming from a Subsonic server, with a local cache and downloads: phases 1 to 3 of [streaming.md](streaming.md)). Last updated: 2026-10-27.
+> streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)). Last updated: 2026-10-27.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -16,15 +16,19 @@ core depends on none of them:
 │   app/headless/  device: evdev buttons, terminal keys, no screen      │
 │   app/frontend/  shared: scripted presses, terminal keys, gamepad map │
 │                  makeMusicServer(): Subsonic, else NoMusicServer      │
+│                  ThreadedScanner: background scan of the files        │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Core  (app/core/, plain C++, no dependencies, library "oapcore")      │
 │   App ── menus, player screen, power states, settings                 │
 │    ├── GestureDetector   press/release → short / long press           │
-│    ├── Library           scans folders into books                     │
+│    ├── Library           the files on disk as books and music         │
+│    ├── LibraryIndex      books, albums, server items in memory,       │
+│    │                     saved through LibraryStore, merged views     │
 │    ├── Settings          dotted keys in memory, SettingsStore for I/O │
 │    └── services.h        Speech · MediaPlayer · SoundEffects ·        │
 │                          VolumeControl · Clock · MusicServer ·        │
-│                          Downloader · TextFiles (interfaces)          │
+│                          Downloader · TextFiles · LibraryStore ·      │
+│                          LibraryScanner · TagReader (interfaces)      │
 │   TrackCache             downloaded and cached tracks, manifests      │
 │   Earcons                synthesized  → effects stream                │
 │   Mixer                  content + speech + effects → PCM, ducking    │
@@ -44,6 +48,7 @@ core depends on none of them:
 ├───────────────────────────────────────────────────────────────────────┤
 │ Media  (app/media/, library "oapmedia")                               │
 │   Player : MediaPlayer   FFmpeg decode → content stream               │
+│   FfmpegTagReader : TagReader   tags of local files                   │
 │   Tts    : Speech        eSpeak NG    → speech stream                 │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Platform  (app/platform/, library "oapaudio")                         │
@@ -87,7 +92,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/library.{h,cpp}` | `Book` (also a remote list or, with `serverBook`, an audiobook of the server: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set), `scanLibrary(root, skip)`, which leaves out the cache folder `skip`. |
 | `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<kind>%3A<list id>/`, where a list is an album or a playlist (the kind in the folder name keeps an album and a playlist with one id apart). Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 2`, then a line `list<TAB>album|playlist<TAB>id<TAB>name<TAB>artist`, then per track tab-separated: id, file, title, duration, a reserved `changed` column (always empty: a download is never compared with the server), pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), read and written through the `TextFiles` interface of `services.h` (core does no file I/O of its own; `DiskTextFiles` in `app/config/` writes with `writeFileAtomically()`: temp file, `fsync`, rename, mode 0600; tests use the same on a temp folder). If `save()` finds a manifest that is there but not valid, it deletes the files in the folder that the new manifest does not name (never a `.part`, never another folder), so a damaged manifest leaves no orphans; a manifest that cannot be read at all (an I/O error) is not replaced (`save()` fails). A missing or corrupt manifest reads as empty, and so does a manifest of format 1 (it had no list line; no device ever held one) or one whose list line does not match its folder (a copied folder). `lists()` gives the lists with at least one complete track, sorted by name (`lists(true)`: only those with a complete pinned track, for Streaming > Downloaded); `trim(limit, played, keep, info)` writes play times into `lastPlayed` (the latest play replaces the old time; a time before `kEarliestPlayTime`, 2020-01-01, is a clock that was never set and is ignored) and evicts unpinned tracks and `.part` files (a `.part` first, then least recently played first), above the limit; `info` gives the evicted ids and the bytes left (section 5, "Automatic cache"); `remove()` deletes one list folder, only ever a direct child of the server's folder. `find(trackId)` returns the complete file of a track from any list (`index()` does it for every track in one pass, `completeFile()` for one manifest entry), never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
 | `app/frontend/threaded_scanner.{h,cpp}` | `ThreadedScanner : LibraryScanner` (both front ends construct it with an `FfmpegTagReader` and pass it to `App`): one worker thread runs `scan(ScanRequest, Done)` jobs in order. A `ScanRequest` holds the library root, the music root, the cache folder to skip and the `previous` local items. The worker lists the roots with `scanLibrary()` (the same files the menus show, cache folder skipped), keeps the track of a file whose path, size and file time (`stat`, whole seconds) equal an entry in `previous` (same kind), and reads tags through `TagReader` only for the others; a file that is not a regular file is never opened (a FIFO would block). Output, all `Source::Local`, `firstSeen` and `lastPlayed` 0: a `Book` item per folder or loose file under the library root, id `local:book:<path>`, titled by the folder, a track per file (title from the tags, else the file name); `Music` items grouped by tags: id `local:album:<album artist or artist>\x1f<album>` (an album in several folders is one item), and files without an album tag by the folder under the music root, id `local:folder:<path>`, titled by the folder name. A file whose tags cannot be read is listed with its file name as title. A book's tracks are in file order (`pathLess`); an album's are ordered by folder, then track number (none: last), then file name (the disc number is not stored). A scan that throws (the reader or an allocation) delivers nothing and the worker goes on. A file with a tag edit that keeps both size and whole-second time is not noticed; the books' files are probed too, once. Results are delivered from `poll()`; `cancel(id)` never waits (a queued scan is dropped, a running one stops after the file it reads) and the callback never runs; the destructor does the same and joins, so a read stuck on a hung mount can delay it. `FakeLibraryScanner` (tests/fakes.h) records requests and delivers only on `finish()` + `poll()`. |
-| `app/core/library_index.{h,cpp}` | `LibraryIndex` (owned by `App`, built on the `LibraryStore` it is given; see section 8): the library in memory, `IndexItem` (id, source local/server/cached, kind book/music/podcast, title, artist, album, genre, year, MusicBrainz id, first-seen and last-played wall times, tracks, `seenOn`) with `IndexTrack` (location, title, artist, number, duration, size, file time, `seenOn`). `seenOn` holds server references `<server key>:<album\|playlist\|track>:<id>` (`seenRef()`; `refOnServer()` finds the one for a server key), each at most once. Lookups by id, by track location, and by reference. `upsert()` merges (keeps first-seen, later last-played, and the references already there), `replaceSource()` is a scan, `replaceServer()` a sync of one server key. It loads and saves through `LibraryStore` in `services.h` (`load()`; `save(changed, removed)`), and `save()` hands over only the items that changed and the ones removed, nothing when none did. The SQLite store comes in step 4.3. |
+| `app/core/library_index.{h,cpp}` | `LibraryIndex` (owned by `App`, built on the `LibraryStore` it is given; see section 8): the library in memory, `IndexItem` (id, source local/server/cached, kind book/music/podcast, title, artist, album, genre, year, MusicBrainz id, first-seen and last-played wall times, tracks, `seenOn`) with `IndexTrack` (location, title, artist, number, duration, size, file time, `seenOn`). `seenOn` holds server references `<server key>:<album\|playlist\|track>:<id>` (`seenRef()`; `refOnServer()` finds the one for a server key), each at most once. Lookups by id, by track location, and by reference. `upsert()` merges (keeps first-seen, later last-played, and the references already there), `replaceSource()` is a scan, `replaceServer()` a sync of one server key. It loads and saves through `LibraryStore` in `services.h` (`load()`; `save(changed, removed)`), and `save()` hands over only the items that changed and the ones removed, nothing when none did. The SQLite store is `SqliteLibraryStore` in `app/library/`. |
 | `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `serverConfigured()`. |
 | `app/library/sqlite_library_store.{h,cpp}` | `SqliteLibraryStore : LibraryStore` (both front ends construct it on `--library-db` and pass it to `App`): `library.db` with tables `schema_version` (2: 4.8 added `items.track_count` and `items.created`; a version 1 file is moved aside and rebuilt by scan and sync), `items`, `tracks` (by item and position) and `refs` (the `seenOn` of an item, or of its track by position). `save()` is one `BEGIN IMMEDIATE` transaction that deletes and rewrites each changed item and deletes the removed ones, and rolls back on any error. Rollback journal (no WAL), `synchronous=FULL`, file mode 0600 (also set on an existing file). A file that is damaged (`quick_check`), not a database, or of another schema version is renamed to `library.db.bad` (replacing an earlier one) and the store starts empty; a file with no tables is new. Front ends take `--library-db FILE` (default `library.db` next to `state.tsv`, so `/data/config/library.db` on the device). |
 | `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys) and `TsvStore` (`state.tsv`). |
@@ -367,7 +372,7 @@ is added only at Beginner.
 ```
 Home
 ├── Now playing: <book or album>   (when something is loaded, or a stream to resume: `last_stream.*`, or a server book: `last_book`)
-├── Library → <books>              (OK plays/resumes)
+├── Library → <books>              (OK plays/resumes; then the books of the server's audiobook folder, value "on the server": "Loading.", then they play; "Scanning" while the first scan runs)
 ├── Music
 │   ├── Play all                   (the files on the device, albums in the order of Albums A to Z; with only server albums it says "No music")
 │   ├── Artists → <artist> → <albums>   (local and server artists once each, sorted without "The"; "Unknown artist" last)
@@ -581,8 +586,9 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   book uses the **embedded chapters** (M4B, MP3 CHAP via FFmpeg). With neither,
   the whole book is one chapter.
 - **Music** lives in its own folder (`App`'s `musicRoot`, simulator `--music DIR`,
-  default `./music`) and is scanned the same way: a sub-folder is an album, a top-level
-  file is a loose track. Music reuses the book playback code (`book_` holds the album or the
+  default `./music`) and is scanned in the same background scan, but grouped by its tags
+  into albums (see "The index" above): an untagged file is grouped by its folder under the
+  music root, and a top-level untagged file is a loose track. Music reuses the book playback code (`book_` holds the album or the
   "Play all" list, `music_` is set), but it says "track" instead of "chapter", ends with
   "End of music", and **saves no position and does not change `last_book`**. Playing music
   never makes you lose your place in a book.
@@ -838,6 +844,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 - Every write is atomic (`writeFileAtomically`): `FILE.tmp` created with mode 0600,
   `fsync`, `rename`, then `fsync` of the folder. A power cut leaves the old file.
 - The old single `settings.tsv` is not read any more; settings start from the defaults.
+- **`library.db`** (`--library-db`, default next to `state.tsv`) is the library index, written by `SqliteLibraryStore` (section 8 and the source table): only what changed, in one transaction, and the play times (`lastPlayed`) only on exit and sleep. It is a cache of what the disk and the server hold, so a lost or damaged file (moved to `library.db.bad`) is rebuilt by the next scan and sync; Factory reset leaves it alone.
 
 ## 10. Simulator (`app/sim/main.cpp`)
 
@@ -853,8 +860,8 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 - **Game controller:** SDL game controllers (DualSense, Xbox, ...) go through `GamepadMapper`,
   the same map as `oap-headless`: D-pad = arrows, Square = Play/Pause, Cross = OK,
   Circle = Home, L1 + Left/Right = deep press. Pads can be plugged in while it runs.
-- **Arguments:** `oap-sim [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--audio NAME] [--script STEPS] [LIBRARY_DIR]`.
-  `--audio` is `auto` (default), `coreaudio`, `pulse`, `alsa[:DEVICE]` or `null`, among those built in.
+- **Arguments:** `oap-sim [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--library-db FILE] [--audio NAME] [--script STEPS] [LIBRARY_DIR]`.
+  `--library-db` moves the library index (default `library.db` next to the state file). `--audio` is `auto` (default), `coreaudio`, `pulse`, `alsa[:DEVICE]` or `null`, among those built in.
   `tools/make_sample_library.sh [LIBRARY_DIR] [MUSIC_DIR]` makes a spoken sample library and some tone "music".
 - **Script mode:** `--script "ok down ok wait:3000 right:long play:long quit"`
   presses buttons automatically, for repeatable walkthroughs and future UI tests.
@@ -865,9 +872,9 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 
 ## 11. Headless front end (`app/headless/`) and the Linux device
 
-- **Arguments:** `oap-headless [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--audio NAME] [--input LIST]
+- **Arguments:** `oap-headless [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--library-db FILE] [--audio NAME] [--input LIST]
   [--evdev-device PATH] [--script STEPS] [LIBRARY_DIR]`. The config defaults to
-  `~/.config/oap/config.yaml`, the state to `state.tsv` next to it (section 9), the cache of downloaded tracks to `cache/` next to the state.
+  `~/.config/oap/config.yaml`, the state to `state.tsv` next to it (section 9), the cache of downloaded tracks to `cache/` next to the state, the library index to `library.db` next to the state.
 - **Inputs** (`--input evdev,terminal,none`; default `evdev` without a tty; on a tty the CMake
   setting `OAP_HEADLESS_TTY_INPUT`: `terminal`, or `evdev,terminal` in the Pi toolchains, since
   a desktop would see each key twice):
@@ -894,7 +901,7 @@ Still to do for the device:
 | Input | Key map from `hal.toml` instead of the built-in table; MCU serial events. |
 | Power | Replace simulated sleep with real suspend (`/sys/power/state` or a request to the MCU). |
 | Status | Battery from the fuel gauge (sysfs `power_supply`), Wi-Fi from iwd. See the HAL plan in [hal.md](hal.md). |
-| Paths | Library under `/data/library`, `config.yaml` and `state.tsv` under `/data/config` (`--config /data/config/config.yaml`), the download cache in `/data/library/cache` (`--cache /data/library/cache`; without `--cache` it is `cache/` next to `state.tsv`). `scanLibrary()` skips it, and so does the scan. |
+| Paths | Library under `/data/library`, `config.yaml` and `state.tsv` under `/data/config` (`--config /data/config/config.yaml`), the download cache in `/data/library/cache` (`--cache /data/library/cache`; without `--cache` it is `cache/` next to `state.tsv`). `scanLibrary()` skips it, and so does the scan. The library index is `/data/config/library.db` (`--library-db`, or next to `state.tsv`). |
 
 Nothing in `app/core/` uses macOS APIs.
 
@@ -904,7 +911,7 @@ Nothing in `app/core/` uses macOS APIs.
 ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 ```
 
-- `oap-tests` links only `oapcore`, `oapconfig`, `oapfrontend`, `oapmusicserver` and `oapaudio`, so it builds without FFmpeg, eSpeak NG,
+- `oap-tests` links only `oapcore`, `oapconfig`, `oaplibrary` (SQLite, system or fetched), `oapmusicserver` (and through it `oapfrontend`) and `oapaudio`, so it builds without FFmpeg, eSpeak NG,
   SDL2, audio libraries or libcurl (`cmake -DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`, where `OAP_BUILD_NET` defaults to `OFF`);
   yaml-cpp is downloaded if missing. With `OAP_BUILD_NET` it links `oapnet` and libcurl through `oapmusicserver`. Without a front end
   `oapaudio` holds only the null output; the device backends are added with the sim or headless build.
@@ -915,7 +922,7 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   request; answers only when the test calls `reply` / `replyPing` / `replyVersion` / `fail`, and then
   only on the next `poll()`; honours `cancel`; its stream URLs show the quality,
   `fake://stream/<id>?maxBitRate=<kbps>`, and with `saltUrls` differ on each call, as a
-  real server's do; `scrobble()` calls are recorded in `scrobbles`). `FakeDownloader` records each `download()` and finishes only when the test calls `finish(id, result)` (which writes `dest` for `Ok`, or a `.part` for a failure, if asked) or `progress()`, then on the next `poll()`; honours `cancel`. `FakePlayer` records the `Transcoded` of the last open.
+  real server's do; `scrobble()` calls are recorded in `scrobbles`). `FakeLibraryStore` keeps the index in memory and counts saves, `FakeTagReader` maps path to tags and counts reads, and `FakeLibraryScanner` records each `ScanRequest` and delivers only on `finish()` + `poll()`. `FakeDownloader` records each `download()` and finishes only when the test calls `finish(id, result)` (which writes `dest` for `Ok`, or a `.part` for a failure, if asked) or `progress()`, then on the next `poll()`; honours `cancel`. `FakePlayer` records the `Transcoded` of the last open.
   `test_fake_music_server.cpp` checks that contract.
 - `test_config.cpp` tests YAML ⇄ dotted keys, `YamlStore` / `TsvStore` on real files
   (mode 0600, atomic replace, a broken file left alone) and `SettingsFiles`.
@@ -926,6 +933,7 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 - `test_terminal_keys.cpp` tests the headless terminal key decoding, including sequences split across reads.
 - `test_presses.cpp` tests `parseScript` and `PressSequencer` timing; `test_held_buttons.cpp` tests `HeldButtons`.
 - `test_gamepad.cpp` tests the gamepad map, including the order of light and deep stages.
+- `test_library_index.cpp` (items, `seenOn` lookups, what `save()` hands over), `test_sqlite_library_store.cpp` (round trips, one transaction, a damaged or newer file moved aside, mode 0600), `test_threaded_scanner.cpp` (real folders with `FakeTagReader`: unchanged files are not read again, grouping into albums, cancel) and `test_album_merge.cpp` (`mergeAlbums()`, the name rule, `albumInfoText()`) test the library without `App`; the menus built on them are in `test_app.cpp`.
 - `test_no_music_server.cpp` tests `NoMusicServer` (answers only from `poll()`, `cancel`, also from a callback).
 - `test_make_music_server.cpp` tests `makeMusicServer()`: no server, another server type, and a Subsonic server,
   which streams only in a build with `OAP_BUILD_NET` (CMake tells the test which build it is in).
@@ -951,8 +959,9 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 
 - Speed control (libavfilter `atempo`, or Sonic), skip silence.
 - Bookmarks, podcasts (RSS), sync (Audiobookshelf).
-- Streaming phases 2a, 4 and 5 in [streaming.md](streaming.md): star / unstar and a Starred
-  list, one library with the server, and sync.
+- Streaming phases 2a and 5 in [streaming.md](streaming.md): star / unstar and a Starred
+  list, and sync. The limits of phase 4 (one library) are listed under "Known limits after
+  phase 4" there.
 - STT (Talk button): push-to-talk capture plus sherpa-onnx, Vosk or whisper.cpp.
 - Localisation of spoken strings; a choice of TTS voice.
 - Hardware abstraction (battery, headphone jack, Wi-Fi, Bluetooth, suspend): planned in [hal.md](hal.md).

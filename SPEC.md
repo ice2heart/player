@@ -274,7 +274,9 @@ Design:
   The library index (local files, downloads and server albums, with where each was seen) is
   `library.db` next to `state.tsv`. The app core holds the index in memory and loads and saves
   it through a `LibraryStore` interface; only the SQLite implementation knows the database
-  (planned, [docs/streaming.md](docs/streaming.md) phase 4).
+  ([docs/streaming.md](docs/streaming.md) phase 4). The scan of the files runs in the background and
+  reads tags only of new or changed files, so start-up shows the saved index at once; the
+  database is a cache that a scan and a sync rebuild, so a damaged file is moved aside and replaced.
 - Folder layout on data partition:
   ```
   /data/library/audiobooks/<Author>/<Title>/...
@@ -322,7 +324,7 @@ Hierarchical list navigation, like a screen reader:
 ```
 Home
 ├── Continue listening          (last item, one press to resume)
-├── Audiobooks                 (planned, phase 4: books on the server are listed after the local ones, value "on the server")
+├── Audiobooks                 (built so far as "Library", a flat list of books: those on the server are listed after the local ones, value "on the server")
 │   ├── Recently played
 │   ├── By author
 │   ├── By title
@@ -332,8 +334,7 @@ Home
 │   ├── Subscriptions → <feed> → <episode>
 │   ├── Add podcast (search / URL by voice)
 │   └── Refresh now
-├── Music                      (albums = folders; Play all)
-│   (planned, phase 4: one library of local and server albums)
+├── Music                      (albums grouped by their tags; one library of local and server albums, an album on both once)
 │   ├── Play all               (what is on the device, never the whole server)
 │   ├── Artists
 │   ├── Albums A to Z

@@ -1,8 +1,9 @@
 # Streaming from a Subsonic server: plan
 
-> Status: **phases 1 to 3 built** (stream and play, see [What phase 1 built differently](#what-phase-1-built-differently);
+> Status: **phases 1 to 4 built** (stream and play, see [What phase 1 built differently](#what-phase-1-built-differently);
 > robust streaming, see [Phase 2](#phase-2-robust-streaming); local cache and downloads, see
-> [Phase 3 as built](#phase-3-as-built)). Phases 2a, 4 and 5 are a plan. The code is described in [architecture.md](architecture.md), and the
+> [Phase 3 as built](#phase-3-as-built); one library of files and server, see
+> [Phase 4 as built](#phase-4-as-built)). Phases 2a and 5 are a plan. The code is described in [architecture.md](architecture.md), and the
 > rules for lists from the server are in [navigation.md](navigation.md#lists-from-the-server).
 > Last updated: 2026-10-27.
 > Target server: Navidrome 0.64 (Subsonic API 1.16.1, OpenSubsonic). Test server:
@@ -534,7 +535,7 @@ Decided for this phase:
 | ✅ 4.10 | **Genres, Recently added, Recently played.** Genres from tags and from the server's album genre. Recently added is newest first: the first-seen time for local albums, `created` for server albums. Recently played is the last-played time an album gets when it plays, kept in memory and written with the index on exit and sleep, like the state. | A genre lists albums from both sources. Recently added orders a new local album and a new server album by time. Playing an album puts it first in Recently played after a restart. Playing writes nothing to disk until exit or sleep. A wall time before 2020-01-01 is ignored, as in the cache. |
 | ✅ 4.11 | **Audiobooks from the server.** `MusicServer::musicFolders(done)` (`getMusicFolders`) and a `musicFolderId` on the album list. `server.audiobook_folder` in `config.yaml` names a folder, and sync gives its albums `kind: book`. They are listed in Library after the local books (with "on the server" as the value), not in Music. They open as books: chapters are the tracks, the place is kept per server key + album id in `state`, and it is resumed when the book is opened again. Fetched with "Loading", as in 4.9. | Net tests: the folders are parsed, and the album list URL carries `musicFolderId`. With the folder set, its albums are in Library and not in Music; without it nothing changes. Opening a server book says "Chapter", and pause, another book, then this book again resume the place. No `pos:` key is ever made from a URL, and nothing spoken or saved contains one. |
 | ✅ 4.12 | **Resume a server book.** `last_book` can name a server book, so "Now playing" on Home and a restart resume it like a local book. With the server down, a downloaded book plays from its files; otherwise "Server not reachable." is said and Home stays. Opening a server book removes `last_stream.*`, as a local book does today. | Exit and restart resume the server book at its chapter and place. Server down: a downloaded book plays offline, and one that is not downloaded gives the error. A local `last_book` and a `last_stream` still resume as before. |
-| 4.13 | Docs: architecture.md (index, scanner, tag reader, sync, merged views, server books), navigation.md where the build differs from 4.1, SPEC, and what phase 4 built differently. | – |
+| ✅ 4.13 | Docs: architecture.md (index, scanner, tag reader, sync, merged views, server books), navigation.md where the build differs from 4.1, SPEC, and what phase 4 built differently. | – |
 
 **Device check (manual):** with the test server set up, the first start lists Music
 from local files, and the server albums appear within a minute without anything being
@@ -543,6 +544,77 @@ and on the server is listed once and plays without network traffic. With Wi-Fi o
 Music still lists everything, a local album plays, and a server album says "Server not
 reachable". A book in the server's audiobook folder is in Library and resumes after a
 restart. Refresh library after an album is added on the server lists it.
+
+### Phase 4 as built
+
+The plan above is kept as it was written. Where the code differs, the code is right:
+
+- **The index.** `LibraryIndex` (`app/core/`) is the whole library in memory; `App` loads it
+  through `LibraryStore` when it is built and saves only the items that changed, in one
+  transaction. `library.db` has schema version 2 (4.8 added the track count and `created`); a file that
+  is damaged, not a database or of another version is renamed to `library.db.bad` and the store
+  starts empty, so the next scan and sync fill it. `--library-db` defaults to `library.db` next
+  to `state.tsv` (so `/data/config/library.db` on the device). A scan or sync that changes nothing writes nothing.
+- **Scan.** `ThreadedScanner` (`app/frontend/`) lists the roots with `scanLibrary()`, reuses
+  an entry whose path, size and whole-second file time are unchanged, and reads tags through
+  `FfmpegTagReader` (which lowers FFmpeg's log level to errors) only for the rest. Items:
+  `local:book:<path>` (a book per folder or loose file under the library root, titled by the
+  folder), `local:album:<album artist or artist>\x1f<album>` for tagged music (an album in
+  several folders is one item) and `local:folder:<path>` for music without an album tag
+  (grouped by its folder under the music root). Lists are built when opened and are not
+  refreshed live; until the first scan is done an empty Library or Music says "Scanning".
+  `last_book` of a book the index does not know yet is looked up with `scanLibrary()`.
+- **Sync.** Start-up and Music, Refresh library run the same sync; Refresh also rescans and
+  joins a scan or sync that is already running. The albums are fetched again only when
+  `lastModified` of `getArtists` differs from `catalogue.version` in `state.tsv` (kept with
+  `catalogue.server`, and `catalogue.folder` for the audiobook folder), or the index holds no
+  server item of that key. The version is stored only after a save that worked. Items from
+  another server key are dropped. The start-up sync is silent, also on an error.
+- **Merged views.** Nothing merged is stored. A local or downloaded album gets the server
+  item's reference in its `seenOn` (by reference first, by the name rule only for items with no
+  reference), and `mergeAlbums()` builds the merged entries whenever a menu is built. A
+  download is a `cached:<ref>` item made from the manifests of `TrackCache` each time Music
+  is built, and it plays as local files.
+- **Texts.** Album info says "On the device.", "Downloaded." or "On the server.", then "Also on
+  the server.", the artist and the track count (not "On this device" or the server's name).
+  Refresh says "Updating the library.", "Library updated, N albums." (an album on both counts once),
+  "Still updating." or the error.
+- **Music.** Artists sort without a leading "The" only: the server's `ignoredArticles` is
+  not read. Cyrillic and other scripts come after Latin names, and an album with no artist is
+  under "Unknown artist", last. Genres are merged without case or spacing; albums with no
+  genre are left out. Recently added and Recently played list 50 albums at most; times
+  before 2020-01-01 are ignored. A play time is set in memory when an album starts from Music
+  (not Play all, Streaming or Downloaded) and written only on exit and sleep. A server-only
+  album opens like one in Streaming (Loading, Play album, Download album, tracks) with Album
+  info last.
+- **Server books.** `server.audiobook_folder` is the exact name of a music folder. The sync
+  asks `getMusicFolders`, fetches that folder's album ids, then the whole catalogue, and the
+  albums in the folder are `Kind::Book`; a name the server does not have makes no books and
+  the sync is not remembered. They are listed in Library after the local books with the value
+  "on the server", never in Music and never merged with a local or downloaded copy (a book
+  that is on both is listed twice). The place is `pos:<server key>:album:<id>`, with no URL.
+- **Resume a server book.** `last_book` is the book's item id `<server key>:album:<id>` and is
+  set only once the book plays (a failed open changes nothing), with `last_stream.*` removed at that
+  point, not at the open. A book that is whole on disk plays at once, with no "Loading." and
+  also offline. Any other says "Loading." and asks the server; with it down "Server not
+  reachable." is said and Home stays. Unlike a stream, a partly downloaded book does not fall
+  back to the files on disk, since its chapter numbers would shift.
+
+Known limits after phase 4: Streaming is still a separate Home entry. There is no sync
+when Wi-Fi connects (the platform gives no network state, [hal.md](hal.md)), only at start-up and from
+Refresh. A server album's tracks are not in the index, so offline only a downloaded or device
+album can be opened. A catalogue stops at 200000 albums (an error). The albums are fetched
+from `getAlbumList2`, so only an album-level genre is known. A tag edit that keeps a file's size
+and whole-second time is not noticed by the scan; the disc number is not stored, so a
+multi-disc album is ordered by folder, then track number. A play time sits on one item: if
+the item is removed and comes back under another id (a moved folder, a deleted and renewed
+download) the album is not in Recently played any more, and an album first seen while the
+clock was not set is left out of Recently added. The destructor of the scanner joins its thread, so
+a read stuck on a hung mount can delay exit (the state and the play times are saved first). A download of a book that left the index is listed in
+Music as an album, and "Now playing" for it goes. Local music played after a server book
+leaves `last_book` alone, so a restart resumes the book. The manifest's `changed` column is
+still empty, and Album info moves to Options when queue.md Q7 is built.
+
 
 ## Phase 5: sync and playlists
 
