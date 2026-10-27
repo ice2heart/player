@@ -1,6 +1,7 @@
 #include "library_index.h"
 
 #include <algorithm>
+#include <set>
 
 namespace oap {
 
@@ -26,8 +27,10 @@ void addOnce(std::vector<std::string>& refs, const std::string& ref) {
 }
 
 // Returns true if anything was removed.
-bool dropServer(std::vector<std::string>& refs, const std::string& serverKey) {
-    auto gone = std::remove_if(refs.begin(), refs.end(), [&](const std::string& r) { return onServer(r, serverKey); });
+// References in `keep` stay.
+bool dropServer(std::vector<std::string>& refs, const std::string& serverKey, const std::set<std::string>* keep = nullptr) {
+    auto gone = std::remove_if(refs.begin(), refs.end(),
+                               [&](const std::string& r) { return onServer(r, serverKey) && !(keep && keep->count(r)); });
     bool any = gone != refs.end();
     refs.erase(gone, refs.end());
     return any;
@@ -151,14 +154,20 @@ void LibraryIndex::replaceSource(IndexItem::Source source, const std::vector<Ind
 }
 
 void LibraryIndex::replaceServer(const std::string& serverKey, const std::vector<IndexItem>& items, int64_t now) {
-    std::set<std::string> incoming;
-    for (const auto& item : items) incoming.insert(item.id);
+    std::set<std::string> incoming, incomingRefs;
+    for (const auto& item : items) {
+        incoming.insert(item.id);
+        incomingRefs.insert(item.seenOn.begin(), item.seenOn.end());
+    }
     // What the touched items were, so an item that comes back the same is not written again.
     std::map<std::string, IndexItem> before;
     std::vector<std::string> gone;
     for (auto& [id, item] : items_) {
         IndexItem copy = item;
-        bool touched = dropServer(item.seenOn, serverKey);
+        // A local or downloaded item keeps a reference the server still has: matched by
+        // reference first, so a renamed album is still the same entry.
+        bool touched = item.source == IndexItem::Source::Server ? dropServer(item.seenOn, serverKey)
+                                                                : dropServer(item.seenOn, serverKey, &incomingRefs);
         for (auto& track : item.tracks) touched = dropServer(track.seenOn, serverKey) || touched;
         if (!touched) continue;
         before.emplace(id, std::move(copy));

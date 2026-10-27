@@ -14,7 +14,7 @@ namespace oap {
 
 namespace {
 
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2; // 2: items.track_count and items.created (4.8); version 1 is moved aside and rebuilt by scan and sync
 constexpr mode_t kFileMode = 0600; // the index lists what the user listens to
 constexpr int kItemRef = -1;       // `track` of a refs row that belongs to the item itself
 
@@ -24,7 +24,8 @@ constexpr const char* kSchema =
     " id TEXT PRIMARY KEY, source INTEGER NOT NULL, kind INTEGER NOT NULL,"
     " title TEXT NOT NULL, artist TEXT NOT NULL, album TEXT NOT NULL, genre TEXT NOT NULL,"
     " year INTEGER NOT NULL, musicbrainz_id TEXT NOT NULL,"
-    " first_seen INTEGER NOT NULL, last_played INTEGER NOT NULL);"
+    " first_seen INTEGER NOT NULL, last_played INTEGER NOT NULL,"
+    " track_count INTEGER NOT NULL, created INTEGER NOT NULL);"
     "CREATE TABLE tracks ("
     " item_id TEXT NOT NULL, position INTEGER NOT NULL,"
     " location TEXT NOT NULL, title TEXT NOT NULL, artist TEXT NOT NULL,"
@@ -146,7 +147,7 @@ public:
         : delRefs_(db, "DELETE FROM refs WHERE item_id = ?"),
           delTracks_(db, "DELETE FROM tracks WHERE item_id = ?"),
           delItem_(db, "DELETE FROM items WHERE id = ?"),
-          insItem_(db, "INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?,?,?)"),
+          insItem_(db, "INSERT INTO items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"),
           insTrack_(db, "INSERT INTO tracks VALUES (?,?,?,?,?,?,?,?,?)"),
           insRef_(db, "INSERT INTO refs VALUES (?,?,?,?)") {}
 
@@ -172,6 +173,8 @@ public:
         insItem_.text(9, item.musicBrainzId);
         insItem_.integer(10, item.firstSeen);
         insItem_.integer(11, item.lastPlayed);
+        insItem_.integer(12, item.trackCount);
+        insItem_.integer(13, item.created);
         if (!insItem_.run() || !writeRefs(item.id, kItemRef, item.seenOn)) return false;
         int position = 0;
         for (const auto& track : item.tracks) {
@@ -254,7 +257,7 @@ std::vector<IndexItem> SqliteLibraryStore::load() {
     if (!db_) return items;
     std::map<std::string, size_t> at; // item id -> index in items
 
-    Stmt itemRows(db_, "SELECT id, source, kind, title, artist, album, genre, year, musicbrainz_id, first_seen, last_played "
+    Stmt itemRows(db_, "SELECT id, source, kind, title, artist, album, genre, year, musicbrainz_id, first_seen, last_played, track_count, created "
                        "FROM items ORDER BY id");
     if (!itemRows) return {};
     while (itemRows.row()) {
@@ -272,6 +275,8 @@ std::vector<IndexItem> SqliteLibraryStore::load() {
         item.musicBrainzId = itemRows.str(8);
         item.firstSeen = itemRows.i64(9);
         item.lastPlayed = itemRows.i64(10);
+        item.trackCount = int(itemRows.i64(11));
+        item.created = itemRows.i64(12);
         at[item.id] = items.size();
         items.push_back(std::move(item));
     }

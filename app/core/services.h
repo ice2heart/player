@@ -71,6 +71,8 @@ struct IndexItem {
     std::string musicBrainzId;   // the album's MusicBrainz id, may be empty
     int64_t firstSeen = 0;       // wall time the item first entered the index
     int64_t lastPlayed = 0;      // wall time it last played, 0: never
+    int trackCount = 0;          // tracks the server says it has (a server item holds no tracks); 0: unknown
+    int64_t created = 0;         // wall time the server added it, 0: unknown
     std::vector<IndexTrack> tracks;
     std::vector<std::string> seenOn; // server references, see LibraryIndex::seenRef()
     bool operator==(const IndexItem&) const = default;

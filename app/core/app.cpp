@@ -1,5 +1,7 @@
 #include "app.h"
 
+#include "album_merge.h"
+
 #include "text.h"
 #include "track_cache.h"
 
@@ -321,6 +323,7 @@ void App::startScan() {
 // The scan is the local files as they are now: the index is made to match, and written only if that changed it.
 void App::onScanned(std::vector<IndexItem> items) {
     index_.replaceSource(IndexItem::Source::Local, items, clock_.wallTime());
+    linkToServer();
     index_.save();
     finishRefresh();
 }
@@ -348,6 +351,61 @@ void App::dropOtherServers(const std::string& key) {
     others.erase(key);
     for (const auto& other : others) index_.replaceServer(other, {}, clock_.wallTime());
     index_.save();
+}
+
+namespace {
+std::string downloadedName(const CachedList& list); // below, with the downloaded lists
+}
+
+// The pinned albums of the cache are the Cached items of the index. A download carries the
+// reference of the server it came from, taken from its manifest: the album's own and one per
+// track. The reference is kept only while the server still lists the album (or while no
+// catalogue of this server is known yet), because an album that left the server has no
+// reference. Playlists are not albums and are not in the index.
+void App::syncDownloads() {
+    std::vector<IndexItem> items;
+    const TrackCache& store = trackCache();
+    if (store.enabled()) {
+        std::string key = catalogueServerKey();
+        bool catalogue = false;
+        for (const auto& [id, item] : index_.items())
+            if (item.source == IndexItem::Source::Server && LibraryIndex::refOnServer(item.seenOn, key)) catalogue = true;
+        for (const CachedList& list : store.lists(true)) {
+            if (list.source.kind != RemoteSource::Kind::Album) continue;
+            IndexItem item;
+            std::string ref = LibraryIndex::seenRef(key, SeenKind::Album, list.source.id);
+            item.id = "cached:" + ref;
+            item.source = IndexItem::Source::Cached;
+            item.kind = IndexItem::Kind::Music;
+            item.title = downloadedName(list);
+            item.album = list.name; // not the placeholder: it must not feed the name rule
+            item.artist = list.artist;
+            for (const CachedTrack& t : list.tracks) {
+                auto file = store.completeFile(list.source, t);
+                if (!file) continue;
+                IndexTrack track;
+                track.location = file->string();
+                track.title = t.title;
+                track.duration = t.duration;
+                track.seenOn.push_back(LibraryIndex::seenRef(key, SeenKind::Track, t.id));
+                item.tracks.push_back(std::move(track));
+            }
+            if (item.tracks.empty()) continue;
+            item.trackCount = int(item.tracks.size());
+            const IndexItem* onServer = index_.find(ref);
+            if (!catalogue || (onServer && onServer->source == IndexItem::Source::Server)) item.seenOn.push_back(ref);
+            items.push_back(std::move(item));
+        }
+    }
+    index_.replaceSource(IndexItem::Source::Cached, items, clock_.wallTime());
+}
+
+// Local and downloaded items with no reference to the server that are a server album by the
+// name rule get its reference (merged entries keep it, so a later sync matches by it).
+void App::linkToServer() {
+    std::string key = catalogueServerKey();
+    if (key.empty()) return;
+    for (const AlbumLink& link : linkByName(key, index_.items())) index_.addSeenOn(link.itemId, link.reference);
 }
 
 void App::startSync() {
@@ -394,6 +452,8 @@ void App::fetchCatalogue(int offset) {
                 item.genre = a.genre;
                 item.year = a.year;
                 item.musicBrainzId = a.musicBrainzId;
+                item.trackCount = a.songCount;
+                item.created = parseIsoTime(a.created);
                 item.seenOn.push_back(item.id);
                 catalogue_.items.push_back(std::move(item));
             }
@@ -410,6 +470,8 @@ void App::fetchCatalogue(int offset) {
 void App::applyCatalogue() {
     index_.replaceServer(catalogue_.key, catalogue_.items, clock_.wallTime());
     catalogue_.items.clear();
+    syncDownloads(); // a download of an album the server dropped loses its reference
+    linkToServer();
     if (index_.save() && !catalogue_.version.empty()) { // else the next start checks again
         state_.setString(kCatalogueServer, catalogue_.key);
         state_.setString(kCatalogueVersion, catalogue_.version);
@@ -448,10 +510,9 @@ void App::finishRefresh() {
         say(errorText(done.error) + ".");
         return;
     }
-    size_t albums = 0;
-    for (const auto& [id, item] : index_.items())
-        if (item.kind == IndexItem::Kind::Music) ++albums;
-    say("Library updated, " + countValue(albums, "album") + ".");
+    syncDownloads(); // a merged album counts once; server-only albums are in the library, though Music lists them from 4.9
+    index_.save();
+    say("Library updated, " + countValue(mergeAlbums(index_.items()).size(), "album") + ".");
 }
 
 void App::shutdown() {
@@ -1011,7 +1072,11 @@ std::vector<const IndexItem*> localItems(const LibraryIndex& index, IndexItem::K
 Book App::bookOf(const IndexItem& item) const {
     Book book;
     book.title = item.title;
-    for (const IndexTrack& t : item.tracks) book.files.emplace_back(t.location);
+    for (const IndexTrack& t : item.tracks) {
+        book.files.emplace_back(t.location);
+        // A download's files are named by the server's track ids: they are spoken by their titles.
+        if (item.source == IndexItem::Source::Cached) book.titles.push_back(t.title);
+    }
     if (item.id.starts_with(kLocalBookPrefix)) book.path = item.id.substr(std::string(kLocalBookPrefix).size());
     else if (item.id.starts_with(kLocalFolderPrefix)) book.path = item.id.substr(std::string(kLocalFolderPrefix).size());
     else if (!book.files.empty()) book.path = book.files.front().parent_path(); // an album of tags
@@ -1040,16 +1105,27 @@ std::vector<MenuItem> App::libraryMenu() {
     return items;
 }
 
+// Music lists the albums that are on the device: local files and downloads, a server album
+// that is one of them as one entry. A server-only album is not listed until it can be opened
+// (4.9). Play all plays what is on the device.
 std::vector<MenuItem> App::musicMenu() {
-    std::vector<Book> albums;
+    syncDownloads(); // a download made or deleted since the menu was last built
+    index_.save();
+    struct Entry {
+        Book book;
+        MergedAlbum merged;
+    };
+    std::vector<Entry> albums;
     Book all;
     all.title = "All music";
     all.path = musicRoot_;
-    for (const IndexItem* item : localItems(index_, IndexItem::Kind::Music)) {
-        albums.push_back(bookOf(*item));
-        all.files.insert(all.files.end(), albums.back().files.begin(), albums.back().files.end());
+    for (MergedAlbum& m : mergeAlbums(index_.items())) {
+        if (m.primary->source == IndexItem::Source::Server) continue;
+        albums.push_back({bookOf(*m.primary), m});
     }
-    // Server albums are in the index but not listed here yet (4.8 and 4.9): Music shows the device.
+    std::stable_sort(albums.begin(), albums.end(),
+                     [](const Entry& a, const Entry& b) { return naturalLess(a.book.title, b.book.title); });
+    for (const Entry& e : albums) all.files.insert(all.files.end(), e.book.files.begin(), e.book.files.end()); // in the order listed
     std::vector<MenuItem> items;
     MenuItem refresh = action("Refresh library", [this] { refreshLibrary(); });
     if (all.files.empty() && scanRequest_) {
@@ -1069,13 +1145,14 @@ std::vector<MenuItem> App::musicMenu() {
     });
     playAll.value = tracks(all.files.size());
     items.push_back(playAll);
-    for (const Book& a : albums) {
+    for (const Entry& e : albums) {
+        const Book& a = e.book;
         if (a.files.size() == 1 && a.files.front() == a.path) { // a loose track, not a folder
             items.push_back(action(a.title, [this, a] {
                 if (playMusic(a, 0)) enterPlayer();
             }));
         } else {
-            MenuItem album = submenu(a.title, [this, a] { return albumMenu(a); });
+            MenuItem album = submenu(a.title, [this, a, info = albumInfoText(e.merged)] { return albumMenu(a, info); });
             album.value = tracks(a.files.size());
             items.push_back(album);
         }
@@ -1084,13 +1161,15 @@ std::vector<MenuItem> App::musicMenu() {
     return items;
 }
 
-std::vector<MenuItem> App::albumMenu(const Book& album) {
+// The tracks of an album, then "Album info" (where it plays from), which only reports.
+std::vector<MenuItem> App::albumMenu(const Book& album, const std::string& info) {
     std::vector<MenuItem> items;
     for (size_t i = 0; i < album.files.size(); ++i) {
         items.push_back(action(partTitle(album, i), [this, album, i] {
             if (playMusic(album, i)) enterPlayer(); // the rest of the album follows
         }));
     }
+    if (!info.empty()) items.push_back(action("Album info", [this, info] { say(info); }));
     return items;
 }
 

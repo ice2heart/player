@@ -401,3 +401,29 @@ TEST(LibraryIndex, ReplaceServerKeepsAnUnsavedChangeOfAnItemThatComesBackTheSame
     index.save();
     EXPECT_EQ(store.items.count("s"), 1u);
 }
+
+TEST(LibraryIndex, ReplaceServerKeepsTheReferenceOfALocalOrDownloadedItemThatTheServerStillHas) {
+    FakeLibraryStore store;
+    LibraryIndex index(store);
+    IndexItem local = album("loc", "Local");
+    local.seenOn = {LibraryIndex::seenRef(kKeyA, SeenKind::Album, "1")};
+    IndexItem downloaded = album("dl", "Downloaded", IndexItem::Source::Cached);
+    downloaded.seenOn = {LibraryIndex::seenRef(kKeyA, SeenKind::Album, "2"), LibraryIndex::seenRef(kKeyA, SeenKind::Album, "gone")};
+    index.upsert(local, kNow);
+    index.upsert(downloaded, kNow);
+    index.save();
+    store.saves = 0;
+
+    // The server renamed album 1 and dropped "gone".
+    IndexItem renamed = album(kKeyA + ":album:1", "Renamed", IndexItem::Source::Server);
+    renamed.seenOn = {LibraryIndex::seenRef(kKeyA, SeenKind::Album, "1")};
+    IndexItem two = album(kKeyA + ":album:2", "Two", IndexItem::Source::Server);
+    two.seenOn = {LibraryIndex::seenRef(kKeyA, SeenKind::Album, "2")};
+    index.replaceServer(kKeyA, {renamed, two}, kNow + 5);
+
+    EXPECT_EQ(index.find("loc")->seenOn, std::vector<std::string>{LibraryIndex::seenRef(kKeyA, SeenKind::Album, "1")});
+    EXPECT_EQ(index.find("dl")->seenOn, std::vector<std::string>{LibraryIndex::seenRef(kKeyA, SeenKind::Album, "2")});
+    index.save();
+    EXPECT_EQ(store.items["loc"].seenOn.size(), 1u);
+    EXPECT_EQ(store.items["dl"].seenOn.size(), 1u) << "only the reference the server dropped is gone";
+}

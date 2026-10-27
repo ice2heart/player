@@ -253,7 +253,8 @@ Music
   played yet").
 - **Album info** is the last item of an album's list, after the tracks. OK says
   where the album plays from ("On the device", "Downloaded" or "On the server"),
-  the artist, and the number of tracks. It only reports, so it stays where it
+  then "Also on the server" for an entry that is on the device or downloaded and
+  also on the server, the artist, and the number of tracks. It only reports, so it stays where it
   is. Nothing else speaks where an album plays from. When the queue plan
   ([queue.md](queue.md) Q7) is built first, Album info moves to Options.
 - **Refresh library** is an action that reports and stays. It says "Updating the

@@ -89,12 +89,13 @@ The unit tests wire in fakes instead (section 12).
 | `app/frontend/threaded_scanner.{h,cpp}` | `ThreadedScanner : LibraryScanner` (both front ends construct it with an `FfmpegTagReader` and pass it to `App`): one worker thread runs `scan(ScanRequest, Done)` jobs in order. A `ScanRequest` holds the library root, the music root, the cache folder to skip and the `previous` local items. The worker lists the roots with `scanLibrary()` (the same files the menus show, cache folder skipped), keeps the track of a file whose path, size and file time (`stat`, whole seconds) equal an entry in `previous` (same kind), and reads tags through `TagReader` only for the others; a file that is not a regular file is never opened (a FIFO would block). Output, all `Source::Local`, `firstSeen` and `lastPlayed` 0: a `Book` item per folder or loose file under the library root, id `local:book:<path>`, titled by the folder, a track per file (title from the tags, else the file name); `Music` items grouped by tags: id `local:album:<album artist or artist>\x1f<album>` (an album in several folders is one item), and files without an album tag by the folder under the music root, id `local:folder:<path>`, titled by the folder name. A file whose tags cannot be read is listed with its file name as title. A book's tracks are in file order (`pathLess`); an album's are ordered by folder, then track number (none: last), then file name (the disc number is not stored). A scan that throws (the reader or an allocation) delivers nothing and the worker goes on. A file with a tag edit that keeps both size and whole-second time is not noticed; the books' files are probed too, once. Results are delivered from `poll()`; `cancel(id)` never waits (a queued scan is dropped, a running one stops after the file it reads) and the callback never runs; the destructor does the same and joins, so a read stuck on a hung mount can delay it. `FakeLibraryScanner` (tests/fakes.h) records requests and delivers only on `finish()` + `poll()`. |
 | `app/core/library_index.{h,cpp}` | `LibraryIndex` (owned by `App`, built on the `LibraryStore` it is given; see section 8): the library in memory, `IndexItem` (id, source local/server/cached, kind book/music/podcast, title, artist, album, genre, year, MusicBrainz id, first-seen and last-played wall times, tracks, `seenOn`) with `IndexTrack` (location, title, artist, number, duration, size, file time, `seenOn`). `seenOn` holds server references `<server key>:<album\|playlist\|track>:<id>` (`seenRef()`; `refOnServer()` finds the one for a server key), each at most once. Lookups by id, by track location, and by reference. `upsert()` merges (keeps first-seen, later last-played, and the references already there), `replaceSource()` is a scan, `replaceServer()` a sync of one server key. It loads and saves through `LibraryStore` in `services.h` (`load()`; `save(changed, removed)`), and `save()` hands over only the items that changed and the ones removed, nothing when none did. The SQLite store comes in step 4.3. |
 | `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `serverConfigured()`. |
-| `app/library/sqlite_library_store.{h,cpp}` | `SqliteLibraryStore : LibraryStore` (both front ends construct it on `--library-db` and pass it to `App`): `library.db` with tables `schema_version` (1), `items`, `tracks` (by item and position) and `refs` (the `seenOn` of an item, or of its track by position). `save()` is one `BEGIN IMMEDIATE` transaction that deletes and rewrites each changed item and deletes the removed ones, and rolls back on any error. Rollback journal (no WAL), `synchronous=FULL`, file mode 0600 (also set on an existing file). A file that is damaged (`quick_check`), not a database, or of another schema version is renamed to `library.db.bad` (replacing an earlier one) and the store starts empty; a file with no tables is new. Front ends take `--library-db FILE` (default `library.db` next to `state.tsv`, so `/data/config/library.db` on the device). |
+| `app/library/sqlite_library_store.{h,cpp}` | `SqliteLibraryStore : LibraryStore` (both front ends construct it on `--library-db` and pass it to `App`): `library.db` with tables `schema_version` (2: 4.8 added `items.track_count` and `items.created`; a version 1 file is moved aside and rebuilt by scan and sync), `items`, `tracks` (by item and position) and `refs` (the `seenOn` of an item, or of its track by position). `save()` is one `BEGIN IMMEDIATE` transaction that deletes and rewrites each changed item and deletes the removed ones, and rolls back on any error. Rollback journal (no WAL), `synchronous=FULL`, file mode 0600 (also set on an existing file). A file that is damaged (`quick_check`), not a database, or of another schema version is renamed to `library.db.bad` (replacing an earlier one) and the store starts empty; a file with no tables is new. Front ends take `--library-db FILE` (default `library.db` next to `state.tsv`, so `/data/config/library.db` on the device). |
 | `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys) and `TsvStore` (`state.tsv`). |
 | `app/config/atomic_file.{h,cpp}` | `writeFileAtomically()`: temp file with mode 0600, `fsync`, `rename`. |
 | `app/config/disk_text_files.h` | `DiskTextFiles`: the `TextFiles` of the real file system, for the cache manifests (`App` takes it with the cache root; without one the cache is off). |
 | `app/config/settings_files.{h,cpp}` | `SettingsFiles`: what a front end hands to `App` (both files, loaded). |
-| `app/core/text.{h,cpp}` | Text for speech, such as `spokenDuration()`. |
+| `app/core/text.{h,cpp}` | Text for speech, such as `spokenDuration()`, and `parseIsoTime()` (an ISO 8601 time as seconds since 1970, 0 if it is not one; pure arithmetic, used for a server album's `created`). |
+| `app/core/album_merge.{h,cpp}` | Duplicates (4.8), plain functions on the index. `mergeAlbums(items)` groups the `Music` items that share a `seenOn` reference into `MergedAlbum`s (`primary`: local, else cached, else server; `items`; `onServer`): the merged view, computed when a menu is built, never stored. `sameAlbumByName(a, b)` is the name rule (same MusicBrainz album id, else artist + album + track count with case and spaces ignored, ASCII, Latin-1 and Cyrillic folded; unknown count or empty name never match); `linkByName(key, items)` gives the `AlbumLink`s (local or cached item, server reference) for items with no reference to that server, matched against server albums that no local item holds; `albumInfoText(merged)` is what Album info says. `trackCountOf()` is a server item's `trackCount`, else its tracks. |
 | `app/platform/audio_output.{h,cpp}` | `AudioOutput` interface and `open(name)`, which picks a built-in backend at run time (`--audio`). |
 | `app/platform/audio_thread.h` | Base for blocking-write backends: a thread renders 10 ms blocks and writes them. When a write fails it closes the device, keeps discarding the mix in real time (so speech and playback still finish) and reopens the device with a growing delay (250 ms up to 4 s). |
 | `app/platform/audio_coreaudio.cpp` | macOS backend (AudioUnit default output). |
@@ -370,7 +371,7 @@ Home
 ├── Music
 │   ├── Play all                   (every track, albums in order)
 │   ├── <loose track>              (OK plays it)
-│   ├── <album> → <tracks>         (OK plays from that track to the end of the album)
+│   ├── <album> → <tracks> · Album info (OK plays from that track to the end of the album; Album info says where it plays from)
 │   └── Refresh library            (rescans the files and syncs the server catalogue, see section 8)
 ├── <server.name, default Server>  (Streaming: lists from the server, see below)
 │   ├── Recently added → <albums>  (one page of 500)
@@ -463,14 +464,31 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   writes only what changed; the version is stored only after a save that worked. Each
   server item is `Source::Server`, `Kind::Music`, id and `seenOn` `<server key>:album:<id>`, with
   title, artist, genre, year and MusicBrainz id; its tracks are not stored. An error at any
-  step keeps the saved items and the old version and is silent at start-up. Music lists
-  local items only for now (4.8 and 4.9 merge and show the server ones). **Music -> Refresh
+  step keeps the saved items and the old version and is silent at start-up. A server item
+  also has `trackCount` (`songCount`) and `created` (`parseIsoTime()` of the server's text, 0 if
+  unknown; for Recently added, 4.10). **Music -> Refresh
   library** (last item of Music, also under "Scanning" / "No music") says "Updating the
   library.", starts a scan and a sync unless the start-up ones still run (it joins them), and
-  when both are done says "Library updated, N albums." (every `Music` item) or the error
+  when both are done says "Library updated, N albums." (merged entries: an album that is local and on the server counts once) or the error
   ("Server not reachable.", ...) , but only if the Music screen it was pressed on is still on
   top and the device is awake. A second press meanwhile says "Still updating.".
   `shutdown()` cancels the sync.
+- **Duplicates and downloads (4.8).** Merging is stored as references, not as a merged item:
+  an album that is on the device and on the server is a local item holding the server item's
+  reference in its `seenOn`, and the same for a download. `replaceServer()` keeps a reference
+  of a local or cached item that the new server items still carry, so a renamed album is still
+  matched by reference. After a scan and after a sync, `linkToServer()` runs `linkByName()` and
+  `addSeenOn()` for local and cached items that have no reference to this server (the name rule
+  is only for them). An album that left the server loses the reference (local and cached
+  items stay). `syncDownloads()` makes the pinned album lists of `TrackCache` the `Cached`
+  items (id `cached:<ref>`, the track files as locations, `seenOn` the album's reference and a
+  track reference per track id, from the manifest). It runs whenever Music is built and before
+  Refresh counts, so a download made or deleted meanwhile shows; the reference is kept only while
+  the server item exists (or no server catalogue is known yet). Music lists `mergeAlbums()` entries
+  whose primary is not a server item, by title: a local or downloaded album plays its files,
+  and a server-only album is left out until 4.9 can open it. "Play all" is the files of those
+  entries. A cached album plays as a local `Book` with its titles from the manifest. Album
+  info is the last item of an album's list.
 - **From item to `Book`.** `App::bookOf()` makes the `Book` that plays: its files are
   the item's tracks in order, with no part titles (a local file is named by its file
   name, as before). A book's `path` is its folder or file, the part of its id after

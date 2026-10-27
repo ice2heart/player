@@ -135,9 +135,11 @@ private:
     std::vector<MenuItem> homeMenu();
     std::vector<MenuItem> libraryMenu();
     std::vector<MenuItem> musicMenu();
-    std::vector<MenuItem> albumMenu(const Book& album);
+    std::vector<MenuItem> albumMenu(const Book& album, const std::string& info = {});
     Book bookOf(const IndexItem& item) const;
     void startScan();
+    void syncDownloads();   // the pinned albums of the cache as Cached items (docs/streaming.md 4.8)
+    void linkToServer();    // local items with no reference that are a server album by the name rule
     void onScanned(std::vector<IndexItem> items);
     // The server catalogue (docs/streaming.md 4.7): checks the version, fetches the albums when
     // it changed and replaces the server items of the index. Silent unless Refresh library asked.

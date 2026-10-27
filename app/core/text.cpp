@@ -21,4 +21,72 @@ std::string spokenDuration(double seconds) {
     return out;
 }
 
+namespace {
+// Days from 1970-01-01 to a civil date (proleptic Gregorian).
+int64_t daysFromCivil(int64_t y, int m, int d) {
+    y -= m <= 2;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    int64_t yoe = y - era * 400;
+    int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+// `n` digits at text[i], advancing i; -1 if they are not all digits.
+int digits(const std::string& text, size_t& i, size_t n) {
+    if (i + n > text.size()) return -1;
+    int v = 0;
+    for (size_t k = 0; k < n; ++k) {
+        char c = text[i + k];
+        if (c < '0' || c > '9') return -1;
+        v = v * 10 + (c - '0');
+    }
+    i += n;
+    return v;
+}
+
+bool take(const std::string& text, size_t& i, char c) {
+    if (i < text.size() && text[i] == c) {
+        ++i;
+        return true;
+    }
+    return false;
+}
+} // namespace
+
+int64_t parseIsoTime(const std::string& text) {
+    size_t i = 0;
+    int year = digits(text, i, 4);
+    if (year < 0 || !take(text, i, '-')) return 0;
+    int month = digits(text, i, 2);
+    if (month < 1 || month > 12 || !take(text, i, '-')) return 0;
+    int day = digits(text, i, 2);
+    if (day < 1 || day > 31) return 0;
+    int hour = 0, minute = 0, second = 0;
+    if (take(text, i, 'T') || take(text, i, ' ')) {
+        hour = digits(text, i, 2);
+        if (hour < 0 || hour > 23 || !take(text, i, ':')) return 0;
+        minute = digits(text, i, 2);
+        if (minute < 0 || minute > 59 || !take(text, i, ':')) return 0;
+        second = digits(text, i, 2);
+        if (second < 0 || second > 60) return 0;
+        if (take(text, i, '.'))
+            while (i < text.size() && text[i] >= '0' && text[i] <= '9') ++i;
+    }
+    int64_t offset = 0; // seconds the written time is ahead of UTC
+    if (i < text.size()) {
+        if (take(text, i, 'Z')) {
+        } else if (text[i] == '+' || text[i] == '-') {
+            int sign = text[i++] == '-' ? -1 : 1;
+            int oh = digits(text, i, 2);
+            take(text, i, ':');
+            int om = i == text.size() ? 0 : digits(text, i, 2);
+            if (oh < 0 || om < 0) return 0;
+            offset = sign * (oh * 3600 + om * 60);
+        }
+        if (i != text.size()) return 0;
+    }
+    return daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - offset;
+}
+
 } // namespace oap

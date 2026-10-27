@@ -66,7 +66,9 @@ public:
     void replaceSource(IndexItem::Source source, const std::vector<IndexItem>& items, int64_t now);
     // A sync of one server: every reference to `serverKey` is dropped from every item and
     // track, server items left without a reference are removed, then `items` are upserted
-    // (they carry their new references).
+    // (they carry their new references). The one exception: a reference of a local or
+    // downloaded item that one of `items` carries too stays, so an album that is merged with a
+    // server album stays merged when the server renames it.
     void replaceServer(const std::string& serverKey, const std::vector<IndexItem>& items, int64_t now);
 
     // Writes the changed items and deletes the removed ones; nothing is called when

@@ -410,7 +410,7 @@ TEST_F(AppTest, ReturningToAListWithRepeatedLabelsKeepsThePlace) {
     ASSERT_EQ(player.file, (music / "Twins" / "02 - Song.mp3").string());
     press(Button::Home);
     EXPECT_EQ(level().index, 1u);
-    EXPECT_EQ(speech.last(), "Song, 2 of 2");
+    EXPECT_EQ(speech.last(), "Song, 2 of 3"); // and Album info
 }
 
 TEST_F(AppTest, AStoredValueBetweenOptionsStepsToTheNearestOne) {
@@ -844,7 +844,7 @@ TEST_F(AppTest, ChoosingATrackPlaysTheRestOfTheAlbum) {
     start();
     open("Music");
     open("Road Trip");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Sunrise", "Highway"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Sunrise", "Highway", "Album info"}));
     open("Highway");
     EXPECT_EQ(app->mode(), App::Mode::Player);
     EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
@@ -1076,7 +1076,7 @@ TEST_F(AppTest, TwoFoldersTaggedAsOneAlbumGiveOneAlbum) {
     press(Button::Down);
     EXPECT_EQ(speech.last(), "Big Album, 2 tracks, 2 of 5");
     press(Button::Ok);
-    EXPECT_EQ(labels(), (std::vector<std::string>{"a", "b"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"a", "b", "Album info"}));
     press(Button::Down);
     press(Button::Ok);
     EXPECT_EQ(player.file, (music / "Big Album CD2" / "b.mp3").string());
@@ -1093,7 +1093,7 @@ TEST_F(AppTest, AFolderOfUntaggedFilesIsOneAlbumWithTheNameOfTheFolder) {
     press(Button::Down);
     EXPECT_EQ(speech.last(), "Mix, 3 tracks, 3 of 5");
     press(Button::Ok);
-    EXPECT_EQ(labels(), (std::vector<std::string>{"z", "x", "y"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"z", "x", "y", "Album info"}));
 }
 
 TEST_F(AppTest, LibraryAndMusicAreSortedByTitleWithNumbersAsNumbers) {
@@ -6272,4 +6272,297 @@ TEST_F(CatalogueTest, RefreshFindsAFolderAddedOnTheDevice) {
     refresh();
     ASSERT_NO_FATAL_FAILURE(deliverScan());
     EXPECT_EQ(speech.last(), "Library updated, 3 albums.");
+}
+
+// ---------------------------------------------------------------- duplicates and downloads
+
+// Docs/streaming.md 4.8: an album that is on the device and on the server, or downloaded, is one
+// entry in Music, played from the preferred source, and keeps the server's reference.
+class MergeTest : public CatalogueTest {
+protected:
+    void SetUp() override {
+        CatalogueTest::SetUp();
+        cache = base / "cache";
+    }
+    // Road Trip has two tracks by Band, tagged, like the server's album of the same name.
+    void tagRoadTrip(const std::string& musicBrainzId = "") {
+        for (const char* f : {"01 - Sunrise.mp3", "02 - Highway.mp3"}) {
+            TrackTags t;
+            t.album = "Road Trip";
+            t.albumArtist = "Band";
+            t.title = f;
+            t.musicBrainzAlbumId = musicBrainzId;
+            tags.tags[roadTrip() / f] = t;
+        }
+    }
+    static RemoteAlbum roadTripOnServer(const std::string& id = "rt", int tracks = 2) {
+        RemoteAlbum a = album(id, "Road Trip");
+        a.songCount = tracks;
+        return a;
+    }
+    // The start-up sync answers: the server has `albums`.
+    void sync(std::vector<RemoteAlbum> albums, const std::string& version = "v1") {
+        answerVersion(version);
+        answerAlbums(std::move(albums));
+    }
+    TrackCache store() const { return TrackCache(diskFiles(), cache, "https://music.example", "ice"); }
+    // A pinned download of album `id` called `name` with tracks t1..tN, as a download leaves it.
+    void download(const std::string& id, const std::string& name, int tracks = 3) {
+        RemoteSource source = albumSource(id);
+        CachedList list{source, name, "Band", {}};
+        fs::create_directories(store().listFolder(source));
+        for (int i = 1; i <= tracks; ++i) {
+            std::string t = id + "-t" + std::to_string(i);
+            list.tracks.push_back({t, t + ".mp3", "Song " + std::to_string(i), 100, "", true, 0});
+            std::ofstream(store().listFolder(source) / (t + ".mp3"), std::ios::binary) << "xxxxx";
+        }
+        ASSERT_TRUE(store().save(list));
+    }
+    std::string downloadedFile(const std::string& id, int n) const {
+        return (store().listFolder(albumSource(id)) / (id + "-t" + std::to_string(n) + ".mp3")).string();
+    }
+    // Music > `album` > Album info, and what it said.
+    std::string albumInfo(const std::string& name) {
+        open("Music");
+        open(name);
+        open("Album info");
+        std::string said = speech.last();
+        hold(Button::Home);
+        return said;
+    }
+    const IndexItem& stored(const std::string& id) { return indexStore.items.at(id); }
+    std::string roadTripId() const { return "local:album:Band\x1f" "Road Trip"; }
+};
+
+TEST_F(MergeTest, TheSameAlbumLocalAndOnTheServerIsOneEntryAndPlaysLocalFiles) {
+    tagRoadTrip();
+    start();
+    sync({roadTripOnServer(), album("other", "Server Only")});
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    open("Road Trip");
+    open("Highway");
+    EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
+    EXPECT_EQ(player.file.find("://"), std::string::npos) << "no stream URL";
+    EXPECT_EQ(countOf(Kind::AlbumTracks), 0u) << "the server is not asked for the tracks";
+    EXPECT_EQ(stored(roadTripId()).seenOn, std::vector<std::string>{ref("rt")}) << "the entry keeps the server's reference";
+}
+
+TEST_F(MergeTest, ASyncAfterTheScanMergesJustAsAScanAfterTheSync) {
+    tagRoadTrip();
+    start(false);
+    sync({roadTripOnServer()});
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    EXPECT_EQ(stored(roadTripId()).seenOn, std::vector<std::string>{ref("rt")});
+}
+
+TEST_F(MergeTest, TheSameNameWithAnotherTrackCountIsNotMerged) {
+    tagRoadTrip();
+    start();
+    sync({roadTripOnServer("rt", 3)});
+    EXPECT_TRUE(stored(roadTripId()).seenOn.empty()) << "two entries: the local one has no reference";
+    EXPECT_TRUE(indexStore.items.count(ref("rt")));
+    EXPECT_EQ(albumInfo("Road Trip"), "On the device. Band. 2 tracks.");
+}
+
+TEST_F(MergeTest, AMatchingMusicBrainzIdMergesDifferentSpellings) {
+    tagRoadTrip("9b3a");
+    start();
+    RemoteAlbum a = album("rt", "The Road Trip (Deluxe Edition)");
+    a.artist = "Band feat. Friends";
+    a.songCount = 17;
+    a.musicBrainzId = "9b3a";
+    sync({a});
+    EXPECT_EQ(stored(roadTripId()).seenOn, std::vector<std::string>{ref("rt")});
+    EXPECT_EQ(albumInfo("Road Trip"), "On the device. Also on the server. Band. 2 tracks.");
+}
+
+TEST_F(MergeTest, ADownloadedServerAlbumIsCachedPlaysItsFilesAndCarriesTheServersReference) {
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Weather"));
+    start();
+    sync({album("al1", "Weather")});
+    const IndexItem& item = stored("cached:" + ref("al1"));
+    EXPECT_EQ(item.source, IndexItem::Source::Cached);
+    EXPECT_EQ(item.seenOn, std::vector<std::string>{ref("al1")});
+    ASSERT_EQ(item.tracks.size(), 3u);
+    EXPECT_EQ(item.tracks[0].location, downloadedFile("al1", 1));
+    EXPECT_EQ(item.tracks[0].seenOn, std::vector<std::string>{LibraryIndex::seenRef(key(), SeenKind::Track, "al1-t1")});
+
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Weather", "Refresh library"}));
+    open("Weather");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Song 1", "Song 2", "Song 3", "Album info"}));
+    open("Song 2");
+    EXPECT_EQ(player.file, downloadedFile("al1", 2));
+    EXPECT_EQ(countOf(Kind::AlbumTracks), 0u);
+}
+
+TEST_F(MergeTest, ADownloadIsListedOnceBeforeTheFirstSyncAndKeepsItsReference) {
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Weather"));
+    start();
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Weather", "Refresh library"}));
+    EXPECT_EQ(stored("cached:" + ref("al1")).seenOn, std::vector<std::string>{ref("al1")});
+}
+
+TEST_F(MergeTest, ADownloadAndTheLocalCopyAreOneEntryPlayedFromTheLocalFiles) {
+    tagRoadTrip();
+    ASSERT_NO_FATAL_FAILURE(download("rt", "Road Trip", 2));
+    start();
+    sync({roadTripOnServer()});
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    open("Road Trip");
+    open("Sunrise");
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+}
+
+TEST_F(MergeTest, PlayAllPlaysTheDownloadsToo) {
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Weather"));
+    start();
+    open("Music");
+    EXPECT_EQ(level().items[0].label, "Play all");
+    EXPECT_EQ(level().items[0].value(), "6 tracks") << "Lullaby, Road Trip and Weather";
+}
+
+TEST_F(MergeTest, AfterAMergeASyncWhereTheServerRenamesTheAlbumKeepsOneEntryMatchedByReference) {
+    tagRoadTrip();
+    start();
+    sync({roadTripOnServer()});
+    ASSERT_EQ(stored(roadTripId()).seenOn, std::vector<std::string>{ref("rt")});
+
+    ASSERT_NO_FATAL_FAILURE(refresh());
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    RemoteAlbum renamed = roadTripOnServer();
+    renamed.name = "Road Trip (2026 remaster)";
+    renamed.songCount = 14; // and by name it would no longer match
+    sync({renamed}, "v2");
+
+    EXPECT_EQ(stored(roadTripId()).seenOn, std::vector<std::string>{ref("rt")});
+    EXPECT_EQ(stored(ref("rt")).title, "Road Trip (2026 remaster)");
+    hold(Button::Home);
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"})) << "still one entry";
+    hold(Button::Home);
+    EXPECT_EQ(albumInfo("Road Trip"), "On the device. Also on the server. Band. 2 tracks.");
+}
+
+TEST_F(MergeTest, AnAlbumRemovedFromTheServerLeavesTheLocalEntryWithNoReference) {
+    tagRoadTrip();
+    start();
+    sync({roadTripOnServer()});
+    ASSERT_FALSE(stored(roadTripId()).seenOn.empty());
+
+    ASSERT_NO_FATAL_FAILURE(refresh());
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    sync({}, "v2");
+
+    EXPECT_FALSE(indexStore.items.count(ref("rt")));
+    ASSERT_TRUE(indexStore.items.count(roadTripId()));
+    EXPECT_TRUE(stored(roadTripId()).seenOn.empty());
+    hold(Button::Home);
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    hold(Button::Home);
+    EXPECT_EQ(albumInfo("Road Trip"), "On the device. Band. 2 tracks.");
+}
+
+TEST_F(MergeTest, ADownloadOfAnAlbumTheServerDroppedStaysWithoutAReference) {
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Weather"));
+    start();
+    sync({album("al1", "Weather")});
+    ASSERT_FALSE(stored("cached:" + ref("al1")).seenOn.empty());
+
+    ASSERT_NO_FATAL_FAILURE(refresh());
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    sync({album("other", "Something else")}, "v2");
+
+    EXPECT_TRUE(stored("cached:" + ref("al1")).seenOn.empty());
+    hold(Button::Home);
+    EXPECT_EQ(albumInfo("Weather"), "Downloaded. Band. 3 tracks.");
+}
+
+TEST_F(MergeTest, AlbumInfoNamesEachSource) {
+    tagRoadTrip();
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Weather"));
+    ASSERT_NO_FATAL_FAILURE(download("al2", "Climate", 1));
+    start();
+    sync({roadTripOnServer(), album("al1", "Weather")});
+    EXPECT_EQ(albumInfo("Road Trip"), "On the device. Also on the server. Band. 2 tracks.");
+    EXPECT_EQ(albumInfo("Weather"), "Downloaded. Also on the server. Band. 3 tracks.");
+    EXPECT_EQ(albumInfo("Climate"), "Downloaded. Band. 1 track.");
+}
+
+TEST_F(MergeTest, ADeletedDownloadLeavesMusic) {
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Weather"));
+    start();
+    open("Music");
+    ASSERT_EQ(labels().size(), 5u);
+    hold(Button::Home);
+    ASSERT_TRUE(store().remove(albumSource("al1")));
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+    EXPECT_FALSE(indexStore.items.count("cached:" + ref("al1")));
+}
+
+TEST_F(MergeTest, ServerOnlyAlbumsAreNotListedInMusicYet) {
+    start();
+    sync({album("x", "Only on the server")});
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+}
+
+TEST_F(MergeTest, TheSyncStoresTheTrackCountAndTheTimeTheServerAddedTheAlbum) {
+    start();
+    RemoteAlbum a = album("x", "Fresh");
+    a.songCount = 12;
+    a.created = "2026-10-20T18:01:44.120Z";
+    sync({a, album("y", "Undated")});
+    EXPECT_EQ(stored(ref("x")).trackCount, 12);
+    EXPECT_EQ(stored(ref("x")).created, 1792519304);
+    EXPECT_EQ(stored(ref("y")).created, 0);
+}
+
+TEST_F(MergeTest, NothingSpokenOrSavedHoldsAStreamUrlOrToken) {
+    tagRoadTrip();
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Weather"));
+    start();
+    sync({roadTripOnServer(), album("al1", "Weather")});
+    albumInfo("Road Trip");
+    EXPECT_FALSE(saidAnythingWith("://"));
+    EXPECT_FALSE(storeHolds("sesame"));
+    EXPECT_FALSE(storeHolds("://"));
+}
+
+TEST_F(MergeTest, RefreshCountsAMergedAlbumOnceAndCountsDownloads) {
+    tagRoadTrip();
+    start();
+    sync({roadTripOnServer(), album("other", "Server Only")});
+    open("Music");
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Weather")); // made since the menu was built
+    open("Refresh library");
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v1"); // unchanged: no album list
+    EXPECT_EQ(speech.last(), "Library updated, 4 albums.") << "Lullaby, Road Trip (once), Weather and the server's own";
+}
+
+TEST_F(MergeTest, ADownloadedPlaylistIsNotAnAlbumInMusic) {
+    CachedList list{playlistSource("pl1"), "Mix", "", {}};
+    fs::create_directories(store().listFolder(playlistSource("pl1")));
+    list.tracks.push_back({"p1", "p1.mp3", "Song", 100, "", true, 0});
+    std::ofstream(store().listFolder(playlistSource("pl1")) / "p1.mp3", std::ios::binary) << "xxxxx";
+    ASSERT_TRUE(store().save(list));
+    start();
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Refresh library"}));
+}
+
+TEST_F(MergeTest, PlayAllPlaysTheAlbumsInTheOrderTheyAreListed) {
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Weather")); // listed last, but its id sorts before the local ones
+    start();
+    open("Music");
+    press(Button::Ok);
+    EXPECT_EQ(player.file, (music / "Lullaby.mp3").string());
 }

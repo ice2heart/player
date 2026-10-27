@@ -59,6 +59,8 @@ IndexItem album(const std::string& id, const std::string& title) {
     item.musicBrainzId = "mbid-" + id;
     item.firstSeen = 1700000100;
     item.lastPlayed = 1700000200;
+    item.trackCount = 12;
+    item.created = 1700000300;
     item.tracks = {track("/music/" + id + "/1.mp3", "One", 1), track("/music/" + id + "/2.mp3", "Two", 2)};
     return item;
 }
@@ -284,6 +286,17 @@ TEST_F(SqliteLibraryStoreTest, AFileWithAScrambledPageOpensEmptyAndIsMovedAside)
     EXPECT_TRUE(fs::exists(SqliteLibraryStore::asidePath(file)));
 }
 
+TEST_F(SqliteLibraryStoreTest, AVersion1DatabaseWithoutTheNewColumnsOpensEmptyAndIsMovedAside) {
+    rawExec(file, "CREATE TABLE schema_version (version INTEGER NOT NULL); INSERT INTO schema_version VALUES (1);"
+                  "CREATE TABLE items (id TEXT PRIMARY KEY);");
+    {
+        SqliteLibraryStore store(file);
+        EXPECT_TRUE(store.load().empty());
+        EXPECT_TRUE(store.save({album("a", "Alpha")}, {})); // the new database works
+    }
+    EXPECT_EQ(rawScalar(SqliteLibraryStore::asidePath(file), "SELECT version FROM schema_version"), "1");
+}
+
 TEST_F(SqliteLibraryStoreTest, ANewerSchemaVersionOpensEmptyAndIsMovedAside) {
     rawExec(file, "CREATE TABLE schema_version (version INTEGER NOT NULL); INSERT INTO schema_version VALUES (99);"
                   "CREATE TABLE items (id TEXT, colour TEXT); INSERT INTO items VALUES ('x', 'from the future');");
@@ -356,8 +369,8 @@ TEST_F(SqliteLibraryStoreTest, LoadIgnoresRowsThatBelongToNothing) {
         SqliteLibraryStore store(file);
         ASSERT_TRUE(store.save({a}, {}));
     }
-    rawExec(file, "INSERT INTO items VALUES ('odd-source', 9, 0, 't', '', '', '', 0, '', 0, 0);"
-                  "INSERT INTO items VALUES ('odd-kind', 0, -3, 't', '', '', '', 0, '', 0, 0);"
+    rawExec(file, "INSERT INTO items VALUES ('odd-source', 9, 0, 't', '', '', '', 0, '', 0, 0, 0, 0);"
+                  "INSERT INTO items VALUES ('odd-kind', 0, -3, 't', '', '', '', 0, '', 0, 0, 0, 0);"
                   "INSERT INTO tracks VALUES ('ghost', 0, '/x.mp3', 'x', '', 1, 1.0, 1, 1);"
                   "INSERT INTO refs VALUES ('ghost', -1, 0, 'ghost-ref');"
                   "INSERT INTO refs VALUES ('a', 7, 0, 'no-such-track');"
