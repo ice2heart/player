@@ -309,7 +309,11 @@ private:
     void togglePlay();
     void play();
     void pause(bool announce);
-    void skip(int direction);
+    void skip(int direction, int seconds = 0); // seconds 0: the skip of Settings
+    int stepUnit() const;                       // of the loaded player: 0 Skip, 1 Track / Chapter, 2 Album / 10 minutes
+    void changeStepUnit(int direction);         // Up / Down in a player
+    void stepByUnit(int direction);             // a light press of Left / Right in a player
+    void stepAlbum(int direction);
     void changeVolume(int delta, Gesture gesture);
     std::vector<ChapterRef> chapters() const;
     int currentChapter() const;

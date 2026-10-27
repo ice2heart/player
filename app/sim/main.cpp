@@ -153,8 +153,8 @@ void drawMenu(const App& app) {
             ImGui::TextWrapped(
                 "PLAYER\n\n"
                 "Space: play / pause\nhold Space: where am I\n"
-                "Left / Right: skip\nhold or Shift: previous / next chapter\n"
-                "Up / Down: volume\n"
+                "Left / Right: move by the step unit\nhold or Shift: previous / next chapter\n"
+                "Up / Down: step unit\n"
                 "Enter: player menu\nEsc: back   hold Esc: home");
         }
         for (size_t j = 0; j < level.items.size(); ++j) {

@@ -37,6 +37,14 @@ constexpr const char* kAutoSleep = "power.auto_sleep_min";
 constexpr const char* kStreamingBitrate = "streaming.bitrate"; // kbit/s of a transcode; 0: the original file
 constexpr const char* kCacheLimit = "cache.limit_gb"; // automatic cache: gigabytes of unpinned tracks, 0: off
 constexpr const char* kLastBook = "last_book";
+// The step unit (Up / Down in a player) of each player, in state.tsv: an index into the units below.
+constexpr const char* kUnitMusic = "unit.music";
+constexpr const char* kUnitBook = "unit.book";
+constexpr int kUnitSkip = 0, kUnitPart = 1, kUnitLarge = 2; // Skip; Track or Chapter; Album or 10 minutes
+const char* const kMusicUnits[] = {"Skip", "Track", "Album"};
+const char* const kBookUnits[] = {"Skip", "Chapter", "10 minutes"};
+constexpr int kUnitCount = 3;
+constexpr int kLargeBookStep = 600; // seconds: the "10 minutes" unit
 // The catalogue version of the server the index was last synced with (getArtists `lastModified`),
 // and the server key it belongs to. In state.tsv, never in config.yaml.
 constexpr const char* kCatalogueServer = "catalogue.server";
@@ -168,10 +176,10 @@ struct ButtonHelp {
 
 const ButtonHelp kButtonHelp[] = {
     {Button::PlayPause, "Play pause", "Starts or pauses playback. Hold to hear where you are."},
-    {Button::Back, "Left", "In menus, lowers a setting. In player, skip back. Hold, or press deeper, for previous chapter or track."},
-    {Button::Forward, "Right", "In menus, raises a setting. In player, skip forward. Hold, or press deeper, for next chapter or track."},
-    {Button::Up, "Up", "In menus, previous item. Hold for first item. In player, volume up."},
-    {Button::Down, "Down", "In menus, next item. Hold for last item. In player, volume down."},
+    {Button::Back, "Left", "In menus, lowers a setting. In player, moves back by the step unit. Hold, or press deeper, for previous chapter or track."},
+    {Button::Forward, "Right", "In menus, raises a setting. In player, moves forward by the step unit. Hold, or press deeper, for next chapter or track."},
+    {Button::Up, "Up", "In menus, previous item. Hold for first item. In player, previous step unit."},
+    {Button::Down, "Down", "In menus, next item. Hold for last item. In player, next step unit: skip, track or chapter, album or ten minutes."},
     {Button::Ok, "OK", "Opens the selected item. In player, opens the player menu. Hold to go back, like Home."},
     {Button::Home, "Home", "Goes back to the previous screen. Hold for the home menu."},
     {Button::VolumeUp, "Volume up", "Raises the volume, in menus and in the player. Hold to keep raising it."},
@@ -782,15 +790,13 @@ void App::handlePlayer(ButtonEvent ev) {
     case Button::Back:
     case Button::Forward: {
         int dir = ev.button == Button::Back ? -1 : 1;
-        if (ev.gesture == Gesture::Short) skip(dir);
+        if (ev.gesture == Gesture::Short) stepByUnit(dir);
         else stepChapter(dir); // long press, or the deep stage of a two-stage key
         return;
     }
     case Button::Up:
-        changeVolume(+kVolumeStep, ev.gesture);
-        return;
-    case Button::Down:
-        changeVolume(-kVolumeStep, ev.gesture);
+    case Button::Down: // one step, however long the key is held
+        changeStepUnit(ev.button == Button::Up ? -1 : 1);
         return;
     case Button::Ok:
         if (ev.gesture == Gesture::Long) back();
@@ -1224,6 +1230,8 @@ std::vector<MenuItem> App::musicMenu() {
     for (const MergedAlbum& m : albums) { // in the order of Albums A to Z
         if (m.primary->source == IndexItem::Source::Server) continue;
         Book b = bookOf(*m.primary);
+        if (b.files.empty()) continue;
+        all.albums.push_back({all.files.size(), m.primary->title});
         all.files.insert(all.files.end(), b.files.begin(), b.files.end());
     }
     MenuItem playAll = action("Play all", [this, all] {
@@ -1986,8 +1994,8 @@ std::vector<MenuItem> App::helpMenu() {
     std::vector<MenuItem> items;
     items.push_back(action("Getting started", [this] {
         say("This player has no screen. Up and Down move through a menu. OK opens the item, Home goes back, "
-            "and holding Home goes to the home menu. Left and Right change a setting. Play pause starts and "
-            "stops playback, and holding it tells you where you are. The volume keys change the volume "
+            "and holding Home goes to the home menu. Left and Right change a setting. In a player, Up and Down choose the step unit, "
+            "and Left and Right move by it. Play pause starts and stops playback, and holding it tells you where you are. The volume keys change the volume "
             "everywhere, and Options shows what can be done with the selected item. "
             "Power puts the player to sleep.");
     }));
@@ -2419,12 +2427,12 @@ void App::pause(bool announce) {
     if (announce) say("Paused.");
 }
 
-void App::skip(int direction) {
+void App::skip(int direction, int seconds) {
     if (!player_.isOpen()) {
         earcons_.play(Earcon::Edge);
         return;
     }
-    int amount = direction < 0 ? config_.getInt(kSkipBack, 10) : config_.getInt(kSkipForward, 30);
+    int amount = seconds > 0 ? seconds : direction < 0 ? config_.getInt(kSkipBack, 10) : config_.getInt(kSkipForward, 30);
     double target = player_.position() + direction * amount;
     if (target < 0 || (player_.duration() > 0 && target >= player_.duration())) {
         earcons_.play(Earcon::Edge);
@@ -2435,6 +2443,60 @@ void App::skip(int direction) {
     player_.seek(target);
     if (!player_.playing())
         say((direction < 0 ? "Back " : "Forward ") + spokenDuration(amount) + ".");
+}
+
+int App::stepUnit() const {
+    int unit = state_.getInt(music_ ? kUnitMusic : kUnitBook, kUnitSkip);
+    return std::clamp(unit, 0, kUnitCount - 1);
+}
+
+// Down goes to the next unit and Up to the previous one, as in a menu, and speaks it. The
+// first and last unit play the edge sound (and are spoken again, so the press is heard).
+void App::changeStepUnit(int direction) {
+    int current = stepUnit();
+    int next = current + direction;
+    bool edge = next < 0 || next >= kUnitCount;
+    if (!edge) state_.setInt(music_ ? kUnitMusic : kUnitBook, next);
+    earcons_.play(edge ? Earcon::Edge : Earcon::Move);
+    say((music_ ? kMusicUnits : kBookUnits)[edge ? current : next]);
+}
+
+// A light press of Left / Right: moves by the unit of this player.
+void App::stepByUnit(int direction) {
+    switch (stepUnit()) {
+    case kUnitPart:
+        stepChapter(direction);
+        return;
+    case kUnitLarge:
+        if (music_) stepAlbum(direction);
+        else skip(direction, kLargeBookStep);
+        return;
+    default:
+        skip(direction);
+        return;
+    }
+}
+
+// To the first track of the previous / next album of the loaded list (Play all spans albums;
+// any other list is one album, so there is no other to go to).
+void App::stepAlbum(int direction) {
+    if (!book_) {
+        earcons_.play(Earcon::Edge);
+        return;
+    }
+    const auto& albums = book_->albums;
+    size_t current = 0;
+    for (size_t i = 0; i < albums.size(); ++i)
+        if (albums[i].first <= fileIndex_) current = i;
+    long target = long(current) + direction;
+    if (albums.empty() || target < 0 || target >= long(albums.size())) {
+        earcons_.play(Earcon::Edge);
+        say(direction < 0 ? "First album." : "Last album.");
+        return;
+    }
+    if (!gotoChapter(int(albums[size_t(target)].first), Origin::Key)) return; // the error was said
+    earcons_.play(Earcon::Move);
+    say(albums[size_t(target)].title);
 }
 
 // The edge sound plays once per press: a held key repeating at its limit stays quiet.

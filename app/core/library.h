@@ -37,6 +37,13 @@ struct Book {
     std::vector<std::string> suffixes;
     std::vector<long long> sizes;
     std::string artist;
+    // Music that spans albums (Play all): where each album starts in `files`, in order, with its
+    // title. Empty: the whole list is one album. The Album step unit moves between these.
+    struct Album {
+        size_t first = 0; // index in `files` of its first track
+        std::string title;
+    };
+    std::vector<Album> albums;
 };
 
 // Natural, case-insensitive order of names: runs of digits compare as numbers ("3" before

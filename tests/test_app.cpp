@@ -472,8 +472,10 @@ TEST_F(AppTest, HelpButtonsDescribesEachButton) {
     open("Buttons");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Play pause", "Left", "Right", "Up", "Down", "OK", "Home",
                                                   "Volume up", "Volume down", "Options", "Talk", "Power"}));
+    open("Left");
+    EXPECT_EQ(speech.last(), "Left. In menus, lowers a setting. In player, moves back by the step unit. Hold, or press deeper, for previous chapter or track.");
     open("Right");
-    EXPECT_EQ(speech.last(), "Right. In menus, raises a setting. In player, skip forward. Hold, or press deeper, for next chapter or track.");
+    EXPECT_EQ(speech.last(), "Right. In menus, raises a setting. In player, moves forward by the step unit. Hold, or press deeper, for next chapter or track.");
     EXPECT_FALSE(app->keyDescriber());
 }
 
@@ -589,22 +591,22 @@ TEST_F(AppTest, SkipWhilePausedIsAnnounced) {
     EXPECT_EQ(speech.last(), "Forward 30 seconds.");
 }
 
-TEST_F(AppTest, UpAndDownChangeVolumeInPlayer) {
+TEST_F(AppTest, VolumeKeysChangeVolumeInPlayer) {
     playAlpha();
-    press(Button::Up);
+    press(Button::VolumeUp);
     EXPECT_EQ(settings.getInt("volume", 0), 75);
     EXPECT_FLOAT_EQ(volume.volume, 0.75f);
-    press(Button::Down);
-    press(Button::Down);
+    press(Button::VolumeDown);
+    press(Button::VolumeDown);
     EXPECT_EQ(settings.getInt("volume", 0), 65);
 }
 
 TEST_F(AppTest, PlayerVolumeIsWrittenOnlyOnExit) {
     playAlpha();
-    press(Button::Up);
-    press(Button::Up);
+    press(Button::VolumeUp);
+    press(Button::VolumeUp);
     press(Button::PlayPause);
-    press(Button::Down);
+    press(Button::VolumeDown);
     EXPECT_EQ(configFile.saves, 0) << "no config.yaml write per press";
     app->shutdown();
     EXPECT_EQ(configFile.saves, 1);
@@ -614,9 +616,266 @@ TEST_F(AppTest, PlayerVolumeIsWrittenOnlyOnExit) {
 TEST_F(AppTest, VolumeStopsAtMaximum) {
     settings.setInt("volume", 100);
     playAlpha();
-    press(Button::Up);
+    press(Button::VolumeUp);
     EXPECT_EQ(settings.getInt("volume", 0), 100);
     EXPECT_EQ(speech.last(), "Maximum volume.");
+}
+
+// ---------------------------------------------------------------- the step unit
+
+TEST_F(AppTest, UpAndDownInAPlayerDoNotChangeTheVolume) {
+    playAlpha();
+    press(Button::Down);
+    press(Button::Up);
+    press(Button::Down);
+    hold(Button::Down);
+    EXPECT_EQ(settings.getInt("volume", -1), -1);
+    EXPECT_FLOAT_EQ(volume.volume, 0.7f);
+}
+
+TEST_F(AppTest, SkipIsTheFirstUnitAndUpFromItPlaysTheEdgeSound) {
+    playAlpha();
+    player.pos = 100;
+    press(Button::Up);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "Skip");
+    press(Button::Forward);
+    EXPECT_DOUBLE_EQ(player.pos, 130) << "still the skip of Settings";
+}
+
+TEST_F(AppTest, DownFromSkipSaysTrackAndRightStartsTheNextTrack) {
+    start();
+    open("Music");
+    open("Albums A to Z");
+    open("Road Trip");
+    open("Sunrise");
+    player.pos = 40;
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Track");
+    EXPECT_EQ(sounds.last(), Earcon::Move);
+    press(Button::Forward);
+    EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
+    EXPECT_EQ(speech.last(), "Highway");
+    player.pos = 40;
+    press(Button::Back);
+    EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string()) << "well into it: back to its start";
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    player.pos = 0;
+    press(Button::Back);
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+}
+
+TEST_F(AppTest, UpGoesBackToThePreviousUnit) {
+    start();
+    open("Music");
+    open("Albums A to Z");
+    open("Road Trip");
+    open("Sunrise");
+    press(Button::Down);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Album");
+    press(Button::Up);
+    EXPECT_EQ(speech.last(), "Track");
+    EXPECT_EQ(sounds.last(), Earcon::Move);
+}
+
+TEST_F(AppTest, TheMusicUnitsEndAtAlbum) {
+    start();
+    open("Music");
+    open("Albums A to Z");
+    open("Road Trip");
+    open("Sunrise");
+    press(Button::Down);
+    press(Button::Down);
+    press(Button::Down);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "Album") << "heard again, and not moved on";
+    press(Button::Up);
+    EXPECT_EQ(speech.last(), "Track");
+}
+
+TEST_F(AppTest, TheBookUnitsAreSkipChapterAndTenMinutes) {
+    playAlpha();
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Chapter");
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "10 minutes");
+    press(Button::Down);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "10 minutes");
+}
+
+TEST_F(AppTest, HoldingUpOrDownInAPlayerMovesOneUnitOnly) {
+    playAlpha();
+    hold(Button::Down);
+    EXPECT_EQ(speech.last(), "Chapter") << "not a jump to the last unit";
+    hold(Button::Up);
+    EXPECT_EQ(speech.last(), "Skip");
+}
+
+TEST_F(AppTest, ChapterUnitMovesABookToTheNextPart) {
+    playAlpha();
+    press(Button::Down);
+    press(Button::Forward);
+    EXPECT_EQ(player.file, alphaFile(2));
+    press(Button::Forward);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "Last chapter.");
+}
+
+TEST_F(AppTest, TenMinutesMovesABookSixHundredSeconds) {
+    playAlpha();
+    player.length = 3000;
+    player.pos = 100;
+    press(Button::Down);
+    press(Button::Down);
+    press(Button::Forward);
+    EXPECT_DOUBLE_EQ(player.pos, 700);
+    press(Button::Back);
+    EXPECT_DOUBLE_EQ(player.pos, 100);
+    press(Button::Back);
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+}
+
+TEST_F(AppTest, TenMinutesPastTheEndOfAFilePlaysTheEdgeSound) {
+    playAlpha();
+    player.length = 500;
+    player.pos = 100;
+    press(Button::Down);
+    press(Button::Down);
+    press(Button::Forward);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_LT(player.pos, 500);
+}
+
+TEST_F(AppTest, AnnouncesTenMinutesWhilePaused) {
+    playAlpha();
+    player.length = 3000;
+    press(Button::Down);
+    press(Button::Down);
+    press(Button::PlayPause);
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Forward 10 minutes.");
+}
+
+TEST_F(AppTest, AlbumUnitGoesToTheFirstTrackOfTheNextAlbumOfPlayAll) {
+    start();
+    open("Music");
+    open("Play all");
+    ASSERT_EQ(player.file, (music / "Lullaby.mp3").string());
+    press(Button::Down);
+    press(Button::Down);
+    ASSERT_EQ(speech.last(), "Album");
+    press(Button::Forward);
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    EXPECT_EQ(speech.last(), "Road Trip");
+    EXPECT_EQ(sounds.last(), Earcon::Move);
+    app->tick();
+    press(Button::Forward);
+    EXPECT_EQ(sounds.last(), Earcon::Edge) << "no album after the last";
+    EXPECT_EQ(speech.last(), "Last album.");
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    press(Button::Back);
+    EXPECT_EQ(player.file, (music / "Lullaby.mp3").string());
+    press(Button::Back);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "First album.");
+}
+
+TEST_F(AppTest, AlbumUnitFromTheMiddleOfAnAlbumGoesToTheNextAlbumsFirstTrack) {
+    start();
+    open("Music");
+    open("Play all");
+    player.atEnd = true;
+    app->tick(); // Sunrise
+    player.atEnd = true;
+    app->tick(); // Highway
+    ASSERT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
+    press(Button::Down);
+    press(Button::Down);
+    press(Button::Back);
+    EXPECT_EQ(player.file, (music / "Lullaby.mp3").string());
+}
+
+TEST_F(AppTest, AlbumUnitInAOneAlbumListPlaysTheEdgeSound) {
+    start();
+    open("Music");
+    open("Albums A to Z");
+    open("Road Trip");
+    open("Sunrise");
+    press(Button::Down);
+    press(Button::Down);
+    press(Button::Forward);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "Last album.");
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    press(Button::Back);
+    EXPECT_EQ(speech.last(), "First album.");
+}
+
+TEST_F(AppTest, DeepPressChangesTrackWhateverTheUnit) {
+    playAlpha();
+    press(Button::Down);
+    press(Button::Down); // 10 minutes
+    player.pos = 100;
+    app->keyDown(Button::Forward);
+    app->keyUp(Button::Forward);
+    hold(Button::Forward);
+    EXPECT_EQ(player.file, alphaFile(2)) << "a hold goes to the next part, not 600 s on";
+}
+
+TEST_F(AppTest, EachPlayerKeepsItsOwnUnit) {
+    playAlpha();
+    press(Button::Down); // book: Chapter
+    hold(Button::Home);
+    open("Music");
+    open("Play all");
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Track") << "the music unit started at Skip";
+    EXPECT_EQ(state.getString("unit.music"), "1");
+    EXPECT_EQ(state.getString("unit.book"), "1");
+}
+
+TEST_F(AppTest, TheUnitSurvivesSleepAndARestart) {
+    playAlpha();
+    press(Button::Down);
+    press(Button::Down); // book: 10 minutes
+    press(Button::Power);
+    EXPECT_EQ(stateFile.onDisk("unit.book"), "2");
+    start(false);
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    player.length = 3000;
+    player.pos = 100;
+    press(Button::Forward);
+    EXPECT_DOUBLE_EQ(player.pos, 700) << "the 10 minutes unit came back";
+}
+
+TEST_F(AppTest, ASavedUnitOutOfRangeIsTheNearestUnit) {
+    state.setString("unit.book", "9");
+    playAlpha();
+    press(Button::Down);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "10 minutes");
+    state.setString("unit.book", "-4");
+    press(Button::Up);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "Skip");
+}
+
+TEST_F(AppTest, NoUnitIsWrittenUntilOneIsChosen) {
+    playAlpha();
+    app->shutdown();
+    EXPECT_EQ(stateFile.onDisk("unit.book"), "");
+    EXPECT_EQ(stateFile.onDisk("unit.music"), "");
+}
+
+TEST_F(AppTest, KeyDescriberNamesTheStepUnitForUpAndDown) {
+    start();
+    open("Help");
+    open("Buttons");
+    open("Down");
+    EXPECT_EQ(speech.last(), "Down. In menus, next item. Hold for last item. In player, next step unit: skip, track or chapter, album or ten minutes.");
 }
 
 // ---------------------------------------------------------------- volume and options keys

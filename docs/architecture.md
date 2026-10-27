@@ -302,9 +302,9 @@ The rules behind this table, and the checklist for new menus, are in
 |--------|----------|------|---------------|
 | Play/Pause short | play / pause | | |
 | Play/Pause long | "Where am I?" | menu path + item | book, chapter, time left |
-| Up / Down short | | previous / next item (wraps) | volume ± 5 % |
-| Up / Down long | | first / last item | volume ± 5 % |
-| Left / Right short | | change the value; nothing on other items | skip back / forward |
+| Up / Down short | | previous / next item (wraps) | previous / next step unit (edge sound at the ends) |
+| Up / Down long | | first / last item | the same, once |
+| Left / Right short | | change the value; nothing on other items | move back / forward by the step unit (skip, track or chapter, album or 10 minutes) |
 | Left / Right long or deep | | same as short | previous / next chapter |
 | OK short | | open / activate | player menu |
 | OK long | | previous screen | previous screen |
@@ -846,7 +846,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   "Now playing". With none on disk the error is spoken as in step 2.6. A whole
   download is not compared with the server, so a list changed there is not seen until
   it is played from a server list.
-- Up / Down in the player change the volume in memory; it is written on exit.
+- The volume keys change the volume in memory; it is written on exit. The step unit of each player (`unit.music`, `unit.book`: 0 Skip, 1 Track / Chapter, 2 Album / 10 minutes) is kept in `state.tsv`, written on sleep and exit; Play all's `Book::albums` marks where each album starts.
 - **Factory reset** clears both, but keeps the `server.*` keys, and restarts
   without saving the position first, so it does not come back.
 - Every write is atomic (`writeFileAtomically`): `FILE.tmp` created with mode 0600,
