@@ -56,8 +56,9 @@ protected:
         return (alpha() / (n == 1 ? "01 - Storm.mp3" : "02 - Calm.mp3")).string();
     }
 
+    TextFiles* textFiles = &diskFiles(); // what start() gives the App
     void start() {
-        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache, &diskFiles());
+        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache, textFiles);
         app->start();
     }
 
@@ -3648,6 +3649,15 @@ TEST_F(CachedPlayTest, ACachedFileThatCannotBeOpenedFallsBackToTheStream) {
     EXPECT_FALSE(speech.heard("Cannot play Storm Front. Server not reachable."));
 }
 
+TEST_F(CachedPlayTest, AFileThatCannotBeOpenedIsNotTriedAgainOnTheNextPlay) {
+    std::string f1 = download("t1");
+    player.unopenable = {f1};
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), f1), 1) << "dropped from the index after the first failure";
+}
+
 TEST_F(CachedPlayTest, ACachedTrackSeeksInItsFileEvenWhenTheQualityIsLowered) {
     std::string f1 = download("t1");
     settings.setInt("streaming.bitrate", 128);
@@ -4089,6 +4099,27 @@ TEST_F(DownloadTest, OkOnDownloadAgainResumesWhereItStopped) {
     finishLast();
     EXPECT_EQ(store().load(albumSource("al1")).tracks.size(), 3u);
     EXPECT_EQ(speech.last(), "Download finished, Weather.");
+}
+
+namespace {
+// Reads from disk; writes nothing (the card is full).
+class ReadOnlyFiles : public TextFiles {
+public:
+    std::optional<std::string> read(const fs::path& path) override { return diskFiles().read(path); }
+    bool writeAtomically(const fs::path&, const std::string&) override { return false; }
+};
+} // namespace
+
+TEST_F(DownloadTest, AFinishedFileWhoseManifestCannotBeWrittenIsNotLeftUnlisted) {
+    ReadOnlyFiles readOnly;
+    textFiles = &readOnly;
+    openAlbum();
+    startDownload();
+    std::string dest = downloader.lastRequest().dest;
+    finishLast();
+    EXPECT_EQ(speech.last(), "Cannot download Storm Front. Cannot write the file.");
+    EXPECT_FALSE(fs::exists(dest)) << "an orphan would count against no limit and never be evicted";
+    app.reset(); // before readOnly goes
 }
 
 TEST_F(DownloadTest, EachFailureIsNamedByItsReason) {
@@ -5291,8 +5322,10 @@ TEST_F(AutoCacheLimitTest, ATrackExactlyTheLimitIsFetched) {
 TEST_F(AutoCacheLimitTest, WithTheCacheOffWhatIsCachedStaysOnExitAndSleep) {
     cacheTrack("a", false, 100);
     cacheTrack("b", false, 200);
+    cacheTrack("t1", false, 300);
     settings.setInt("cache.limit_gb", 0);
     start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band")); // a play to write on sleep and exit
     press(Button::Power);
     ASSERT_EQ(app->mode(), App::Mode::Sleeping);
     EXPECT_TRUE(cached("a"));

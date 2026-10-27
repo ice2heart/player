@@ -20,7 +20,7 @@ struct CachedTrack {
     std::string file;         // file name inside the list's folder, never a path
     std::string title;
     double duration = 0;      // seconds
-    std::string changed;      // the server's `changed` time of the list when it was downloaded
+    std::string changed;      // reserved column of the format, always empty: nothing compares a download with the server
     bool pinned = false;      // a download the user asked for; the automatic cache evicts only unpinned tracks
     int64_t lastPlayed = 0;   // wall time (seconds since 1970) it last played, 0: never; for eviction
 };

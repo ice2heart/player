@@ -1591,8 +1591,10 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
         if (book_->remote) {
             // A downloaded track is a local file: it opens at once and seeks by itself. If it
             // cannot be opened after all, the stream is the way.
-            if (std::optional<std::filesystem::path> cached = cachedFile(book_->files[file].string(), true))
+            if (std::optional<std::filesystem::path> cached = cachedFile(book_->files[file].string(), true)) {
                 opens = player_.open(cached->string(), position);
+                if (!opens && cacheIndex_) cacheIndex_->erase(book_->files[file].string()); // not tried again at every play
+            }
             if (!opens) {
                 // A stream takes a moment to open: say why nothing plays yet.
                 if (origin == Origin::Menu || origin == Origin::Key || origin == Origin::Resume) say("Loading.");
@@ -2164,6 +2166,8 @@ void App::onTrackDownloaded(Downloader::Result result) {
     case Downloader::Result::Disk: failDownload(track, item.number, "Cannot write the file"); return;
     }
     if (!addToManifest(job.source, track, {job.title, job.artist, true, true, 0, &job.order})) {
+        std::error_code ec; // the whole file is in place but unlisted: nothing would count or evict it
+        std::filesystem::remove(trackDestination(job.source, track), ec);
         failDownload(track, item.number, "Cannot write the file");
         return;
     }

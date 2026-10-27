@@ -467,8 +467,9 @@ Known limits after phase 3: there is no Wi-Fi-only check (decided: not now, the 
 has only Wi-Fi). A server that sends no `Content-Length` and a stale listed size can
 leave a file of the wrong size. Re-downloading a list deletes the file of a dropped
 track even if the player has it open (harmless on POSIX, the open file stays readable).
-Scrobbles made offline are lost. The server's `changed` time is not written yet, so a
-track changed on the server is not fetched again.
+Scrobbles made offline are lost. The manifest's `changed` column is reserved and
+always empty (the track data has no changed time), so a track changed on the server is not
+fetched again; phase 4 sync may fill it.
 
 ## Phase 4: one library (local files and server)
 
