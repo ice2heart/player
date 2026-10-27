@@ -26,7 +26,7 @@ Steps that touch the build, dependencies or Docker files also run the Docker tar
    - A number is the phase.
    Examples: `/implement-phase 1`, `/implement-phase docs/streaming.md`, `/implement-phase docs/streaming.md 2`.
 2. Read `CLAUDE.md`, `PLAN` (the target phase, the one before it, its intro and its **Decisions** / **Open questions** sections) and skim `docs/architecture.md` sections the phase touches.
-3. Work out how `PLAN` marks steps and progress, and tell the user how you read it:
+3. Work out how `PLAN` marks steps and progress, and tell the user how you read it (the expected format is in `docs/writing-plans.md`):
    - Step ids are `N.M`, usually rows of a `| # | Step | Tests |` table; the Tests column is that step's done criteria.
    - A step is done when its id cell is ticked as `✅ N.M` (or its `- [ ]` box is `- [x]` if the plan uses boxes). This is `MARK` below.
    - A phase written as bullets without step ids has no steps yet: **stop and ask** the user to break it into `N.M` steps first (offer to draft the table).

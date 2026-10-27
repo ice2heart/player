@@ -1,7 +1,7 @@
 # Music queue, new buttons and separate players: plan
 
 > Status: **a plan, nothing built.** The rules it changes are in [navigation.md](navigation.md),
-> which is updated first (step Q0), before any code. The code as it is now is described in
+> which is updated first (step 1.1), before any code. The code as it is now is described in
 > [architecture.md](architecture.md); streaming is in [streaming.md](streaming.md).
 > Last updated: 2026-10-27.
 
@@ -88,10 +88,12 @@ menus then **jump in long lists**:
 - **Options on a menu item** opens "Options, Weather": a short list of what can be done
   with that item. **Options in a player** gives the actions for the playing track.
 - **OK and Options in a player stay different.** OK opens the Player menu, which is
-  about the player (Queue, Shuffle, Repeat, Sleep timer, info). Options is about the
-  playing track: Go to album, and Star / Unstar for a remote track. Star is built in
-  the Player menu in [streaming.md phase 2a](streaming.md#phase-2a-stars); Q7 moves it
-  to Options, so it has one key. Go to artist comes later.
+  about the player (Queue, Shuffle, Repeat, Sleep timer). Options is about the
+  playing track: Go to album, Album info, and Star / Unstar for a remote track. Album
+  info moves to Options from the Player menu and from the end of an album's list (an
+  album in a list has it in its Options). Star is built in the Player menu in
+  [streaming.md phase 2a](streaming.md#phase-2a-stars); step 2.5 moves it to Options,
+  so it has one key. Go to artist comes later.
 - An item with no actions plays the edge sound and says "No options" (rule 9: every
   press of a key is heard).
 - An action that finishes a task (Play next, Add to queue) goes back by itself and
@@ -194,13 +196,13 @@ Player menu (music player)
 ├── Queue → <entries>      opens on the current entry, spoken "current"
 ├── Shuffle, off           list: off · tracks · albums
 ├── Repeat, off            list: off · all · track
-├── Album info
 ├── Go to first track      the first entry in the play order
 └── Sleep timer → …
 ```
 
-Queue takes the place of today's "Tracks" item, which lists the album: Q3 keeps
-"Tracks" in the music Player menu, and Q9 replaces it with Queue.
+Queue takes the place of today's "Tracks" item, which lists the album: step 1.5 keeps
+"Tracks" in the music Player menu, and step 2.7 replaces it with Queue. Album info is
+in Options (step 2.5).
 
 Shuffle and Repeat are "Setting with list" items backed by the queue instead of
 `config.yaml`. A change works at once: shuffle keeps the current entry current and
@@ -253,34 +255,58 @@ Queue
 ## Steps
 
 Every step is one commit and gets tests, each checked with a sabotage (CLAUDE.md).
+The steps are built with `/implement-phase docs/queue.md <phase>`: a finished step is
+ticked in its `#` cell (`✅ 1.2`), and a phase is closed once its device check passes.
 
-### Part 1: buttons and two players
+## Phase 1: buttons and two players
+
+Goal: volume has its own keys on every screen, Options answers everywhere, Up / Down in
+a player choose what Left / Right move by, settings change only in their list, and music
+and books are separate players that each keep their place.
 
 | # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
 |---|------|------|
-| Q0 | **Navigation contract first:** navigation.md gets the new buttons and key table, the Options rule, the step unit, Left / Right in menus jumping by letter or by 10, the two players and the queue rules. SPEC §3.3 and §5.4 button tables. | – |
-| Q1 | **Volume and Options buttons.** `Button::VolumeUp`, `VolumeDown`, `Options`; a repeat event in `GestureDetector` for the volume keys; volume on every screen, edge sound at the limits; Options says "No options" where there are none. Key describer, Help → Buttons, "Getting started". Front ends: simulator keys, terminal keys, evdev `KEY_VOLUMEUP` / `KEY_VOLUMEDOWN` / `KEY_MENU`, gamepad layout. | Volume up in a menu and in the player changes the volume and writes nothing until exit. Holding it repeats; letting go stops. Edge sound at 100 %. Options with nothing to act on says "No options". Key describer names the new keys. Terminal, gamepad and evdev maps give the new buttons. |
-| Q2 | **Up / Down in a player choose the step unit; menus lose in-place change.** Units per player as in the table above; Left / Right move by the unit; deep and hold still change track or chapter. The unit is saved per player in `state.tsv`. Settings change only through their list. Left / Right in menus jump to the previous / next letter in lists sorted by name, else 10 items. Existing tests that press Up / Down for volume or Right to change a setting are rewritten for the new keys, each checked with a sabotage. | Down from Skip says "Track", and Right then starts the next track; Up from Skip plays the edge sound. Album unit goes to the first track of the next album. Book: 10 minutes moves 600 s. Deep press changes track whatever the unit. Edge sound past the last unit and before the first. Sleep, wake and a restart keep each player's unit. A setting is no longer changed by Right. Right in Albums A to Z goes to the first album of the next letter and speaks the letter; in an unsorted list it moves 10; edge sound (or wrap) at the end. |
-| Q3 | **Separate music and book players.** Book state (book, file, position, `last_book`) and music state apart; `Screen::Kind::MusicPlayer` / `BookPlayer`; each its own Player menu; Home "Now playing" and "Continue". | A book, then music, then the book again: the book resumes where it was and music where it was. Home lists both. Each Player menu has its own items. The existing book and music tests (as rewritten in Q2) pass. |
+| 1.1 | **Navigation contract first:** navigation.md gets the new buttons and key table, the Options rule, the step unit, Left / Right in menus jumping by letter or by 10, the two players and the queue rules. SPEC §3.3 and §5.4 button tables. No code. | – |
+| 1.2 | **Volume and Options buttons.** `Button::VolumeUp`, `VolumeDown`, `Options`; a repeat event in `GestureDetector` for the volume keys (about every 150 ms); volume on every screen, edge sound at the limits; Options says "No options" with the edge sound everywhere (no item has options yet). Up / Down in the player still change the volume until 1.3. Key describer, Help → Buttons, "Getting started". Front ends: simulator keys, terminal keys, evdev `KEY_VOLUMEUP` / `KEY_VOLUMEDOWN` / `KEY_MENU`, gamepad layout. | Volume up in a menu and in the player changes the volume and writes nothing until exit. Holding it repeats; letting go stops. Edge sound at 100 % and at 0. Options says "No options". Key describer names the new keys. Terminal, gamepad and evdev maps give the new buttons. |
+| 1.3 | **Up / Down in a player choose the step unit.** Units per player as in [the table above](#up--down-in-a-player-the-step-unit); Left / Right move by the unit; deep and hold still change track or chapter. Up / Down no longer change the volume. Until the queue (phase 2), the Album unit moves within the loaded list (Play all and an artist span albums); in a one-album list it plays the edge sound. The unit is saved per player in `state.tsv` (`unit.music`, `unit.book`). Existing tests that press Up / Down for volume are rewritten for the volume keys, each checked with a sabotage. | Down from Skip says "Track", and Right then starts the next track; Up from Skip plays the edge sound. Album unit goes to the first track of the next album of Play all. Book: 10 minutes moves 600 s. Deep press changes track whatever the unit. Edge sound past the last unit. Sleep, wake and a restart keep each player's unit. |
+| 1.4 | **Menus: settings change only in their list; Left / Right jump.** Left / Right no longer change a setting in place (OK opens its list on the current value). In lists sorted by name (Albums A to Z, Artists, Library, Music) Left / Right go to the first item of the previous / next letter and speak "D. Dune, 41 of 500"; in other lists they move 10 items; edge sound at the ends, or wrap with Menu wrap around. Existing tests that press Right to change a setting are rewritten, each checked with a sabotage. | A setting is no longer changed by Right. Right in Albums A to Z goes to the first album of the next letter and speaks the letter; Left goes back a letter. In an unsorted list Right moves 10. Edge sound at the end; with wrap on it wraps. |
+| 1.5 | **Separate music and book players.** Book state (book, file, position, `last_book`) and music state apart; `Screen::Kind::MusicPlayer` / `BookPlayer`; each its own Player menu (the music one keeps "Tracks" until 2.7); starting one pauses the other and keeps its place; Home "Now playing, <last used>" and "Continue, <the other>". | A book, then music, then the book again: the book resumes where it was and music where it was. Home lists both, the last used first. Each Player menu has its own items. The existing book and music tests (as rewritten in 1.3 and 1.4) pass. |
+| 1.6 | **Docs for phase 1 as built:** architecture.md (new buttons, the gesture repeat, the step unit, two players, `unit.*` in `state.tsv`), navigation.md where the build differs from 1.1, SPEC. | – |
 
 **Device check (manual), with blind users:** the volume and Options keys can be found
-by touch. Left / Right jumping by letter in Albums A to Z feels natural and is not
-mistaken for changing a value. The step unit is clear from what Up / Down say. Decide
-open question 1 here, before Part 2.
+by touch. Holding a volume key ramps smoothly and stops on release. Left / Right
+jumping by letter in Albums A to Z feels natural and is not mistaken for changing a
+value. The step unit is clear from what Up / Down say. A book and an album each resume
+where they were after switching between them. Decide open question 1 here, before
+phase 2.
 
-### Part 2: the queue
+## Phase 2: the queue
+
+Goal: the music player plays a queue that mixes local and server tracks, filled with
+Options (Play now, Play next, Add to queue), with shuffle, repeat and a Queue list;
+tracks that cannot play are skipped and a server that fails is checked until it
+answers; the queue survives a restart and can be saved as a server playlist.
 
 | # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
 |---|------|------|
-| Q4 | **`Queue` class** (`app/core/queue.{h,cpp}`): entries, original and play order, current, shuffle off / tracks / albums, repeat off / all / track, edited flag; replace, play next, append, remove, move, next / previous, set shuffle. | `tests/test_queue.cpp` on the class. Shuffle albums keeps each album's order. Shuffle off gives back the original order with the same current entry. Repeat all wraps; repeat track stays at the end of a track, but next / previous move; off ends. Remove and move of the current entry. Replace resets shuffle and repeat. |
-| Q5 | **The music player plays the queue**, local and remote mixed. Read-ahead and scrobbling follow the play order. "End of queue". | A mixed queue plays local, remote, local in order. Read-ahead pre-opens the next remote entry. A local track is not scrobbled. End of queue pauses at the first entry. |
-| Q6 | **Unavailable sources and server checks.** "Storm, source unavailable." (or "3 tracks, source unavailable." for a run) and skip; a server marked down after a failure; background pings (10 s, 30 s, 60 s, and on Play); Server status reflects the mark; "Server not reachable. Press play to try again." when nothing ahead can play. | A missing local file is skipped with "Storm, source unavailable.". A track from another server is skipped. After one failed open, the next remote entries are skipped without an open and a local entry plays. A ping that answers clears the mark and the next remote entry opens. Pings stop when no remote entries are ahead. Only remote entries left: stops and says so; Play pings and plays. A run of skips is said once, with the count. |
-| Q7 | **Options: Play now, Play next, Add to queue** on local tracks, albums and Play all, and on remote tracks, albums, playlists and artists (loaded first). Options in the music player for the current track: Go to album, and Star / Unstar moved there from the Player menu if phase 2a is built. Previous queue when an edited queue is replaced. | Each action on a local and a remote item puts the right entries in the right place and says the counts. Home while a remote album loads: nothing is added and nothing is said. Play next with nothing loaded: paused, "Press play". Replacing an edited queue keeps "Previous queue", and OK on it restores it. |
-| Q8 | **Shuffle and Repeat in the music Player menu**, backed by the queue. | Choosing Shuffle tracks works at once and keeps the current entry. A new queue starts with both off. The book Player menu has neither. |
-| Q9 | **The Queue list**, in place of "Tracks" in the music Player menu: opens on the current entry ("current"); OK plays an entry; Options on an entry: Play next, Move, Remove; Clear queue behind Cancel. | Opens on the current entry and says "current". Move to 3 says "Moved to 3 of 30" and the order changes. Remove of the current entry makes the next one current, paused. Clear queue opens on Cancel. |
-| Q10 | **Keep the queue**: `queue.tsv` written on sleep and exit, when changed; read on start; `last_stream.*` read once and removed; cut to 5000 entries. | Sleep, then restart: the same mixed, shuffled queue, current entry, position and repeat. Exit writes it; a second exit with no change writes nothing. Old `last_stream.*` keys become a queue and are removed. Nothing in `queue.tsv` contains a stream URL, a token (`t=`, `s=`) or the password. |
-| Q11 | **Save as playlist**: `MusicServer::createPlaylist(name, trackIds, done)`, `Subsonic` `createPlaylist`, `FakeMusicServer`. Remote entries only, cached copies count as remote; name from the wall time. | Net tests: the URL has `name` and one `songId` per track, and no `p`. A mixed queue saves only the ids of the server set up now and says how many tracks were left out (local, and from another server). No remote entries: says why and sends nothing. An error is spoken. |
-| Q12 | Docs: architecture.md (players, queue, `queue.tsv`, new buttons, server checks), navigation.md where the build differs from Q0, streaming.md (`last_stream` replaced), SPEC. | – |
+| 2.1 | **`Queue` class** (`app/core/queue.{h,cpp}`): entries, original and play order, current, shuffle off / tracks / albums, repeat off / all / track, edited flag; replace, play next, append, remove, move, next / previous, set shuffle. The random generator is passed in. No `App`, no I/O. | `tests/test_queue.cpp` on the class. Shuffle albums keeps each album's order. Shuffle off gives back the original order with the same current entry. Repeat all wraps; repeat track stays at the end of a track, but next / previous move; off ends. Remove and move of the current entry. Replace resets shuffle, repeat and the edited flag. |
+| 2.2 | **The music player plays the queue**, local and remote mixed. OK on a track and Play album / playlist / all replace the queue. Read-ahead and scrobbling follow the play order. "End of queue". The Album unit of 1.3 moves to the first entry of the next album in the queue. | A mixed queue plays local, remote, local in order. Read-ahead pre-opens the next remote entry. A local track is not scrobbled. End of queue pauses at the first entry. The Album unit goes to the next album in the queue. |
+| 2.3 | **Unavailable sources and server checks.** "Storm, source unavailable." (or "3 tracks, source unavailable." for a run) and skip; a server marked down after a failure; background pings (10 s, 30 s, 60 s, and on Play) while remote entries are ahead; Server status reflects the mark; "Server not reachable. Press play to try again." when nothing ahead can play. | A missing local file is skipped with "Storm, source unavailable.". A track from another server is skipped. After one failed open, the next remote entries are skipped without an open and a local entry plays. A ping that answers clears the mark and the next remote entry opens. Pings stop when no remote entries are ahead. Only remote entries left: stops and says so; Play pings and plays. A run of skips is said once, with the count. |
+| 2.4 | **Options on items: Play now, Play next, Add to queue** on local tracks, albums and Play all, and on remote tracks, albums, playlists and artists (loaded first: "Loading.", then the counts). `MenuItem` gets its `options` builder; the Beginner hint names Options. | Each action on a local and a remote item puts the right entries in the right place and says the counts. Home while a remote album loads: nothing is added and nothing is said. Play next with nothing loaded: paused, "Press play". An action goes back by itself. |
+| 2.5 | **Options in the music player and Previous queue.** Options for the playing track: Go to album, Album info (moved there from the Player menu, and from the end of an album's list into that album's Options, as navigation.md and streaming.md say), and Star / Unstar if streaming.md 2a.1 is ticked (else 2a.1 builds it there). Previous queue: when an edited queue is replaced it is kept, and OK on it restores it. | Options in the player lists the actions and Go to album opens the album on the playing track. Album info is in the player's Options and an album's Options, and no longer in the Player menu or at the end of an album's list. Replacing an edited queue keeps "Previous queue", and OK on it restores it; replacing an unedited queue keeps nothing. |
+| 2.6 | **Shuffle and Repeat in the music Player menu**, "Setting with list" items backed by the queue. | Choosing Shuffle tracks works at once and keeps the current entry. Repeat track replays the track when it ends. A new queue starts with both off. The book Player menu has neither. |
+| 2.7 | **The Queue list**, in place of "Tracks" in the music Player menu: opens on the current entry ("current"); OK plays an entry; Options on an entry: Play next, Move, Remove; Save as playlist (says "Not available yet." until 2.9); Previous queue; Clear queue behind Cancel. | Opens on the current entry and says "current". Move to 3 says "Moved to 3 of 30" and the order changes. Remove of the current entry makes the next one current, paused. Clear queue opens on Cancel. Move and Remove set the edited flag. |
+| 2.8 | **Keep the queue**: `queue.tsv` written on sleep and exit, when changed; read on start; `last_stream.*` read once, turned into a queue and removed; cut to 5000 entries around the current one. | Sleep, then restart: the same mixed, shuffled queue, current entry, position and repeat. Exit writes it; a second exit with no change writes nothing. Old `last_stream.*` keys become a queue and are removed. Nothing in `queue.tsv` contains a stream URL, a token (`t=`, `s=`) or the password. |
+| 2.9 | **Save as playlist**: `MusicServer::createPlaylist(name, trackIds, done)`, `Subsonic` `createPlaylist`, `FakeMusicServer`. Remote entries of the server set up now only, cached copies count as remote; name from the wall time. | Net tests: the URL has `name` and one `songId` per track, and no `p`. A mixed queue saves only the ids of the server set up now and says how many tracks were left out (local, and from another server). No remote entries: says why and sends nothing. An error is spoken and the queue is unchanged. |
+| 2.10 | **Docs for phase 2 as built:** architecture.md (queue, `queue.tsv`, server checks, Options), navigation.md where the build differs from 1.1, streaming.md (`last_stream` replaced), SPEC. | – |
+
+**Device check (manual), with a server set up:** add a local album and a server album
+to one queue with Options and hear them play in order. Pull the Wi-Fi during a server
+track: it says "source unavailable" (once for a run), the local tracks go on, and after
+the Wi-Fi is back the next server track plays without a key press. Shuffle albums keeps
+each album in order. Power off and on: the queue, current track and position are back.
+Save as playlist: the playlist is on the server with only its tracks, and the device
+says how many were left out.
 
 ### Later
 

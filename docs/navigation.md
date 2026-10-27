@@ -276,7 +276,7 @@ Music
   then "Also on the server" for an entry that is on the device or downloaded and
   also on the server, the artist, and the number of tracks. It only reports, so it stays where it
   is. Nothing else speaks where an album plays from. When the queue plan
-  ([queue.md](queue.md) Q7) is built first, Album info moves to Options.
+  ([queue.md](queue.md) step 2.5) is built first, Album info moves to Options.
 - **Refresh library** is an action that reports and stays. It says "Updating the
   library." at once, then the result ("Library updated, 12 albums.") or the error
   ("Server not reachable.", "Wrong user name or password.", "Server error."). Keys
