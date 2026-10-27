@@ -70,6 +70,7 @@ Practical notes:
   `oap-net-tests`, or one with an `OAP_TESTS_EXPECT_NET` branch (`MakeMusicServer`), configure
   that dir with `-DOAP_BUILD_NET=ON` (needs libcurl); check both branches of such a test.
 - A sabotage that hangs a test counts as caught. ctest stops each test after 10 s.
+- Do not run TSan or ASan builds unless explicitly asked.
 
 ## Git
 

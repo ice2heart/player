@@ -366,7 +366,7 @@ first. Break it into steps once that interface is decided.
 
 | # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
 |---|------|------|
-| 2a.1 | **Star / unstar** from the Player menu, and a **Starred** list in Streaming. Decide whether a track played from Starred is saved in `last_stream` (it has no album or playlist id; it needs a new `RemoteSource::Kind` that `resumeStream()` can load again). | Star and unstar call the server. Starred loads like the other lists (Loading, filled, error). An error is spoken. |
+| 2a.1 | **Star / unstar** from the Player menu (it moves to Options with the queue, [queue.md](queue.md) Q7), and a **Starred** list in Streaming. Decide whether a track played from Starred is saved in `last_stream` (it has no album or playlist id; it needs a new `RemoteSource::Kind` that `resumeStream()` can load again). | Star and unstar call the server. Starred loads like the other lists (Loading, filled, error). An error is spoken. |
 
 ## Phase 3: local cache and downloads
 
