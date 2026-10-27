@@ -62,7 +62,7 @@ Do, in this order:
 4. Run the full check until it passes:
    cmake -S . -B build && cmake --build build -j && ctest --test-dir build --output-on-failure
    If the step touches CMakeLists.txt, cmake/, docker/ or dependencies, also run the Docker targets it affects (docker build -f docker/Dockerfile --target native . / --target pi .), and the core-only configure (-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF).
-5. Review your own uncommitted diff. If the Skill tool is available, invoke the `code-review` skill (level: high) on the working tree; otherwise review it yourself for: correctness bugs, layering violations (media/ or platform/ headers in core, real time in App), threading bugs (UI vs decoder vs worker threads, callbacks after cancel or destruction), blocking calls on the UI thread, anything that could leave the user without speech or with a hung device, menus that break docs/navigation.md rules, magic numbers, missing or weak tests, dead code.
+5. Before committing, you MUST run the `code-review` skill on your uncommitted working tree: call the Skill tool with skill "code-review" and args "high". Don't replace it with a review of your own. Only if the Skill tool is not available, review the diff yourself and say so in REVIEW. Either way, look for: correctness bugs, layering violations (media/ or platform/ headers in core, real time in App), threading bugs (UI vs decoder vs worker threads, callbacks after cancel or destruction), blocking calls on the UI thread, anything that could leave the user without speech or with a hung device, menus that break docs/navigation.md rules, magic numbers, missing or weak tests, dead code.
 6. Fix every real finding, add tests for bug fixes (red first, then green, sabotage-checked), and rerun the full check.
 7. Verify the step's Tests column and goal. Anything that needs a human (listening to audio, real buttons, the Pi, a real server, Wi-Fi) can't be verified by you: list it as a manual check, don't claim it.
 8. Mark the step done in {PLAN}: {MARK}. If the step changed a build or run command, update CLAUDE.md's "Build and test" section. Update docs/architecture.md if the step changed what it describes.
@@ -76,7 +76,7 @@ Final report (this is all the orchestrator sees). Keep it terse, no prose outsid
 STATUS: DONE | BLOCKED <reason if blocked>
 COMMIT: <sha or none>
 SUMMARY: <one line>
-REVIEW: <only unfixed findings, one line each with why. Omit if none>
+REVIEW: <first line: code-review ran (or why not), N findings, M fixed. Then only unfixed findings, one line each with why>
 MANUAL CHECKS: <one per line: setup → what you should hear. Omit if none>
 NOTES: <only what later steps must know. Omit if none>
 ```
@@ -88,6 +88,7 @@ NOTES: <only what later steps must know. Omit if none>
    - `git status` is clean and `git log -1` is the reported commit with the `N.M:` prefix.
    - The step is marked done in the plan.
    - `git show --stat HEAD` touches `tests/` when it touches logic.
+   - The REVIEW line says the `code-review` skill ran. If it did not and the agent had the Skill tool, send it back to run the review and fix the findings in a follow-up commit.
    If anything is off, send the same agent a follow-up (SendMessage with its id) to fix it. If it still isn't right, stop and ask the user.
 3. Post one short progress line to the user (`1.3 done: <summary> (abc1234)`) and keep the agent's MANUAL CHECKS and NOTES for later.
 
@@ -100,7 +101,7 @@ When every step is committed:
 
 ```
 Review phase {N} of {PLAN} in /Users/ice/hobby/deafbot: the diff `git diff {BASE}..HEAD` (commits: `git log --oneline {BASE}..HEAD`).
-Read CLAUDE.md, the phase and Decisions sections of {PLAN}, and the docs/architecture.md sections the diff touches first. If the Skill tool is available, invoke `code-review` (level: high) on that range; otherwise review it yourself.
+Read CLAUDE.md, the phase and Decisions sections of {PLAN}, and the docs/architecture.md sections the diff touches first. You MUST run the `code-review` skill on that range (Skill tool, skill "code-review", args "high {BASE}..HEAD"); review it yourself only if the Skill tool is not available, and say so.
 Look especially for problems that only show up across steps: interfaces in app/core/services.h that one side implements differently, fakes in tests/fakes.h that behave unlike the real implementation, callbacks that can arrive after a menu or player was left, edge cases at step boundaries, duplicated helpers, layering violations, constants that ended up hard-coded, docs (architecture.md, navigation.md, help texts) that no longer match, tests that don't pin the behaviour, gaps against the phase's goal and device check.
 Then fix every real finding: tests first for bugs (red, then green), sabotage-check new tests as CLAUDE.md describes, and the full check passes (cmake --build build -j && ctest --test-dir build --output-on-failure).
 Commit to main as `Phase {N} review fixes` with a body listing each fix as a `- ` bullet (see `git show f5fa32d` for the style), ending with:
