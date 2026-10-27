@@ -7314,7 +7314,7 @@ TEST_F(ServerBookTest, NoPosKeyIsMadeFromAUrlAndNothingSpokenOrSavedHoldsOne) {
                 EXPECT_EQ(text.find(bad), std::string::npos) << k << " = " << v << " has " << bad;
     }
     EXPECT_TRUE(anyPos);
-    EXPECT_EQ(state.getString("last_book"), "") << "resuming it after a restart is a later step";
+    EXPECT_EQ(state.getString("last_book"), ref("b1")) << "the item id, no URL";
     for (const std::string& said : speech.said)
         for (const char* bad : {"http", "://", "t=", "s=", "sesame"}) EXPECT_EQ(said.find(bad), std::string::npos) << said;
     EXPECT_FALSE(storeHolds("://"));
@@ -7375,4 +7375,261 @@ TEST_F(ServerBookTest, AServerBookOfAnotherServerIsNotListed) {
     start();
     open("Library");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta"}));
+}
+
+// ---------------------------------------------------------------- resume a server book (docs/streaming.md 4.12)
+
+class ServerBookResumeTest : public ServerBookTest {
+protected:
+    // The tracks of Dune as a download of it names them.
+    static std::vector<RemoteTrack> duneTracks() {
+        return {{"b1-t1", "One", "Band", "Dune", 200, 1, "mp3", 5},
+                {"b1-t2", "Two", "Band", "Dune", 180, 2, "mp3", 5},
+                {"b1-t3", "Three", "Band", "Dune", 160, 3, "mp3", 5}};
+    }
+    // Dune is opened, left at chapter 2 and 77.5 s, and the App is closed and started again. The start-up
+    // sync of the new App waits for an answer (the test gives it, or fails it).
+    void playDuneThenRestart(std::vector<RemoteTrack> tracks = duneTracks()) {
+        start();
+        ASSERT_NO_FATAL_FAILURE(syncWithFolder({dune()}, {dune()}));
+        ASSERT_NO_FATAL_FAILURE(openServerBook("Dune", std::move(tracks)));
+        hold(Button::Forward);
+        player.pos = 77.5;
+        restart();
+    }
+    void restart() {
+        app->shutdown();
+        app.reset();
+        player = FakePlayer{};
+        speech.said.clear();
+        sounds.played.clear();
+        start(false);
+        ASSERT_NO_FATAL_FAILURE(deliverScan());
+    }
+    static void expectNoUrl(const std::string& text) {
+        for (const char* bad : {"http", "://", "t=", "s=", "u=", "sesame", "music.example"})
+            EXPECT_EQ(text.find(bad), std::string::npos) << text << " has " << bad;
+    }
+};
+
+TEST_F(ServerBookResumeTest, ExitAndRestartResumeTheServerBookAtItsChapterAndPlace) {
+    ASSERT_NO_FATAL_FAILURE(playDuneThenRestart());
+    EXPECT_EQ(state.getString("last_book"), ref("b1"));
+    EXPECT_EQ(app->mode(), App::Mode::Menu) << "nothing plays and the server is not asked until the user chooses it";
+    EXPECT_EQ(level().title, "Home");
+    ASSERT_EQ(level().items[0].label, "Now playing");
+    EXPECT_EQ(level().items[0].value(), "Dune");
+    EXPECT_EQ(player.file, "");
+    const size_t asked = countOf(Kind::AlbumTracks);
+    ASSERT_NO_FATAL_FAILURE(answerVersion("v1"));
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Loading.");
+    ASSERT_EQ(countOf(Kind::AlbumTracks), asked + 1);
+    EXPECT_EQ(server.lastRequest().arg, "b1");
+    ASSERT_NO_FATAL_FAILURE(answerTracks(duneTracks()));
+    EXPECT_EQ(player.file, "fake://stream/b1-t2");
+    EXPECT_DOUBLE_EQ(player.pos, 77.5);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(speech.last(), "Now playing. Dune.");
+}
+
+TEST_F(ServerBookResumeTest, PlayWithNothingLoadedAfterARestartResumesTheServerBook) {
+    ASSERT_NO_FATAL_FAILURE(playDuneThenRestart());
+    ASSERT_NO_FATAL_FAILURE(answerVersion("v1"));
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Loading.");
+    ASSERT_NO_FATAL_FAILURE(answerTracks(duneTracks()));
+    EXPECT_EQ(player.file, "fake://stream/b1-t2");
+    EXPECT_DOUBLE_EQ(player.pos, 77.5);
+}
+
+TEST_F(ServerBookResumeTest, ATrackListThatGotShorterStartsAtTheFirstChapter) {
+    ASSERT_NO_FATAL_FAILURE(playDuneThenRestart());
+    ASSERT_NO_FATAL_FAILURE(answerVersion("v1"));
+    press(Button::Ok);
+    ASSERT_NO_FATAL_FAILURE(answerTracks({duneTracks()[0]}));
+    EXPECT_EQ(player.file, "fake://stream/b1-t1");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+}
+
+TEST_F(ServerBookResumeTest, WithTheServerDownADownloadedBookPlaysFromItsFilesAtOnce) {
+    ASSERT_NO_FATAL_FAILURE(playDuneThenRestart());
+    ASSERT_NO_FATAL_FAILURE(download("b1", "Dune"));
+    ASSERT_NO_FATAL_FAILURE(fail(Kind::CatalogueVersion, MusicServer::Error::Unreachable));
+    ASSERT_EQ(level().items[0].label, "Now playing");
+    const size_t asked = server.requests.size();
+    speech.said.clear();
+    press(Button::Ok);
+    EXPECT_EQ(server.requests.size(), asked) << "nothing is asked of the server";
+    EXPECT_FALSE(speech.heard("Loading."));
+    EXPECT_EQ(player.file, downloadedFile("b1", 2));
+    EXPECT_DOUBLE_EQ(player.pos, 77.5);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    for (const std::string& said : speech.said) EXPECT_EQ(said.find("not reachable"), std::string::npos) << said;
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, downloadedFile("b1", 3)) << "the next chapter comes from the disk too";
+}
+
+TEST_F(ServerBookResumeTest, WithTheServerDownABookThatIsNotDownloadedSaysSoAndHomeStays) {
+    ASSERT_NO_FATAL_FAILURE(playDuneThenRestart());
+    ASSERT_NO_FATAL_FAILURE(fail(Kind::CatalogueVersion, MusicServer::Error::Unreachable));
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Loading.");
+    ASSERT_NO_FATAL_FAILURE(fail(Kind::AlbumTracks, MusicServer::Error::Unreachable));
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(level().title, "Home");
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(player.file, "");
+    EXPECT_EQ(level().items[0].label, "Now playing") << "it can be tried again";
+}
+
+TEST_F(ServerBookResumeTest, ABookOnlyPartlyDownloadedIsAskedOfTheServerFirst) {
+    ASSERT_NO_FATAL_FAILURE(playDuneThenRestart());
+    ASSERT_NO_FATAL_FAILURE(download("b1", "Dune"));
+    CachedList list = store().load(albumSource("b1"));
+    list.tracks[2].pinned = false; // the download did not finish
+    ASSERT_TRUE(store().save(list));
+    ASSERT_NO_FATAL_FAILURE(answerVersion("v1"));
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Loading.") << "its chapters would shift if only some played";
+    ASSERT_NO_FATAL_FAILURE(fail(Kind::AlbumTracks, MusicServer::Error::Unreachable));
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    EXPECT_EQ(level().title, "Home");
+}
+
+TEST_F(ServerBookResumeTest, ADownloadedBookOpenedFromLibraryPlaysItsFilesWithoutAskingTheServer) {
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncWithFolder({dune()}, {dune()}));
+    ASSERT_NO_FATAL_FAILURE(download("b1", "Dune"));
+    state.setString(bookKey("b1"), "0:12.0");
+    const size_t asked = server.requests.size();
+    open("Library");
+    open("Dune");
+    EXPECT_EQ(server.requests.size(), asked);
+    EXPECT_EQ(player.file, downloadedFile("b1", 1));
+    EXPECT_DOUBLE_EQ(player.pos, 12);
+    EXPECT_EQ(state.getString("last_book"), ref("b1"));
+}
+
+TEST_F(ServerBookResumeTest, OpeningAServerBookRemovesTheLastStream) {
+    state.setString("last_stream.server", "https://music.example");
+    state.setString("last_stream.user", "ice");
+    state.setString("last_stream.kind", "album");
+    state.setString("last_stream.id", "al1");
+    state.setString("last_stream.title", "Weather");
+    state.setString("last_stream.track", "1");
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncWithFolder({dune()}, {dune()}));
+    ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
+    for (const auto& [k, v] : state.values()) EXPECT_NE(k.rfind("last_stream.", 0), 0u) << k;
+    EXPECT_EQ(state.getString("last_book"), ref("b1"));
+}
+
+TEST_F(ServerBookResumeTest, AServerBookThatFailsToOpenChangesNeitherLastBookNorLastStream) {
+    state.setString("last_stream.server", "https://music.example");
+    state.setString("last_stream.user", "ice");
+    state.setString("last_stream.kind", "album");
+    state.setString("last_stream.id", "al1");
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncWithFolder({dune()}, {dune()}));
+    open("Library");
+    open("Dune");
+    ASSERT_NO_FATAL_FAILURE(fail(Kind::AlbumTracks, MusicServer::Error::Unreachable));
+    EXPECT_EQ(state.getString("last_book"), "");
+    EXPECT_EQ(state.getString("last_stream.id"), "al1");
+    player.openSucceeds = false; // the answer comes, but no track opens
+    open("Dune");
+    ASSERT_NO_FATAL_FAILURE(answerTracks(weather()));
+    EXPECT_EQ(state.getString("last_book"), "");
+    EXPECT_EQ(state.getString("last_stream.id"), "al1");
+}
+
+TEST_F(ServerBookResumeTest, ALocalLastBookStillResumesPausedAtItsPlace) {
+    state.setString("last_book", alpha().string());
+    state.setString("pos:" + alpha().string(), "1:5.0");
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncWithFolder({dune()}, {dune()}));
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(countOf(Kind::AlbumTracks), 0u);
+}
+
+TEST_F(ServerBookResumeTest, ALastStreamStillResumesAndWinsOverAnOlderServerBook) {
+    state.setString("last_book", ref("b1"));
+    seedServerAlbum("b1", "Dune");
+    indexStore.items.at(ref("b1")).kind = IndexItem::Kind::Book;
+    state.setString("last_stream.server", "https://music.example");
+    state.setString("last_stream.user", "ice");
+    state.setString("last_stream.kind", "album");
+    state.setString("last_stream.id", "al1");
+    state.setString("last_stream.title", "Weather");
+    state.setString("last_stream.track", "1");
+    state.setString("last_stream.track_id", "t2");
+    state.setString("last_stream.pos", "42.0");
+    start();
+    EXPECT_EQ(level().title, "Home");
+    ASSERT_EQ(level().items[0].label, "Now playing");
+    EXPECT_EQ(level().items[0].value(), "Weather");
+    press(Button::Ok);
+    EXPECT_EQ(server.lastRequest().kind, Kind::AlbumTracks);
+    EXPECT_EQ(server.lastRequest().arg, "al1");
+    ASSERT_NO_FATAL_FAILURE(answerTracks(weather()));
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+}
+
+TEST_F(ServerBookResumeTest, ALastBookOfAnotherServerOrOneThatLeftTheIndexIsNotResumed) {
+    seedServerAlbum("b1", "Dune", key("other"));
+    indexStore.items.at(ref("b1", key("other"))).kind = IndexItem::Kind::Book;
+    state.setString("last_book", ref("b1", key("other")));
+    start();
+    EXPECT_NE(level().items[0].label, "Now playing");
+    app->shutdown();
+    app.reset();
+    state.setString("last_book", ref("gone"));
+    start();
+    EXPECT_NE(level().items[0].label, "Now playing");
+    app->shutdown();
+    app.reset();
+    seedServerAlbum("m1", "Weather"); // an album of this server, not a book
+    state.setString("last_book", ref("m1"));
+    start();
+    EXPECT_NE(level().items[0].label, "Now playing");
+}
+
+TEST_F(ServerBookResumeTest, ADownloadedServerBookIsNotInMusicAndStaysInLibrary) {
+    ASSERT_NO_FATAL_FAILURE(download("b1", "Dune"));
+    ASSERT_NO_FATAL_FAILURE(download("m1", "Weather"));
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncWithFolder({dune()}, {dune(), album("m1", "Weather")}));
+    open("Music");
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip", "Weather"})) << "an album download is in Music, a book is not";
+    EXPECT_EQ(indexStore.items.count("cached:" + ref("b1")), 0u);
+    EXPECT_EQ(indexStore.items.count("cached:" + ref("m1")), 1u);
+    hold(Button::Home);
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta", "Dune"}));
+}
+
+TEST_F(ServerBookResumeTest, NothingSpokenOrSavedHoldsAUrlOnTheResumePaths) {
+    ASSERT_NO_FATAL_FAILURE(playDuneThenRestart());
+    ASSERT_NO_FATAL_FAILURE(answerVersion("v1"));
+    press(Button::Ok);
+    ASSERT_NO_FATAL_FAILURE(answerTracks(duneTracks()));
+    ASSERT_NO_FATAL_FAILURE(download("b1", "Dune"));
+    app->shutdown();
+    for (const auto& [k, v] : state.values()) {
+        expectNoUrl(k);
+        expectNoUrl(v);
+    }
+    EXPECT_EQ(state.getString("last_book"), ref("b1"));
+    for (const std::string& said : speech.said) expectNoUrl(said);
+    EXPECT_FALSE(storeHolds("://"));
+    EXPECT_FALSE(storeHolds("sesame"));
 }

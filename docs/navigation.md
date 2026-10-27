@@ -222,7 +222,8 @@ these rules too ([streaming.md](streaming.md) has the plan).
 
 Music is built (steps 4.9 and 4.10) and Streaming is its own Home entry. Server books in
 Library are built (4.11): after the local books, with the value "on the server", they say "Loading." and play like a book
-from their saved place; resuming one after a restart is 4.12. [streaming.md](streaming.md) phase 4 builds one library from files and server; the
+from their saved place; "Now playing" on Home resumes the last one after a restart (4.12), from its
+files at once if it is downloaded. [streaming.md](streaming.md) phase 4 builds one library from files and server; the
 tree in [architecture.md](architecture.md#current-menu-tree) is what the device does today.
 The rules below are the contract for phase 4.
 
@@ -283,7 +284,9 @@ Music
 - **Server books are in Library**, after the local books, with the value "on the
   server" (spoken after the title). They are never in Music. They open as books:
   chapters are the tracks, and the place is kept and resumed like a local book.
-  While their tracks load, the "Loading" rules apply.
+  While their tracks load, the "Loading" rules apply. After a restart "Now playing" on Home resumes the
+  book that played last (it is the last played unless a stream played after it); a downloaded book plays from
+  its files at once, otherwise with the server down "Server not reachable." is said and Home stays.
 - **Streaming stays a separate Home entry.** It keeps its own lists as above.
 
 ## Checklist for a new menu, item or program

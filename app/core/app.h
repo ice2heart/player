@@ -148,7 +148,12 @@ private:
     MenuItem albumEntry(const MergedAlbum& album);
     std::vector<MenuItem> albumMenu(const Book& album, const std::string& info = {}, const std::string& playedId = {});
     Book bookOf(const IndexItem& item) const;
-    void openServerBook(const IndexItem& item); // Library: loads its tracks ("Loading."), then plays it from its saved place
+    void openServerBook(const IndexItem& item); // Library, "Now playing": plays it from its saved place (its files if downloaded, else "Loading.")
+    bool resumeServerBook();                    // "Now playing" / Play with nothing loaded: false when `last_book` names none
+    static bool isServerBookId(const std::string& id);
+    const IndexItem* savedServerBook() const;   // `last_book` when it names a server book of this server
+    static Book serverBookOf(const std::string& ref, const std::string& title, const std::string& albumId,
+                             const std::vector<RemoteTrack>& tracks);
     std::string audiobookFolder() const;
     void startScan();
     void syncDownloads();   // the pinned albums of the cache as Cached items (docs/streaming.md 4.8)

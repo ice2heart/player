@@ -281,11 +281,13 @@ void App::start() {
 
     // A stream played last: "Now playing" on Home resumes it. Nothing is asked
     // of the server now, and nothing plays until the user chooses it.
-    if (savedStream()) {
+    // A server book played last (`last_book` is its item id, `<server key>:album:<id>`, which no local
+    // book is, as a local path is absolute) is resumed from Home the same way, and is not looked for on disk.
+    std::string last = state_.getString(kLastBook);
+    if (savedStream() || isServerBookId(last)) {
         goHome();
         return;
     }
-    std::string last = state_.getString(kLastBook);
     if (auto b = resumableBook(last); b && openBook(*b, false)) {
         closeScreens(0);
         pushScreen(menuScreen("Home", [this] { return homeMenu(); }));
@@ -377,8 +379,12 @@ void App::syncDownloads() {
             if (item.source == IndexItem::Source::Server && LibraryIndex::refOnServer(item.seenOn, key)) catalogue = true;
         for (const CachedList& list : store.lists(true)) {
             if (list.source.kind != RemoteSource::Kind::Album) continue;
-            IndexItem item;
             std::string ref = LibraryIndex::seenRef(key, SeenKind::Album, list.source.id);
+            const IndexItem* onServer = index_.find(ref);
+            // A downloaded audiobook of the server stays a book (Library, not Music): it plays its files
+            // through the server book (openServerBook()).
+            if (onServer && onServer->source == IndexItem::Source::Server && onServer->kind == IndexItem::Kind::Book) continue;
+            IndexItem item;
             item.id = "cached:" + ref;
             item.source = IndexItem::Source::Cached;
             item.kind = IndexItem::Kind::Music;
@@ -397,7 +403,6 @@ void App::syncDownloads() {
             }
             if (item.tracks.empty()) continue;
             item.trackCount = int(item.tracks.size());
-            const IndexItem* onServer = index_.find(ref);
             if (!catalogue || (onServer && onServer->source == IndexItem::Source::Server)) item.seenOn.push_back(ref);
             items.push_back(std::move(item));
         }
@@ -1085,6 +1090,14 @@ std::vector<MenuItem> App::homeMenu() {
         });
         now.value = [this, title = stream->title] { return book_ ? book_->title : title; };
         items.push_back(now);
+    } else if (const IndexItem* saved = savedServerBook()) {
+        // Likewise for the server book played last: loaded now, or played from its files if it is downloaded.
+        MenuItem now = action("Now playing", [this] {
+            if (book_) enterPlayer();
+            else resumeServerBook();
+        });
+        now.value = [this, title = saved->title] { return book_ ? book_->title : title; };
+        items.push_back(now);
     }
     items.push_back(submenu("Library", [this] { return libraryMenu(); }));
     items.push_back(submenu("Music", [this] { return musicMenu(); }));
@@ -1657,6 +1670,13 @@ std::string downloadedName(const CachedList& list) {
 }
 
 bool sameList(const RemoteSource& a, const RemoteSource& b) { return a.kind == b.kind && a.id == b.id; }
+
+// A list the user downloaded whole: every manifest track pinned and complete on disk (`onDisk` are the
+// complete ones). It plays from the disk at once, with no question to the server.
+bool isWholeDownload(const CachedList& list, const std::vector<RemoteTrack>& onDisk) {
+    return !list.tracks.empty() && onDisk.size() == list.tracks.size() &&
+           std::all_of(list.tracks.begin(), list.tracks.end(), [](const CachedTrack& t) { return t.pinned; });
+}
 } // namespace
 
 // The tracks of `list` whose files are whole on disk, in manifest order.
@@ -1813,8 +1833,7 @@ void App::resumeStream() {
     const TrackCache& store = trackCache();
     CachedList cached = store.enabled() ? store.load(place->source) : CachedList{};
     std::vector<RemoteTrack> onDisk = completeTracks(store, place->source, cached);
-    bool wholeDownload = !cached.tracks.empty() && onDisk.size() == cached.tracks.size() &&
-                         std::all_of(cached.tracks.begin(), cached.tracks.end(), [](const CachedTrack& t) { return t.pinned; });
+    bool wholeDownload = isWholeDownload(cached, onDisk);
     bool hasSaved = std::any_of(onDisk.begin(), onDisk.end(), [&](const RemoteTrack& t) { return t.id == place->trackId; });
     if (wholeDownload && hasSaved) {
         playResumed(*place, onDisk);
@@ -2029,10 +2048,58 @@ bool App::openBook(const Book& book, bool autoplay) {
     return true;
 }
 
-// A book of the server: "Loading." while its tracks come, then it plays from where it was left
-// (`pos:` + the item id: `<server key>:album:<id>`, no URL) and opens the player. The request
-// is the one of resumeStream(): a new screen, sleep or power off drops it. It sets neither
-// `last_book` nor `last_stream` (resuming it after a restart is 4.12).
+// The server book `last_book` names: the item id of a book of this server in the index
+// (`<server key>:album:<id>`, never a URL), which a local path cannot be. None when the server
+// is not set up, `last_book` is a local book or another server's, or the book left the index.
+const IndexItem* App::savedServerBook() const {
+    std::string last = state_.getString(kLastBook);
+    std::string key = catalogueServerKey();
+    if (last.empty() || key.empty() || !server_.configured() || !last.starts_with(LibraryIndex::seenRef(key, SeenKind::Album, "")))
+        return nullptr;
+    const IndexItem* item = index_.find(last);
+    return item && item->source == IndexItem::Source::Server && item->kind == IndexItem::Kind::Book ? item : nullptr;
+}
+
+// "Now playing" or Play after a restart: opens the server book `last_book` names. False if none.
+bool App::resumeServerBook() {
+    const IndexItem* saved = savedServerBook();
+    if (!saved) return false;
+    openServerBook(IndexItem(*saved)); // a copy: opening may change the index
+    return true;
+}
+
+// `last_book` as a server book of any server names it: an item id `<server key>:album:<id>` is never an absolute path.
+bool App::isServerBookId(const std::string& id) {
+    return !id.empty() && !std::filesystem::path(id).is_absolute() && id.find(":album:") != std::string::npos;
+}
+
+// The chapters of a server book: the tracks of the album, under the item id as its path.
+Book App::serverBookOf(const std::string& ref, const std::string& title, const std::string& albumId,
+                       const std::vector<RemoteTrack>& tracks) {
+    Book book;
+    book.title = title;
+    book.path = ref;
+    book.remote = true;
+    book.serverBook = true;
+    book.source = RemoteSource{RemoteSource::Kind::Album, albumId};
+    for (const RemoteTrack& t : tracks) {
+        book.suffixes.push_back(t.suffix);
+        book.sizes.push_back(t.size);
+        book.files.emplace_back(t.id);
+        book.titles.push_back(t.title);
+        book.durations.push_back(t.duration);
+    }
+    return book;
+}
+
+// A book of the server, from Library or "Now playing" (`last_book`): it plays from where it was left
+// (`pos:` + the item id: `<server key>:album:<id>`, no URL) and opens the player. A book the user
+// downloaded whole plays from its files at once, with no question to the server and no "Loading."
+// (as a resumed download does). Any other is "Loading." while its tracks come, and with the server
+// down "Server not reachable." is said and the user stays where they were. The request is the one
+// of resumeStream(): a new screen, sleep or power off drops it. Once it plays, the book is
+// `last_book` and `last_stream` is removed, as for a local book. Its place is a file index of the
+// list as the server gives it now: a list shorter than the saved index starts at the first chapter.
 void App::openServerBook(const IndexItem& item) {
     std::string key = catalogueServerKey();
     std::string ref = LibraryIndex::refOnServer(item.seenOn, key).value_or(item.id);
@@ -2044,8 +2111,18 @@ void App::openServerBook(const IndexItem& item) {
     }
     std::string albumId = ref.substr(prefix.size());
     cancelResume();
-    say("Loading.");
     std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
+    RemoteSource source{RemoteSource::Kind::Album, albumId};
+    const TrackCache& store = trackCache();
+    CachedList cached = store.enabled() ? store.load(source) : CachedList{};
+    std::vector<RemoteTrack> onDisk = completeTracks(store, source, cached);
+    if (isWholeDownload(cached, onDisk)) {
+        Book book = serverBookOf(ref, item.title, albumId, onDisk);
+        auto [file, pos] = savedPlace(book);
+        playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
+        return;
+    }
+    say("Loading.");
     resumeScreen_ = screen; // leaving this screen drops the request (closeScreens())
     resume_ = server_.albumTracks(albumId, [this, screen, ref, title = item.title, albumId](
                                                MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
@@ -2062,19 +2139,7 @@ void App::openServerBook(const IndexItem& item) {
             say("This book has no chapters on the server.");
             return;
         }
-        Book book;
-        book.title = title;
-        book.path = ref;
-        book.remote = true;
-        book.serverBook = true;
-        book.source = RemoteSource{RemoteSource::Kind::Album, albumId};
-        for (const RemoteTrack& t : tracks) {
-            book.suffixes.push_back(t.suffix);
-            book.sizes.push_back(t.size);
-            book.files.emplace_back(t.id);
-            book.titles.push_back(t.title);
-            book.durations.push_back(t.duration);
-        }
+        Book book = serverBookOf(ref, title, albumId, tracks);
         auto [file, pos] = savedPlace(book);
         playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
     });
@@ -2083,7 +2148,9 @@ void App::openServerBook(const IndexItem& item) {
 // playMusic() for a book: its chapters are the tracks (music_ stays false) and it keeps its place.
 bool App::playServerBook(const Book& book, size_t file, double position, Then opened) {
     if (book_) rememberPosition();
-    auto playing = [this, opened = std::move(opened)] {
+    auto playing = [this, path = book.path.string(), opened = std::move(opened)] {
+        state_.setString(kLastBook, path); // start() and "Now playing" resume it, not a stream
+        state_.clearPrefix(kLastStream);
         sleepAtChapterEnd_ = -1;
         pausedAt_.reset();
         if (opened) opened();
@@ -2310,6 +2377,7 @@ void App::play() {
         resumeStream();
         return;
     }
+    if (!book_ && resumeServerBook()) return;
     if (!book_ || !player_.isOpen()) {
         earcons_.play(Earcon::Error);
         say("Nothing to play. Choose a book in the library.");

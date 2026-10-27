@@ -366,7 +366,7 @@ is added only at Beginner.
 
 ```
 Home
-├── Now playing: <book or album>   (when something is loaded, or a stream to resume: `last_stream.*`)
+├── Now playing: <book or album>   (when something is loaded, or a stream to resume: `last_stream.*`, or a server book: `last_book`)
 ├── Library → <books>              (OK plays/resumes)
 ├── Music
 │   ├── Play all                   (the files on the device, albums in the order of Albums A to Z; with only server albums it says "No music")
@@ -495,9 +495,27 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   album, played with `music_` false (so it says "Chapter") from the place in `pos:<item id>`
   (`"<file index>:<seconds>"`, as a local book's; an index past the chapters starts at the first).
   `rememberPosition()` writes that key (on pause, on opening another book, on exit and sleep, and
-  at the end of the book, when it saves chapter 0 at 0) and no `last_stream`. A server book sets
-  neither `last_book` nor clears `last_stream` (4.12), is not cached by the automatic cache, and is
-  scrobbled like any remote track. A book is not merged with a local copy or a download of it.
+  at the end of the book, when it saves chapter 0 at 0) and no `last_stream`. A server book is not
+  cached by the automatic cache, and is scrobbled like any remote track. A book is not merged with a
+  local copy or a download of it: `syncDownloads()` makes no Cached item for a download whose server
+  item is a book, so a downloaded book stays out of Music.
+- **Resume a server book (4.12).** Once a server book plays (not before: a failed open changes
+  nothing), `playServerBook()` sets `last_book` to its item id (`<server key>:album:<id>`, no URL; a
+  local book's `last_book` is its absolute path, so the two cannot be mixed up) and removes
+  `last_stream.*`, as `openBook()` does. `savedServerBook()` is the index item (`Source::Server`,
+  `Kind::Book`) of the server set up now that `last_book` names; none when `last_book` is a local path,
+  another server's id or a book that left the index (then `last_book` is not resumed). `start()` does not
+  look for a server book on disk and loads nothing: it opens Home, where "Now playing" (shown after the
+  loaded book and after `savedStream()`, so a stream played later wins) and Play with nothing loaded call
+  `resumeServerBook()` -> `openServerBook()`, the same code as Library's OK. A book downloaded whole
+  (`isWholeDownload()`, the rule of 3.6) plays from its files at once: no question to the server, no
+  "Loading.", also offline. Any other book says "Loading." and asks the server; with the server down
+  "Server not reachable." is said and Home stays (a partly downloaded book does not fall back to the
+  files on disk, since its chapter numbers would shift). The place is the file index saved in
+  `pos:` against the list as it is now (the server's, or the download's manifest order, which
+  follows the server's); an index past the end of the list starts at the first chapter at 0. Limits:
+  a download of a book that left the index is listed in Music as an album and "Now playing" for it
+  goes; local music played after a server book leaves `last_book` alone, so a restart resumes the book.
 - **Duplicates and downloads (4.8).** Merging is stored as references, not as a merged item:
   an album that is on the device and on the server is a local item holding the server item's
   reference in its `seenOn`, and the same for a download. `replaceServer()` keeps a reference
@@ -774,7 +792,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 | File | Store | Keys |
 |------|-------|------|
 | `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` (kbps, 0 = the original file), `cache.limit_gb` (0, 1, 4 or 16; default 1), and `server.*` (see [streaming.md](streaming.md)) |
-| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_book`: the book to resume on start (never music); `catalogue.server` / `catalogue.version`: the server key and catalogue version of the last server sync; `catalogue.folder`: `server.audiobook_folder` at the last server sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); `last_stream.server` / `.user` (the `server.url` without a trailing slash and `server.user`, never the password or a stream URL), `.kind` (`album` / `playlist`), `.id`, `.title`, `.track` (index), `.track_id`, `.pos` (seconds): the remote list that played last |
+| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.server` / `catalogue.version`: the server key and catalogue version of the last server sync; `catalogue.folder`: `server.audiobook_folder` at the last server sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); `last_stream.server` / `.user` (the `server.url` without a trailing slash and `server.user`, never the password or a stream URL), `.kind` (`album` / `playlist`), `.id`, `.title`, `.track` (index), `.track_id`, `.pos` (seconds): the remote list that played last |
 
 - `config.yaml` is nested YAML (`speech: {rate: 220}` is `speech.rate`). It is
   written only when a setting changes in the Settings menu (on leaving the item,
