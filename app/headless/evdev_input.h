@@ -46,6 +46,7 @@ private:
         std::string path;
         bool shift = false;
         std::set<Button> deepHeld; // deep stages pressed via Shift+arrow
+        std::set<Button> keysHeld; // keys of this device pressed, released when it is removed
         GamepadMapper pad;
     };
 

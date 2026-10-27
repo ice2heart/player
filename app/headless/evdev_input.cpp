@@ -178,6 +178,8 @@ void EvdevInput::process(App& app) {
         if (gone) {
             std::printf("input: %s removed\n", d.path.c_str());
             applyChanges(app, d.pad.releaseAll()); // a controller that dropped off mid-press
+            for (Button b : d.deepHeld) app.keyUp(b);  // and keys: a held volume key would repeat for ever
+            for (Button b : d.keysHeld) app.keyUp(b);
             closeDevice(d);
             it = devices_.erase(it);
         } else {
@@ -219,6 +221,7 @@ void EvdevInput::handle(Device& d, App& app, unsigned type, unsigned code, int v
     if (!b) return;
     auto deep = deepOf(*b);
     if (down) {
+        d.keysHeld.insert(*b);
         app.keyDown(*b);
         if (deep && d.shift) {
             d.deepHeld.insert(*deep);
@@ -226,6 +229,7 @@ void EvdevInput::handle(Device& d, App& app, unsigned type, unsigned code, int v
         }
     } else {
         if (deep && d.deepHeld.erase(*deep)) app.keyUp(*deep);
+        d.keysHeld.erase(*b);
         app.keyUp(*b);
     }
 }
