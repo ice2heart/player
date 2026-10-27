@@ -1,4 +1,5 @@
 #include "core/app.h"
+#include "core/track_cache.h"
 #include "fakes.h"
 #include "temp_dir.h"
 
@@ -3545,4 +3546,140 @@ TEST_F(ReadAheadTest, ChangingTheQualityDuringAPreOpenPreOpensAtTheNewOne) {
     app->tick();
     EXPECT_EQ(player.file, "fake://stream/t2?maxBitRate=192");
     EXPECT_EQ(player.adopted, 1);
+}
+
+// ------------------------------------------------------- playing from the cache
+
+// Downloaded tracks (TrackCache, step 3.1) play from their files: a track
+// resolves to its complete cached file, else to the stream.
+class CachedPlayTest : public AsyncOpenTest {
+protected:
+    void SetUp() override {
+        AsyncOpenTest::SetUp();
+        cache = base / "cache";
+        settings.setString("server.url", "https://music.example");
+        settings.setString("server.user", "bob");
+    }
+    // Track `id` of Weather is downloaded into the cache; returns its file.
+    std::string download(const std::string& id) {
+        TrackCache store(cache, "https://music.example", "bob");
+        std::vector<CachedTrack> tracks = store.load("weather");
+        tracks.push_back({id, id + ".mp3", id, 100, "", true, 0});
+        fs::create_directories(store.listFolder("weather"));
+        touch(store.listFolder("weather") / (id + ".mp3"));
+        EXPECT_TRUE(store.save("weather", tracks));
+        return (store.listFolder("weather") / (id + ".mp3")).string();
+    }
+    std::vector<std::string> streamsOpened() const {
+        std::vector<std::string> out;
+        for (const std::string& p : player.opened)
+            if (p.find("://") != std::string::npos) out.push_back(p);
+        return out;
+    }
+};
+
+TEST_F(CachedPlayTest, AFullyCachedAlbumPlaysItsFilesAndOpensNoStream) {
+    std::string f1 = download("t1"), f2 = download("t2"), f3 = download("t3");
+    start();
+    player.holdStreams = true;
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    EXPECT_FALSE(player.opening()) << "a file opens at once";
+    EXPECT_FALSE(speech.heard("Loading."));
+    EXPECT_EQ(player.file, f1);
+    EXPECT_TRUE(player.playing());
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, f2);
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, f3);
+    EXPECT_TRUE(streamsOpened().empty());
+    EXPECT_TRUE(player.preloads.empty());
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(CachedPlayTest, InAMixedAlbumEachTrackUsesItsOwnSource) {
+    std::string f1 = download("t1"), f3 = download("t3");
+    start();
+    player.holdStreams = true;
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    EXPECT_EQ(player.file, f1);
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_TRUE(player.opening()) << "the stream waits for the server";
+    ASSERT_TRUE(player.finishOpen());
+    app->tick();
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, f3);
+    EXPECT_EQ(streamsOpened(), (std::vector<std::string>{"fake://stream/t2"}));
+}
+
+TEST_F(CachedPlayTest, ACachedFileDeletedOnDiskFallsBackToTheStream) {
+    std::string f1 = download("t1");
+    fs::remove(f1);
+    start();
+    player.holdStreams = true;
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    ASSERT_TRUE(player.finishOpen());
+    app->tick();
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(CachedPlayTest, ACachedFileThatCannotBeOpenedFallsBackToTheStream) {
+    std::string f1 = download("t1");
+    player.unopenable = {f1};
+    start();
+    player.holdStreams = true;
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    ASSERT_TRUE(player.finishOpen());
+    app->tick();
+    EXPECT_TRUE(player.playing());
+    EXPECT_FALSE(speech.heard("Cannot play Storm Front. Server not reachable."));
+}
+
+TEST_F(CachedPlayTest, ACachedTrackSeeksInItsFileEvenWhenTheQualityIsLowered) {
+    std::string f1 = download("t1");
+    settings.setInt("streaming.bitrate", 128);
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    EXPECT_EQ(player.file, f1);
+    EXPECT_FALSE(player.transcoded) << "no transcode offset for a file";
+    EXPECT_DOUBLE_EQ(player.duration(), player.length);
+}
+
+TEST_F(CachedPlayTest, ReadAheadPreOpensAStreamedNextTrackButNotACachedOne) {
+    download("t3");
+    playWeather();
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_EQ(player.preloaded, "fake://stream/t2") << "t2 is streamed";
+    player.atEnd = true;
+    app->tick();
+    ASSERT_EQ(player.adopted, 1);
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_TRUE(player.preloaded == std::nullopt) << "t3 is a file";
+    EXPECT_EQ(player.preloads, (std::vector<std::string>{"fake://stream/t2"}));
+}
+
+TEST_F(CachedPlayTest, ACachedTrackIsScrobbledLikeAStreamedOne) {
+    download("t1");
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    idle(1s);
+    EXPECT_EQ(server.scrobbles, (std::vector<FakeMusicServer::Scrobble>{{"t1", false}}));
+    for (int i = 0; i < 241; ++i) idle(1s);
+    EXPECT_EQ(server.scrobbles, (std::vector<FakeMusicServer::Scrobble>{{"t1", false}, {"t1", true}}));
+}
+
+TEST_F(CachedPlayTest, AnotherServersCacheIsNotUsed) {
+    download("t1");
+    settings.setString("server.url", "https://other.example");
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    EXPECT_EQ(player.file, "fake://stream/t1") << "another server's cache";
 }

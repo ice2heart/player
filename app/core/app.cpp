@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include "text.h"
+#include "track_cache.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1418,13 +1419,18 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
     if (!book_) return OpenResult::Failed;
     for (; file < book_->files.size(); ++file, position = 0) {
         fileIndex_ = file;
-        // A stream takes a moment to open: say why nothing plays yet.
-        if (book_->remote && (origin == Origin::Menu || origin == Origin::Key || origin == Origin::Resume))
-            say("Loading.");
         bool opens = false;
         if (book_->remote) {
-            MusicServer::Stream stream = remoteStream(file);
-            opens = player_.open(stream.url, position, stream.transcoded);
+            // A downloaded track is a local file: it opens at once and seeks by itself. If it
+            // cannot be opened after all, the stream is the way.
+            if (std::optional<std::filesystem::path> cached = cachedFile(book_->files[file].string()))
+                opens = player_.open(cached->string(), position);
+            if (!opens) {
+                // A stream takes a moment to open: say why nothing plays yet.
+                if (origin == Origin::Menu || origin == Origin::Key || origin == Origin::Resume) say("Loading.");
+                MusicServer::Stream stream = remoteStream(file);
+                opens = player_.open(stream.url, position, stream.transcoded);
+            }
         } else {
             opens = player_.open(book_->files[file].string(), position);
         }
@@ -1715,6 +1721,14 @@ void App::checkReadAhead() {
         // A new track, or the quality changed since: pre-open the stream that will be opened.
         size_t next = fileIndex_ + 1;
         const std::string id = book_->files[next].string();
+        if (readAhead_ && readAhead_->trackId == id && readAhead_->bitrate == streamingBitrate()) return;
+        if (cachedFile(id)) { // a file on disk opens at once: nothing to read ahead
+            if (readAhead_) {
+                player_.cancelPreload();
+                readAhead_.reset();
+            }
+            return;
+        }
         if (!readAhead_ || readAhead_->trackId != id || readAhead_->bitrate != streamingBitrate()) {
             readAhead_ = ReadAhead{id, streamingBitrate(), newStream(next)};
             player_.preload(readAhead_->stream.url);
@@ -1758,6 +1772,13 @@ void App::checkScrobble(TimePoint now) {
         play.submitted = true;
         server_.scrobble(play.trackId, true);
     }
+}
+
+// The complete downloaded file of remote track `id`, if the cache is set up for the
+// server in the config and has one.
+std::optional<std::filesystem::path> App::cachedFile(const std::string& id) const {
+    if (cacheRoot_.empty()) return std::nullopt;
+    return TrackCache(cacheRoot_, config_.getString(kServerUrl), config_.getString(kServerUser)).find(id);
 }
 
 int App::streamingBitrate() const { return std::max(kOriginalQuality, config_.getInt(kStreamingBitrate, kOriginalQuality)); }

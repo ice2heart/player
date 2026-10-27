@@ -76,7 +76,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
 | `app/core/library.{h,cpp}` | `Book` (also a remote list: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set), `scanLibrary(root, skip)`, which leaves out the cache folder `skip`. |
-| `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<list id>/`, where a list is an album or a playlist. Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 1`, then per track tab-separated: id, file, title, duration, server `changed` time, pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), written to `manifest.tsv.tmp` and renamed (no `fsync`: core has no OS calls). A missing or corrupt manifest reads as empty. `find(trackId)` returns the complete file of a track from any list, never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root and leaves it out of Library and Music; it does not play from it yet. |
+| `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<list id>/`, where a list is an album or a playlist. Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 1`, then per track tab-separated: id, file, title, duration, server `changed` time, pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), written to `manifest.tsv.tmp` and renamed (no `fsync`: core has no OS calls). A missing or corrupt manifest reads as empty. `find(trackId)` returns the complete file of a track from any list, never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
 | `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `serverConfigured()`. |
 | `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys) and `TsvStore` (`state.tsv`). |
 | `app/config/atomic_file.{h,cpp}` | `writeFileAtomically()`: temp file with mode 0600, `fsync`, `rename`. |
@@ -499,6 +499,16 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   after `kStreamOpenGiveUp` (15 s, which covers a DNS lookup that FFmpeg cannot
   interrupt), `App` closes it and reports the track as not reachable. Automatic
   sleep and the end-of-track sleep timer wait while a track opens.
+- **Play from the cache:** `openFile()` opens a remote track from its complete
+  cached file when `App::cachedFile()` finds one (a `TrackCache` built from the
+  cache root and the `server.url` / `server.user` in the config at that moment, so
+  another server's downloads are never used), else from `remoteStream()` as above.
+  The file is a local path: it opens at once (no "Loading."), seeks by itself and
+  has no transcode offset, whatever the Streaming quality. A file that is gone is
+  not found, and one that fails to open falls back to the stream. Read-ahead
+  pre-opens nothing for a cached next track (it is a file). A cached track is
+  scrobbled like a streamed one (it is a play on the server's account; offline
+  the call is lost, as for any scrobble). The menus do not change.
 - **Read-ahead:** while a remote track plays its last `kReadAhead` (10 s, by the
   player's position and length), `App::checkReadAhead()` (last in `tick()`) asks
   the player to `preload()` the next track of the list, once; opening that track

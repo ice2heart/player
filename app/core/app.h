@@ -224,6 +224,8 @@ private:
     void checkReadAhead(); // tick(): pre-opens the next remote track near the end of this one
     void startTrackPlay(); // the loaded remote track starts a new play (scrobble_)
     void checkScrobble(Clock::TimePoint now); // tick(): tells the server what plays and what has been heard
+    // The downloaded file of remote track `id` (TrackCache::find()), none if there is none.
+    std::optional<std::filesystem::path> cachedFile(const std::string& id) const;
     int streamingBitrate() const; // Streaming quality: kbit/s, 0 for the original file
     // The stream of remote track `file` at the Streaming quality set now: the
     // pre-opened one if it is that track at that quality, else a new one.
