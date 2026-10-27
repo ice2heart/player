@@ -38,11 +38,18 @@ IndexItem album(const std::string& id, const std::string& title, IndexItem::Sour
 
 constexpr int64_t kNow = 1800000000;
 
+// An item as the store holds it after a scan with a real clock (firstSeen is set).
+IndexItem stored(const std::string& id, const std::string& title, IndexItem::Source source = IndexItem::Source::Local) {
+    IndexItem item = album(id, title, source);
+    item.firstSeen = kNow;
+    return item;
+}
+
 } // namespace
 
 TEST(LibraryIndex, UnchangedIndexSavesNothing) {
     FakeLibraryStore store;
-    store.items["a"] = album("a", "Alpha");
+    store.items["a"] = stored("a", "Alpha");
     LibraryIndex index(store);
     EXPECT_TRUE(index.save());
     EXPECT_EQ(store.saves, 0);
@@ -94,6 +101,19 @@ TEST(LibraryIndex, NewItemGetsFirstSeenAndOldKeepsIt) {
     index.upsert(again, kNow + 500);
     EXPECT_EQ(index.find("a")->firstSeen, kNow);
     EXPECT_EQ(index.find("a")->title, "Alpha (remaster)");
+}
+
+TEST(LibraryIndex, FirstSeenOfAnUnsetClockIsFilledInByALaterUpsert) {
+    FakeLibraryStore store;
+    LibraryIndex index(store);
+    index.upsert(album("a", "Alpha"), 40); // 1970 plus uptime: no RTC, no NTP yet
+    EXPECT_EQ(index.find("a")->firstSeen, 0);
+
+    index.upsert(album("a", "Alpha"), kNow); // the same item, the clock is set now
+    EXPECT_EQ(index.find("a")->firstSeen, kNow);
+
+    index.upsert(album("a", "Alpha"), kNow + 500);
+    EXPECT_EQ(index.find("a")->firstSeen, kNow); // and from then on it stays
 }
 
 TEST(LibraryIndex, UpsertKeepsLastPlayedUnlessLater) {
@@ -276,9 +296,9 @@ TEST(LibraryIndex, UpsertKeepsReferencesAndTrackReferencesAlreadyThere) {
 
 TEST(LibraryIndex, ReplaceSourceRemovesGoneItemsOfThatSourceOnly) {
     FakeLibraryStore store;
-    store.items["a"] = album("a", "Alpha");
-    store.items["b"] = album("b", "Beta");
-    store.items["s"] = album("s", "Served", IndexItem::Source::Server);
+    store.items["a"] = stored("a", "Alpha");
+    store.items["b"] = stored("b", "Beta");
+    store.items["s"] = stored("s", "Served", IndexItem::Source::Server);
     LibraryIndex index(store);
 
     IndexItem c = album("c", "Gamma");
@@ -480,7 +500,7 @@ TEST(LibraryIndex, AFailedPlayTimeSaveIsRetried) {
 
 TEST(LibraryIndex, ARescanOfTheSameItemKeepsTheMarkedPlayTimeAndWritesNothing) {
     FakeLibraryStore store;
-    store.items["a"] = album("a", "Alpha");
+    store.items["a"] = stored("a", "Alpha");
     LibraryIndex index(store);
     index.markPlayed("a", kNow);
     index.replaceSource(IndexItem::Source::Local, {album("a", "Alpha")}, kNow);

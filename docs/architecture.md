@@ -567,8 +567,9 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   adds those ids and saves (exit, sleep, power off, restart). An item that a scan or sync
   rewrites for another reason takes its play time along. The time sits on one item: if that
   item is removed and comes back under a new id (a moved folder, a download deleted and made
-  again) the album is not in Recently played any more. A `firstSeen` taken while the clock was
-  not set stays below the floor and the album has no added time (it is left out of Recently added). Play all, Streaming and Downloaded mark
+  again) the album is not in Recently played any more. `LibraryIndex::upsert` leaves
+  `firstSeen` 0 while the clock was not set (before `kEarliestPlayTime`); the album is left out of Recently added
+  until a later upsert with a set clock fills it in. Play all, Streaming and Downloaded mark
   nothing.
 - **From item to `Book`.** `App::bookOf()` makes the `Book` that plays: its files are
   the item's tracks in order, with no part titles (a local file is named by its file

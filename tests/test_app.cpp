@@ -78,9 +78,9 @@ protected:
             items = std::move(found);
             done = true;
         });
-        for (int i = 0; i < 2000 && !done; ++i) {
+        for (int i = 0; i < 20000 && !done; ++i) { // up to 20 s: only a stalled worker gets there
             real.poll();
-            if (!done) std::this_thread::sleep_for(5ms);
+            if (!done) std::this_thread::sleep_for(1ms);
         }
         ASSERT_TRUE(done);
         ASSERT_TRUE(scanner.finish(request.id, std::move(items)));

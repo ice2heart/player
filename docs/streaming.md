@@ -608,8 +608,13 @@ from `getAlbumList2`, so only an album-level genre is known. A tag edit that kee
 and whole-second time is not noticed by the scan; the disc number is not stored, so a
 multi-disc album is ordered by folder, then track number. A play time sits on one item: if
 the item is removed and comes back under another id (a moved folder, a deleted and renewed
-download) the album is not in Recently played any more, and an album first seen while the
-clock was not set is left out of Recently added. The destructor of the scanner joins its thread, so
+download) the album is not in Recently played any more. An album first seen while the clock
+was not set has no first-seen time and is left out of Recently added until a scan with a set clock
+fills it in. A downloaded album with no server item (the server is not reachable, or dropped
+the album) plays from Music as a local album: no scrobble, no read-ahead, and it is not resumed
+as `last_stream`. Refresh fetches the albums again only when the server's `getArtists`
+`lastModified` changed, so a server that does not bump it for an edit is not noticed until it
+does. A book that is both on the device and on the server is listed twice in Library. The destructor of the scanner joins its thread, so
 a read stuck on a hung mount can delay exit (the state and the play times are saved first). A download of a book that left the index is listed in
 Music as an album, and "Now playing" for it goes. Local music played after a server book
 leaves `last_book` alone, so a restart resumes the book. The manifest's `changed` column is

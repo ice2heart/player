@@ -87,7 +87,10 @@ target_compile_options(oapconfig PRIVATE -Wall -Wextra)
 # SQLite comes from the system if found, else its amalgamation is fetched and built here,
 # so the core-only build and its tests need no system package.
 find_package(SQLite3)
-if(TARGET SQLite::SQLite3)
+# CMake 4 renamed the target to SQLite3::SQLite3 and deprecates the old name (3.25 has only the old).
+if(TARGET SQLite3::SQLite3)
+    set(OAP_SQLITE SQLite3::SQLite3)
+elseif(TARGET SQLite::SQLite3)
     set(OAP_SQLITE SQLite::SQLite3)
 else()
     FetchContent_Declare(sqlite3

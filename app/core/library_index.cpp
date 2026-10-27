@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <set>
 
+#include "track_cache.h"
+
 namespace oap {
 
 namespace {
@@ -105,10 +107,13 @@ void LibraryIndex::markChanged(const std::string& id) {
 }
 
 void LibraryIndex::upsert(IndexItem item, int64_t now) {
+    // A clock that was never set (before kEarliestPlayTime) is no time: firstSeen stays 0 and a
+    // later upsert, with a real clock, fills it in. Else the item would never be "recently added".
+    if (item.firstSeen == 0 && now >= kEarliestPlayTime) item.firstSeen = now;
     auto old = items_.find(item.id);
     if (old != items_.end()) {
         const IndexItem& before = old->second;
-        item.firstSeen = before.firstSeen ? before.firstSeen : item.firstSeen;
+        if (before.firstSeen) item.firstSeen = before.firstSeen;
         item.lastPlayed = std::max(item.lastPlayed, before.lastPlayed);
         for (const auto& ref : before.seenOn) addOnce(item.seenOn, ref);
         for (auto& track : item.tracks) {
@@ -119,7 +124,6 @@ void LibraryIndex::upsert(IndexItem item, int64_t now) {
         }
         if (item == before) return;
     }
-    if (item.firstSeen == 0) item.firstSeen = now;
     std::string id = item.id;
     items_[id] = std::move(item);
     markChanged(id);

@@ -333,8 +333,7 @@ int main(int argc, char** argv) {
     if (state.empty()) state = defaultStateFile(config);
     if (cache.empty()) cache = state.parent_path() / "cache";
     cache = std::filesystem::absolute(cache).lexically_normal();
-    // The library index file. Nothing opens it yet: App reads the index from step 4.6 on
-    // (docs/streaming.md), which constructs a SqliteLibraryStore on this path.
+    // The library index file: the SqliteLibraryStore below opens it.
     if (libraryDb.empty()) libraryDb = state.parent_path() / "library.db";
     libraryDb = std::filesystem::absolute(libraryDb).lexically_normal();
 
