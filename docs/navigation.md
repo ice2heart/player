@@ -1,5 +1,10 @@
 # Navigation guidelines
 
+> Status: this file is the **target contract** of [queue.md](queue.md) phase 1 and 2.
+> Where it differs from [architecture.md](architecture.md) (volume on Up / Down,
+> Left / Right changing values, one player), the code is not built to it yet; each
+> step of queue.md brings it closer and step 1.6 / 2.10 update architecture.md.
+
 Users can't see the menu, so they learn it from what each key does. A key that
 does one thing in one menu and something else in the next menu breaks that.
 These rules are the contract. Follow them when you add a menu or an item, and
@@ -10,59 +15,75 @@ change this file before you change a rule.
 Everything the user is "in" is a **screen** on one stack (`App::screens()`):
 
 - a **menu**: a spoken list of items, or
-- a **program**: a screen with its own keys. Today the only program is the
-  **player**. A podcast player or a button tutorial would be programs too.
+- a **program**: a screen with its own keys. The programs are the **music
+  player** and the **book player** (see [Two players](#two-players)). A
+  podcast player or a button tutorial would be programs too.
 
 Home is always at the bottom of the stack. OK pushes a screen, and Home pops
 one, back to wherever you came from. If you open a book from Library, Home
-takes you back to Library. There is only one player screen: opening it again
+takes you back to Library. There is only one screen per player: opening a player again
 returns to the one already on the stack. The Power menu works the same way, and
 Sleep in it closes the menu first, so the device wakes where you were.
 
 ## The rules
 
 1. **Up / Down move, and only move.** In a menu they go to the previous or next
-   item, and holding them jumps to the first or last item. In the player they
-   change the volume.
+   item, and holding them jumps to the first or last item. In a player they
+   choose the step unit that Left / Right move by (see
+   [The step unit](#the-step-unit-up--down-in-a-player)). They never change the volume.
 2. **OK goes in.** It opens the selected item's submenu or program, or runs its action.
 3. **Home goes out** to the previous screen. Holding OK does the same.
    Leaving a screen changes nothing. Home on the Home menu plays the edge
    sound and says "Home".
 4. **Holding Home goes to the Home menu**, from anywhere.
-5. **Left / Right change a value in place, and do nothing else.** On an item
-   without a value they do nothing at all, with no sound. They never mean
-   "back" or "open". At the end of a value's range you hear the edge sound.
-6. **A changed value works at once, and is saved when you leave the item.**
-   You hear the new speech rate straight away. Steps are not written one by
-   one: the file is written when another key is pressed or the device sleeps
-   or powers off. Streaming quality is the one exception: a stream that plays
+5. **Left / Right jump in a menu, and nothing else.** They go to the previous
+   or next letter in a list sorted by name, else 10 items back or forward (see
+   [Left and Right in menus](#left-and-right-in-menus)). They never change a
+   value, and never mean "back" or "open". At the first or last item you hear
+   the edge sound.
+6. **A value is changed in its list, and works at once.** A setting is changed
+   by opening it with OK: its list opens on the current value, and choosing a
+   value with OK saves it and goes back. You hear the new speech rate straight
+   away. The file is written when another key is pressed or the device sleeps
+   or powers off; the volume is the exception, kept in memory and written on exit. Streaming quality is the one exception: a stream that plays
    would have to open again, so the new quality starts with the next track.
-7. **In a program, Left / Right are that program's own keys.** In the player
-   they skip back and forward, and holding them or pressing them deeper
-   moves to the previous or next chapter or track.
-8. **Play/Pause, Power and Talk work the same on every screen.** Holding
-   Play/Pause ("where am I?") speaks the screen path and the selected item,
-   and the progress of a download that runs ("Downloading, 3 of 9 tracks.").
-9. **Every press of a key that has a job is heard.** The press interrupts
-   speech and plays an earcon, speaks, or both. Rule 5 is the one exception.
+7. **In a program, Left / Right are that program's own keys.** In a player
+   they skip back and forward by the step unit, and holding them or pressing
+   them deeper moves to the previous or next chapter or track.
+8. **Play/Pause, Volume up / down, Power and Talk work the same on every
+   screen.** Holding Play/Pause ("where am I?") speaks the screen path and the
+   selected item, and the progress of a download that runs ("Downloading, 3 of 9
+   tracks."). The volume keys change the content volume in menus and players
+   alike (see [Volume](#volume)).
+9. **Every press of a key is heard.** The press interrupts speech and plays an
+   earcon, speaks, or both. A key with no job on the screen plays the edge
+   sound. There is no silent key. A held key that repeats (volume) plays the edge
+   sound once at the limit, not on each repeat.
+10. **Options is about the selected item.** It opens the actions for the selected
+    item in a menu and for the playing track in a player, and is never used for
+    anything else (see [Options](#options)). An item with none says "No options".
 
 ## Item types
 
 What an item does depends on which parts of `MenuItem` are set:
 
-| Type | `value` | `adjust` | OK opens | Example |
-|------|:-:|:-:|---|---|
-| **Submenu** | (info) | – | `submenu` | Library, Road Trip (`2 tracks`) |
-| **Setting** | ✓ | ✓ | – | (none yet; use for on/off values) |
-| **Setting with list** | ✓ | ✓ | `submenu` of all values, on the current one | Speech rate, Volume |
-| **Status with list** | ✓ | – | `submenu` of choices, on the current one | Sleep timer (`15 minutes left`) |
-| **Action** | (info) | – | runs `action` | Status, Time and date |
-| **Program** | (info) | – | `action` pushes the program's screen | a book, a track, Now playing |
-| **List from the server** | (info) | – | `action` opens a list that loads from the server | Recently added, an album on the server |
+| Type | `value` | OK opens | Example |
+|------|:-:|---|---|
+| **Submenu** | (info) | `submenu` | Library, Road Trip (`2 tracks`) |
+| **Setting with list** | ✓ | `submenu` of all values, on the current one | Speech rate, Volume (an on/off value is a list of two) |
+| **Status with list** | ✓ | `submenu` of choices, on the current one | Sleep timer (`15 minutes left`) |
+| **Action** | (info) | runs `action` | Status, Time and date |
+| **Program** | (info) | `action` pushes the program's screen | a book, a track, Now playing |
+| **List from the server** | (info) | `action` opens a list that loads from the server | Recently added, an album on the server |
+
+No type changes its value with Left / Right: the `adjust` part of `MenuItem` goes
+away (queue.md step 1.4). Any item may also have an `options` builder (see
+[Options](#options)).
 
 `choice()` in `app.cpp` builds a *setting with list* from a settings key and
 its options. In the list the current value is spoken as "current". Choosing a
 value with OK saves it and goes back. Use `choice()` for every user setting.
+Volume stays in Settings as a list; the volume keys change the same value.
 
 ## Two-stage keys
 
@@ -74,24 +95,189 @@ ignored. On one-stage hardware, holding the key does the same as a deep press.
 
 | | Light press | Hold | Deep press |
 |---|---|---|---|
-| Player | skip back / forward | previous / next chapter | previous / next chapter, without waiting |
-| Menu | step the value | step the value | step the value |
+| Player | skip back / forward, or the unit's step | previous / next chapter or track | previous / next chapter or track, without waiting |
+| Menu | jump (letter or 10) | the same jump, once | the same jump, once |
+
+A hold or a deep press in a menu does what a light press does, once; it does not
+repeat. A hold or deep press in a player moves to the previous or next track or chapter
+whatever the step unit.
+
+## Buttons and keys
+
+| Button | What it is for |
+|--------|----------------|
+| Up / Down | move in menus; in a player, choose what Left / Right move by |
+| Left / Right (two-stage) | in menus: jump by letter or by 10; in a player: skip, and a deep press or hold goes to the previous / next track or chapter |
+| OK | go in; in a player, the Player menu |
+| Home | go out; hold for the Home menu |
+| Play/Pause | play / pause; hold for "where am I?" |
+| **Volume up / down** | content volume, on every screen |
+| **Options** | actions for the selected item, or in a player for the playing track |
+| Talk | push to talk (STT, later) |
+| Power | sleep / wake; hold for the Power menu |
+| Hold switch | locks every key except Power |
+
+Text (playlist names, search, Wi-Fi passwords) comes from STT or a keyboard later.
+Until then names are made by the device.
 
 ## Key table
 
 | Key | Menu | Player |
 |-----|------|--------|
-| Up / Down | previous / next item | volume up / down |
-| Up / Down held | first / last item | volume up / down |
-| Left / Right | change the value (nothing if none) | skip back / forward |
-| Left / Right held or deep | change the value (nothing if none) | previous / next chapter / track |
+| Up / Down | previous / next item | previous / next step unit |
+| Up / Down held | first / last item | once, like a light press (no repeat) |
+| Left / Right | previous / next letter, or 10 items back / forward | move by the unit (skip, track or chapter, album or 10 minutes) |
+| Left / Right held or deep | the same, once | previous / next chapter / track |
 | OK | **in**: open / run | Player menu |
 | OK held | **out** | **out** |
 | Home | **out** | **out** |
 | Home held | Home menu | Home menu |
 | Play/Pause | play / pause | play / pause |
 | Play/Pause held | where am I? | where am I? |
+| Volume up / down | content volume | content volume |
+| Volume up / down held | repeats the step until let go | repeats the step until let go |
+| Options | actions of the selected item ("No options" if none) | actions of the playing track |
 | Power / Power held | sleep / Power menu | sleep / Power menu |
+
+Options pressed inside an Options list says "No options": it does not open a second level.
+
+### Volume
+
+- **Volume up / down change the content volume** on every screen, menus included.
+  Speech keeps its own level. At 0 and 100 % the edge sound plays.
+- **Holding a volume key repeats the step** (about every 150 ms) until it is let go.
+  `GestureDetector` gets a repeat event for these two keys; the other keys keep
+  short / long / deep.
+- The volume is kept in memory and written to `config.yaml` only on exit.
+
+### The step unit (Up / Down in a player)
+
+With volume on its own keys, Up / Down in a player choose **what Left / Right move
+by**, like the navigation levels of a Victor Reader Stream. As in a menu, Down moves
+to the next unit and Up to the previous one, and each speaks the unit ("Track"). The
+edge sound plays at the first and last unit; holding Up or Down does not jump.
+
+| Player | Units (Up / Down) | Light press of Left / Right |
+|--------|-------------------|-----------------------------|
+| Music | Skip · Track · Album | the skip of Settings (back / forward), the previous / next track, or the first track of the previous / next album in the queue |
+| Book | Skip · Chapter · 10 minutes | the skip of Settings, the previous / next chapter, or 10 minutes |
+
+- The first unit is **Skip**, and it is the unit after a first start.
+- **A deep press or hold of Left / Right always goes to the previous / next track or
+  chapter**, whatever the unit.
+- The unit is kept per player and saved in `state.tsv` (`unit.music`, `unit.book`),
+  written on sleep and exit like the rest of the state, so it is the same after a wake
+  or a restart.
+- Until the queue exists, the Album unit moves within the loaded list (Play all and an
+  artist span albums); in a one-album list it plays the edge sound.
+
+### Left and Right in menus
+
+Settings no longer change in place with Left / Right (rule 6). Left / Right in menus
+**jump in long lists**:
+
+- In a list sorted by name (Albums A to Z, Artists, Library, Music), Left / Right go to
+  the first item of the previous / next letter and speak it: "D. Dune, 41 of 500". A
+  letter is the first letter of the sort name (so "The" is skipped as in Artists);
+  names in other scripts and "Unknown artist" form their own groups after the Latin
+  ones. Left goes to the first item of the previous letter, also from the middle of a
+  letter. The spoken letter is the first letter of the sort name; an item in a
+  group of its own ("Unknown artist") is spoken by name without a letter.
+- In other lists they go 10 items back or forward, and stop at the first or last item.
+- At the first or last item (Right on the last, Left on the first) the edge sound plays;
+  with Menu wrap around it wraps, as Up / Down do.
+- A list says by itself whether it is sorted by name (a flag on the list); a new list
+  that is not marked jumps by 10.
+- This does not repeat what OK and Home do, so each action keeps one key.
+- **To be confirmed on a real device** with blind users before it is final (queue.md
+  open question 1).
+
+### Options
+
+- **Options on a menu item** opens "Options, Weather": a short list of what can be done
+  with that item. **Options in a player** gives the actions for the playing track.
+- **OK and Options in a player stay different.** OK opens the Player menu, which is
+  about the player (Queue, Shuffle, Repeat, Sleep timer). Options is about the
+  playing track: Go to album, Album info, and Star / Unstar for a remote track. Album
+  info moves to Options from the Player menu and from the end of an album's list (an
+  album in a list has it in its Options). Star is built in the Player menu in
+  [streaming.md phase 2a](streaming.md#phase-2a-stars) and moves to Options in
+  queue.md step 2.5, so it has one key. Go to artist comes later.
+- An item with no actions plays the edge sound and says "No options" (rule 9: every
+  press of a key is heard). So does Options in a player with nothing loaded.
+- **Play now** is an action that finishes a task: it starts playback, goes back by
+  itself and says what plays ("Playing Weather."), like Play next and Add to queue.
+- An action that finishes a task (Play next, Add to queue) goes back by itself and
+  says what it did. An action that only reports something stays.
+- `MenuItem` gets an `options` builder, next to `submenu` and `action`. Lists build it
+  for their items; a player builds it for the current track.
+- At Beginner verbosity the hint names it: "Press OK to play, Options for more."
+- The actions are Play now, Play next and Add to queue (see [The queue](#the-queue)),
+  plus the ones above.
+
+## Two players
+
+- **The music player** plays the queue. **The book player** plays one book, with its
+  position kept per book and `last_book`. Podcasts will use the book player.
+- They share one `MediaPlayer`. Starting one pauses the other and keeps its place, so
+  going back to it resumes where it stopped.
+- Each is its own program: `Screen::Kind::MusicPlayer` and `Screen::Kind::BookPlayer`,
+  each with its own Player menu.
+- **Home:** "Now playing, <album or book>" for the player used last, and "Continue,
+  <the other>" below it when the other player has something loaded.
+- The book player has no queue, shuffle or repeat. Its step units are Skip · Chapter ·
+  10 minutes, the music player's are Skip · Track · Album.
+
+## The queue
+
+Only the music player has a queue ([queue.md](queue.md) has the full design). The rules
+that touch navigation:
+
+- **OK on a track** in any list of tracks replaces the queue with that list and plays from
+  the track. Play album / Play playlist / Play all replace it with the whole list.
+  **Options → Play now / Play next / Add to queue** (on a track, album, playlist or
+  artist) replace the queue, put the item after the current entry, or at the end.
+- A remote item is loaded first ("Loading.", then "Added Weather, 12 tracks. 30 in
+  queue."). Home while it loads drops the late answer. With nothing loaded, Play next and
+  Add to queue make a queue that is paused at its first entry: "Added Weather, 12 tracks.
+  Press play."
+- **Shuffle** (off · tracks · albums) and **Repeat** (off · all · track) belong to the
+  queue and start off with each new queue. They are "Setting with list" items in the
+  music Player menu, not settings in `config.yaml`. Repeat track repeats the current
+  track when it ends; Left / Right and a deep press still move to other tracks.
+- At the end of the queue: "End of queue", paused at the first entry, unless Repeat is on.
+- **An entry that cannot play is skipped**: "Storm, source unavailable." (a run: "3
+  tracks, source unavailable."). A server that fails is marked down and checked in the
+  background; with nothing ahead that can play the device says "Server not reachable.
+  Press play to try again."
+- The music Player menu:
+
+```
+Player menu (music player)
+├── Queue → <entries>      opens on the current entry, spoken "current"
+├── Shuffle, off           list: off · tracks · albums
+├── Repeat, off            list: off · all · track
+├── Go to first track      the first entry in the play order
+└── Sleep timer → …
+```
+
+  The book Player menu has no Queue, Shuffle or Repeat.
+- The **Queue list** opens on the current entry ("Storm, current, 5 of 30"). OK plays an
+  entry; Options on an entry: Play next · Move · Remove. After the entries: Save as
+  playlist, Previous queue (only when there is one: the edited queue that the last
+  replacement kept, and OK on it brings it back), and Clear queue, which is behind a list
+  that opens on Cancel (a dangerous action is never first). Move is a list of positions that
+  opens on the entry's own, like a setting. Remove of the current entry stops it and
+  makes the next entry current, paused.
+- **Save as playlist** saves the remote tracks of the server set up now as a server
+  playlist, named from the wall time ("Queue, 27 October 14:05"), and says how many tracks
+  were left out. With none to save it says "Only tracks from the server can be saved."
+- The queue is saved on sleep and exit and is back after a restart; nothing plays until
+  the user chooses it.
+
+Until the queue is built (queue.md phase 2) the music player holds one list, its Player
+menu keeps "Tracks", and the rules above for Options actions, Shuffle, Repeat and the
+Queue list do not apply yet.
 
 ## Lists
 
@@ -106,8 +292,8 @@ ignored. On one-stage hardware, holding the key does the same as a deep press.
 - **A dangerous action is never the first item of its list.** It sits in a
   list that opens on something harmless: `Cancel` in Factory reset, `Sleep`
   in Power. Pressing OK twice by accident then does no harm.
-- **An action that finishes a task goes back by itself** (choosing a value or
-  a sleep timer). An action that only reports something stays where it is.
+- **An action that finishes a task goes back by itself** (choosing a value, a
+  sleep timer, Play next or Add to queue). An action that only reports something stays where it is.
 - **An empty list says why and what to do** ("Library is empty", "No music",
   "No server set up").
 
@@ -275,8 +461,9 @@ Music
   where the album plays from ("On the device", "Downloaded" or "On the server"),
   then "Also on the server" for an entry that is on the device or downloaded and
   also on the server, the artist, and the number of tracks. It only reports, so it stays where it
-  is. Nothing else speaks where an album plays from. When the queue plan
-  ([queue.md](queue.md) step 2.5) is built first, Album info moves to Options.
+  is. Nothing else speaks where an album plays from. Target
+  ([queue.md](queue.md) step 2.5): Album info moves to Options, from the end of an
+  album's list and from the Player menu, and the list no longer ends with it.
 - **Refresh library** is an action that reports and stays. It says "Updating the
   library." at once, then the result ("Library updated, 12 albums.") or the error
   ("Server not reachable.", "Wrong user name or password.", "Server error."). Keys
@@ -302,5 +489,8 @@ Music
 - [ ] A new program is a `Screen::Kind` with its own key handler. Home and
       holding OK leave it, and holding Home still goes to the Home menu.
 - [ ] Anything destructive is behind a list whose first item is harmless.
+- [ ] Left / Right in it jump (by letter if the list is sorted by name), and a
+      setting changes only in its list.
+- [ ] Options on its items does something or says "No options".
 - [ ] The Help texts (`kButtonHelp`, "Getting started") still match.
 - [ ] A test in `tests/test_app.cpp` drives it with the real keys.

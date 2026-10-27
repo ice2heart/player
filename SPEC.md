@@ -123,10 +123,13 @@ Proposed layout (v1):
 | Button          | Shape / position           | Short press        | Long press (≥ 600 ms)     | Double press |
 |-----------------|----------------------------|--------------------|---------------------------|--------------|
 | **Play/Pause**  | large round, center        | play / pause       | "Where am I?" (announce)  | —            |
-| **Back**        | left arrow, two-stage      | skip back N sec / menu: value − | previous chapter (also deep press) | — |
-| **Forward**     | right arrow, two-stage     | skip fwd N sec / menu: value +  | next chapter (also deep press)     | — |
-| **Up**          | top, ridged                | volume up / menu ↑ | speech rate up (in menus) | —            |
-| **Down**        | bottom, ridged             | volume down / menu ↓ | speech rate down        | —            |
+| **Back**        | left arrow, two-stage      | player: skip back by the step unit / menu: previous letter, or 10 items back | previous chapter or track (also deep press) | — |
+| **Forward**     | right arrow, two-stage     | player: skip fwd by the step unit / menu: next letter, or 10 items on | next chapter or track (also deep press)     | — |
+| **Up**          | top, ridged                | menu ↑ / player: previous step unit | first item (in menus) | —            |
+| **Down**        | bottom, ridged             | menu ↓ / player: next step unit | last item (in menus)        | —            |
+| **Volume up**   | side, ridged               | content volume up, on every screen; held repeats the step | — | — |
+| **Volume down** | side, ridged               | content volume down, on every screen; held repeats the step | — | — |
+| **Options**     | side, distinct from OK     | actions for the selected item, or for the playing track in a player | — | — |
 | **Menu / OK**   | square                     | open menu / select | go back one level         | —            |
 | **Home / Back** | small, recessed            | back one level     | go to Home (library root) | —            |
 | **Talk (Mic)**  | side, textured             | push-to-talk       | dictation mode            | —            |
@@ -141,6 +144,9 @@ Notes:
 - Debounce in MCU (or `gpio-keys` `debounce-interval`).
 - Linux side sees standard **evdev** key events (`KEY_PLAYPAUSE`, `KEY_NEXTSONG`, …) so the
   app can be developed on a desktop with a keyboard.
+- **Step unit:** Up / Down in a player choose what Left / Right move by (music: Skip, Track,
+  Album; book: Skip, Chapter, 10 minutes), like the navigation levels of a Victor Reader Stream.
+  Settings change only in their list. See [docs/navigation.md](docs/navigation.md) for the full contract.
 - **Key describer mode** (like screen readers): press a key → it says what it does, no action.
 
 ### 3.4 Audio: USB Audio Class codec
@@ -365,9 +371,11 @@ Home
 | Action                | Behaviour |
 |-----------------------|-----------|
 | Play/Pause            | toggles; says "Paused" / earcon on resume (configurable) |
-| Back / Forward short  | skip 10 s / 30 s (configurable) |
-| Back / Forward long   | previous / next chapter; announces chapter name |
-| Up / Down             | volume; earcon pitch indicates level, speak % at limits |
+| Back / Forward short  | move by the step unit: skip 10 s / 30 s (configurable), track or chapter, album or 10 minutes |
+| Back / Forward long or deep | previous / next chapter or track; announces chapter name |
+| Up / Down             | choose the step unit for Back / Forward; speaks it ("Track") |
+| Volume up / down      | content volume, held repeats; earcon pitch indicates level, edge sound at the limits |
+| Options               | actions for the playing track (Go to album, Album info, Star) |
 | Play long             | "Chapter 7 of 22, 'The Storm'. 14 minutes left in chapter, 6 hours 3 minutes left in book." |
 | OK                    | player menu: speed, bookmark add, sleep timer, chapters, info |
 | Talk                  | voice command |
