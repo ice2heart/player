@@ -261,7 +261,7 @@ TEST_F(AppTest, ChoosingAValueFromTheListSavesItAppliesItAndGoesBack) {
     EXPECT_EQ(configFile.onDisk("speech.rate"), "250") << "written at once";
     EXPECT_EQ(speech.rate, 250);
     EXPECT_EQ(level().title, "Settings");
-    EXPECT_EQ(speech.last(), "Speech rate, 250 words per minute, 1 of 11");
+    EXPECT_EQ(speech.last(), "Speech rate, 250 words per minute, 1 of 12");
 }
 
 TEST_F(AppTest, LeavingAValueListChangesNothing) {
@@ -272,7 +272,7 @@ TEST_F(AppTest, LeavingAValueListChangesNothing) {
     press(Button::Home);
     EXPECT_EQ(level().title, "Settings");
     EXPECT_EQ(settings.getInt("volume", 70), 70);
-    EXPECT_EQ(speech.last(), "Volume, 70 percent, 2 of 11");
+    EXPECT_EQ(speech.last(), "Volume, 70 percent, 2 of 12");
 }
 
 TEST_F(AppTest, LeftAndRightChangeASettingInPlace) {
@@ -330,7 +330,7 @@ TEST_F(AppTest, LeftAndRightDoNothingOnItemsWithoutAValue) {
         int stops = speech.stops;
         press(b);
         EXPECT_EQ(level().title, "Settings");
-        EXPECT_EQ(level().index, 10u);
+        EXPECT_EQ(level().index, 11u);
         EXPECT_EQ(speech.said.size(), said) << "silent";
         EXPECT_EQ(sounds.played.size(), played) << "silent";
         EXPECT_EQ(speech.stops, stops) << "speech goes on";
@@ -883,7 +883,7 @@ TEST_F(AppTest, SleepTimerAtEndOfALooseTrack) {
     hold(Button::Home);
     open("Settings");
     hold(Button::Down);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 11 of 11");
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 12 of 12");
 }
 
 TEST_F(AppTest, MusicDoesNotTakeOverTheBookToResume) {
@@ -3281,11 +3281,11 @@ TEST_F(AppTest, SleepTimerIsInSettings) {
     hold(Button::Home);
     open("Settings");
     hold(Button::Down);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 11 of 11");
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 12 of 12");
     press(Button::Ok);
     open("15 minutes");
     EXPECT_EQ(level().title, "Settings") << "choosing a time goes back";
-    EXPECT_EQ(speech.last(), "Sleep timer, 15 minutes left, 11 of 11");
+    EXPECT_EQ(speech.last(), "Sleep timer, 15 minutes left, 12 of 12");
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "Sleep timer. 15 minutes, current, 3 of 7") << "opens on the timer that is set";
     press(Button::Home);
@@ -4662,4 +4662,493 @@ TEST_F(OfflineTest, LeavingHomeWhileTheFallbackWaitsForTheServerDropsIt) {
     EXPECT_FALSE(server.fail(id, FakeMusicServer::Error::Unreachable)) << "the request was cancelled";
     app->tick();
     EXPECT_TRUE(player.opened.empty());
+}
+
+// ------------------------------------------------------- automatic cache (step 3.7)
+
+// A streamed track that has been heard for a while is fetched into the cache,
+// unpinned, silently. Above the limit the least recently played unpinned tracks go.
+class AutoCacheTest : public OfflineTest {
+protected:
+    void SetUp() override {
+        OfflineTest::SetUp();
+        clock.setWallTime(kNow);
+    }
+    static constexpr std::time_t kNow = 1'800'000'000;
+    // Weather plays from the server, from track `index`, with its sizes and file types.
+    void playSized(size_t index = 0) {
+        start();
+        ASSERT_TRUE(app->playRemote("Weather", sized(), index, albumSource("al1"), 0, "Band"));
+        ASSERT_TRUE(player.playing());
+    }
+    // Ticks through `ms` of playback, a second at a time, as the device's loop would.
+    void listen(std::chrono::milliseconds ms) {
+        for (; ms >= 1s; ms -= 1s) idle(1s);
+        if (ms > 0ms) idle(ms);
+    }
+    // A track of `bytes` bytes of list `source` in the cache, as an earlier session left it.
+    void cacheTrack(const std::string& id, bool pinned, std::int64_t played, size_t bytes = 5,
+                    RemoteSource source = albumSource("al1"), const std::string& name = "Weather") {
+        CachedList list = store().load(source);
+        if (list.source.id.empty()) list = {source, name, "Band", {}};
+        list.tracks.push_back({id, id + ".mp3", id, 100, "", pinned, played});
+        fs::create_directories(store().listFolder(source));
+        std::ofstream(store().listFolder(source) / (id + ".mp3"), std::ios::binary) << std::string(bytes, 'x');
+        ASSERT_TRUE(store().save(list));
+    }
+    std::string weatherFolderFile(const std::string& name) const {
+        return (store().listFolder(albumSource("al1")) / name).string();
+    }
+    bool cached(const std::string& id) const { return store().find(id).has_value(); }
+};
+
+TEST_F(AutoCacheTest, AStreamedTrackIsFetchedUnpinnedIntoItsListFolderOnceHeardLongEnough) {
+    playSized();
+    listen(9s);
+    EXPECT_TRUE(downloader.requests.empty()) << "a track that is skipped costs no bandwidth";
+    listen(2s);
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "t1");
+    EXPECT_EQ(downloader.lastRequest().dest, weatherFolderFile("t1.flac"));
+    listen(30s);
+    EXPECT_EQ(downloader.requests.size(), 1u) << "once per play";
+    size_t said = speech.said.size(), played = sounds.played.size();
+    finishLast();
+    ASSERT_EQ(store().find("t1"), store().listFolder(albumSource("al1")) / "t1.flac");
+    CachedList list = store().load(albumSource("al1"));
+    EXPECT_EQ(list.name, "Weather");
+    EXPECT_EQ(list.artist, "Band");
+    ASSERT_EQ(list.tracks.size(), 1u);
+    EXPECT_EQ(list.tracks[0].title, "Storm Front");
+    EXPECT_DOUBLE_EQ(list.tracks[0].duration, 200);
+    EXPECT_FALSE(list.tracks[0].pinned);
+    EXPECT_EQ(list.tracks[0].lastPlayed, kNow);
+    EXPECT_EQ(speech.said.size(), said) << "silent";
+    EXPECT_EQ(sounds.played.size(), played) << "no earcon";
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(AutoCacheTest, TracksAreFetchedOneAtATimeInTheOrderTheyWereHeard) {
+    playSized();
+    listen(11s);
+    hold(Button::Forward); // Rain
+    listen(11s);
+    ASSERT_EQ(downloader.requests.size(), 1u) << "Rain waits for Storm Front";
+    finishLast();
+    ASSERT_EQ(downloader.requests.size(), 2u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "t2");
+    EXPECT_EQ(downloader.lastRequest().dest, weatherFolderFile("t2.mp3"));
+    finishLast();
+    EXPECT_TRUE(cached("t1"));
+    EXPECT_TRUE(cached("t2"));
+}
+
+TEST_F(AutoCacheTest, ASkippedTrackIsNotFetched) {
+    playSized();
+    listen(5s);
+    hold(Button::Forward);
+    listen(5s);
+    hold(Button::Forward);
+    listen(5s);
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(AutoCacheTest, PausedTimeDoesNotCountAsHeard) {
+    playSized();
+    listen(5s);
+    press(Button::PlayPause);
+    listen(60s);
+    EXPECT_TRUE(downloader.requests.empty());
+    press(Button::PlayPause);
+    listen(8s);
+    EXPECT_EQ(downloader.requests.size(), 1u);
+}
+
+TEST_F(AutoCacheTest, WithTheLimitAtZeroNothingIsFetched) {
+    settings.setInt("cache.limit_gb", 0);
+    playSized();
+    listen(60s);
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(AutoCacheTest, WithTheLimitAtZeroAnExplicitDownloadStillWorks) {
+    settings.setInt("cache.limit_gb", 0);
+    start();
+    openAlbum();
+    startDownload();
+    EXPECT_EQ(downloader.lastRequest().trackId, "t1");
+    finishLast();
+    ASSERT_TRUE(cached("t1"));
+    EXPECT_TRUE(store().load(albumSource("al1")).tracks[0].pinned);
+}
+
+TEST_F(AutoCacheTest, SwitchingTheCacheOffDropsTracksStillWaiting) {
+    playSized();
+    listen(11s);
+    hold(Button::Forward);
+    listen(11s); // Rain waits behind Storm Front
+    settings.setInt("cache.limit_gb", 0);
+    finishLast();
+    listen(1s);
+    EXPECT_EQ(downloader.requests.size(), 1u);
+}
+
+TEST_F(AutoCacheTest, ATrackAlreadyOnDiskIsNotFetchedAgain) {
+    cacheTrack("t1", false, 100);
+    playSized();
+    ASSERT_EQ(player.file, weatherFolderFile("t1.mp3"));
+    listen(60s);
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(AutoCacheTest, WithoutAWorkingDownloaderNothingIsAsked) {
+    downloader.isConfigured = false;
+    playSized();
+    listen(60s);
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(AutoCacheTest, AFailedFetchIsSilentAndNotTriedAgainDuringThatPlay) {
+    playSized();
+    listen(11s);
+    size_t said = speech.said.size(), played = sounds.played.size();
+    finishLast(Result::Unreachable, false);
+    listen(60s);
+    EXPECT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(speech.said.size(), said);
+    EXPECT_EQ(sounds.played.size(), played);
+    EXPECT_FALSE(cached("t1"));
+    EXPECT_TRUE(store().load(albumSource("al1")).tracks.empty());
+    EXPECT_TRUE(player.playing()) << "the music goes on";
+}
+
+TEST_F(AutoCacheTest, AFileOfTheWrongSizeIsRemovedAndNotListed) {
+    playSized();
+    listen(11s);
+    ASSERT_TRUE(downloader.finish(downloader.lastRequest().id, Result::Ok, true, "short!!"));
+    app->tick();
+    EXPECT_FALSE(cached("t1"));
+    EXPECT_FALSE(fs::exists(weatherFolderFile("t1.flac")));
+}
+
+TEST_F(AutoCacheTest, TheTrackPlaysFromItsFileTheNextTimeAndIsNotStreamed) {
+    playSized();
+    listen(11s);
+    finishLast();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    EXPECT_EQ(player.file, weatherFolderFile("t1.flac"));
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t1"), 1) << "only the first play";
+}
+
+TEST_F(AutoCacheTest, APinnedTrackWhoseFileWentAwayStaysPinnedWhenItIsFetchedAgain) {
+    cacheTrack("t1", true, 0);
+    fs::remove(weatherFolderFile("t1.mp3"));
+    playSized();
+    listen(11s);
+    finishLast();
+    ASSERT_EQ(store().load(albumSource("al1")).tracks.size(), 1u);
+    EXPECT_TRUE(store().load(albumSource("al1")).tracks[0].pinned);
+    EXPECT_TRUE(cached("t1"));
+}
+
+TEST_F(AutoCacheTest, AListTheUserDownloadedKeepsItsNameAndPinnedTracks) {
+    cacheTrack("t2", true, 0);
+    CachedList list = store().load(albumSource("al1"));
+    list.name = "My name";
+    ASSERT_TRUE(store().save(list));
+    playSized();
+    listen(11s);
+    finishLast();
+    list = store().load(albumSource("al1"));
+    EXPECT_EQ(list.name, "My name");
+    ASSERT_EQ(list.tracks.size(), 2u);
+    EXPECT_TRUE(list.tracks[0].pinned) << "t2 stays pinned";
+    EXPECT_FALSE(list.tracks[1].pinned);
+}
+
+// ---- priority of an explicit download
+
+class AutoCachePriorityTest : public AutoCacheTest {
+protected:
+    // Weather plays from the server and Storm Front is being fetched; the other album
+    // "Other" is open in Streaming with its Download item ready.
+    void fetchingWhileOtherAlbumIsOpen() {
+        start();
+        ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+        listen(11s);
+        ASSERT_EQ(downloader.requests.size(), 1u);
+        auto_ = downloader.lastRequest().id;
+        press(Button::Home);
+        open("Server");
+        open("Recently added");
+        answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}, {"al2", "Other", "Duo", 2}});
+        open("Other");
+        answer(std::vector<RemoteTrack>{{"o1", "One", "Duo", "Other", 100, 1, "mp3", 5}, {"o2", "Two", "Duo", "Other", 100, 2, "mp3", 5}});
+    }
+    Downloader::RequestId auto_ = 0;
+};
+
+TEST_F(AutoCachePriorityTest, AnExplicitDownloadCancelsTheTransferAndGoesFirst) {
+    fetchingWhileOtherAlbumIsOpen();
+    startDownload();
+    EXPECT_NE(std::find(downloader.cancelled.begin(), downloader.cancelled.end(), auto_), downloader.cancelled.end());
+    ASSERT_EQ(downloader.requests.size(), 2u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "o1");
+    EXPECT_EQ(speech.last(), "Downloading, 0 of 2 tracks.") << "the automatic fetch is not counted";
+    EXPECT_FALSE(downloader.finish(auto_, Result::Ok)) << "its answer is dropped";
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Downloading, 0 of 2 tracks.");
+}
+
+TEST_F(AutoCachePriorityTest, NothingAutomaticStartsWhileTheDownloadRuns) {
+    fetchingWhileOtherAlbumIsOpen();
+    startDownload();
+    app->playRemote("Weather", sized(), 1, albumSource("al1"), 0, "Band");
+    listen(30s); // Rain is heard, and waits
+    EXPECT_EQ(downloader.requests.size(), 2u);
+    finishLast();
+    EXPECT_EQ(downloader.requests.size(), 3u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "o2");
+}
+
+TEST_F(AutoCachePriorityTest, TheTransferContinuesAfterTheDownloadAndTheDownloadCountsOnlyItsOwnTracks) {
+    fetchingWhileOtherAlbumIsOpen();
+    startDownload();
+    finishLast();
+    finishLast();
+    EXPECT_EQ(sounds.last(), Earcon::Open) << "the download ended over music";
+    ASSERT_EQ(downloader.requests.size(), 4u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "t1") << "Storm Front is fetched again from where it was";
+    EXPECT_EQ(downloader.lastRequest().dest, weatherFolderFile("t1.flac"));
+    size_t said = speech.said.size();
+    finishLast();
+    EXPECT_TRUE(cached("t1"));
+    EXPECT_FALSE(store().load(albumSource("al1")).tracks[0].pinned);
+    EXPECT_TRUE(store().load(albumSource("al2")).tracks[0].pinned);
+    EXPECT_EQ(speech.said.size(), said);
+}
+
+TEST_F(AutoCachePriorityTest, ATrackTheDownloadFetchedMeanwhileIsNotFetchedAgain) {
+    start();
+    openAlbum();
+    open("Play album");
+    listen(11s);
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    press(Button::Home);
+    startDownload(); // the same album: Storm Front comes with it
+    for (int i = 0; i < 3; ++i) finishLast();
+    EXPECT_EQ(trackIdsRequested(), (std::vector<std::string>{"t1", "t1", "t2", "t3"}));
+    listen(5s);
+    EXPECT_EQ(downloader.requests.size(), 4u);
+}
+
+TEST_F(AutoCachePriorityTest, DeletingAListDropsItsTransfer) {
+    cacheTrack("t3", true, 0);
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    auto id = downloader.lastRequest().id;
+    hold(Button::Forward);
+    listen(11s); // Rain waits behind Storm Front
+    ASSERT_TRUE(app->playRemote("Other", {{"o1", "One", "Duo", "Other", 100, 1, "mp3", 5}}, 0, albumSource("al2")));
+    press(Button::Home);
+    open("Server");
+    open("Downloaded");
+    open("Weather");
+    open("Delete download");
+    open("Yes, delete");
+    EXPECT_NE(std::find(downloader.cancelled.begin(), downloader.cancelled.end(), id), downloader.cancelled.end());
+    EXPECT_FALSE(fs::exists(store().listFolder(albumSource("al1"))));
+    listen(5s);
+    EXPECT_EQ(downloader.requests.size(), 1u) << "Rain is not fetched either";
+}
+
+// ---- the limit
+
+class AutoCacheLimitTest : public AutoCacheTest {
+protected:
+    void SetUp() override {
+        AutoCacheTest::SetUp();
+    }
+    // Starts the app with one "gigabyte" of `bytes` bytes.
+    void startSmall(std::uintmax_t bytes = 10) {
+        start();
+        app->setCacheGigabyte(bytes);
+    }
+};
+
+TEST_F(AutoCacheLimitTest, OverTheLimitTheLeastRecentlyPlayedUnpinnedTrackGoesFirst) {
+    cacheTrack("a", false, 100);
+    cacheTrack("b", false, 50);
+    cacheTrack("c", false, 200);
+    startSmall(15); // with the new one 20 bytes
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    hold(Button::Forward); // Storm Front is not the open one any more
+    finishLast();
+    EXPECT_FALSE(cached("b")) << "the oldest play goes";
+    EXPECT_TRUE(cached("a"));
+    EXPECT_TRUE(cached("c"));
+    EXPECT_TRUE(cached("t1")) << "the track just cached played last";
+    EXPECT_FALSE(fs::exists(weatherFolderFile("b.mp3")));
+}
+
+TEST_F(AutoCacheLimitTest, PinnedTracksNeverGoAndDoNotCount) {
+    cacheTrack("pin", true, 1, 500);
+    cacheTrack("a", false, 100);
+    cacheTrack("b", false, 200);
+    startSmall();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    finishLast();
+    EXPECT_TRUE(cached("pin"));
+    EXPECT_FALSE(cached("a")) << "15 bytes of unpinned tracks, limit 10";
+    EXPECT_TRUE(cached("b"));
+    EXPECT_TRUE(cached("t1"));
+}
+
+TEST_F(AutoCacheLimitTest, AnEvictedTrackIsStreamedAgainAndTheNewOneIsPlayedFromItsFile) {
+    cacheTrack("a", false, 100);
+    cacheTrack("b", false, 200);
+    startSmall();
+    std::vector<RemoteTrack> tracks = sized(); // Storm Front, Rain, Sunshine
+    tracks.insert(tracks.begin() + 2, {"a", "A", "Band", "Weather", 100, 4, "mp3", 5});
+    ASSERT_TRUE(app->playRemote("Weather", tracks, 1, albumSource("al1"), 0, "Band")); // Rain streams
+    listen(11s);
+    finishLast(); // 15 bytes: "a" goes
+    ASSERT_FALSE(cached("a"));
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_EQ(player.preloaded, "fake://stream/a") << "the index forgot the file: the next track is pre-opened";
+    ASSERT_TRUE(app->playRemote("Weather", tracks, 2, albumSource("al1"), 0, "Band"));
+    EXPECT_EQ(player.file, "fake://stream/a");
+    ASSERT_TRUE(app->playRemote("Weather", tracks, 1, albumSource("al1"), 0, "Band"));
+    EXPECT_EQ(player.file, weatherFolderFile("t2.mp3"));
+}
+
+TEST_F(AutoCacheLimitTest, TheFileThePlayerHasOpenIsKeptWhateverTheLimit) {
+    cacheTrack("a", false, 100);
+    cacheTrack("b", false, 200);
+    settings.setInt("cache.limit_gb", 0);
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", {{"a", "A", "Band", "Weather", 100, 1}, {"b", "B", "Band", "Weather", 100, 2}}, 0, albumSource("al1")));
+    ASSERT_EQ(player.file, weatherFolderFile("a.mp3"));
+    app->shutdown();
+    EXPECT_TRUE(cached("a")) << "it is open";
+    EXPECT_FALSE(cached("b"));
+}
+
+TEST_F(AutoCacheLimitTest, TheLimitIsAppliedOnExitWhenItWasLowered) {
+    cacheTrack("a", false, 100);
+    cacheTrack("pin", true, 100);
+    settings.setInt("cache.limit_gb", 0);
+    start();
+    EXPECT_TRUE(cached("a")) << "nothing is deleted while the user steps through the values";
+    app->shutdown();
+    EXPECT_FALSE(cached("a"));
+    EXPECT_TRUE(cached("pin"));
+    EXPECT_FALSE(fs::exists(weatherFolderFile("a.mp3")));
+}
+
+TEST_F(AutoCacheLimitTest, TheLimitIsAppliedOnSleepToo) {
+    cacheTrack("a", false, 100);
+    settings.setInt("cache.limit_gb", 0);
+    start();
+    press(Button::Power);
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_FALSE(cached("a"));
+}
+
+// ---- lastPlayed
+
+TEST_F(AutoCacheLimitTest, APlayOfACachedTrackIsWrittenToItsManifestOnExitNotBefore) {
+    cacheTrack("t1", false, 100);
+    cacheTrack("t2", false, 100);
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 1, albumSource("al1"), 0, "Band"));
+    listen(30s);
+    clock.setWallTime(kNow + 500);
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    EXPECT_EQ(store().load(albumSource("al1")).tracks[0].lastPlayed, 100) << "no flash write at every play";
+    app->shutdown();
+    CachedList list = store().load(albumSource("al1"));
+    EXPECT_EQ(list.tracks[0].lastPlayed, kNow + 500) << "t1";
+    EXPECT_EQ(list.tracks[1].lastPlayed, kNow) << "t2";
+}
+
+TEST_F(AutoCacheLimitTest, APlayedCachedTrackOutlivesOneThatWasNotWhenTheLimitBites) {
+    cacheTrack("a", false, 100);
+    cacheTrack("b", false, 200);
+    startSmall();
+    ASSERT_TRUE(app->playRemote("Weather", {{"a", "A", "Band", "Weather", 100, 1}}, 0, albumSource("al1")));
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"))); // a is not open any more
+    app->setCacheGigabyte(5);                                                 // room for one of them
+    press(Button::Power);
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_FALSE(cached("b")) << "a was played after b";
+    EXPECT_TRUE(cached("a"));
+}
+
+// ---- the setting
+
+TEST_F(AutoCacheLimitTest, CacheSizeIsInSettingsAndOffersTheFourSizes) {
+    start();
+    open("Settings");
+    open("Cache size");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"off", "1 gigabyte", "4 gigabytes", "16 gigabytes"}));
+    EXPECT_EQ(level().index, 1u) << "opens on the default";
+}
+
+TEST_F(AutoCacheLimitTest, TheSizeIsSavedAndKeptAcrossARestart) {
+    start();
+    open("Settings");
+    open("Cache size");
+    open("4 gigabytes");
+    EXPECT_EQ(configFile.onDisk("cache.limit_gb"), "4");
+    app->shutdown();
+    app.reset();
+    Settings reloaded{&configFile};
+    reloaded.load();
+    EXPECT_EQ(reloaded.getInt("cache.limit_gb", 1), 4);
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, reloaded, state, clock, root, music, cache);
+    app->start();
+    open("Settings");
+    open("Cache size");
+    EXPECT_EQ(level().index, 2u);
+    open("off");
+    app->shutdown();
+    app.reset();
+    Settings off{&configFile};
+    off.load();
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, off, state, clock, root, music, cache);
+    app->start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1")));
+    listen(60s);
+    EXPECT_TRUE(downloader.requests.empty()) << "off, as it was saved";
+    app.reset(); // before `reloaded` goes
+}
+
+// ---- Downloaded means what was downloaded
+
+TEST_F(AutoCacheLimitTest, DownloadedListsOnlyWhatWasDownloaded) {
+    cacheTrack("a1", false, 100, 5, albumSource("auto"), "Automatic");
+    cacheTrack("m1", false, 100, 5, albumSource("mixed"), "Mixed");
+    cacheTrack("m2", true, 100, 5, albumSource("mixed"), "Mixed");
+    cacheTrack("p", true, 100, 5, albumSource("mine"), "Mine");
+    openDownloaded();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Mine", "Mixed"}));
+}
+
+TEST_F(AutoCacheLimitTest, WhenOnlyAutomaticTracksAreCachedDownloadedIsEmpty) {
+    cacheTrack("a1", false, 100);
+    openDownloaded();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No downloads"}));
+}
+
+TEST_F(AutoCacheLimitTest, TheErrorListDoesNotOfferDownloadedForOnlyAutomaticTracks) {
+    cacheTrack("a1", false, 100);
+    openList("Recently added");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again"}));
 }

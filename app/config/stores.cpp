@@ -22,7 +22,7 @@ bool isDigit(char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; 
 const char* const kKeyOrder[] = {
     "speech.rate",   "volume",          "verbosity",        "skip.back",   "skip.forward",
     "rewind_on_resume", "buttons.long_press_ms", "menu.wrap", "power.auto_sleep_min", "streaming.bitrate",
-    "server.type",   "server.name",     "server.url",       "server.user", "server.password",
+    "cache.limit_gb", "server.type",   "server.name",     "server.url",       "server.user", "server.password",
 };
 
 // Always quoted, so an all-digit password is never read as a number by anyone.
@@ -33,7 +33,8 @@ const char* const kHeader =
     "# changed in the Settings menu; comments added here are not kept.\n"
     "# Keys: speech.rate, volume, verbosity, skip.back, skip.forward, rewind_on_resume,\n"
     "#   buttons.long_press_ms, menu.wrap, power.auto_sleep_min, streaming.bitrate (kbps,\n"
-    "#   0 for the original file), and server: type, name, url, user, password (quote it).\n";
+    "#   0 for the original file), cache.limit_gb (gigabytes of automatically cached tracks,\n"
+    "#   0 for none), and server: type, name, url, user, password (quote it).\n";
 
 void flatten(const YAML::Node& node, const std::string& key, SettingsMap& out) {
     auto child = [&key](const std::string& name) { return key.empty() ? name : key + "." + name; };

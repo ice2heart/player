@@ -69,6 +69,18 @@ TEST_F(ConfigTest, DottedKeysBecomeNestedYamlInAFixedOrder) {
                     "  extra: \"x\"\n");
 }
 
+TEST_F(ConfigTest, TheCacheSizeIsWrittenAfterStreamingBeforeTheServerAndNamedInTheHeader) {
+    std::string text = nestYaml({{"server.url", "https://music.example"}, {"cache.limit_gb", "4"}, {"streaming.bitrate", "0"}});
+    EXPECT_NE(text.find("cache.limit_gb"), std::string::npos) << "the header names the key";
+    EXPECT_EQ(text.substr(text.find("\nstreaming:") + 1), "streaming:\n"
+                                                           "  bitrate: 0\n"
+                                                           "cache:\n"
+                                                           "  limit_gb: 4\n"
+                                                           "server:\n"
+                                                           "  url: \"https://music.example\"\n");
+    EXPECT_EQ(flattenYaml(text).at("cache.limit_gb"), "4");
+}
+
 TEST_F(ConfigTest, KeysSurviveARoundTrip) {
     SettingsMap values{{"speech.rate", "250"},     {"menu.wrap", "0"},           {"server.name", "Home: server #1"},
                        {"server.user", "ice"},     {"streaming.bitrate", "0"},   {"server.type", "subsonic"},

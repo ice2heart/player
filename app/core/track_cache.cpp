@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <tuple>
 
@@ -275,7 +276,7 @@ std::optional<fs::path> TrackCache::completeFile(const RemoteSource& list, const
     return completeIn(listFolder(list), track);
 }
 
-std::vector<CachedList> TrackCache::lists() const {
+std::vector<CachedList> TrackCache::lists(bool pinnedOnly) const {
     std::vector<CachedList> out;
     if (!enabled()) return out;
     std::error_code ec;
@@ -285,7 +286,10 @@ std::vector<CachedList> TrackCache::lists() const {
         CachedList list = readFolder(it->path());
         if (list.source.id.empty()) continue;
         std::erase_if(list.tracks, [&](const CachedTrack& t) { return !completeIn(it->path(), t); });
-        if (!list.tracks.empty()) out.push_back(std::move(list));
+        bool wanted = pinnedOnly ? std::any_of(list.tracks.begin(), list.tracks.end(),
+                                               [](const CachedTrack& t) { return t.pinned; })
+                                 : !list.tracks.empty();
+        if (wanted) out.push_back(std::move(list));
     }
     std::sort(out.begin(), out.end(), [](const CachedList& a, const CachedList& b) {
         return std::tuple(lowerCase(a.name), a.source.kind, a.source.id) <
@@ -301,6 +305,83 @@ bool TrackCache::remove(const RemoteSource& list) const {
     std::error_code ec;
     fs::remove_all(folder, ec);
     return !fs::exists(folder, ec);
+}
+
+namespace {
+bool hasPartFile(const fs::path& folder) {
+    std::error_code ec;
+    for (fs::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec))
+        if (it->path().filename().string().ends_with(kPartSuffix)) return true;
+    return false;
+}
+} // namespace
+
+size_t TrackCache::trim(std::uintmax_t limitBytes, const std::map<std::string, int64_t>& played,
+                        const std::vector<fs::path>& keep) const {
+    if (!enabled()) return 0;
+    struct Folder {
+        fs::path path;
+        CachedList list;
+        bool changed = false;
+    };
+    struct Candidate {
+        size_t folder, track;
+        std::uintmax_t size;
+    };
+    std::vector<Folder> folders;
+    std::vector<Candidate> candidates;
+    std::uintmax_t total = 0;
+    std::error_code ec;
+    for (fs::directory_iterator it(serverDir_, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code entryEc;
+        if (!it->is_directory(entryEc)) continue;
+        Folder folder{it->path(), readFolder(it->path()), false};
+        if (folder.list.source.id.empty()) continue;
+        for (size_t i = 0; i < folder.list.tracks.size(); ++i) {
+            CachedTrack& t = folder.list.tracks[i];
+            if (auto at = played.find(t.id); at != played.end() && at->second > t.lastPlayed) {
+                t.lastPlayed = at->second;
+                folder.changed = true;
+            }
+            if (t.pinned || !completeIn(folder.path, t)) continue;
+            std::error_code sizeEc;
+            auto size = fs::file_size(folder.path / t.file, sizeEc);
+            if (sizeEc) continue;
+            candidates.push_back({folders.size(), i, size});
+            total += size;
+        }
+        folders.push_back(std::move(folder));
+    }
+    std::sort(candidates.begin(), candidates.end(), [&](const Candidate& a, const Candidate& b) {
+        const CachedTrack& x = folders[a.folder].list.tracks[a.track];
+        const CachedTrack& y = folders[b.folder].list.tracks[b.track];
+        return std::tuple(x.lastPlayed, folders[a.folder].path.filename().string(), x.id) <
+               std::tuple(y.lastPlayed, folders[b.folder].path.filename().string(), y.id);
+    });
+    std::set<std::pair<size_t, size_t>> gone;
+    for (const Candidate& c : candidates) {
+        if (total <= limitBytes) break;
+        Folder& folder = folders[c.folder];
+        fs::path file = folder.path / folder.list.tracks[c.track].file;
+        if (std::find(keep.begin(), keep.end(), file) != keep.end()) continue;
+        std::error_code removeEc;
+        fs::remove(file, removeEc);
+        if (fs::exists(file, removeEc)) continue; // still there: keep its entry
+        total -= c.size;
+        gone.emplace(c.folder, c.track);
+        folder.changed = true;
+    }
+    for (size_t f = 0; f < folders.size(); ++f) {
+        Folder& folder = folders[f];
+        if (!folder.changed) continue;
+        std::vector<CachedTrack> left;
+        for (size_t i = 0; i < folder.list.tracks.size(); ++i)
+            if (!gone.count({f, i})) left.push_back(std::move(folder.list.tracks[i]));
+        folder.list.tracks = std::move(left);
+        if (folder.list.tracks.empty() && !hasPartFile(folder.path)) remove(folder.list.source);
+        else save(folder.list);
+    }
+    return gone.size();
 }
 
 std::map<std::string, fs::path> TrackCache::index() const {

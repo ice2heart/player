@@ -156,7 +156,8 @@ these rules too ([streaming.md](streaming.md) has the plan).
   "Download finished, Weather." unless something is playing, which gets only an
   earcon (and a sleeping device says nothing).
 - **Downloaded** (in the Streaming menu after Random albums, only where a cache
-  folder is set up) lists the albums and playlists that are on the disk, by name
+  folder is set up) lists the albums and playlists that you downloaded (at least
+  one track kept by Download album / playlist, not just cached by playing), by name
   (an album says its artist, a playlist says "playlist"). It is read from the
   disk, not the server, so it opens at once, and it is rebuilt when you come back
   to it, like a local menu. An album or playlist opens with "Play album" / "Play
@@ -172,7 +173,7 @@ these rules too ([streaming.md](streaming.md) has the plan).
   album in an album."
 - **Offline.** When a list from the server fails with an error ("Server not
   reachable", "Server error" and so on), the list is "the error", "Try again" and, if
-  anything is downloaded, "Downloaded" (the same list as in the Streaming menu, which
+  anything is downloaded (not just cached by playing), "Downloaded" (the same list as in the Streaming menu, which
   needs no server). Without downloads there is no such item. Try again replaces the
   error list with "Loading" as before. A cached album played offline never says
   "Loading." and does not wait on the server.

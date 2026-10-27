@@ -78,7 +78,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
 | `app/core/library.{h,cpp}` | `Book` (also a remote list: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set), `scanLibrary(root, skip)`, which leaves out the cache folder `skip`. |
-| `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<kind>%3A<list id>/`, where a list is an album or a playlist (the kind in the folder name keeps an album and a playlist with one id apart). Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 2`, then a line `list<TAB>album|playlist<TAB>id<TAB>name<TAB>artist`, then per track tab-separated: id, file, title, duration, server `changed` time, pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), written to `manifest.tsv.tmp` and renamed (no `fsync`: core has no OS calls). A missing or corrupt manifest reads as empty, and so does a manifest of format 1 (it had no list line; no device ever held one) or one whose list line does not match its folder (a copied folder). `lists()` gives the lists with at least one complete track, sorted by name, for Streaming > Downloaded; `remove()` deletes one list folder, only ever a direct child of the server's folder. `find(trackId)` returns the complete file of a track from any list (`index()` does it for every track in one pass, `completeFile()` for one manifest entry), never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
+| `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<kind>%3A<list id>/`, where a list is an album or a playlist (the kind in the folder name keeps an album and a playlist with one id apart). Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 2`, then a line `list<TAB>album|playlist<TAB>id<TAB>name<TAB>artist`, then per track tab-separated: id, file, title, duration, server `changed` time, pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), written to `manifest.tsv.tmp` and renamed (no `fsync`: core has no OS calls). A missing or corrupt manifest reads as empty, and so does a manifest of format 1 (it had no list line; no device ever held one) or one whose list line does not match its folder (a copied folder). `lists()` gives the lists with at least one complete track, sorted by name (`lists(true)`: only those with a complete pinned track, for Streaming > Downloaded); `trim(limit, played, keep)` writes play times into `lastPlayed` and evicts unpinned tracks, least recently played first, above the limit (section 5, "Automatic cache"); `remove()` deletes one list folder, only ever a direct child of the server's folder. `find(trackId)` returns the complete file of a track from any list (`index()` does it for every track in one pass, `completeFile()` for one manifest entry), never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
 | `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `serverConfigured()`. |
 | `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys) and `TsvStore` (`state.tsv`). |
 | `app/config/atomic_file.{h,cpp}` | `writeFileAtomically()`: temp file with mode 0600, `fsync`, `rename`. |
@@ -381,6 +381,7 @@ Home
 │   ├── Menu wrap around on / off
 │   ├── Auto sleep       1–30 min / never
 │   ├── Streaming quality original file / 320 / 192 / 128 kbps (an MP3 transcode for a slow link; from the next track)
+│   ├── Cache size       off / 1 / 4 / 16 GB (automatic cache of streamed tracks; default 1 GB; a lower size is applied on the next exit)
 │   └── Sleep timer →    Off · 1 · 15 · 30 · 45 min · 1 hour · End of chapter/track (only when something is loaded; opens on the timer that is set)
 ├── System
 │   ├── Status           battery (simulated), free space, Wi-Fi, time
@@ -520,10 +521,11 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   updated when a download saves a track. The open of a track passes `verify`, which
   also checks that the file is still there. A file added to the cache by anything
   but `App`'s own downloads is not seen until the index is rebuilt (Delete download
-  resets it; step 3.7 must update or reset it too).
+  and an eviction reset it; a finished download and a cached track update it).
 - **Downloaded (3.5):** Streaming > Downloaded (`downloadedMenu()`, a menu with a
-  `build`, so it is rebuilt when the user comes back) lists `TrackCache::lists()`:
-  the lists of the server in the config that have a complete track. Each item opens
+  `build`, so it is rebuilt when the user comes back) lists `TrackCache::lists(true)`:
+  the lists of the server in the config that have a complete pinned track (what the user
+  downloaded; lists of only automatically cached tracks are not shown). Each item opens
   `downloadedListMenu()`, built from the manifest and the files on disk: "Play
   album/playlist" first, "Delete download", then the complete tracks; they play with
   `playRemote()` and the list's `RemoteSource`, so a cached file opens (section
@@ -534,7 +536,39 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   `cacheIndex_.reset()`, two `popScreen()` (the rebuilt Downloaded list shows what is
   left) and "Deleted Weather.". The folder name keeps an album and a playlist apart;
   the manifest keeps the name and artist.
-- **Offline (3.6):** `showStatus()` adds a "Downloaded" item after "Try again" in an error list when `hasDownloads()` (a cache folder and `TrackCache::lists()` not empty); it opens `downloadedMenu()`, which never asks the server. "Server status" is not changed: it sits in the Streaming menu, which already has Downloaded. `completeTracks()` builds the playable tracks of a manifest and is shared by `downloadedListMenu()` and `resumeStream()`. Scrobbles of a cached track are still sent; they are fire and forget and silent, so a failure offline says nothing and blocks nothing. A cached next track is never read ahead (`checkReadAhead()`), so offline play of a cached album touches no network.
+- **Offline (3.6):** `showStatus()` adds a "Downloaded" item after "Try again" in an error list when `hasDownloads()` (a cache folder and `TrackCache::lists(true)` not empty); it opens `downloadedMenu()`, which never asks the server. "Server status" is not changed: it sits in the Streaming menu, which already has Downloaded. `completeTracks()` builds the playable tracks of a manifest and is shared by `downloadedListMenu()` and `resumeStream()`. Scrobbles of a cached track are still sent; they are fire and forget and silent, so a failure offline says nothing and blocks nothing. A cached next track is never read ahead (`checkReadAhead()`), so offline play of a cached album touches no network.
+- **Automatic cache (3.7):** `checkAutoCache()` (in `tick()`, after `checkScrobble()`)
+  queues the streamed track that plays once it has been heard for `kAutoCacheAfter`
+  (10 s of listening, the same count as scrobbling: paused or dry time does not count,
+  so a skipped track costs no bandwidth), once per play, unless `cache.limit_gb` is 0.
+  The job holds the list's `RemoteSource`, name and artist (`Book::artist`) and the
+  track's title, length, `suffix` and `size` (`Book::suffixes`, `sizes`, set by
+  `playRemote()`). `pumpAutoCache()` starts one transfer at a time into the list's
+  folder, only while no explicit `download_` runs and the downloader works, and drops
+  jobs for tracks that are on disk by then. `startDownload()` calls `pauseAutoCache()`:
+  the running transfer is cancelled (its `.part` stays and continues later), its job
+  goes back to the head of the queue, and the queue waits until `download_` is gone.
+  Download progress ("Downloading, 3 of 9 tracks") counts only the download's own list
+  and is never spoken for the automatic cache. The cache is silent: no speech, no
+  earcon, a failed transfer is forgotten (not retried during that play). `onAutoCached()`
+  checks the size when known, adds the track to the list's manifest **unpinned** with
+  `lastPlayed` = the time the play began (an existing list keeps its name, a pinned
+  entry stays pinned), updates `cacheIndex_` and calls `trimCache()`. Deleting a list
+  drops its queued and running jobs.
+  **LRU:** `trimCache()` calls `TrackCache::trim()` with `cache.limit_gb` times
+  `cacheGigabyte_` (1 GiB; a test sets a small one). It evicts the unpinned complete
+  files, least recently played first (never played counts as oldest), until they add up
+  to at most the limit; **pinned tracks never go and are not counted**. The file the
+  player has open is kept. A list left with no tracks loses its folder, unless a `.part`
+  is in it. It runs after a track was cached and in `saveOnExit()` (exit and sleep), so
+  a lowered size takes effect then, not while the user steps through the values in
+  Settings. It scans the manifests once, never from a key or a tick. After an eviction
+  `cacheIndex_` is reset.
+  **lastPlayed:** `startTrackPlay()` records the wall time (`clock_.wallTime()`) of a
+  cached track that starts in the in-memory `played_` map; a newly cached track gets the
+  time its play began. `trim()` writes `played_` into the manifests, and only where it
+  changed, so the flash is written when a track was cached and on exit or sleep, never at
+  a play.
 - **Downloads (3.4):** `trackItems()` adds "Download album" / "Download playlist"
   after the Play item when `canDownload()`. `startDownload()` reads the list's
   manifest, skips (and pins) the tracks whose files are whole, checks the free
@@ -585,7 +619,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 
 | File | Store | Keys |
 |------|-------|------|
-| `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` (kbps, 0 = the original file), and `server.*` (see [streaming.md](streaming.md)) |
+| `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` (kbps, 0 = the original file), `cache.limit_gb` (0, 1, 4 or 16; default 1), and `server.*` (see [streaming.md](streaming.md)) |
 | `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_book`: the book to resume on start (never music); `pos:<book path>`: `"<file index>:<seconds>"`; `last_stream.server` / `.user` (the `server.url` without a trailing slash and `server.user`, never the password or a stream URL), `.kind` (`album` / `playlist`), `.id`, `.title`, `.track` (index), `.track_id`, `.pos` (seconds): the remote list that played last |
 
 - `config.yaml` is nested YAML (`speech: {rate: 220}` is `speech.rate`). It is
@@ -619,7 +653,8 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   saved track among them) plays at once with `playResumed()`: nothing is asked of
   the server and "Loading." is not said, because offline the question would wait for
   the connect timeout (10 s). Otherwise the server is asked first (a partly cached
-  album, e.g. from the automatic cache, would lose its other tracks); on an error,
+  album, e.g. from the automatic cache, would lose its other tracks; step 3.7 caches
+  tracks unpinned, so they never make a "whole download"); on an error,
   if any track of the list is on disk, those play (the saved track and position if it
   is among them, else the first from its start) and nothing is spoken but the usual
   "Now playing". With none on disk the error is spoken as in step 2.6. A whole

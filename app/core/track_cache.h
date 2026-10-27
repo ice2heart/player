@@ -67,7 +67,9 @@ public:
     // case ignored), then kind and id. Tracks whose file is not complete are
     // left out of them, and so are lists with no complete track. A manifest
     // that does not belong to the folder it is in (a copied folder) is skipped.
-    std::vector<CachedList> lists() const;
+    // With `pinnedOnly`, only the lists with at least one complete pinned track:
+    // what the user downloaded, not what the automatic cache happens to hold.
+    std::vector<CachedList> lists(bool pinnedOnly = false) const;
 
     // Deletes the list's folder with everything in it. Never touches anything
     // outside this server's folder. True if the folder is gone afterwards.
@@ -79,6 +81,19 @@ public:
 
     // The file of a manifest entry of `list` if it is complete (the rules of find()).
     std::optional<std::filesystem::path> completeFile(const RemoteSource& list, const CachedTrack& track) const;
+
+    // Maintenance of the automatic cache, in one pass over the manifests. First
+    // `played` (track id -> wall time it played) is written into the tracks'
+    // `lastPlayed` where it is later than what the manifest has. Then, while the
+    // complete files of unpinned tracks add up to more than `limitBytes`, the
+    // least recently played of them (ties: list folder, then track id) are
+    // deleted with their manifest entries. Pinned tracks never go and do not
+    // count; a file in `keep` (the one the player has open) is not deleted. A list
+    // left with no tracks loses its folder, unless a `.part` is in it (a transfer
+    // that may be resumed), then only its manifest is emptied. Returns the number
+    // of tracks deleted. Manifests are rewritten only where something changed.
+    size_t trim(std::uintmax_t limitBytes, const std::map<std::string, int64_t>& played,
+                const std::vector<std::filesystem::path>& keep) const;
 
     // Every track find() would return, by track id, from one pass over the
     // manifests: for a caller that asks often and keeps the answer in memory.

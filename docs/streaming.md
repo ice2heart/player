@@ -154,6 +154,8 @@ power:
   auto_sleep_min: 10
 streaming:
   bitrate: 0                # Streaming quality: 0 = the original file, or 320 / 192 / 128 kbps MP3
+cache:
+  limit_gb: 1               # Cache size: gigabytes of automatically cached tracks (0, 1, 4 or 16); 0 = off
 
 server:
   type: subsonic            # first type; others (e.g. audiobookshelf) later
@@ -389,8 +391,21 @@ the album's Download item and by "where am I?".
 | ✅ 3.4 | **Download album / playlist.** A "Download album" item right after "Play album" (and the same for playlists). Core queues the tracks, writes the manifest after each and pins them. Free space is checked first (`std::filesystem::space` against the sum of the track sizes). OK on the item again, and "where am I?", say "Downloading, 3 of 9 tracks". | Tracks are fetched in order and pinned. Not enough space: nothing starts and the reason is spoken. Progress is spoken on the item and by "where am I?". A failed track is spoken and a retry resumes. Leaving the menu does not stop the download. |
 | ✅ 3.5 | **Streaming → Downloaded** lists the albums and playlists in the manifests; they play like the server lists. **Delete download** sits in a list that opens on Cancel. | The list matches the manifests. Playing from it opens files. Delete opens on Cancel, removes the folder, and the list updates. An empty list says why. |
 | ✅ 3.6 | **Offline.** When the server cannot be reached, Streaming still offers Downloaded, and the error list gets a "Downloaded" item. `last_stream` resumes from the cache with the server down. | Server unreachable: Downloaded works and plays. Resume after a restart with the server down plays the cached album. |
-| 3.7 | **Automatic cache with an LRU limit.** Setting (0 / 1 / 4 / 16 GB, default 1 GB) in Settings, saved in `config.yaml`. A streamed track is queued to the downloader unpinned; above the limit the least recently played unpinned tracks are evicted. | A streamed track ends up cached. Over the limit the least recently played unpinned track goes first; pinned tracks never go. With 0 nothing is cached. The setting persists. |
+| ✅ 3.7 | **Automatic cache with an LRU limit.** Setting (0 / 1 / 4 / 16 GB, default 1 GB) in Settings, saved in `config.yaml`. A streamed track is queued to the downloader unpinned; above the limit the least recently played unpinned tracks are evicted. | A streamed track ends up cached. Over the limit the least recently played unpinned track goes first; pinned tracks never go. With 0 nothing is cached. The setting persists. |
 | 3.8 | Docs: architecture.md, navigation.md, SPEC where needed, and what phase 3 built differently. | – |
+
+Step 3.7 as built: a streamed track is queued to the downloader, unpinned, once it
+has been heard for 10 s (so a skipped track costs no bandwidth), into the folder of the
+list it plays from. An explicit download goes first: it cancels the running automatic
+transfer, which waits and continues after it; the progress speech counts only the
+download's own list. The automatic cache is silent and ignores failures. Eviction is
+LRU over the unpinned tracks only: pinned tracks never go and do not count toward the
+limit (setting "Cache size", `cache.limit_gb`, 0 / 1 / 4 / 16 GB, default 1; 0 caches
+nothing new). The file the player has open is kept. `lastPlayed` is kept in memory and
+written to the manifests with a cached track, on exit and on sleep, not at every play.
+A lowered size takes effect on the next exit or cached track. Downloaded lists only
+what the user downloaded (a list with at least one pinned track); the automatic cache's
+tracks still play from their files whenever they are met in a server list or on resume.
 
 **Device check (manual):** download an album, pull the Wi-Fi, and it still plays
 from Streaming → Downloaded and from "Now playing" after a restart. "Where am I?"

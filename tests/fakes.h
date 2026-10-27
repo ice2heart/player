@@ -24,10 +24,12 @@ namespace oap::test {
 class FakeClock : public Clock {
 public:
     TimePoint now() const override { return now_; }
-    std::time_t wallTime() const override { return 1'700'000'000; }
+    std::time_t wallTime() const override { return wall_; }
     void advance(std::chrono::milliseconds ms) { now_ += ms; }
+    void setWallTime(std::time_t t) { wall_ = t; } // wall time only moves when a test says so
 
 private:
+    std::time_t wall_ = 1'700'000'000;
     TimePoint now_{std::chrono::hours(1000)};
 };
 

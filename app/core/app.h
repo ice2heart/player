@@ -54,6 +54,8 @@ public:
     // std::filesystem::space(); a test sets its own.
     using FreeSpace = std::function<std::optional<std::uintmax_t>(const std::filesystem::path&)>;
     void setFreeSpace(FreeSpace freeSpace) { freeSpace_ = std::move(freeSpace); }
+    // How many bytes the Cache size setting counts a gigabyte as (a test sets a small one).
+    void setCacheGigabyte(std::uintmax_t bytes) { cacheGigabyte_ = bytes; }
 
     void start();
     void keyDown(Button button);
@@ -74,7 +76,8 @@ public:
     // as `last_stream` in the state, and "Now playing" resumes it after a
     // restart; `position` is where the track starts.
     bool playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index,
-                    std::optional<RemoteSource> source = std::nullopt, double position = 0);
+                    std::optional<RemoteSource> source = std::nullopt, double position = 0,
+                    const std::string& artist = {});
 
     // Read-only state for the simulator's visualisation.
     Mode mode() const;
@@ -268,6 +271,25 @@ private:
     void checkReadAhead(); // tick(): pre-opens the next remote track near the end of this one
     void startTrackPlay(); // the loaded remote track starts a new play (scrobble_)
     void checkScrobble(Clock::TimePoint now); // tick(): tells the server what plays and what has been heard
+
+    // The automatic cache (docs/streaming.md, step 3.7). A streamed track that has
+    // been heard for kAutoCacheAfter is queued here, unpinned, into the folder of the
+    // list it plays from. One transfer at a time, only while no explicit download runs
+    // (starting one cancels the transfer, which goes back to the head of the queue and
+    // continues from its .part later). Silent: no speech, no earcon, failures are ignored.
+    struct AutoCache {
+        RemoteSource source;
+        std::string title, artist; // of the list, for a manifest that does not exist yet
+        RemoteTrack track;
+        std::int64_t playedAt = 0; // wall time the play began: its lastPlayed
+    };
+    void checkAutoCache();       // tick(): queues the track that has been heard long enough
+    void pumpAutoCache();        // tick(): starts the next queued track if nothing else downloads
+    void pauseAutoCache();       // an explicit download starts: the running transfer waits
+    void dropAutoCache(const RemoteSource& list); // a list is deleted: nothing of it is fetched
+    void onAutoCached(Downloader::Result result);
+    void trimCache();            // lastPlayed to the manifests, then evicts over the limit
+    std::uintmax_t cacheLimit() const; // bytes the unpinned tracks may take, 0: no automatic cache
     // The downloaded file of remote track `id` (TrackCache::find()), none if there is none.
     // Looks in an index kept in memory (built at the first call, kept up to date by
     // the downloads), so it is cheap enough for every tick. `verify`: also checks that
@@ -316,6 +338,13 @@ private:
     std::uint64_t pingScreen_ = 0;                    // the screen it was asked from
     MusicServer::RequestId resume_ = 0; // resumeStream(): the list being loaded, 0 when none; a new screen cancels it
     std::optional<Download> download_;
+    std::deque<AutoCache> autoQueue_;
+    std::optional<AutoCache> autoJob_; // the transfer in flight, if autoRequest_ != 0
+    Downloader::RequestId autoRequest_ = 0;
+    std::uintmax_t cacheGigabyte_ = std::uintmax_t(1) << 30;
+    // When cached tracks last played (track id -> wall time), kept in memory and written
+    // to the manifests by trimCache(): on exit, on sleep and after a track was cached.
+    std::map<std::string, std::int64_t> played_;
     // The complete files of the server in the config, by track id (TrackCache::index()).
     // `server` is the folder name it was made for; another server in the config rebuilds it.
     struct CacheIndex {
@@ -373,6 +402,8 @@ private:
         std::string trackId;
         bool nowPlayingSent = false;
         bool submitted = false;
+        bool cacheAsked = false; // the automatic cache has had its turn (checkAutoCache())
+        std::int64_t startedAt = 0; // wall time it began
         Clock::TimePoint::duration heard{};  // listened time
         std::optional<TimePoint> heardSince; // the last tick that heard it
     };

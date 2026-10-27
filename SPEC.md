@@ -338,6 +338,7 @@ Home
 │   ├── Sync account
 │   ├── Power (auto-sleep time, deep sleep)
 │   ├── Streaming quality (original file, or a transcode for a slow link)
+│   ├── Cache size (off / 1 / 4 / 16 GB for tracks cached while streaming)
 │   ├── Sleep timer
 │   ├── Language
 │   └── About / Update / Reset

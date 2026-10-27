@@ -5,6 +5,7 @@
 
 #include <fstream>
 #include <string>
+#include <tuple>
 
 using oap::CachedList;
 using oap::CachedTrack;
@@ -321,4 +322,124 @@ TEST_F(TrackCacheTest, SafeNameNeverLeavesTheFolder) {
     EXPECT_EQ(TrackCache::safeName("Сон"), "%D0%A1%D0%BE%D0%BD");
     TrackCache c = cache();
     EXPECT_EQ(c.listFolder(album("../../x")).parent_path(), c.serverFolder());
+}
+
+// ------------------------------------------------------- automatic cache: trim()
+
+namespace {
+// A list of `n`-byte files with these (id, pinned, lastPlayed); the files exist.
+CachedList seedFiles(const TrackCache& c, RemoteSource source, size_t bytes,
+                     std::vector<std::tuple<std::string, bool, int64_t>> tracks) {
+    CachedList list = listOf(source, {});
+    for (const auto& [id, pinned, played] : tracks) {
+        CachedTrack t = track(id, id + ".mp3");
+        t.pinned = pinned;
+        t.lastPlayed = played;
+        list.tracks.push_back(t);
+        writeFile(c.listFolder(source) / t.file, std::string(bytes, 'x'));
+    }
+    EXPECT_TRUE(c.save(list));
+    return list;
+}
+std::vector<std::string> ids(const CachedList& list) {
+    std::vector<std::string> out;
+    for (const CachedTrack& t : list.tracks) out.push_back(t.id);
+    return out;
+}
+} // namespace
+
+TEST_F(TrackCacheTest, TrimDeletesTheLeastRecentlyPlayedUnpinnedFirstUntilUnderTheLimit) {
+    TrackCache c = cache();
+    seedFiles(c, album("a"), 10, {{"new", false, 300}, {"old", false, 100}, {"mid", false, 200}});
+    EXPECT_EQ(c.trim(20, {}, {}), 1u);
+    EXPECT_EQ(ids(c.load(album("a"))), (std::vector<std::string>{"new", "mid"}));
+    EXPECT_FALSE(fs::exists(c.listFolder(album("a")) / "old.mp3"));
+    EXPECT_EQ(c.trim(10, {}, {}), 1u);
+    EXPECT_EQ(ids(c.load(album("a"))), (std::vector<std::string>{"new"}));
+    EXPECT_EQ(c.trim(10, {}, {}), 0u) << "at the limit nothing goes";
+}
+
+TEST_F(TrackCacheTest, TrimOrdersByPlayAcrossListsAndNeverPlayedGoesFirst) {
+    TrackCache c = cache();
+    seedFiles(c, album("a"), 10, {{"a1", false, 500}});
+    seedFiles(c, playlist("p"), 10, {{"p1", false, 0}, {"p2", false, 400}});
+    EXPECT_EQ(c.trim(20, {}, {}), 1u);
+    EXPECT_FALSE(c.find("p1")) << "never played";
+    EXPECT_TRUE(c.find("a1"));
+    EXPECT_TRUE(c.find("p2"));
+}
+
+TEST_F(TrackCacheTest, TrimNeverDeletesPinnedTracksAndDoesNotCountThem) {
+    TrackCache c = cache();
+    seedFiles(c, album("a"), 100, {{"pin", true, 1}});
+    seedFiles(c, album("b"), 10, {{"u", false, 2}});
+    EXPECT_EQ(c.trim(10, {}, {}), 0u) << "the pinned 100 bytes are not counted";
+    EXPECT_EQ(c.trim(0, {}, {}), 1u);
+    EXPECT_TRUE(c.find("pin"));
+    EXPECT_FALSE(c.find("u"));
+}
+
+TEST_F(TrackCacheTest, TrimKeepsTheFileInKeepAndTakesTheNextOne) {
+    TrackCache c = cache();
+    seedFiles(c, album("a"), 10, {{"open", false, 1}, {"other", false, 2}});
+    EXPECT_EQ(c.trim(0, {}, {c.listFolder(album("a")) / "open.mp3"}), 1u);
+    EXPECT_TRUE(c.find("open"));
+    EXPECT_FALSE(c.find("other"));
+}
+
+TEST_F(TrackCacheTest, TrimWritesPlayedTimesAndUsesThemForTheOrder) {
+    TrackCache c = cache();
+    seedFiles(c, album("a"), 10, {{"x", false, 100}, {"y", false, 200}});
+    // x played after y: y is now the older one. A time older than the manifest's is ignored.
+    EXPECT_EQ(c.trim(10, {{"x", 300}, {"y", 150}}, {}), 1u);
+    EXPECT_TRUE(c.find("x"));
+    EXPECT_FALSE(c.find("y"));
+    EXPECT_EQ(c.load(album("a")).tracks[0].lastPlayed, 300);
+}
+
+TEST_F(TrackCacheTest, TrimWritesAPlayedTimeEvenWhenNothingIsDeleted) {
+    TrackCache c = cache();
+    seedFiles(c, album("a"), 10, {{"x", false, 100}});
+    EXPECT_EQ(c.trim(1000, {{"x", 777}, {"unknown", 5}}, {}), 0u);
+    EXPECT_EQ(c.load(album("a")).tracks[0].lastPlayed, 777);
+}
+
+TEST_F(TrackCacheTest, TrimRemovesAListFolderLeftEmptyButNotOneWithAPartFile) {
+    TrackCache c = cache();
+    seedFiles(c, album("gone"), 10, {{"g", false, 1}});
+    seedFiles(c, album("resume"), 10, {{"r", false, 2}});
+    writeFile(c.listFolder(album("resume")) / "next.mp3.part", "half");
+    EXPECT_EQ(c.trim(0, {}, {}), 2u);
+    EXPECT_FALSE(fs::exists(c.listFolder(album("gone")))) << "an empty list is removed";
+    EXPECT_TRUE(fs::exists(c.listFolder(album("resume")) / "next.mp3.part")) << "a transfer to resume stays";
+    EXPECT_TRUE(c.load(album("resume")).tracks.empty());
+}
+
+TEST_F(TrackCacheTest, TrimLeavesAnotherServersFilesAlone) {
+    TrackCache c = cache();
+    TrackCache other(root, "https://other.example", "anna");
+    seedFiles(c, album("a"), 10, {{"mine", false, 1}});
+    seedFiles(other, album("a"), 10, {{"theirs", false, 1}});
+    c.trim(0, {}, {});
+    EXPECT_TRUE(other.find("theirs"));
+}
+
+TEST_F(TrackCacheTest, ListsPinnedOnlyLeavesOutListsOfAutomaticTracks) {
+    TrackCache c = cache();
+    seedFiles(c, album("auto"), 1, {{"a", false, 1}});
+    seedFiles(c, album("mixed"), 1, {{"m1", false, 1}, {"m2", true, 1}});
+    seedFiles(c, album("mine"), 1, {{"p", true, 1}});
+    EXPECT_EQ(c.lists().size(), 3u);
+    std::vector<std::string> names;
+    for (const CachedList& l : c.lists(true)) names.push_back(l.source.id);
+    EXPECT_EQ(names, (std::vector<std::string>{"mine", "mixed"}));
+}
+
+TEST_F(TrackCacheTest, TrimRewritesNoManifestWhenNothingChanged) {
+    TrackCache c = cache();
+    seedFiles(c, album("a"), 10, {{"x", false, 100}});
+    auto longAgo = fs::file_time_type::clock::now() - std::chrono::hours(24 * 365);
+    fs::last_write_time(c.manifestFile(album("a")), longAgo);
+    EXPECT_EQ(c.trim(1000, {{"x", 50}, {"unknown", 5}}, {}), 0u);
+    EXPECT_EQ(fs::last_write_time(c.manifestFile(album("a"))), longAgo) << "flash is spared";
 }
