@@ -26,6 +26,7 @@ constexpr size_t kSpeechLogSize = 100;
 // Setting keys
 constexpr const char* kSpeechRate = "speech.rate";
 constexpr const char* kVolume = "volume";
+constexpr int kVolumeStep = 5; // percent per press of a volume key
 constexpr const char* kVerbosity = "verbosity"; // 0 beginner, 1 normal, 2 expert
 constexpr const char* kSkipBack = "skip.back";
 constexpr const char* kSkipForward = "skip.forward";
@@ -173,6 +174,9 @@ const ButtonHelp kButtonHelp[] = {
     {Button::Down, "Down", "In menus, next item. Hold for last item. In player, volume down."},
     {Button::Ok, "OK", "Opens the selected item. In player, opens the player menu. Hold to go back, like Home."},
     {Button::Home, "Home", "Goes back to the previous screen. Hold for the home menu."},
+    {Button::VolumeUp, "Volume up", "Raises the volume, in menus and in the player. Hold to keep raising it."},
+    {Button::VolumeDown, "Volume down", "Lowers the volume, in menus and in the player. Hold to keep lowering it."},
+    {Button::Options, "Options", "Actions for the selected item. Says when there are none."},
     {Button::Talk, "Talk", "Hold and speak a command. Coming later."},
     {Button::Power, "Power", "Press to sleep. Hold for the power menu."},
 };
@@ -581,6 +585,7 @@ void App::shutdown() {
 
 void App::keyDown(Button button) {
     held_[static_cast<size_t>(button)] = true;
+    locked_[static_cast<size_t>(button)] = false; // a new press; a lock left by a release that never came ends
     if (hold_ && button != Button::Power) {
         tts_.stop();
         earcons_.play(Earcon::Error);
@@ -661,11 +666,16 @@ void App::tick() {
 void App::onButton(ButtonEvent ev) {
     usage_[static_cast<size_t>(ev.button)][static_cast<size_t>(ev.gesture)]++;
     lastActivity_ = clock_.now();
+    // A held volume key repeats; that never wakes the device or describes a key again.
+    if (ev.gesture == Gesture::Repeat && (sleeping_ || keyDescriber_)) return;
 
     // A value changed with Left / Right is written once the user moves on.
     if (ev.button != Button::Back && ev.button != Button::Forward) saveChangedSettings();
 
     if (sleeping_) {
+        // A key that wakes the device and stays down (a volume key) must not go on to
+        // repeat; like a key held when Hold was switched on, it does nothing more.
+        if (held_[static_cast<size_t>(ev.button)]) locked_[static_cast<size_t>(ev.button)] = true;
         wake();
         return;
     }
@@ -673,7 +683,9 @@ void App::onButton(ButtonEvent ev) {
     bool idle = !keyDescriber_ && mode() == Mode::Menu && !screens_.empty() &&
                 (ev.button == Button::Back || ev.button == Button::Forward) && !canAdjust();
     if (idle) return;
-    tts_.stop(); // any other key interrupts speech
+    // Any other key interrupts speech. A repeat does so only when the volume moves (in
+    // changeVolume), so "Maximum volume." is not cut off by the repeat that follows it.
+    if (ev.gesture != Gesture::Repeat) tts_.stop();
 
     if (keyDescriber_) {
         describeKey(ev);
@@ -692,6 +704,14 @@ void App::onButton(ButtonEvent ev) {
     case Button::PlayPause:
         if (ev.gesture == Gesture::Short) togglePlay();
         else whereAmI();
+        return;
+    case Button::VolumeUp:
+    case Button::VolumeDown:
+        changeVolume(ev.button == Button::VolumeUp ? kVolumeStep : -kVolumeStep, ev.gesture);
+        return;
+    case Button::Options: // no item has options yet
+        earcons_.play(Earcon::Edge);
+        say("No options.");
         return;
     default:
         break;
@@ -767,10 +787,10 @@ void App::handlePlayer(ButtonEvent ev) {
         return;
     }
     case Button::Up:
-        changeVolume(+5);
+        changeVolume(+kVolumeStep, ev.gesture);
         return;
     case Button::Down:
-        changeVolume(-5);
+        changeVolume(-kVolumeStep, ev.gesture);
         return;
     case Button::Ok:
         if (ev.gesture == Gesture::Long) back();
@@ -1967,7 +1987,9 @@ std::vector<MenuItem> App::helpMenu() {
     items.push_back(action("Getting started", [this] {
         say("This player has no screen. Up and Down move through a menu. OK opens the item, Home goes back, "
             "and holding Home goes to the home menu. Left and Right change a setting. Play pause starts and "
-            "stops playback, and holding it tells you where you are. Power puts the player to sleep.");
+            "stops playback, and holding it tells you where you are. The volume keys change the volume "
+            "everywhere, and Options shows what can be done with the selected item. "
+            "Power puts the player to sleep.");
     }));
     items.push_back(submenu("Buttons", [this] {
         std::vector<MenuItem> buttons;
@@ -2415,8 +2437,18 @@ void App::skip(int direction) {
         say((direction < 0 ? "Back " : "Forward ") + spokenDuration(amount) + ".");
 }
 
-void App::changeVolume(int delta) {
-    int v = std::clamp(config_.getInt(kVolume, 70) + delta, 0, 100);
+// The edge sound plays once per press: a held key repeating at its limit stays quiet.
+void App::changeVolume(int delta, Gesture gesture) {
+    int old = config_.getInt(kVolume, 70);
+    int v = std::clamp(old + delta, 0, 100);
+    if (v == old) {
+        if (gesture != Gesture::Repeat || !volumeEdgeHeard_) earcons_.play(Earcon::Edge);
+        volumeEdgeHeard_ = true;
+        if (gesture != Gesture::Repeat) say(v == 100 ? "Maximum volume." : "Muted.");
+        return;
+    }
+    volumeEdgeHeard_ = false;
+    tts_.stop();
     config_.setInt(kVolume, v);
     volumeChanged_ = true; // a config.yaml write per press would wear the flash
     volume_.setVolume(v / 100.0f);

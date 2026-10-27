@@ -128,3 +128,65 @@ TEST(GestureDetector, DeepPressAfterALongPressIsOneStepThenEachIsHeard) {
     EXPECT_FALSE(g.release(Button::ForwardDeep, t0 + 1s));
     EXPECT_FALSE(g.release(Button::Forward, t0 + 1s));
 }
+
+// ---------------------------------------------------------------- repeating keys
+
+TEST(GestureDetector, VolumeKeyStepsAtOnceAndReleaseSaysNothing) {
+    GestureDetector g;
+    auto ev = g.press(Button::VolumeUp, t0);
+    ASSERT_TRUE(ev);
+    EXPECT_EQ(ev->button, Button::VolumeUp);
+    EXPECT_EQ(ev->gesture, Gesture::Short);
+    EXPECT_FALSE(g.release(Button::VolumeUp, t0 + 100ms));
+    EXPECT_TRUE(g.poll(t0 + 2s).empty()) << "nothing repeats once the key is up";
+}
+
+TEST(GestureDetector, HeldVolumeKeyRepeatsEveryIntervalAfterTheDelay) {
+    GestureDetector g;
+    g.press(Button::VolumeDown, t0);
+    EXPECT_TRUE(g.poll(t0 + GestureDetector::kRepeatDelay - 1ms).empty()) << "a slow tap does not repeat";
+    auto first = g.poll(t0 + GestureDetector::kRepeatDelay);
+    ASSERT_EQ(first.size(), 1u);
+    EXPECT_EQ(first[0].button, Button::VolumeDown);
+    EXPECT_EQ(first[0].gesture, Gesture::Repeat);
+    auto at = t0 + GestureDetector::kRepeatDelay;
+    EXPECT_TRUE(g.poll(at + GestureDetector::kRepeatInterval - 1ms).empty());
+    EXPECT_EQ(g.poll(at + GestureDetector::kRepeatInterval).size(), 1u);
+    EXPECT_EQ(g.poll(at + 2 * GestureDetector::kRepeatInterval).size(), 1u);
+}
+
+TEST(GestureDetector, LettingGoOfAVolumeKeyStopsTheRepeat) {
+    GestureDetector g;
+    g.press(Button::VolumeUp, t0);
+    EXPECT_EQ(g.poll(t0 + 500ms).size(), 1u);
+    g.release(Button::VolumeUp, t0 + 520ms);
+    EXPECT_TRUE(g.poll(t0 + 700ms).empty());
+    EXPECT_TRUE(g.poll(t0 + 2s).empty());
+}
+
+TEST(GestureDetector, VolumeKeyNeverBecomesALongPress) {
+    GestureDetector g;
+    g.press(Button::VolumeUp, t0);
+    for (auto t = t0; t < t0 + 3s; t += 50ms)
+        for (const auto& ev : g.poll(t)) EXPECT_EQ(ev.gesture, Gesture::Repeat);
+}
+
+TEST(GestureDetector, OtherKeysDoNotRepeat) {
+    GestureDetector g;
+    EXPECT_FALSE(g.press(Button::Options, t0));
+    EXPECT_FALSE(g.press(Button::Up, t0));
+    auto events = g.poll(t0 + 500ms); // before a long press
+    EXPECT_TRUE(events.empty());
+    for (const auto& ev : g.poll(t0 + 3s)) EXPECT_EQ(ev.gesture, Gesture::Long);
+}
+
+TEST(GestureDetector, TwoVolumeKeysRepeatIndependently) {
+    GestureDetector g;
+    g.press(Button::VolumeUp, t0);
+    g.press(Button::VolumeDown, t0 + 200ms);
+    auto events = g.poll(t0 + 400ms);
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].button, Button::VolumeUp);
+    events = g.poll(t0 + 600ms);
+    ASSERT_EQ(events.size(), 2u);
+}

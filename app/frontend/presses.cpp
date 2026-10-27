@@ -16,7 +16,8 @@ std::vector<PressStep> parseScript(const std::string& text) {
     static const std::pair<const char*, Button> kNames[] = {
         {"play", Button::PlayPause}, {"left", Button::Back}, {"right", Button::Forward},
         {"up", Button::Up}, {"down", Button::Down}, {"ok", Button::Ok},
-        {"home", Button::Home}, {"talk", Button::Talk}, {"power", Button::Power}};
+        {"home", Button::Home}, {"talk", Button::Talk}, {"power", Button::Power},
+        {"volup", Button::VolumeUp}, {"voldown", Button::VolumeDown}, {"options", Button::Options}};
     std::vector<PressStep> steps;
     std::istringstream in(text);
     std::string word;

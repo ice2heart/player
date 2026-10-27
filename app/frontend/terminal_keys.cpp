@@ -17,6 +17,10 @@ std::optional<Button> plainKey(char c) {
     case '\b': return Button::Home;
     case 't': return Button::Talk;
     case 'p': return Button::Power;
+    case '+':
+    case '=': return Button::VolumeUp;
+    case '-': return Button::VolumeDown;
+    case 'o': return Button::Options;
     default: return std::nullopt;
     }
 }
@@ -60,6 +64,8 @@ void TerminalKeyDecoder::emit(std::vector<TerminalKey>& keys, Button b, bool lon
     TerminalKey k;
     k.press.button = b;
     deep = (deep || nextDeep_) && deepOf(b);
+    // The volume keys repeat while held, so a long hold would swing the volume by half.
+    if (b == Button::VolumeUp || b == Button::VolumeDown) longPress = nextLong_ = false;
     k.press.deep = deep;
     k.press.longPress = !deep && (longPress || nextLong_);
     nextLong_ = nextDeep_ = false;

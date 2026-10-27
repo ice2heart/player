@@ -15,12 +15,17 @@ const char* buttonName(Button button) {
     case Button::Power:     return "Power";
     case Button::BackDeep:    return "Back deep";
     case Button::ForwardDeep: return "Forward deep";
+    case Button::VolumeUp:    return "Volume up";
+    case Button::VolumeDown:  return "Volume down";
+    case Button::Options:     return "Options";
     case Button::Count:     break;
     }
     return "?";
 }
 
 namespace {
+bool repeats(Button button) { return button == Button::VolumeUp || button == Button::VolumeDown; }
+
 std::optional<Button> shallowOf(Button deep) {
     if (deep == Button::BackDeep) return Button::Back;
     if (deep == Button::ForwardDeep) return Button::Forward;
@@ -39,6 +44,11 @@ std::optional<ButtonEvent> GestureDetector::press(Button button, Clock::time_poi
     s.down = true;
     s.since = now;
     s.longFired = false;
+    if (repeats(button)) {
+        s.consumed = true; // no long press, and the release says nothing
+        s.nextRepeat = now + kRepeatDelay;
+        return ButtonEvent{button, Gesture::Short};
+    }
     auto shallow = shallowOf(button);
     if (!shallow) {
         // A light press while its deep stage is down (stages out of order, or the
@@ -70,6 +80,13 @@ std::vector<ButtonEvent> GestureDetector::poll(Clock::time_point now) {
     std::vector<ButtonEvent> events;
     for (size_t i = 0; i < states_.size(); ++i) {
         State& s = states_[i];
+        if (s.down && repeats(static_cast<Button>(i))) {
+            if (now >= s.nextRepeat) {
+                s.nextRepeat = now + kRepeatInterval;
+                events.push_back({static_cast<Button>(i), Gesture::Repeat});
+            }
+            continue;
+        }
         if (s.down && !s.consumed && now - s.since >= longPress_) {
             s.consumed = true;
             s.longFired = true;

@@ -13,7 +13,8 @@ namespace oap {
 // so each key becomes a whole press for PressSequencer:
 //
 //   Space play/pause   arrows Back/Forward/Up/Down   Enter OK   Esc/Backspace Home
-//   t Talk   p Power   h hold switch (toggle)
+//   t Talk   p Power   h hold switch (toggle)   + (or =) / - volume up / down   o Options
+//   (a terminal never releases a key, so a volume key steps once and has no long press)
 //   Alt+key, or l then key: long press     Shift+Left/Right, or d then Left/Right: deep press
 struct TerminalKey {
     PressStep press;         // valid unless toggleHold

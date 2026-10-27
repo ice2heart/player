@@ -52,6 +52,12 @@ const KeyBinding kKeys[] = {
     {SDLK_BACKSPACE, Button::Home, "Esc"},
     {SDLK_t, Button::Talk, "T"},
     {SDLK_p, Button::Power, "P"},
+    {SDLK_EQUALS, Button::VolumeUp, "+"},
+    {SDLK_PLUS, Button::VolumeUp, "+"},
+    {SDLK_KP_PLUS, Button::VolumeUp, "+"},
+    {SDLK_MINUS, Button::VolumeDown, "-"},
+    {SDLK_KP_MINUS, Button::VolumeDown, "-"},
+    {SDLK_o, Button::Options, "O"},
 };
 
 std::optional<Button> mapKey(SDL_Keycode key) {
@@ -199,6 +205,9 @@ void drawDevice(App& app, HeldButtons& held) {
     ImGui::SameLine(); col(2); deviceButton(app, held, Button::Ok, kSize);
     col(0); deviceButton(app, held, Button::BackDeep, kSize);
     ImGui::SameLine(); col(2); deviceButton(app, held, Button::ForwardDeep, kSize);
+    col(0); deviceButton(app, held, Button::VolumeDown, kSize);
+    ImGui::SameLine(); col(1); deviceButton(app, held, Button::Options, kSize);
+    ImGui::SameLine(); col(2); deviceButton(app, held, Button::VolumeUp, kSize);
 
     bool hold = app.hold();
     if (ImGui::Checkbox("Hold switch (H)", &hold)) app.setHold(hold);
@@ -223,11 +232,12 @@ void drawNowPlaying(const App& app) {
 }
 
 void drawUsage(App& app) {
-    if (ImGui::BeginTable("usage", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+    if (ImGui::BeginTable("usage", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("Button");
         ImGui::TableSetupColumn("Short");
         ImGui::TableSetupColumn("Long");
         ImGui::TableSetupColumn("Deep");
+        ImGui::TableSetupColumn("Repeat");
         ImGui::TableHeadersRow();
         const auto& usage = app.buttonUsage();
         for (size_t i = 0; i < kButtonCount; ++i) {

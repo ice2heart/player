@@ -143,7 +143,9 @@ Notes:
   the case. On one-stage hardware the long press stays the fallback.
 - Debounce in MCU (or `gpio-keys` `debounce-interval`).
 - Linux side sees standard **evdev** key events (`KEY_PLAYPAUSE`, `KEY_NEXTSONG`, …) so the
-  app can be developed on a desktop with a keyboard.
+  app can be developed on a desktop with a keyboard. The volume keys are `KEY_VOLUMEUP` /
+  `KEY_VOLUMEDOWN` and Options is `KEY_MENU`. On a gamepad R1 / R2 are volume up / down and
+  Triangle is Options; in the simulator `+` / `-` and `O`; in a terminal `+` / `-` and `o`.
 - **Step unit:** Up / Down in a player choose what Left / Right move by (music: Skip, Track,
   Album; book: Skip, Chapter, 10 minutes), like the navigation levels of a Victor Reader Stream.
   Settings change only in their list. See [docs/navigation.md](docs/navigation.md) for the full contract.

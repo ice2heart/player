@@ -19,6 +19,9 @@ GamepadLayout defaultGamepadLayout() {
     layout.buttons[index(PadControl::West)] = Button::PlayPause; // Square
     layout.buttons[index(PadControl::South)] = Button::Ok;       // Cross
     layout.buttons[index(PadControl::East)] = Button::Home;      // Circle
+    layout.buttons[index(PadControl::North)] = Button::Options;  // Triangle
+    layout.buttons[index(PadControl::R1)] = Button::VolumeUp;
+    layout.buttons[index(PadControl::R2)] = Button::VolumeDown;
     layout.deep = PadControl::L1;
     return layout;
 }

@@ -310,7 +310,7 @@ private:
     void play();
     void pause(bool announce);
     void skip(int direction);
-    void changeVolume(int delta);
+    void changeVolume(int delta, Gesture gesture);
     std::vector<ChapterRef> chapters() const;
     int currentChapter() const;
     bool gotoChapter(int index, Origin origin, Then opened = {}); // false if its file did not open
@@ -437,7 +437,8 @@ private:
     TextFiles* textFiles_ = nullptr;
     bool sleeping_ = false;
     bool settingsChanged_ = false; // changed with Left / Right, not yet written to disk
-    bool volumeChanged_ = false;   // changed in the player, written on exit
+    bool volumeChanged_ = false;   // changed with the volume keys, written on exit
+    bool volumeEdgeHeard_ = false; // a held volume key already played the edge sound at its limit
     std::optional<Book> book_; // the loaded book, or the album / playlist when music_
     bool music_ = false;
     size_t fileIndex_ = 0;

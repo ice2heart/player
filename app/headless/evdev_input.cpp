@@ -44,6 +44,14 @@ std::optional<Button> mapKey(unsigned code) {
     case KEY_VOICECOMMAND: return Button::Talk;
     case KEY_P:
     case KEY_POWER: return Button::Power;
+    case KEY_VOLUMEUP:
+    case KEY_KPPLUS:
+    case KEY_EQUAL: return Button::VolumeUp;
+    case KEY_VOLUMEDOWN:
+    case KEY_KPMINUS:
+    case KEY_MINUS: return Button::VolumeDown;
+    case KEY_MENU:
+    case KEY_O: return Button::Options;
     case KEY_F13: return Button::BackDeep;
     case KEY_F14: return Button::ForwardDeep;
     default: return std::nullopt;

@@ -145,7 +145,8 @@ Options pressed inside an Options list says "No options": it does not open a sec
 
 - **Volume up / down change the content volume** on every screen, menus included.
   Speech keeps its own level. At 0 and 100 % the edge sound plays.
-- **Holding a volume key repeats the step** (about every 150 ms) until it is let go.
+- **Holding a volume key repeats the step** (about every 150 ms, after a short 400 ms
+  delay so a slow tap steps once) until it is let go.
   `GestureDetector` gets a repeat event for these two keys; the other keys keep
   short / long / deep.
 - The volume is kept in memory and written to `config.yaml` only on exit.

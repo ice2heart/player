@@ -23,6 +23,8 @@ namespace oap {
 //   Up/Down    KEY_UP KEY_DOWN                OK            KEY_ENTER KEY_KPENTER KEY_OK KEY_SELECT
 //   Home       KEY_ESC KEY_BACKSPACE KEY_HOMEPAGE KEY_BACK
 //   Talk       KEY_T KEY_VOICECOMMAND         Power         KEY_P KEY_POWER
+//   VolumeUp   KEY_VOLUMEUP KEY_KPPLUS KEY_EQUAL        VolumeDown  KEY_VOLUMEDOWN KEY_KPMINUS KEY_MINUS
+//   Options    KEY_MENU KEY_O
 //   BackDeep/ForwardDeep  KEY_F13/KEY_F14, or Shift+Left/Right on a keyboard
 //   Hold       switch SW_MUTE_DEVICE, or KEY_H toggles it
 //   Gamepads (DualSense etc.): see defaultGamepadLayout() in frontend/gamepad.h

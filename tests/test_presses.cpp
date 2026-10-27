@@ -34,6 +34,10 @@ TEST(ParseScript, ReadsButtonsWaitsAndQuit) {
               "Down, OK, wait 3000, Forward long, Back deep, Play/Pause, Talk, Power, Home, Up, quit");
 }
 
+TEST(ParseScript, VolumeAndOptionsSteps) {
+    EXPECT_EQ(describe(parseScript("volup voldown:long options")), "Volume up, Volume down long, Options");
+}
+
 TEST(ParseScript, DeepOnlyForKeysWithADeepStage) {
     EXPECT_EQ(describe(parseScript("up:deep right:deep")), "Up, Forward deep");
 }

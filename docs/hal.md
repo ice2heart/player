@@ -121,7 +121,8 @@ power = "sysfs"                 # rev 1: fuel gauge on I2C, no MCU
 haptics = "none"
 [board.buttons]                 # gpio-keys device
 device = "gpio-keys"
-keys = { KEY_PLAYPAUSE = "PlayPause", KEY_PREVIOUSSONG = "Back", KEY_NEXTSONG = "Forward" }
+keys = { KEY_PLAYPAUSE = "PlayPause", KEY_PREVIOUSSONG = "Back", KEY_NEXTSONG = "Forward",
+         KEY_VOLUMEUP = "VolumeUp", KEY_VOLUMEDOWN = "VolumeDown", KEY_MENU = "Options" }
 
 [[board]]
 match = "radxa,zero3w-rev2"
@@ -351,7 +352,9 @@ MCU sits on a UART instead of USB.
 When no text field is open, `App` maps `KeyInput` to buttons with one table in core,
 `defaultKeyMap()`. The simulator's key bindings (architecture §10: Space = Play/Pause,
 arrows, Enter = OK, ...) move there, so every front end and the tests use the same map. Media
-keys from headsets map to Play/Pause, Back and Forward. Keys that are not mapped are ignored
+keys from headsets map to Play/Pause, Back and Forward, and their volume keys (`KEY_VOLUMEUP`,
+`KEY_VOLUMEDOWN`) to Volume up / down. `KEY_MENU` is Options. The held volume keys repeat in
+`GestureDetector`, not through the keyboard's own autorepeat, which the front end ignores. Keys that are not mapped are ignored
 silently.
 
 ### 5.3 Keyboard as text entry

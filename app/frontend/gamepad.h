@@ -30,6 +30,7 @@ struct GamepadLayout {
 // PlayStation layout. Edit this to remap:
 //   D-pad   Up/Down/Back/Forward      Square  Play/Pause
 //   Cross   OK                        Circle  Home
+//   Triangle Options                  R1 / R2  Volume up / down
 //   L1 + D-pad Left/Right             deep press (previous / next chapter)
 GamepadLayout defaultGamepadLayout();
 

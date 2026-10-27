@@ -470,8 +470,8 @@ TEST_F(AppTest, HelpButtonsDescribesEachButton) {
     start();
     open("Help");
     open("Buttons");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play pause", "Left", "Right", "Up", "Down", "OK", "Home", "Talk",
-                                                  "Power"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play pause", "Left", "Right", "Up", "Down", "OK", "Home",
+                                                  "Volume up", "Volume down", "Options", "Talk", "Power"}));
     open("Right");
     EXPECT_EQ(speech.last(), "Right. In menus, raises a setting. In player, skip forward. Hold, or press deeper, for next chapter or track.");
     EXPECT_FALSE(app->keyDescriber());
@@ -617,6 +617,226 @@ TEST_F(AppTest, VolumeStopsAtMaximum) {
     press(Button::Up);
     EXPECT_EQ(settings.getInt("volume", 0), 100);
     EXPECT_EQ(speech.last(), "Maximum volume.");
+}
+
+// ---------------------------------------------------------------- volume and options keys
+
+TEST_F(AppTest, VolumeKeysChangeTheVolumeInAMenuAndWriteNothingUntilExit) {
+    start();
+    ASSERT_EQ(app->mode(), App::Mode::Menu);
+    press(Button::VolumeUp);
+    EXPECT_EQ(settings.getInt("volume", 0), 75);
+    EXPECT_FLOAT_EQ(volume.volume, 0.75f);
+    EXPECT_EQ(speech.last(), "Volume 75 percent.");
+    EXPECT_EQ(sounds.last(), Earcon::Volume);
+    press(Button::VolumeDown);
+    press(Button::VolumeDown);
+    EXPECT_EQ(settings.getInt("volume", 0), 65);
+    EXPECT_FLOAT_EQ(volume.volume, 0.65f);
+    EXPECT_EQ(level().title, "Home") << "the menu did not move";
+    EXPECT_EQ(configFile.saves, 0);
+    app->shutdown();
+    EXPECT_EQ(configFile.saves, 1);
+    EXPECT_EQ(configFile.onDisk("volume"), "65");
+}
+
+TEST_F(AppTest, VolumeKeysChangeTheVolumeInThePlayerAndWriteNothingUntilExit) {
+    playAlpha();
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    press(Button::VolumeUp);
+    press(Button::VolumeUp);
+    press(Button::VolumeDown);
+    EXPECT_EQ(settings.getInt("volume", 0), 75);
+    EXPECT_FLOAT_EQ(volume.volume, 0.75f);
+    EXPECT_TRUE(player.playing()) << "volume does not pause";
+    EXPECT_EQ(configFile.saves, 0);
+    app->shutdown();
+    EXPECT_EQ(configFile.onDisk("volume"), "75");
+}
+
+TEST_F(AppTest, HoldingAVolumeKeyRepeatsAndLettingGoStops) {
+    start();
+    app->keyDown(Button::VolumeUp);
+    EXPECT_EQ(settings.getInt("volume", 0), 75) << "the first step is at once";
+    idle(GestureDetector::kRepeatDelay - 10ms);
+    EXPECT_EQ(settings.getInt("volume", 0), 75);
+    int stops = speech.stops;
+    idle(10ms);
+    EXPECT_EQ(settings.getInt("volume", 0), 80);
+    EXPECT_EQ(speech.last(), "Volume 80 percent.");
+    EXPECT_GT(speech.stops, stops) << "the new volume replaces the old announcement";
+    idle(GestureDetector::kRepeatInterval);
+    idle(GestureDetector::kRepeatInterval);
+    EXPECT_EQ(settings.getInt("volume", 0), 90);
+    app->keyUp(Button::VolumeUp);
+    idle(1s);
+    EXPECT_EQ(settings.getInt("volume", 0), 90) << "no step after the key is let go";
+    EXPECT_FLOAT_EQ(volume.volume, 0.9f);
+}
+
+TEST_F(AppTest, HoldingVolumeDownRepeatsDownwards) {
+    playAlpha();
+    app->keyDown(Button::VolumeDown);
+    idle(GestureDetector::kRepeatDelay);
+    idle(GestureDetector::kRepeatInterval);
+    app->keyUp(Button::VolumeDown);
+    EXPECT_EQ(settings.getInt("volume", 0), 55);
+}
+
+TEST_F(AppTest, VolumeAtMaximumPlaysTheEdgeSoundOncePerPress) {
+    settings.setInt("volume", 100);
+    start();
+    sounds.played.clear();
+    press(Button::VolumeUp);
+    EXPECT_EQ(sounds.played, (std::vector<Earcon>{Earcon::Edge}));
+    EXPECT_EQ(settings.getInt("volume", 0), 100);
+    EXPECT_EQ(speech.last(), "Maximum volume.");
+    sounds.played.clear();
+    speech.said.clear();
+    app->keyDown(Button::VolumeUp);
+    for (int i = 0; i < 5; ++i) idle(GestureDetector::kRepeatInterval + GestureDetector::kRepeatDelay);
+    app->keyUp(Button::VolumeUp);
+    EXPECT_EQ(std::count(sounds.played.begin(), sounds.played.end(), Earcon::Edge), 1) << "not on each repeat";
+    EXPECT_EQ(std::count(speech.said.begin(), speech.said.end(), "Maximum volume."), 1) << "not on each repeat";
+}
+
+TEST_F(AppTest, VolumeAtZeroPlaysTheEdgeSoundOncePerPress) {
+    settings.setInt("volume", 0);
+    start();
+    sounds.played.clear();
+    press(Button::VolumeDown);
+    EXPECT_EQ(sounds.played, (std::vector<Earcon>{Earcon::Edge}));
+    EXPECT_EQ(speech.last(), "Muted.");
+    sounds.played.clear();
+    app->keyDown(Button::VolumeDown);
+    for (int i = 0; i < 5; ++i) idle(GestureDetector::kRepeatInterval + GestureDetector::kRepeatDelay);
+    app->keyUp(Button::VolumeDown);
+    EXPECT_EQ(std::count(sounds.played.begin(), sounds.played.end(), Earcon::Edge), 1);
+}
+
+TEST_F(AppTest, HoldingVolumeUpToTheLimitStepsThenPlaysTheEdgeSoundOnce) {
+    settings.setInt("volume", 90);
+    start();
+    sounds.played.clear();
+    app->keyDown(Button::VolumeUp); // 95
+    idle(GestureDetector::kRepeatDelay); // 100
+    for (int i = 0; i < 4; ++i) idle(GestureDetector::kRepeatInterval);
+    app->keyUp(Button::VolumeUp);
+    EXPECT_EQ(settings.getInt("volume", 0), 100);
+    EXPECT_EQ(std::count(sounds.played.begin(), sounds.played.end(), Earcon::Volume), 2);
+    EXPECT_EQ(std::count(sounds.played.begin(), sounds.played.end(), Earcon::Edge), 1);
+    sounds.played.clear();
+    press(Button::VolumeUp); // a new press at the limit sounds again
+    EXPECT_EQ(sounds.played, (std::vector<Earcon>{Earcon::Edge}));
+}
+
+TEST_F(AppTest, ARepeatAtTheLimitDoesNotCutOffMaximumVolume) {
+    settings.setInt("volume", 95);
+    start();
+    app->keyDown(Button::VolumeUp); // 100: "Maximum volume."
+    int stops = speech.stops;
+    for (int i = 0; i < 4; ++i) idle(GestureDetector::kRepeatDelay);
+    app->keyUp(Button::VolumeUp);
+    EXPECT_EQ(speech.stops, stops) << "a repeat that changes nothing leaves the speech alone";
+    EXPECT_EQ(speech.last(), "Maximum volume.");
+}
+
+TEST_F(AppTest, AKeyThatWokeTheDeviceAndNeverCameUpWorksAgainOnTheNextPress) {
+    start();
+    press(Button::Power);
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    app->keyDown(Button::VolumeUp); // wakes; the release is lost
+    app->keyDown(Button::VolumeUp);
+    EXPECT_EQ(settings.getInt("volume", 70), 75);
+}
+
+TEST_F(AppTest, EdgeSoundOfAHeldKeyIsHeardAgainAfterTheVolumeMoved) {
+    settings.setInt("volume", 100);
+    start();
+    press(Button::VolumeUp);   // the edge sound
+    press(Button::VolumeDown); // 95
+    sounds.played.clear();
+    app->keyDown(Button::VolumeUp); // 100
+    for (int i = 0; i < 4; ++i) idle(GestureDetector::kRepeatDelay);
+    app->keyUp(Button::VolumeUp);
+    EXPECT_EQ(std::count(sounds.played.begin(), sounds.played.end(), Earcon::Edge), 1);
+}
+
+TEST_F(AppTest, AHeldVolumeKeyDoesNotWakeTheDeviceWhenItSleepsMeanwhile) {
+    start();
+    app->keyDown(Button::VolumeUp);
+    press(Button::Power);
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    for (int i = 0; i < 4; ++i) idle(GestureDetector::kRepeatDelay);
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+    app->keyUp(Button::VolumeUp);
+    EXPECT_EQ(settings.getInt("volume", 70), 75) << "only the first step";
+}
+
+TEST_F(AppTest, OptionsSaysNoOptionsWithTheEdgeSoundInAMenuAndInThePlayer) {
+    start();
+    size_t index = level().index;
+    press(Button::Options);
+    EXPECT_EQ(speech.last(), "No options.");
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(level().index, index);
+    EXPECT_EQ(level().title, "Home");
+
+    playAlpha();
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    speech.said.clear();
+    press(Button::Options);
+    EXPECT_EQ(speech.last(), "No options.");
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(AppTest, KeyDescriberNamesTheVolumeAndOptionsKeys) {
+    start();
+    open("Help");
+    open("Key describer");
+    ASSERT_TRUE(app->keyDescriber());
+    press(Button::VolumeUp);
+    EXPECT_EQ(speech.last(), "Volume up. Raises the volume, in menus and in the player. Hold to keep raising it.");
+    press(Button::VolumeDown);
+    EXPECT_EQ(speech.last(), "Volume down. Lowers the volume, in menus and in the player. Hold to keep lowering it.");
+    press(Button::Options);
+    EXPECT_EQ(speech.last(), "Options. Actions for the selected item. Says when there are none.");
+    EXPECT_EQ(settings.getInt("volume", 70), 70) << "described, not acted on";
+}
+
+TEST_F(AppTest, HeldVolumeKeyIsDescribedOnceInTheKeyDescriber) {
+    start();
+    open("Help");
+    open("Key describer");
+    speech.said.clear();
+    app->keyDown(Button::VolumeUp);
+    for (int i = 0; i < 4; ++i) idle(GestureDetector::kRepeatDelay);
+    app->keyUp(Button::VolumeUp);
+    EXPECT_EQ(speech.said.size(), 1u);
+    EXPECT_EQ(settings.getInt("volume", 70), 70);
+}
+
+TEST_F(AppTest, HeldVolumeKeyThatWokeTheDeviceDoesNotChangeTheVolume) {
+    start();
+    press(Button::Power);
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    app->keyDown(Button::VolumeUp);
+    for (int i = 0; i < 4; ++i) idle(GestureDetector::kRepeatDelay);
+    app->keyUp(Button::VolumeUp);
+    EXPECT_NE(app->mode(), App::Mode::Sleeping);
+    EXPECT_EQ(settings.getInt("volume", 70), 70);
+    press(Button::VolumeUp);
+    EXPECT_EQ(settings.getInt("volume", 70), 75) << "the next press works";
+}
+
+TEST_F(AppTest, HelpGettingStartedMentionsTheVolumeKeysAndOptions) {
+    start();
+    open("Help");
+    open("Getting started");
+    EXPECT_NE(speech.last().find("The volume keys change the volume everywhere"), std::string::npos) << speech.last();
+    EXPECT_NE(speech.last().find("Options shows what can be done"), std::string::npos) << speech.last();
 }
 
 TEST_F(AppTest, PauseRemembersThePositionWithoutWritingIt) {

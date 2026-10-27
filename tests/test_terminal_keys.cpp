@@ -39,6 +39,17 @@ TEST(TerminalKeys, PlainKeysAreShortPresses) {
     EXPECT_EQ(decode("p"), "Power");
 }
 
+TEST(TerminalKeys, VolumeAndOptionsKeys) {
+    EXPECT_EQ(decode("+"), "Volume up");
+    EXPECT_EQ(decode("="), "Volume up");
+    EXPECT_EQ(decode("-"), "Volume down");
+    EXPECT_EQ(decode("o"), "Options");
+    EXPECT_EQ(decode("\x1b+"), "Volume up") << "held long, a volume key would repeat";
+    EXPECT_EQ(decode("l-"), "Volume down");
+    EXPECT_EQ(decode("lo"), "Options long");
+    EXPECT_EQ(decode("d+"), "Volume up") << "volume keys have no deep stage";
+}
+
 TEST(TerminalKeys, ArrowsMapToDirectionButtons) {
     EXPECT_EQ(decode("\x1b[A"), "Up");
     EXPECT_EQ(decode("\x1b[B"), "Down");

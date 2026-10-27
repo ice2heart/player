@@ -44,6 +44,16 @@ TEST(Gamepad, DpadButtonsAreArrows) {
     EXPECT_EQ(press(pad, PadControl::DpadRight), "Forward down");
 }
 
+TEST(Gamepad, TriangleIsOptionsAndTheRightShoulderButtonsAreVolume) {
+    GamepadMapper pad;
+    EXPECT_EQ(press(pad, PadControl::North), "Options down");
+    EXPECT_EQ(release(pad, PadControl::North), "Options up");
+    EXPECT_EQ(press(pad, PadControl::R1), "Volume up down");
+    EXPECT_EQ(release(pad, PadControl::R1), "Volume up up");
+    EXPECT_EQ(press(pad, PadControl::R2), "Volume down down");
+    EXPECT_EQ(release(pad, PadControl::R2), "Volume down up");
+}
+
 TEST(Gamepad, DpadHatAxisPressesAndReleasesBackAndForward) {
     GamepadMapper pad;
     EXPECT_EQ(hatX(pad, -1), "Back down");
@@ -54,8 +64,8 @@ TEST(Gamepad, DpadHatAxisPressesAndReleasesBackAndForward) {
 
 TEST(Gamepad, UnmappedControlsDoNothing) {
     GamepadMapper pad;
-    EXPECT_EQ(press(pad, PadControl::North), "");
-    EXPECT_EQ(press(pad, PadControl::R1), "");
+    EXPECT_EQ(press(pad, PadControl::L2), "");
+    EXPECT_EQ(press(pad, PadControl::Select), "");
     EXPECT_EQ(press(pad, PadControl::L1), ""); // the deep modifier alone
 }
 
@@ -150,5 +160,6 @@ TEST(Gamepad, DefaultLayoutMapsOnlyTheDocumentedControls) {
         if (!change.empty()) mapped += (mapped.empty() ? "" : ", ") + std::string(names[c]) + ": " + change;
     }
     EXPECT_EQ(mapped, "DpadUp: Up down, DpadDown: Down down, DpadLeft: Back down, DpadRight: Forward down, "
-                      "South: OK down, East: Home down, West: Play/Pause down");
+                      "South: OK down, East: Home down, West: Play/Pause down, North: Options down, "
+                      "R1: Volume up down, R2: Volume down down");
 }

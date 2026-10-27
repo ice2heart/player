@@ -272,7 +272,7 @@ Rules:
 ```
 key / GPIO ─► App::keyDown(b) ─► GestureDetector.press   ─► Deep ──┐
           └─► App::keyUp(b)   ─► GestureDetector.release ─► Short ─┤
-              App::tick()     ─► GestureDetector.poll    ─► Long ──┴► App::onButton()
+              App::tick()     ─► GestureDetector.poll    ─► Long / Repeat ┴► App::onButton()
 ```
 
 - **Long press** fires while the button is still held, after `Long press time`
@@ -280,11 +280,16 @@ key / GPIO ─► App::keyDown(b) ─► GestureDetector.press   ─► Deep ─
 - **Deep press**: Left / Right may be two-stage keys. The second stage is a
   raw input (`BackDeep`, `ForwardDeep`). It fires a `Deep` gesture on `Back` /
   `Forward` as soon as it closes, and the first stage's release is then ignored.
+- **Repeat**: the volume keys (`VolumeUp`, `VolumeDown`) send a `Short` as soon as they go
+  down, then a `Repeat` every `kRepeatInterval` (150 ms) after `kRepeatDelay` (400 ms), until
+  they are let go. They have no long press and the release says nothing. `App` plays the
+  edge sound once per press at a volume limit, not on each repeat, and a repeat never wakes
+  the device or speaks in the key describer. A key that wakes the device stays quiet until let go.
 - **Hold switch** (`App::setHold`) blocks every button except Power and says "Locked".
   A key that is already down when Hold goes on is ignored until it is let go:
   no long press while held, no short press on release.
 - **Buttons:** `PlayPause, Back (left), Forward (right), Up, Down, Ok, Home, Talk, Power`,
-  plus the raw `BackDeep, ForwardDeep`.
+  plus the raw `BackDeep, ForwardDeep`, and `VolumeUp, VolumeDown, Options`.
 - `App` counts every gesture per button (`buttonUsage()`). The simulator shows
   the counts, so we can see which buttons are actually needed.
 
@@ -305,6 +310,8 @@ The rules behind this table, and the checklist for new menus, are in
 | OK long | | previous screen | previous screen |
 | Home short | | previous screen | previous screen |
 | Home long | | home menu | home menu |
+| Volume up / down | volume ± 5 %, held repeats; edge sound at 0 and 100 % | | |
+| Options | "No options." with the edge sound (no item has options yet) | | |
 | Talk | "not available yet" | | |
 | Power short | sleep | | |
 | Power long | power menu | | |
@@ -857,16 +864,16 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
     **now playing** with a progress bar, a table of **button usage**, and the
     **speech log**.
 - **Keyboard:** Space = Play/Pause, arrows = Back/Forward/Up/Down, Enter = OK,
-  Esc/Backspace = Home, T = Talk, P = Power, H = hold switch. Holding a key gives a long press.
+  Esc/Backspace = Home, T = Talk, P = Power, + / - = volume, O = Options, H = hold switch. Holding a key gives a long press.
 - **Game controller:** SDL game controllers (DualSense, Xbox, ...) go through `GamepadMapper`,
   the same map as `oap-headless`: D-pad = arrows, Square = Play/Pause, Cross = OK,
-  Circle = Home, L1 + Left/Right = deep press. Pads can be plugged in while it runs.
+  Circle = Home, Triangle = Options, R1 / R2 = volume up / down, L1 + Left/Right = deep press. Pads can be plugged in while it runs.
 - **Arguments:** `oap-sim [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--library-db FILE] [--audio NAME] [--script STEPS] [LIBRARY_DIR]`.
   `--library-db` moves the library index (default `library.db` next to the state file). `--audio` is `auto` (default), `coreaudio`, `pulse`, `alsa[:DEVICE]` or `null`, among those built in.
   `tools/make_sample_library.sh [LIBRARY_DIR] [MUSIC_DIR]` makes a spoken sample library and some tone "music".
 - **Script mode:** `--script "ok down ok wait:3000 right:long play:long quit"`
   presses buttons automatically, for repeatable walkthroughs and future UI tests.
-  Steps: `play left right up down ok home talk power`, with `:long` for a long
+  Steps: `play left right up down ok home talk power volup voldown options`, with `:long` for a long
   press, plus `wait:<ms>` and `quit`. An unknown step or a `wait` without a number is printed and skipped.
 - **Several inputs at once:** keyboard, pads, on-screen buttons and `--script` share one
   `HeldButtons`, so a button held from two of them is released only when both let go.
@@ -887,7 +894,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
     `SW_MUTE_DEVICE` is the hold switch; its state is read at startup.
   - The terminal is put in non-canonical, no-echo mode. Bytes go through `TerminalKeyDecoder`
     and the presses are played by a `PressSequencer` (80 ms short, 1600 ms long), since a
-    terminal sends no releases. Alt / `l` prefix = long, Shift / `d` prefix = deep.
+    terminal sends no releases (so a volume key steps once and has no long press). `+` `=` / `-` are volume up / down, `o` is Options. Alt / `l` prefix = long, Shift / `d` prefix = deep.
     `main.cpp` still calls the untimed `decode(bytes)`, which takes each read as complete;
     switching to `decode(bytes, now)` plus `poll(now)` every loop keeps sequences split over slow SSH.
   - `--script` uses a second `PressSequencer`, shared with the simulator.
