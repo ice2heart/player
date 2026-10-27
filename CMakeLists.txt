@@ -43,6 +43,7 @@ add_library(oapcore STATIC
     app/core/buttons.cpp
     app/core/earcons.cpp
     app/core/library.cpp
+app/core/library_index.cpp
     app/core/mixer.cpp
     app/core/settings.cpp
     app/core/text.cpp
@@ -237,6 +238,7 @@ if(OAP_BUILD_TESTS)
         tests/test_gestures.cpp
         tests/test_held_buttons.cpp
         tests/test_library.cpp
+        tests/test_library_index.cpp
         tests/test_make_music_server.cpp
         tests/test_mixer.cpp
         tests/test_fake_downloader.cpp

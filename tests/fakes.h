@@ -198,6 +198,35 @@ public:
     bool failSaves = false;
 };
 
+// A library store in memory: what was last saved, and how often.
+class FakeLibraryStore : public LibraryStore {
+public:
+    std::vector<IndexItem> load() override {
+        std::vector<IndexItem> out;
+        for (const auto& [id, item] : items) out.push_back(item);
+        return out;
+    }
+    bool save(const std::vector<IndexItem>& changed, const std::vector<std::string>& removed) override {
+        if (failSaves) return false;
+        ++saves;
+        for (const auto& item : changed) {
+            items[item.id] = item;
+            savedIds.push_back(item.id);
+        }
+        for (const auto& id : removed) {
+            items.erase(id);
+            removedIds.push_back(id);
+        }
+        return true;
+    }
+
+    std::map<std::string, IndexItem> items;
+    int saves = 0;
+    std::vector<std::string> savedIds;   // every item written, in order
+    std::vector<std::string> removedIds; // every item deleted, in order
+    bool failSaves = false;
+};
+
 // A music server that answers only when the test says so. Every request is
 // recorded and stays pending until the test calls reply() / replyPing() / fail().
 // Even then the callback runs only on the next poll(), as on the real server, so

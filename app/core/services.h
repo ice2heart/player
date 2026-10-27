@@ -42,6 +42,52 @@ public:
     virtual bool writeAtomically(const std::filesystem::path& file, const std::string& contents) = 0;
 };
 
+// One track of a library item. `location` is a file path for a local or cached
+// track and the server's track id for a server track.
+struct IndexTrack {
+    std::string location;
+    std::string title;
+    std::string artist;
+    int number = 0;       // track number, 0: unknown
+    double duration = 0;  // seconds
+    int64_t size = 0;     // bytes
+    int64_t fileTime = 0; // wall time (seconds since 1970) the file last changed
+    std::vector<std::string> seenOn; // server references, see LibraryIndex::seenRef()
+    bool operator==(const IndexTrack&) const = default;
+};
+
+// One entry of the library index: a book, an album or a podcast, wherever it lives.
+struct IndexItem {
+    enum class Source { Local, Server, Cached };
+    enum class Kind { Book, Music, Podcast };
+    std::string id;
+    Source source = Source::Local;
+    Kind kind = Kind::Music;
+    std::string title;
+    std::string artist;
+    std::string album;
+    std::string genre;
+    int year = 0;                // 0: unknown
+    std::string musicBrainzId;   // the album's MusicBrainz id, may be empty
+    int64_t firstSeen = 0;       // wall time the item first entered the index
+    int64_t lastPlayed = 0;      // wall time it last played, 0: never
+    std::vector<IndexTrack> tracks;
+    std::vector<std::string> seenOn; // server references, see LibraryIndex::seenRef()
+    bool operator==(const IndexItem&) const = default;
+};
+
+// Where the library index is kept between runs. Core holds the index in memory
+// and only loads and saves it through this; the real store (SQLite) lives in app/library/.
+class LibraryStore {
+public:
+    virtual ~LibraryStore() = default;
+    // Everything stored; empty when there is nothing or it cannot be read.
+    virtual std::vector<IndexItem> load() = 0;
+    // Writes `changed` (each replaces the stored item with its id) and deletes the items
+    // named in `removed`, all or nothing. False on failure: nothing is then stored.
+    virtual bool save(const std::vector<IndexItem>& changed, const std::vector<std::string>& removed) = 0;
+};
+
 // Text to speech. stop() cancels both queued and currently playing speech.
 class Speech {
 public:
