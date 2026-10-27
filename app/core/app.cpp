@@ -1020,6 +1020,8 @@ void App::showStatus(std::uint64_t screenId) {
             screen->index = screen->items.size() - 1; // on "Loading"
             say(itemSpeech(*screen));
         }));
+        // Downloads need no server: offered when there are some (the same rule as Streaming).
+        if (hasDownloads()) items.push_back(submenu("Downloaded", [this] { return downloadedMenu(); }));
     } else if (list.waiting) {
         items.push_back(action("Loading", [this] { say("Still loading."); }));
     } else if (list.loaded == 0) {
@@ -1096,6 +1098,25 @@ std::string downloadedName(const CachedList& list) {
 bool sameList(const RemoteSource& a, const RemoteSource& b) { return a.kind == b.kind && a.id == b.id; }
 } // namespace
 
+// The tracks of `list` whose files are whole on disk, in manifest order.
+std::vector<RemoteTrack> App::completeTracks(const TrackCache& store, const RemoteSource& source, const CachedList& list) {
+    std::vector<RemoteTrack> tracks;
+    for (const CachedTrack& t : list.tracks) {
+        if (!store.completeFile(source, t)) continue;
+        RemoteTrack track;
+        track.id = t.id;
+        track.title = t.title;
+        track.duration = t.duration;
+        tracks.push_back(std::move(track));
+    }
+    return tracks;
+}
+
+bool App::hasDownloads() const {
+    TrackCache store = trackCache();
+    return store.enabled() && !store.lists().empty();
+}
+
 // Streaming > Downloaded: the lists whose manifests are in the cache, by name.
 // Read from disk each time the menu is built, so it shows what changed meanwhile.
 std::vector<MenuItem> App::downloadedMenu() {
@@ -1116,15 +1137,7 @@ std::vector<MenuItem> App::downloadedMenu() {
 std::vector<MenuItem> App::downloadedListMenu(const RemoteSource& source) {
     TrackCache store = trackCache();
     CachedList list = store.load(source);
-    auto tracks = std::make_shared<std::vector<RemoteTrack>>();
-    for (const CachedTrack& t : list.tracks) {
-        if (!store.completeFile(source, t)) continue;
-        RemoteTrack track;
-        track.id = t.id;
-        track.title = t.title;
-        track.duration = t.duration;
-        tracks->push_back(std::move(track));
-    }
+    auto tracks = std::make_shared<std::vector<RemoteTrack>>(completeTracks(store, source, list));
     if (tracks->empty()) return {action("No tracks", [this] { say("The tracks of this download are gone from the disk."); })};
     std::string title = downloadedName(list);
     std::vector<MenuItem> items;
@@ -1215,35 +1228,61 @@ std::optional<App::StreamPlace> App::savedStream() const {
     return place;
 }
 
-// The list is loaded again rather than saved: it may have changed on the
-// server, and stream URLs (with a fresh salt each) are never kept. The track is
-// found by its id; if it is gone, the track now at its index plays from its
-// start, or the first one.
+// The track of a resumed list: found by its id; if it is gone, the track now at
+// its index plays from its start, or the first one.
+void App::playResumed(const StreamPlace& place, const std::vector<RemoteTrack>& tracks) {
+    size_t index = place.track < tracks.size() ? place.track : 0;
+    double position = 0;
+    auto same = [&](size_t i) { return i < tracks.size() && tracks[i].id == place.trackId; };
+    if (!same(place.track)) {
+        for (size_t i = 0; i < tracks.size(); ++i)
+            if (same(i)) {
+                index = i;
+                break;
+            }
+    }
+    if (same(index)) position = place.position;
+    playRemote(place.title, tracks, index, place.source, position);
+}
+
+// Where the list comes from: a list the user downloaded whole, with the saved track
+// among it, plays from the disk at once, with no "Loading" and no question to the
+// server (offline, a question waits up to the connect timeout). Otherwise the list is
+// loaded again rather than saved: it may have changed on the server, and stream URLs
+// (with a fresh salt each) are never kept. If the server cannot answer, the tracks
+// of it that are on disk play instead (a streamed album kept in part), else the
+// error is spoken.
 void App::resumeStream() {
     auto place = savedStream();
     if (!place) return;
     cancelResume();
+    TrackCache store = trackCache();
+    CachedList cached = store.enabled() ? store.load(place->source) : CachedList{};
+    std::vector<RemoteTrack> onDisk = completeTracks(store, place->source, cached);
+    bool wholeDownload = !cached.tracks.empty() && onDisk.size() == cached.tracks.size() &&
+                         std::all_of(cached.tracks.begin(), cached.tracks.end(), [](const CachedTrack& t) { return t.pinned; });
+    bool hasSaved = std::any_of(onDisk.begin(), onDisk.end(), [&](const RemoteTrack& t) { return t.id == place->trackId; });
+    if (wholeDownload && hasSaved) {
+        playResumed(*place, onDisk);
+        return;
+    }
     say("Loading.");
-    auto done = [this, place = *place](MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
+    auto done = [this, place = *place, onDisk = std::move(onDisk), hasSaved](MusicServer::Error error,
+                                                                              std::vector<RemoteTrack> tracks, bool) {
         resume_ = 0; // a new screen or sleep would have cancelled it: the user is still where they asked
         tts_.stop();
         if (error != MusicServer::Error::None) {
+            if (!onDisk.empty()) { // the server is down, but part of the list is here
+                StreamPlace here = place;
+                if (!hasSaved) here.track = 0, here.trackId.clear(); // the saved track is not here: start at the first
+                playResumed(here, onDisk);
+                return;
+            }
             earcons_.play(Earcon::Error);
             say(errorText(error) + ".");
             return;
         }
-        size_t index = place.track < tracks.size() ? place.track : 0;
-        double position = 0;
-        auto same = [&](size_t i) { return i < tracks.size() && tracks[i].id == place.trackId; };
-        if (!same(place.track)) {
-            for (size_t i = 0; i < tracks.size(); ++i)
-                if (same(i)) {
-                    index = i;
-                    break;
-                }
-        }
-        if (same(index)) position = place.position;
-        playRemote(place.title, tracks, index, place.source, position);
+        playResumed(place, tracks);
     };
     resume_ = place->source.kind == RemoteSource::Kind::Album ? server_.albumTracks(place->source.id, done)
                                                                : server_.playlistTracks(place->source.id, done);

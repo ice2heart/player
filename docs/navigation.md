@@ -170,12 +170,23 @@ these rules too ([streaming.md](streaming.md) has the plan).
   list that is downloading cancels the download. With nothing downloaded the list
   has one item, "No downloads"; OK says "Nothing is downloaded. Choose Download
   album in an album."
+- **Offline.** When a list from the server fails with an error ("Server not
+  reachable", "Server error" and so on), the list is "the error", "Try again" and, if
+  anything is downloaded, "Downloaded" (the same list as in the Streaming menu, which
+  needs no server). Without downloads there is no such item. Try again replaces the
+  error list with "Loading" as before. A cached album played offline never says
+  "Loading." and does not wait on the server.
 - **The last album or playlist resumes after a restart.** When a stream played
   last, the device starts on Home (nothing plays), with "Now playing, Weather"
   first. OK on it, or Play, says "Loading.", loads the list from the server and
-  opens the track where it was, then the player. A new screen, sleep or Power off
-  while it loads drops it; an error is spoken ("Server not reachable.") and Home
-  stays. OK on "Now playing" again while the track opens goes to the player; if
+  opens the track where it was, then the player. If the album was downloaded whole
+  (every track pinned and on the disk, the saved track among them) it plays from
+  the files at once: no "Loading.", no question to the server. If it is only partly
+  on the disk, the server is asked first so no track is lost; with the server down
+  the tracks that are on the disk play (from the saved track, or the first if that
+  one is not there) and no error is spoken. A new screen, sleep or Power off
+  while it loads drops it; an error with nothing of the list on the disk is spoken
+  ("Server not reachable.") and Home stays. OK on "Now playing" again while the track opens goes to the player; if
   the track then does not open, or sleep drops it, Home comes back instead of an
   empty player.
   A local book played after the stream is resumed instead, as before.

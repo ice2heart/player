@@ -4474,3 +4474,192 @@ TEST_F(DownloadedTest, AListWhoseFilesVanishedAfterTheMenuWasBuiltSaysSo) {
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "The tracks of this download are gone from the disk.");
 }
+
+// ------------------------------------------------------------------ offline
+
+// Step 3.6: with the server down, the downloads still play: the error list offers
+// Downloaded, and a restart resumes the album from its files.
+class OfflineTest : public DownloadedTest {
+protected:
+    void SetUp() override {
+        DownloadedTest::SetUp();
+        settings.setString("server.password", "secret");
+    }
+    // Exit, and a new App on what was written to state.tsv, as after a reboot.
+    void reboot() {
+        app->shutdown();
+        app.reset();
+        state = Settings(&stateFile);
+        state.load();
+        player = FakePlayer{};
+        speech.said.clear();
+        sounds.played.clear();
+        start();
+    }
+    // Plays "Rain" of the downloaded Weather, stopped at 42 s, then a restart.
+    void playRainThenRestart() {
+        openDownload("Weather");
+        open("Rain");
+        ASSERT_TRUE(player.playing());
+        player.pos = 42;
+        reboot();
+    }
+    // Marks every track of the list as not pinned, as the automatic cache leaves them.
+    void unpin(const RemoteSource& source) {
+        CachedList list = store().load(source);
+        for (CachedTrack& t : list.tracks) t.pinned = false;
+        ASSERT_TRUE(store().save(list));
+    }
+    bool spokeUnreachable() const {
+        for (const std::string& s : speech.said)
+            if (s.find("not reachable") != std::string::npos) return true;
+        return false;
+    }
+};
+
+TEST_F(OfflineTest, ALoadErrorOffersDownloadedAndItPlaysFromTheFiles) {
+    RemoteSource al = seedWeather();
+    openList("Recently added");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again", "Downloaded"}));
+    EXPECT_EQ(speech.last(), "Server not reachable, 1 of 3");
+    press(Button::Down);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Downloaded, 3 of 3");
+    press(Button::Ok);
+    open("Weather");
+    speech.said.clear();
+    open("Play album");
+    EXPECT_EQ(player.file, fileOf(al, "t1"));
+    EXPECT_TRUE(player.playing());
+    EXPECT_FALSE(anyStreamOpened());
+    EXPECT_FALSE(speech.heard("Loading."));
+    EXPECT_FALSE(spokeUnreachable());
+}
+
+TEST_F(OfflineTest, ALoadErrorWithNothingDownloadedOffersOnlyTryAgain) {
+    openList("Recently added");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again"}));
+}
+
+TEST_F(OfflineTest, TryAgainDropsDownloadedAndTheListFillsWithoutIt) {
+    seedWeather();
+    openList("Recently added");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
+    app->tick();
+    press(Button::Down);
+    press(Button::Ok); // Try again
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Loading"}));
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Weather"}));
+}
+
+TEST_F(OfflineTest, AWholeDownloadResumesFromItsFilesAtOnceWithoutAskingTheServer) {
+    RemoteSource al = seedWeather();
+    playRainThenRestart();
+    std::size_t requests = server.requests.size();
+    press(Button::Ok); // Now playing
+    EXPECT_EQ(server.requests.size(), requests) << "nothing is asked of the server";
+    EXPECT_FALSE(speech.heard("Loading."));
+    EXPECT_EQ(player.file, fileOf(al, "t2"));
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, fileOf(al, "t3")) << "the rest of the album follows from the disk";
+    EXPECT_FALSE(anyStreamOpened());
+    EXPECT_FALSE(spokeUnreachable());
+    EXPECT_EQ(requestsOf(Kind::AlbumTracks), 0u);
+}
+
+TEST_F(OfflineTest, ADownloadWithAMissingFileAsksTheServerAndFallsBackToTheFilesWhenItIsDown) {
+    RemoteSource al = seedWeather();
+    playRainThenRestart();
+    fs::remove(fileOf(al, "t3"));
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Loading.");
+    ASSERT_EQ(server.lastRequest().kind, Kind::AlbumTracks);
+    ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(player.file, fileOf(al, "t2"));
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_FALSE(spokeUnreachable());
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+}
+
+TEST_F(OfflineTest, APartlyKeptAlbumIsLoadedFromTheServerFirstSoNoTrackIsLost) {
+    RemoteSource al = seedWeather();
+    playRainThenRestart();
+    unpin(al);
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Loading.");
+    ASSERT_EQ(server.lastRequest().kind, Kind::AlbumTracks);
+    std::vector<RemoteTrack> longer = weather();
+    longer.push_back({"t4", "Hail", "Band", "Weather", 100, 4, "mp3", 5}); // only the server has it
+    answer(longer);
+    EXPECT_EQ(player.file, fileOf(al, "t2")) << "a track on disk still plays from it";
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, fileOf(al, "t3"));
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t4") << "the server's whole list plays";
+}
+
+TEST_F(OfflineTest, APartlyKeptAlbumWithTheServerDownPlaysWhatIsOnDisk) {
+    RemoteSource al = seedWeather();
+    playRainThenRestart();
+    unpin(al);
+    press(Button::Ok);
+    ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(player.file, fileOf(al, "t2"));
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_FALSE(spokeUnreachable());
+    EXPECT_NE(sounds.last(), Earcon::Error);
+}
+
+TEST_F(OfflineTest, WhenTheSavedTrackIsNotOnDiskTheFirstOneOnDiskPlaysFromItsStart) {
+    RemoteSource al = seedWeather();
+    playRainThenRestart();
+    unpin(al);
+    CachedList list = store().load(al);
+    list.tracks.erase(list.tracks.begin() + 1); // Rain is no longer in the cache
+    ASSERT_TRUE(store().save(list));
+    press(Button::Ok);
+    ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(player.file, fileOf(al, "t1"));
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+}
+
+TEST_F(OfflineTest, ResumeWithTheServerDownAndNothingOfThatListOnDiskStillSaysServerNotReachable) {
+    RemoteSource al = seedWeather();
+    playRainThenRestart();
+    ASSERT_TRUE(store().remove(al));
+    seed(albumSource("other"), "Zodiac", "Band", {{"z1", "Fish"}}); // downloads of another list do not count
+    press(Button::Ok);
+    ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_TRUE(player.opened.empty());
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+}
+
+TEST_F(OfflineTest, LeavingHomeWhileTheFallbackWaitsForTheServerDropsIt) {
+    RemoteSource al = seedWeather();
+    playRainThenRestart();
+    unpin(al);
+    press(Button::Ok);
+    auto id = server.lastRequest().id;
+    press(Button::Down); // another screen or item: the user has moved on
+    press(Button::Ok);
+    EXPECT_FALSE(server.fail(id, FakeMusicServer::Error::Unreachable)) << "the request was cancelled";
+    app->tick();
+    EXPECT_TRUE(player.opened.empty());
+}

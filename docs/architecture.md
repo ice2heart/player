@@ -533,7 +533,8 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   cancels the download when that list is downloading; then `TrackCache::remove()`,
   `cacheIndex_.reset()`, two `popScreen()` (the rebuilt Downloaded list shows what is
   left) and "Deleted Weather.". The folder name keeps an album and a playlist apart;
-  the manifest keeps the name and artist. Offline use (the server down) is step 3.6.
+  the manifest keeps the name and artist.
+- **Offline (3.6):** `showStatus()` adds a "Downloaded" item after "Try again" in an error list when `hasDownloads()` (a cache folder and `TrackCache::lists()` not empty); it opens `downloadedMenu()`, which never asks the server. "Server status" is not changed: it sits in the Streaming menu, which already has Downloaded. `completeTracks()` builds the playable tracks of a manifest and is shared by `downloadedListMenu()` and `resumeStream()`. Scrobbles of a cached track are still sent; they are fire and forget and silent, so a failure offline says nothing and blocks nothing. A cached next track is never read ahead (`checkReadAhead()`), so offline play of a cached album touches no network.
 - **Downloads (3.4):** `trackItems()` adds "Download album" / "Download playlist"
   after the Play item when `canDownload()`. `startDownload()` reads the list's
   manifest, skips (and pins) the tracks whose files are whole, checks the free
@@ -611,8 +612,19 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   loads nothing; otherwise `last_book` resumes as before. OK on it, or Play with
   nothing loaded, runs `resumeStream()`: "Loading.", `albumTracks` /
   `playlistTracks` (`resume_`; a new screen, sleep, Power off and `shutdown()` cancel it), then
-  `playRemote(..., source, position)` with the track found by id. The answer's error
-  is spoken with `errorText()`.
+  `playRemote(..., source, position)` with the track found by id (`playResumed()`).
+  The answer's error is spoken with `errorText()`.
+  **Resume from the cache (3.6):** `resumeStream()` first reads the list's manifest.
+  A download that is whole (every manifest track pinned and complete on disk, the
+  saved track among them) plays at once with `playResumed()`: nothing is asked of
+  the server and "Loading." is not said, because offline the question would wait for
+  the connect timeout (10 s). Otherwise the server is asked first (a partly cached
+  album, e.g. from the automatic cache, would lose its other tracks); on an error,
+  if any track of the list is on disk, those play (the saved track and position if it
+  is among them, else the first from its start) and nothing is spoken but the usual
+  "Now playing". With none on disk the error is spoken as in step 2.6. A whole
+  download is not compared with the server, so a list changed there is not seen until
+  it is played from a server list.
 - Up / Down in the player change the volume in memory; it is written on exit.
 - **Factory reset** clears both, but keeps the `server.*` keys, and restarts
   without saving the position first, so it does not come back.

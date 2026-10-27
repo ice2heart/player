@@ -198,6 +198,8 @@ private:
     TrackCache trackCache() const;        // of the server in the config
     std::vector<MenuItem> downloadedMenu();                               // Streaming > Downloaded
     std::vector<MenuItem> downloadedListMenu(const RemoteSource& source); // one downloaded album or playlist
+    static std::vector<RemoteTrack> completeTracks(const TrackCache& store, const RemoteSource& source, const CachedList& list);
+    bool hasDownloads() const; // some list has a track on disk: the error lists offer Downloaded
     void deleteDownload(const RemoteSource& source, const std::string& title);
     void checkServer(); // Server status
 
@@ -216,6 +218,7 @@ private:
     // ("Loading."), then opens the saved track at its place, as if chosen there.
     // Any new screen (or leaving Home), sleep and power off drop it; an error is said.
     void resumeStream();
+    void playResumed(const StreamPlace& place, const std::vector<RemoteTrack>& tracks);
     void cancelResume();
 
     // Playback. A local file opens at once. A remote track opens in the
