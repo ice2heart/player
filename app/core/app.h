@@ -133,14 +133,19 @@ private:
     void saveConfig();
     void saveOnExit(); // exit and sleep: the only times state.tsv is written
     void saveState();  // only if it changed since it was loaded or last written
+    void markPlayed(const std::string& itemId); // the album plays from Music: in memory until exit or sleep
     std::vector<MenuItem> homeMenu();
     std::vector<MenuItem> libraryMenu();
     std::vector<MenuItem> musicMenu();
     static std::string artistOf(const MergedAlbum& album);
     std::vector<MenuItem> artistsMenu();
-    std::vector<MenuItem> albumList(std::vector<MergedAlbum> albums);
+    std::vector<MenuItem> genresMenu();
+    std::vector<MenuItem> recentAlbums(std::int64_t (*when)(const MergedAlbum&), const std::string& empty);
+    std::vector<MenuItem> recentlyAddedMenu();
+    std::vector<MenuItem> recentlyPlayedMenu();
+    std::vector<MenuItem> albumList(std::vector<MergedAlbum> albums, bool byTitle = true); // else as given
     MenuItem albumEntry(const MergedAlbum& album);
-    std::vector<MenuItem> albumMenu(const Book& album, const std::string& info = {});
+    std::vector<MenuItem> albumMenu(const Book& album, const std::string& info = {}, const std::string& playedId = {});
     Book bookOf(const IndexItem& item) const;
     void startScan();
     void syncDownloads();   // the pinned albums of the cache as Cached items (docs/streaming.md 4.8)
@@ -195,11 +200,13 @@ private:
     void onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<MenuItem> items, bool more);
     void showStatus(std::uint64_t screenId); // Loading, the error, or why it is empty, after the loaded items
     void openAlbumList(const std::string& title, const std::string& listType, int pageSize, bool paged);
-    void openRemoteAlbum(const RemoteAlbum& album, const std::string& info = {}); // `info`: Album info, last
+    // `info`: Album info, last. `playedId`: the index item to mark as played when it plays (Music).
+    void openRemoteAlbum(const RemoteAlbum& album, const std::string& info = {}, const std::string& playedId = {});
     std::vector<MenuItem> albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist);
     std::vector<MenuItem> trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
                                      const std::string& playAll, const RemoteSource& source,
-                                     const std::string& artist, std::optional<MenuItem> second = std::nullopt);
+                                     const std::string& artist, std::optional<MenuItem> second = std::nullopt,
+                                     const std::string& playedId = {});
 
     // Downloads (docs/streaming.md, step 3.4). One album or playlist at a time, its
     // tracks one after the other, each into its list folder in the cache; the

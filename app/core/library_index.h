@@ -71,9 +71,18 @@ public:
     // server album stays merged when the server renames it.
     void replaceServer(const std::string& serverKey, const std::vector<IndexItem>& items, int64_t now);
 
+    // Sets the item's last-played time in memory only, if `when` is later than what it has
+    // (callers filter wall times that are not real). It is not "changed": save() does not write
+    // it, savePlayTimes() does. The one way a play time reaches the disk early is an item that
+    // changes for another reason (a scan, a sync) before the next exit: it is written whole.
+    // False if the item is unknown.
+    bool markPlayed(const std::string& id, int64_t when);
+
     // Writes the changed items and deletes the removed ones; nothing is called when
     // nothing changed. False if the store failed (the changes are kept for the next try).
     bool save();
+    // save(), and the play times set by markPlayed() with it: for exit and sleep.
+    bool savePlayTimes();
 
 private:
     void markChanged(const std::string& id);
@@ -83,6 +92,7 @@ private:
     std::map<std::string, IndexItem> items_;
     std::set<std::string> changed_;
     std::set<std::string> removed_;
+    std::set<std::string> played_; // marked played, not written yet
 
     // Lookup tables, rebuilt on demand after a change.
     mutable bool indexed_ = false;

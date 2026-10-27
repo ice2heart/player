@@ -374,6 +374,9 @@ Home
 │   ├── Albums A to Z → <albums>   (every merged entry, server-only ones too)
 │   │   <album on the device> → <tracks> · Album info   (OK plays from that track to the end; a loose track plays at once)
 │   │   <server-only album> → Loading, then Play album · Download album · <tracks> · Album info   (as in Streaming)
+│   ├── Genres → <genre> → <albums>   (tags and server genre, names merged without case; albums with no genre are left out)
+│   ├── Recently added → <albums>      (newest first, at most 50; "No new albums")
+│   ├── Recently played → <albums>     (last played first, at most 50; "Nothing played yet")
 │   └── Refresh library            (rescans the files and syncs the server catalogue, see section 8)
 ├── <server.name, default Server>  (Streaming: lists from the server, see below)
 │   ├── Recently added → <albums>  (one page of 500)
@@ -468,7 +471,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   title, artist, genre, year and MusicBrainz id; its tracks are not stored. An error at any
   step keeps the saved items and the old version and is silent at start-up. A server item
   also has `trackCount` (`songCount`) and `created` (`parseIsoTime()` of the server's text, 0 if
-  unknown; for Recently added, 4.10). **Music -> Refresh
+  unknown; used by Recently added). **Music -> Refresh
   library** (last item of Music, also under "Scanning" / "No music") says "Updating the
   library.", starts a scan and a sync unless the start-up ones still run (it joins them), and
   when both are done says "Library updated, N albums." (merged entries: an album that is local and on the server counts once) or the error
@@ -489,7 +492,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   the server item exists (or no server catalogue is known yet). A cached album plays as a local `Book`
   with its titles from the manifest. Album info is the last item of an album's list.
 - **The Music tree (4.9).** `musicMenu()` is Play all, Artists, Albums A to Z, Refresh library
-  (Genres, Recently added and Recently played come in 4.10); an empty index gives "Scanning" or
+  (Genres, Recently added and Recently played, below); an empty index gives "Scanning" or
   "No music" and Refresh. Every list is a `submenu()` whose builder runs `mergeAlbums()` again,
   so it is a local menu rebuilt when you come back to it, with no "Loading". `albumList()` sorts
   merged entries by title and `albumEntry()` makes one item: an album whose primary is local or
@@ -505,6 +508,25 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   all is the files of the entries whose primary is not a server item (a server item holds no
   tracks) and says "No music" when there are none. Closures keep copies, never pointers into
   the index.
+- **Genres, Recently added, Recently played (4.10).** `genresMenu()` files each merged entry under
+  every distinct genre of its items (`genresOf()`, keyed by `artistKey()`: case and spacing
+  folded; the spoken name is the first spelling met), so a local "Rock" that the server calls
+  "Alternative" is in both; entries with no genre are left out. A genre's list is `albumList()` of its entries.
+  `recentAlbums()` serves both recent lists. `recentlyAddedMenu()` sorts by `addedOf()` newest first: per item `firstSeen`, or `created`
+  for a server item, the earliest of an entry's items; `recentlyPlayedMenu()` by `playedOf()`, the
+  latest `lastPlayed` of the items; both ties by title, at most `kRecentAlbums` (50), times
+  below `kEarliestPlayTime` (`track_cache.h`, 2020-01-01) ignored, `albumList(..., false)`
+  keeps the order. An album that plays from Music calls `markPlayed(item id)` (the primary item:
+  `albumEntry()` passes its id to `albumMenu()` / `openRemoteAlbum()` / `trackItems()`), which
+  reads `clock_.wallTime()`, drops a time before the floor and calls `LibraryIndex::markPlayed()`.
+  That sets `lastPlayed` in memory and remembers the id, but not as changed, so `save()` (after a
+  scan, a sync, building Music) does not write it; `saveOnExit()` calls `savePlayTimes()`, which
+  adds those ids and saves (exit, sleep, power off, restart). An item that a scan or sync
+  rewrites for another reason takes its play time along. The time sits on one item: if that
+  item is removed and comes back under a new id (a moved folder, a download deleted and made
+  again) the album is not in Recently played any more. A `firstSeen` taken while the clock was
+  not set stays below the floor and the album has no added time (it is left out of Recently added). Play all, Streaming and Downloaded mark
+  nothing.
 - **From item to `Book`.** `App::bookOf()` makes the `Book` that plays: its files are
   the item's tracks in order, with no part titles (a local file is named by its file
   name, as before). A book's `path` is its folder or file, the part of its id after

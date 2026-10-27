@@ -427,3 +427,64 @@ TEST(LibraryIndex, ReplaceServerKeepsTheReferenceOfALocalOrDownloadedItemThatThe
     EXPECT_EQ(store.items["loc"].seenOn.size(), 1u);
     EXPECT_EQ(store.items["dl"].seenOn.size(), 1u) << "only the reference the server dropped is gone";
 }
+
+TEST(LibraryIndex, MarkPlayedIsKeptInMemoryAndSaveDoesNotWriteIt) {
+    FakeLibraryStore store;
+    store.items["a"] = album("a", "Alpha");
+    LibraryIndex index(store);
+    EXPECT_TRUE(index.markPlayed("a", kNow));
+    EXPECT_EQ(index.find("a")->lastPlayed, kNow);
+    EXPECT_TRUE(index.save());
+    EXPECT_EQ(store.saves, 0);
+    EXPECT_FALSE(index.markPlayed("nope", kNow));
+}
+
+TEST(LibraryIndex, SavePlayTimesWritesOnlyThePlayedItemsOnceAndAnEarlierTimeDoesNotLowerIt) {
+    FakeLibraryStore store;
+    store.items["a"] = album("a", "Alpha");
+    store.items["b"] = album("b", "Beta");
+    LibraryIndex index(store);
+    index.markPlayed("a", kNow);
+    index.markPlayed("a", kNow - 10);
+    EXPECT_EQ(index.find("a")->lastPlayed, kNow);
+    EXPECT_TRUE(index.savePlayTimes());
+    EXPECT_EQ(store.savedIds, std::vector<std::string>{"a"});
+    EXPECT_EQ(store.items.at("a").lastPlayed, kNow);
+    EXPECT_TRUE(index.savePlayTimes());
+    EXPECT_EQ(store.saves, 1) << "written once";
+}
+
+TEST(LibraryIndex, APlayTimeWrittenWithAnItemThatChangedIsNotWrittenAgain) {
+    FakeLibraryStore store;
+    store.items["a"] = album("a", "Alpha");
+    LibraryIndex index(store);
+    index.markPlayed("a", kNow);
+    index.upsert(album("a", "Renamed"), kNow); // changed for another reason: written whole
+    EXPECT_TRUE(index.save());
+    EXPECT_EQ(store.items.at("a").lastPlayed, kNow);
+    EXPECT_TRUE(index.savePlayTimes());
+    EXPECT_EQ(store.saves, 1);
+}
+
+TEST(LibraryIndex, AFailedPlayTimeSaveIsRetried) {
+    FakeLibraryStore store;
+    store.items["a"] = album("a", "Alpha");
+    LibraryIndex index(store);
+    index.markPlayed("a", kNow);
+    store.failSaves = true;
+    EXPECT_FALSE(index.savePlayTimes());
+    store.failSaves = false;
+    EXPECT_TRUE(index.savePlayTimes());
+    EXPECT_EQ(store.items.at("a").lastPlayed, kNow);
+}
+
+TEST(LibraryIndex, ARescanOfTheSameItemKeepsTheMarkedPlayTimeAndWritesNothing) {
+    FakeLibraryStore store;
+    store.items["a"] = album("a", "Alpha");
+    LibraryIndex index(store);
+    index.markPlayed("a", kNow);
+    index.replaceSource(IndexItem::Source::Local, {album("a", "Alpha")}, kNow);
+    EXPECT_TRUE(index.save());
+    EXPECT_EQ(store.saves, 0);
+    EXPECT_EQ(index.find("a")->lastPlayed, kNow);
+}

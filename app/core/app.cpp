@@ -40,6 +40,7 @@ constexpr const char* kLastBook = "last_book";
 // and the server key it belongs to. In state.tsv, never in config.yaml.
 constexpr const char* kCatalogueServer = "catalogue.server";
 constexpr const char* kCatalogueVersion = "catalogue.version";
+constexpr size_t kRecentAlbums = 50; // the most albums Recently added and Recently played list
 constexpr int kCataloguePage = 500;          // albums per request (the most getAlbumList2 gives)
 constexpr size_t kCatalogueLimit = 200000;   // a server that never stops paging is an error
 constexpr const char* kServerName = "server.name"; // the Streaming entry on Home
@@ -959,6 +960,7 @@ void App::saveOnExit() {
     rememberPosition();
     if (settingsChanged_ || volumeChanged_) saveConfig();
     saveState();
+    index_.savePlayTimes(); // the only time play times are written; false: the next exit tries again
     trimCache(true); // the manifests are written on exit too, not at every play (a second call at power off usually finds nothing to do)
 }
 
@@ -1145,6 +1147,9 @@ std::vector<MenuItem> App::musicMenu() {
     items.push_back(playAll);
     items.push_back(submenu("Artists", [this] { return artistsMenu(); }));
     items.push_back(submenu("Albums A to Z", [this] { return albumList(mergeAlbums(index_.items())); }));
+    items.push_back(submenu("Genres", [this] { return genresMenu(); }));
+    items.push_back(submenu("Recently added", [this] { return recentlyAddedMenu(); }));
+    items.push_back(submenu("Recently played", [this] { return recentlyPlayedMenu(); }));
     items.push_back(refresh);
     return items;
 }
@@ -1191,10 +1196,111 @@ std::vector<MenuItem> App::artistsMenu() {
     return items;
 }
 
-// The albums of `albums` by title, as entries of a list.
-std::vector<MenuItem> App::albumList(std::vector<MergedAlbum> albums) {
-    std::stable_sort(albums.begin(), albums.end(),
-                     [](const MergedAlbum& a, const MergedAlbum& b) { return naturalLess(a.primary->title, b.primary->title); });
+namespace {
+// The genres of an entry, one per distinct name (case and spacing folded): a local album tagged
+// "Rock" that the server files under "Alternative" is in both. Primary item first.
+std::vector<std::pair<std::string, std::string>> genresOf(const MergedAlbum& album) { // (key, spelling)
+    std::vector<std::pair<std::string, std::string>> genres;
+    for (const IndexItem* item : album.items) {
+        std::string key = artistKey(item->genre);
+        if (key.empty()) continue;
+        if (std::none_of(genres.begin(), genres.end(), [&](const auto& g) { return g.first == key; })) genres.emplace_back(key, item->genre);
+    }
+    return genres;
+}
+
+bool realTime(int64_t t) { return t >= kEarliestPlayTime; } // a clock that was never set is no time at all
+
+// When an entry was added: the earliest real time of its items, firstSeen for a device or
+// downloaded item and `created` for a server one (firstSeen when the server gave none): the
+// album has been in the library since the first of them. 0: no item has a real time.
+int64_t addedOf(const MergedAlbum& album) {
+    int64_t added = 0;
+    for (const IndexItem* item : album.items) {
+        int64_t t = item->source == IndexItem::Source::Server && realTime(item->created) ? item->created : item->firstSeen;
+        if (realTime(t) && (added == 0 || t < added)) added = t;
+    }
+    return added;
+}
+
+// When an entry was last played: the latest real time of its items. 0: never.
+int64_t playedOf(const MergedAlbum& album) {
+    int64_t played = 0;
+    for (const IndexItem* item : album.items)
+        if (realTime(item->lastPlayed)) played = std::max(played, item->lastPlayed);
+    return played;
+}
+} // namespace
+
+// Genres: the albums of both sources by genre, from tags and from the server. Names that differ
+// only in case or spacing are one genre, spoken as its first spelling (by item id); albums with
+// no genre are not listed. Sorted like artists.
+std::vector<MenuItem> App::genresMenu() {
+    struct Genre {
+        std::string name, key;
+        size_t albums = 0;
+    };
+    std::vector<Genre> genres;
+    std::map<std::string, size_t> byKey;
+    for (const MergedAlbum& m : mergeAlbums(index_.items())) {
+        for (const auto& [key, name] : genresOf(m)) {
+            auto [it, fresh] = byKey.emplace(key, genres.size());
+            if (fresh) genres.push_back({name, key, 0});
+            ++genres[it->second].albums;
+        }
+    }
+    std::stable_sort(genres.begin(), genres.end(), [](const Genre& a, const Genre& b) { return naturalLess(a.key, b.key); });
+    std::vector<MenuItem> items;
+    for (const Genre& g : genres) {
+        MenuItem item = submenu(g.name, [this, key = g.key] {
+            std::vector<MergedAlbum> theirs;
+            for (MergedAlbum& m : mergeAlbums(index_.items()))
+                for (const auto& g : genresOf(m))
+                    if (g.first == key) theirs.push_back(m);
+            return albumList(std::move(theirs));
+        });
+        item.value = [n = g.albums] { return countValue(n, "album"); };
+        items.push_back(item);
+    }
+    if (items.empty()) items.push_back(action("No genres", [this] { say("No album has a genre yet."); }));
+    return items;
+}
+
+// The albums with a time (`when`; 0: none), the greatest first, ties by title, at most kRecentAlbums;
+// `empty` is the one item of a list with none.
+std::vector<MenuItem> App::recentAlbums(int64_t (*when)(const MergedAlbum&), const std::string& empty) {
+    std::vector<std::pair<int64_t, MergedAlbum>> dated;
+    for (MergedAlbum& m : mergeAlbums(index_.items()))
+        if (int64_t t = when(m)) dated.emplace_back(t, std::move(m));
+    std::stable_sort(dated.begin(), dated.end(), [](const auto& a, const auto& b) {
+        if (a.first != b.first) return a.first > b.first;
+        return naturalLess(a.second.primary->title, b.second.primary->title);
+    });
+    std::vector<MergedAlbum> albums;
+    for (auto& d : dated) {
+        if (albums.size() == kRecentAlbums) break;
+        albums.push_back(std::move(d.second));
+    }
+    if (albums.empty()) return {action(empty, [this, empty] { say(empty + "."); })};
+    return albumList(std::move(albums), false);
+}
+
+std::vector<MenuItem> App::recentlyAddedMenu() { return recentAlbums(addedOf, "No new albums"); }
+
+// The albums played from Music, the last one first.
+std::vector<MenuItem> App::recentlyPlayedMenu() { return recentAlbums(playedOf, "Nothing played yet"); }
+
+// The play time is kept in the index in memory and written on exit and sleep (saveOnExit()).
+void App::markPlayed(const std::string& itemId) {
+    int64_t now = clock_.wallTime();
+    if (realTime(now)) index_.markPlayed(itemId, now);
+}
+
+// The albums of `albums` as entries of a list, by title unless `byTitle` is false.
+std::vector<MenuItem> App::albumList(std::vector<MergedAlbum> albums, bool byTitle) {
+    if (byTitle)
+        std::stable_sort(albums.begin(), albums.end(),
+                         [](const MergedAlbum& a, const MergedAlbum& b) { return naturalLess(a.primary->title, b.primary->title); });
     std::vector<MenuItem> items;
     for (const MergedAlbum& m : albums) items.push_back(albumEntry(m));
     // An artist's last album may have gone since the list above was built: never an empty list.
@@ -1214,27 +1320,32 @@ MenuItem App::albumEntry(const MergedAlbum& m) {
         album.id = ref.starts_with(prefix) ? ref.substr(prefix.size()) : std::string();
         album.name = item.title;
         album.artist = item.artist;
-        MenuItem entry = action(item.title, [this, album, info] { openRemoteAlbum(album, info); });
+        MenuItem entry = action(item.title, [this, album, info, id = item.id] { openRemoteAlbum(album, info, id); });
         if (int n = trackCountOf(item); n > 0) entry.value = [n] { return countValue(size_t(n), "track"); };
         return entry;
     }
     Book a = bookOf(item);
     if (a.files.size() == 1 && a.files.front() == a.path) { // a loose track, not a folder
-        return action(a.title, [this, a] {
-            if (playMusic(a, 0)) enterPlayer();
+        return action(a.title, [this, a, id = item.id] {
+            if (playMusic(a, 0)) {
+                markPlayed(id);
+                enterPlayer();
+            }
         });
     }
-    MenuItem entry = submenu(a.title, [this, a, info] { return albumMenu(a, info); });
+    MenuItem entry = submenu(a.title, [this, a, info, id = item.id] { return albumMenu(a, info, id); });
     entry.value = [n = a.files.size()] { return countValue(n, "track"); };
     return entry;
 }
 
 // The tracks of an album, then "Album info" (where it plays from), which only reports.
-std::vector<MenuItem> App::albumMenu(const Book& album, const std::string& info) {
+std::vector<MenuItem> App::albumMenu(const Book& album, const std::string& info, const std::string& playedId) {
     std::vector<MenuItem> items;
     for (size_t i = 0; i < album.files.size(); ++i) {
-        items.push_back(action(partTitle(album, i), [this, album, i] {
-            if (playMusic(album, i)) enterPlayer(); // the rest of the album follows
+        items.push_back(action(partTitle(album, i), [this, album, i, playedId] {
+            if (!playMusic(album, i)) return;
+            if (!playedId.empty()) markPlayed(playedId); // from Music; Downloaded and Streaming pass none
+            enterPlayer(); // the rest of the album follows
         }));
     }
     if (!info.empty()) items.push_back(action("Album info", [this, info] { say(info); }));
@@ -1426,14 +1537,15 @@ void App::openAlbumList(const std::string& title, const std::string& listType, i
                    paged ? pageSize : 0, "No albums", "The server has no music yet. Add music to the server, then come back.");
 }
 
-void App::openRemoteAlbum(const RemoteAlbum& album, const std::string& info) {
+void App::openRemoteAlbum(const RemoteAlbum& album, const std::string& info, const std::string& playedId) {
     openRemoteList(album.name,
                    fetchPages<RemoteTrack>(
                        [this, id = album.id](int, MusicServer::Done<RemoteTrack> done) {
                            return server_.albumTracks(id, std::move(done));
                        },
-                       [this, name = album.name, artist = album.artist, id = album.id, info](const std::vector<RemoteTrack>& tracks) {
-                           std::vector<MenuItem> items = trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id}, artist);
+                       [this, name = album.name, artist = album.artist, id = album.id, info, playedId](const std::vector<RemoteTrack>& tracks) {
+                           std::vector<MenuItem> items = trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id}, artist,
+                                                                    std::nullopt, playedId);
                            if (!items.empty() && !info.empty()) items.push_back(action("Album info", [this, info] { say(info); }));
                            return items;
                        }),
@@ -1456,11 +1568,15 @@ std::vector<MenuItem> App::albumItems(const std::vector<RemoteAlbum>& albums, bo
 // tracks: OK on one plays from it to the end, like Music.
 std::vector<MenuItem> App::trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
                                       const std::string& playAll, const RemoteSource& source,
-                                      const std::string& artist, std::optional<MenuItem> second) {
+                                      const std::string& artist, std::optional<MenuItem> second,
+                                      const std::string& playedId) {
     if (tracks.empty()) return {};
+    auto play = [this, title, artist, source, playedId](const std::shared_ptr<const std::vector<RemoteTrack>>& list, size_t from) {
+        if (playRemote(title, *list, from, source, 0, artist) && !playedId.empty()) markPlayed(playedId);
+    };
     auto list = std::make_shared<const std::vector<RemoteTrack>>(tracks); // one copy for all the items
     std::vector<MenuItem> items;
-    MenuItem all = action(playAll, [this, title, list, source, artist] { playRemote(title, *list, 0, source, 0, artist); });
+    MenuItem all = action(playAll, [play, list] { play(list, 0); });
     all.value = [n = tracks.size()] { return countValue(n, "track"); };
     items.push_back(all);
     if (second) {
@@ -1471,7 +1587,7 @@ std::vector<MenuItem> App::trackItems(const std::string& title, const std::vecto
     }
     for (size_t i = 0; i < tracks.size(); ++i) {
         std::string label = tracks[i].title.empty() ? "Track " + std::to_string(i + 1) : tracks[i].title;
-        items.push_back(action(label, [this, title, list, i, source, artist] { playRemote(title, *list, i, source, 0, artist); }));
+        items.push_back(action(label, [play, list, i] { play(list, i); }));
     }
     return items;
 }

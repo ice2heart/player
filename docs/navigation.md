@@ -220,9 +220,8 @@ these rules too ([streaming.md](streaming.md) has the plan).
 
 ## Music and Library (phase 4)
 
-Music is built (steps 4.9 and on) and Streaming is its own Home entry. Genres, Recently
-added and Recently played below are not built yet (4.10), nor are server books in Library
-(4.11). [streaming.md](streaming.md) phase 4 builds one library from files and server; the
+Music is built (steps 4.9 and 4.10) and Streaming is its own Home entry. Server books in
+Library are not built yet (4.11). [streaming.md](streaming.md) phase 4 builds one library from files and server; the
 tree in [architecture.md](architecture.md#current-menu-tree) is what the device does today.
 The rules below are the contract for phase 4.
 
@@ -254,9 +253,19 @@ Music
   server-only ones too.
 - **Play all** plays what is on the device (local and downloaded), never the
   whole server. With nothing on the device it says "No music".
+- **Genres** lists each genre once, local tags and the server's album genre together; names
+  that differ only in case or spacing are one genre ("Rock", "rock"). A genre's list holds
+  the albums of both sources; an album on both under two genres is in both. Albums with no genre are not listed, and with none at all
+  the list is one item, "No genres".
 - **Recently added** is newest first. **Recently played** is the albums you
   played, the last one first. Each says why it is empty ("No new albums", "Nothing
-  played yet").
+  played yet") and lists at most 50 albums. An album is added when it first entered the
+  library: the first-seen time of a device or downloaded album, `created` for a server
+  album, and for an album on both the earliest of them. An album plays when it starts from
+  Music (an album, a track or Play album; not Play all, Streaming or Downloaded); the time
+  is that of the last play and, for an album on both, the latest of its items. A time
+  before 2020-01-01 is a clock that was never set and counts as none. Play times are saved
+  on exit and sleep only.
 - **Album info** is the last item of an album's list, after the tracks. OK says
   where the album plays from ("On the device", "Downloaded" or "On the server"),
   then "Also on the server" for an entry that is on the device or downloaded and

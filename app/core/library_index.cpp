@@ -186,12 +186,29 @@ void LibraryIndex::replaceServer(const std::string& serverKey, const std::vector
         if (!alreadyChanged.count(id) && items_.at(id) == item) changed_.erase(id);
 }
 
+bool LibraryIndex::markPlayed(const std::string& id, int64_t when) {
+    auto it = items_.find(id);
+    if (it == items_.end()) return false;
+    if (when > it->second.lastPlayed) {
+        it->second.lastPlayed = when;
+        played_.insert(id);
+    }
+    return true;
+}
+
+bool LibraryIndex::savePlayTimes() {
+    for (const auto& id : played_)
+        if (items_.count(id)) changed_.insert(id);
+    return save(); // on failure the play times stay marked for the next try
+}
+
 bool LibraryIndex::save() {
     if (changed_.empty() && removed_.empty()) return true;
     std::vector<IndexItem> changed;
     for (const auto& id : changed_) changed.push_back(items_.at(id));
     std::vector<std::string> removed(removed_.begin(), removed_.end());
     if (!store_->save(changed, removed)) return false;
+    for (const auto& id : changed_) played_.erase(id); // written whole, play time and all
     changed_.clear();
     removed_.clear();
     return true;

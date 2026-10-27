@@ -807,8 +807,8 @@ TEST_F(AppTest, HomeFromThePlayerMenuReturnsToThePlayer) {
 TEST_F(AppTest, MusicMenuIsPlayAllArtistsAlbumsAToZAndRefresh) {
     start();
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Refresh library"}));
-    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 4");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Genres", "Recently added", "Recently played", "Refresh library"}));
+    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 7");
     open("Albums A to Z");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
     EXPECT_EQ(speech.last(), "Albums A to Z. Lullaby, 1 of 2");
@@ -995,8 +995,8 @@ TEST_F(AppTest, LibraryAndMusicListTheSavedIndexBeforeTheScanIsDelivered) {
     EXPECT_EQ(speech.last(), "Library. Old Book, 2 parts, 1 of 1");
     press(Button::Home);
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Refresh library"}));
-    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 4");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Genres", "Recently added", "Recently played", "Refresh library"}));
+    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 7");
     open("Albums A to Z");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Old Album"}));
     press(Button::Ok);
@@ -6716,7 +6716,7 @@ TEST_F(MusicTreeTest, PlayAllPlaysOnlyDeviceFilesNeverTheServer) {
     sync({album("s1", "Zeta On The Server")});
     const size_t asked = server.requests.size();
     open("Music");
-    EXPECT_EQ(speech.last(), "Music. Play all, 6 tracks, 1 of 4") << "Lullaby, Road Trip and the download: no server album";
+    EXPECT_EQ(speech.last(), "Music. Play all, 6 tracks, 1 of 7") << "Lullaby, Road Trip and the download: no server album";
     press(Button::Ok);
     std::vector<std::string> played{player.file};
     for (int i = 0; i < 5; ++i) {
@@ -6737,8 +6737,8 @@ TEST_F(MusicTreeTest, PlayAllWithOnlyServerAlbumsSaysNoMusic) {
     start();
     sync({album("s1", "Weather")});
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Refresh library"}));
-    EXPECT_EQ(speech.last(), "Music. Play all, 1 of 4");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Genres", "Recently added", "Recently played", "Refresh library"}));
+    EXPECT_EQ(speech.last(), "Music. Play all, 1 of 7");
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "No music");
     EXPECT_EQ(app->mode(), App::Mode::Menu);
@@ -6767,7 +6767,7 @@ TEST_F(MusicTreeTest, AListYouComeBackToShowsWhatChangedMeanwhile) {
     EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
     press(Button::Home);
     sync({album("s1", "Weather")});
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Refresh library"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Genres", "Recently added", "Recently played", "Refresh library"}));
     open("Albums A to Z");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip", "Weather"}));
     EXPECT_EQ(level().items[2].value(), "10 tracks");
@@ -6818,4 +6818,237 @@ TEST_F(MusicTreeTest, PlayAllBeforeTheScanFindsFilesSaysTheScanIsRunning) {
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "Looking for music. Try again in a moment.");
     EXPECT_FALSE(player.isOpen());
+}
+
+// ---------------------------------------------------------------- genres, recently added and played
+
+class RecentMusicTest : public MusicTreeTest {
+protected:
+    static constexpr int64_t kStart = 1'700'000'000; // FakeClock's wall time: when a scan first sees an album
+    static RemoteAlbum made(const std::string& id, const std::string& name, const std::string& created, const std::string& genre = "") {
+        RemoteAlbum a = album(id, name);
+        a.created = created;
+        a.genre = genre;
+        return a;
+    }
+    static RemoteAlbum roadTripMade() {
+        RemoteAlbum a = roadTripOnServer();
+        a.created = "2020-06-01T00:00:00Z";
+        return a;
+    }
+    void tagGenre(const std::string& genre) {
+        for (const char* f : {"01 - Sunrise.mp3", "02 - Highway.mp3"}) {
+            TrackTags t = tags.tags.at(roadTrip() / f);
+            t.genre = genre;
+            tags.tags[roadTrip() / f] = t;
+        }
+    }
+    // Music > `list`.
+    void openMusicList(const std::string& list) {
+        open("Music");
+        open(list);
+    }
+    // Plays Music > Albums A to Z > `name` (a loose track, or its first track), then goes Home.
+    void playFromMusic(const std::string& name) {
+        openAlbum(name); // a loose track plays at once
+        if (app->mode() != App::Mode::Player) press(Button::Ok); // an album opened: its first track
+        ASSERT_EQ(app->mode(), App::Mode::Player);
+        goHome();
+    }
+    void goHome() {
+        for (int i = 0; i < 6 && !(app->mode() == App::Mode::Menu && app->screens().size() == 1); ++i) hold(Button::Home);
+        ASSERT_EQ(app->screens().size(), 1u);
+    }
+};
+
+TEST_F(RecentMusicTest, AGenreListsTheAlbumsOfBothSourcesAndNamesThatDifferInCaseAreOne) {
+    tagRoadTrip();
+    tagGenre("rock");
+    start();
+    sync({made("s1", "Weather", "2022-01-01T00:00:00Z", "Rock"), made("s2", "Blues Night", "2022-01-01T00:00:00Z", " ROCK "),
+          made("s3", "Smooth", "2022-01-01T00:00:00Z", "Jazz"), made("s4", "No genre", "2022-01-01T00:00:00Z")});
+    openMusicList("Genres");
+    ASSERT_EQ(labels().size(), 2u) << "Rock, rock and ROCK are one genre; albums with no genre have none";
+    EXPECT_EQ(labels().front(), "Jazz");
+    EXPECT_EQ(speech.last(), "Genres. Jazz, 1 album, 1 of 2");
+    press(Button::Down);
+    EXPECT_NE(speech.last().find(", 3 albums, 2 of 2"), std::string::npos) << speech.last();
+    press(Button::Ok);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Blues Night", "Road Trip", "Weather"})) << "the local album and two server albums";
+    press(Button::Down); // Road Trip: on the device, it opens at once
+    press(Button::Ok);
+    EXPECT_EQ(labels().front(), "Sunrise");
+    EXPECT_EQ(countOf(Kind::AlbumTracks), 0u);
+}
+
+TEST_F(RecentMusicTest, AnAlbumThatTheServerFilesUnderAnotherGenreIsInBoth) {
+    tagRoadTrip();
+    tagGenre("Rock");
+    start();
+    RemoteAlbum a = roadTripOnServer();
+    a.genre = "Alternative";
+    sync({a});
+    openMusicList("Genres");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alternative", "Rock"}));
+    open("Alternative");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Road Trip"}));
+}
+
+TEST_F(RecentMusicTest, ANoGenreLibraryHasAGenresItemThatSaysSo) {
+    start();
+    openMusicList("Genres");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No genres"}));
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "No album has a genre yet.");
+}
+
+TEST_F(RecentMusicTest, RecentlyAddedIsNewestFirstAndAMergedAlbumIsAsOldAsItsEarliestItem) {
+    tagRoadTrip();
+    start(); // the scan sees Lullaby and Road Trip at kStart
+    sync({made("new", "Fresh", "2026-10-20T18:01:44Z"), made("mid", "Zeta", "2022-01-01T00:00:00Z"),
+          roadTripMade(), made("none", "Undated", "")});
+    openMusicList("Recently added");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Fresh", "Lullaby", "Undated", "Zeta", "Road Trip"}))
+        << "Undated has no `created`: its first-seen time (the sync, with Lullaby) is used";
+    EXPECT_EQ(level().title, "Recently added");
+}
+
+TEST_F(RecentMusicTest, RecentlyAddedPutsANewLocalAlbumBeforeAnOlderServerAlbumAndAfterANewerOne) {
+    start();
+    clock.setWallTime(kStart + 86400 * 400); // a year later the user copies an album
+    touch(music / "Newer" / "1.mp3");
+    press(Button::Home);
+    open("Music");
+    open("Refresh library");
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v1");
+    answerAlbums({made("s1", "Server old", "2020-01-02T00:00:00Z"), made("s2", "Server newest", "2030-01-01T00:00:00Z")});
+    press(Button::Home);
+    openMusicList("Recently added");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server newest", "Newer", "Lullaby", "Road Trip", "Server old"}))
+        << "Newer: " << (kStart + 86400 * 400);
+}
+
+TEST_F(RecentMusicTest, RecentlyAddedListsAtMostFiftyAlbums) {
+    start();
+    std::vector<RemoteAlbum> many;
+    for (int i = 0; i < 60; ++i) many.push_back(made("m" + std::to_string(i), "Album " + std::to_string(i), "2024-01-01T00:00:00Z"));
+    sync(many);
+    openMusicList("Recently added");
+    EXPECT_EQ(labels().size(), 50u);
+}
+
+TEST_F(RecentMusicTest, AnAlbumPlayedFromMusicIsFirstInRecentlyPlayedAfterARestart) {
+    tagRoadTrip();
+    start();
+    clock.setWallTime(kStart + 100);
+    ASSERT_NO_FATAL_FAILURE(playFromMusic("Lullaby"));
+    clock.setWallTime(kStart + 200);
+    ASSERT_NO_FATAL_FAILURE(playFromMusic("Road Trip"));
+    app->shutdown();
+    start(); // a new App on the same store
+    openMusicList("Recently played");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Road Trip", "Lullaby"})) << "not the order of titles or of first sight";
+    EXPECT_EQ(level().title, "Recently played");
+    press(Button::Ok); // the same entries as Albums A to Z
+    EXPECT_EQ(labels().front(), "Sunrise");
+}
+
+TEST_F(RecentMusicTest, PlayingWritesNothingToDiskUntilExitOrSleep) {
+    start();
+    const int saves = indexStore.saves;
+    clock.setWallTime(kStart + 100);
+    ASSERT_NO_FATAL_FAILURE(playFromMusic("Lullaby"));
+    openMusicList("Recently played"); // building Music saves what changed, which is nothing
+    press(Button::Home);
+    idle(60s);
+    EXPECT_EQ(indexStore.saves, saves) << "nothing written by playing";
+    for (const auto& [key, item] : indexStore.items) EXPECT_EQ(item.lastPlayed, 0) << key;
+    press(Button::Power); // sleep
+    EXPECT_GT(indexStore.saves, saves);
+    std::vector<std::string> played;
+    for (const auto& [key, item] : indexStore.items)
+        if (item.lastPlayed != 0) played.push_back(key);
+    ASSERT_EQ(played.size(), 1u);
+    EXPECT_EQ(indexStore.items.at(played.front()).lastPlayed, kStart + 100);
+    EXPECT_EQ(indexStore.items.at(played.front()).title, "Lullaby");
+    EXPECT_EQ(indexStore.savedIds.back(), played.front()) << "only the played album is written";
+    EXPECT_EQ(std::count(indexStore.savedIds.begin(), indexStore.savedIds.end(), played.front()), 2) << "the scan, then the play time";
+}
+
+TEST_F(RecentMusicTest, ARescanAfterPlayingWritesNothingAndTheTimeSurvives) {
+    start();
+    clock.setWallTime(kStart + 100);
+    ASSERT_NO_FATAL_FAILURE(playFromMusic("Lullaby"));
+    const int saves = indexStore.saves;
+    open("Music");
+    open("Refresh library");
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    EXPECT_EQ(indexStore.saves, saves) << "a scan that finds the same files does not flush play times";
+    ASSERT_NO_FATAL_FAILURE(goHome());
+    openMusicList("Recently played");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby"}));
+}
+
+TEST_F(RecentMusicTest, ExitWritesThePlayTimeOnceAndASecondExitWritesNothing) {
+    start();
+    ASSERT_NO_FATAL_FAILURE(playFromMusic("Road Trip"));
+    app->shutdown();
+    const int saves = indexStore.saves;
+    EXPECT_GT(saves, 0);
+    app->shutdown();
+    EXPECT_EQ(indexStore.saves, saves);
+}
+
+TEST_F(RecentMusicTest, AServerAlbumPlayedFromMusicIsRecentlyPlayedAndAMergedEntryUsesTheLatestOfItsItems) {
+    tagRoadTrip();
+    seedServerAlbum("rt", "Road Trip");
+    indexStore.items.at(ref("rt")).lastPlayed = kStart + 500; // played from the server before
+    start();
+    sync({roadTripOnServer(), album("s1", "Weather")});
+    clock.setWallTime(kStart + 300);
+    ASSERT_NO_FATAL_FAILURE(playFromMusic("Lullaby"));
+    clock.setWallTime(kStart + 100);
+    ASSERT_NO_FATAL_FAILURE(playFromMusic("Road Trip")); // the device item: 100, the server item: 500
+    openAlbum("Weather");
+    ASSERT_NO_FATAL_FAILURE(answerTracks(weather()));
+    clock.setWallTime(kStart + 400);
+    press(Button::Ok); // Play album
+    press(Button::Home);
+    while (app->screens().size() > 1) hold(Button::Home);
+    openMusicList("Recently played");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Road Trip", "Weather", "Lullaby"}));
+}
+
+TEST_F(RecentMusicTest, AWallTimeBeforeTheFloorIsNotAPlayTimeNorAnAddedTime) {
+    clock.setWallTime(1000); // a clock that was never set
+    start();
+    ASSERT_NO_FATAL_FAILURE(playFromMusic("Lullaby"));
+    app->shutdown();
+    for (const auto& [key, item] : indexStore.items) EXPECT_EQ(item.lastPlayed, 0) << key;
+    start();
+    openMusicList("Recently played");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Nothing played yet"}));
+    ASSERT_NO_FATAL_FAILURE(goHome());
+    openMusicList("Recently added");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No new albums"})) << "first seen at 1000: no time at all";
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "No new albums.");
+}
+
+TEST_F(RecentMusicTest, ASavedPlayTimeBeforeTheFloorIsIgnoredWhenListing) {
+    start();
+    for (auto& [key, item] : indexStore.items) item.lastPlayed = 5;
+    start();
+    openMusicList("Recently played");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Nothing played yet"}));
+}
+
+TEST_F(RecentMusicTest, EmptyListsSayWhy) {
+    start();
+    openMusicList("Recently played");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Nothing played yet"}));
+    EXPECT_EQ(speech.last(), "Recently played. Nothing played yet, 1 of 1");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Nothing played yet.");
 }
