@@ -106,23 +106,29 @@ bool pathLess(const fs::path& a, const fs::path& b) {
                                         });
 }
 
+// The cache folder is not a book.
+bool isSkipped(const fs::path& dir, const fs::path& skip) {
+    std::error_code ec;
+    return fs::equivalent(dir, skip, ec); // false (with `ec` set) when `skip` is empty or missing
+}
+
 // Adds the audio files under dir, skipping dot entries and anything that cannot be read.
 // Never throws: a folder that fails to list keeps what was read before the error.
-void collectAudio(const fs::path& dir, std::vector<fs::path>& out) {
+void collectAudio(const fs::path& dir, const fs::path& skip, std::vector<fs::path>& out) {
     std::error_code ec;
     for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
         const auto& entry = *it;
         if (isHidden(entry.path())) continue;
         std::error_code entryEc;
-        if (entry.is_directory(entryEc) && !entry.is_symlink(entryEc))
-            collectAudio(entry.path(), out);
-        else if (entry.is_regular_file(entryEc) && isAudio(entry.path()))
+        if (entry.is_directory(entryEc) && !entry.is_symlink(entryEc)) {
+            if (!isSkipped(entry.path(), skip)) collectAudio(entry.path(), skip, out);
+        } else if (entry.is_regular_file(entryEc) && isAudio(entry.path()))
             out.push_back(entry.path());
     }
 }
 } // namespace
 
-std::vector<Book> scanLibrary(const fs::path& root) {
+std::vector<Book> scanLibrary(const fs::path& root, const fs::path& skip) {
     std::vector<Book> books;
     std::error_code ec;
     for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
@@ -130,10 +136,11 @@ std::vector<Book> scanLibrary(const fs::path& root) {
         if (isHidden(entry.path())) continue;
         std::error_code entryEc;
         if (entry.is_directory(entryEc)) {
+            if (isSkipped(entry.path(), skip)) continue;
             Book book;
             book.title = entry.path().filename().string();
             book.path = entry.path();
-            collectAudio(entry.path(), book.files);
+            collectAudio(entry.path(), skip, book.files);
             std::sort(book.files.begin(), book.files.end(), pathLess);
             if (!book.files.empty()) books.push_back(std::move(book));
         } else if (entry.is_regular_file(entryEc) && isAudio(entry.path())) {

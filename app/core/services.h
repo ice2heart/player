@@ -140,6 +140,8 @@ struct RemoteTrack {
     std::string id, title, artist, album;
     double duration = 0; // seconds
     int track = 0;       // number on the album, 0 if unknown
+    std::string suffix{}; // file type of the original, e.g. "flac"; empty if unknown
+    long long size = 0;   // bytes of the original, 0 if unknown
 };
 struct RemoteAlbum {
     std::string id, name, artist;

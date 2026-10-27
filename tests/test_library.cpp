@@ -138,3 +138,28 @@ TEST_F(LibraryTest, AccentedLatinSortsWithItsBaseLetter) {
     EXPECT_EQ(titles(scanLibrary(root)),
               (std::vector<std::string>{"apple", "Ärger", armel, "Arzt", "Banane", "école", "Zebra"}));
 }
+
+TEST_F(LibraryTest, CacheFolderInsideTheLibraryIsSkipped) {
+    touch(root / "Book" / "01.mp3");
+    touch(root / "cache" / "server-1234" / "al1" / "01.flac");
+    touch(root / "Book" / "nested" / "cache" / "02.mp3"); // another folder called cache is a book's own
+    auto books = scanLibrary(root, root / "cache");
+    ASSERT_EQ(books.size(), 1u);
+    EXPECT_EQ(books[0].title, "Book");
+    EXPECT_EQ(books[0].files.size(), 2u);
+    // The same path spelled another way is the same folder.
+    books = scanLibrary(root, root / "Book" / ".." / "cache");
+    ASSERT_EQ(books.size(), 1u);
+    // A cache folder deeper in a book is left out of that book.
+    touch(root / "Book" / "dl" / "03.mp3");
+    books = scanLibrary(root, root / "Book" / "dl");
+    ASSERT_EQ(books.size(), 2u);
+    EXPECT_EQ(books[0].files.size(), 2u);
+    // Without a cache folder everything is a book, as before.
+    EXPECT_EQ(scanLibrary(root).size(), 2u);
+}
+
+TEST_F(LibraryTest, CacheFolderThatDoesNotExistSkipsNothing) {
+    touch(root / "Book" / "01.mp3");
+    EXPECT_EQ(scanLibrary(root, root / "cache").size(), 1u);
+}

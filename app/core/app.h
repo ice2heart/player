@@ -38,10 +38,12 @@ public:
     // `config` holds what the user sets (config.yaml), `state` the positions and
     // the book to resume (state.tsv). State is written only on exit and on sleep.
     // `server` gives the stream URLs of remote tracks; a front end without one
-    // passes a server that is not configured.
+    // passes a server that is not configured. `cacheRoot` is the folder of
+    // downloaded tracks (empty: none); it is left out of Library and Music
+    // when it lies inside them.
     App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
         Settings& config, Settings& state, Clock& clock, std::filesystem::path libraryRoot,
-        std::filesystem::path musicRoot);
+        std::filesystem::path musicRoot, std::filesystem::path cacheRoot = {});
 
     void start();
     void keyDown(Button button);
@@ -253,6 +255,7 @@ private:
     Clock& clock_;
     std::filesystem::path libraryRoot_;
     std::filesystem::path musicRoot_;
+    std::filesystem::path cacheRoot_; // downloaded tracks; never scanned as library or music
     GestureDetector gestures_;
 
     std::vector<Screen> screens_;

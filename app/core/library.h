@@ -29,6 +29,8 @@ struct Book {
     std::optional<RemoteSource> source; // remote: where the list came from; none: it is not resumed
 };
 
-std::vector<Book> scanLibrary(const std::filesystem::path& root);
+// The books under `root`. A folder `skip` (the cache of downloaded tracks),
+// wherever it lies below `root`, is left out.
+std::vector<Book> scanLibrary(const std::filesystem::path& root, const std::filesystem::path& skip = {});
 
 } // namespace oap

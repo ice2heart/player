@@ -72,6 +72,7 @@ void usage() {
         "  --config FILE        settings and server (default ~/.config/oap/config.yaml)\n"
         "  --state FILE         positions and the book to resume (default state.tsv next to the config)\n"
         "  --music DIR          music folder (default ./music)\n"
+        "  --cache DIR          downloaded tracks (default cache/ next to the state file)\n"
         "  --audio NAME         %s (default auto); alsa:DEVICE picks an ALSA PCM\n"
         "  --input LIST         comma-separated: evdev, terminal, none\n"
         "                       (default: " OAP_HEADLESS_TTY_INPUT " if stdin is a terminal, else evdev)\n"
@@ -94,7 +95,7 @@ int main(int argc, char** argv) {
     std::filesystem::path library = "library";
     std::filesystem::path music = "music";
     std::filesystem::path config = defaultConfig();
-    std::filesystem::path state;
+    std::filesystem::path state, cache;
     std::string script, audio = "auto", inputs, evdevDevice;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -103,6 +104,7 @@ int main(int argc, char** argv) {
         else if (arg == "--config" && hasValue) config = argv[++i];
         else if (arg == "--state" && hasValue) state = argv[++i];
         else if (arg == "--music" && hasValue) music = argv[++i];
+        else if (arg == "--cache" && hasValue) cache = argv[++i];
         else if (arg == "--audio" && hasValue) audio = argv[++i];
         else if (arg == "--input" && hasValue) inputs = argv[++i];
         else if (arg == "--evdev-device" && hasValue) evdevDevice = argv[++i];
@@ -133,6 +135,8 @@ int main(int argc, char** argv) {
     library = std::filesystem::absolute(library).lexically_normal();
     music = std::filesystem::absolute(music).lexically_normal();
     if (state.empty()) state = defaultStateFile(config);
+    if (cache.empty()) cache = state.parent_path() / "cache";
+    cache = std::filesystem::absolute(cache).lexically_normal();
 
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
@@ -148,7 +152,7 @@ int main(int argc, char** argv) {
     SystemClock clock;
     SettingsFiles settings(config, state);
     std::unique_ptr<MusicServer> server = makeMusicServer(settings.config());
-    App app(tts, player, earcons, mixer, *server, settings.config(), settings.state(), clock, library, music);
+    App app(tts, player, earcons, mixer, *server, settings.config(), settings.state(), clock, library, music, cache);
 
     EvdevInput evdev;
     if (useEvdev && evdev.open(evdevDevice) == 0)
@@ -159,8 +163,8 @@ int main(int argc, char** argv) {
         printTerminalKeys();
     }
 
-    std::printf("Library: %s\nMusic: %s\nConfig: %s\nState: %s\n\n", library.c_str(), music.c_str(), config.c_str(),
-                state.c_str());
+    std::printf("Library: %s\nMusic: %s\nConfig: %s\nState: %s\nCache: %s\n\n", library.c_str(), music.c_str(),
+                config.c_str(), state.c_str(), cache.c_str());
     std::fflush(stdout);
     app.start();
 

@@ -65,7 +65,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
-| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `MusicServer` with its `RemoteTrack` / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&`: the Streaming menu asks it for lists, `tick()` calls its `poll()`, and opening a remote track asks it for `stream(id, maxBitRate)`: the URL, and for a transcode a `Transcoded` (offset URL, and the length `App` fills in from the listing) that `MediaPlayer::open()` takes. |
+| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `MusicServer` with its `RemoteTrack` (with the original's `suffix` and `size`) / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&`: the Streaming menu asks it for lists, `tick()` calls its `poll()`, and opening a remote track asks it for `stream(id, maxBitRate)`: the URL, and for a transcode a `Transcoded` (offset URL, and the length `App` fills in from the listing) that `MediaPlayer::open()` takes. |
 | `app/net/http_client.{h,cpp}` | `Http`: asynchronous GET whose handler runs on the client's thread (tests use a fake). `HttpClient`: libcurl multi on one worker thread; 10 s connect timeout, 10 s without data or 60 s in all ends a request, answers over 16 MB fail; cancellable; the destructor aborts transfers and never waits on a socket. |
 | `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `stream()`: the original file with no `format` / `maxBitRate`, or an MP3 transcode (`format=mp3&maxBitRate=<kbps>`) whose offset URL adds `&timeOffset=` once `getOpenSubsonicExtensions` (asked with the first transcode) lists `transcodeOffset`. `scrobble()` sends `scrobble?id=&submission=` and only logs a failure to stderr (by its kind, never the URL). `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
 | `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists, getPlaylist and getOpenSubsonicExtensions answers, and `parseStatus()` for an answer with only a status (scrobble) (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
@@ -75,7 +75,8 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
-| `app/core/library.{h,cpp}` | `Book` (also a remote list: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set), `scanLibrary()`. |
+| `app/core/library.{h,cpp}` | `Book` (also a remote list: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set), `scanLibrary(root, skip)`, which leaves out the cache folder `skip`. |
+| `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<list id>/`, where a list is an album or a playlist. Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 1`, then per track tab-separated: id, file, title, duration, server `changed` time, pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), written to `manifest.tsv.tmp` and renamed (no `fsync`: core has no OS calls). A missing or corrupt manifest reads as empty. `find(trackId)` returns the complete file of a track from any list, never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root and leaves it out of Library and Music; it does not play from it yet. |
 | `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `serverConfigured()`. |
 | `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys) and `TsvStore` (`state.tsv`). |
 | `app/config/atomic_file.{h,cpp}` | `writeFileAtomically()`: temp file with mode 0600, `fsync`, `rename`. |
@@ -584,7 +585,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 - **Game controller:** SDL game controllers (DualSense, Xbox, ...) go through `GamepadMapper`,
   the same map as `oap-headless`: D-pad = arrows, Square = Play/Pause, Cross = OK,
   Circle = Home, L1 + Left/Right = deep press. Pads can be plugged in while it runs.
-- **Arguments:** `oap-sim [--config FILE] [--state FILE] [--music DIR] [--audio NAME] [--script STEPS] [LIBRARY_DIR]`.
+- **Arguments:** `oap-sim [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--audio NAME] [--script STEPS] [LIBRARY_DIR]`.
   `--audio` is `auto` (default), `coreaudio`, `pulse`, `alsa[:DEVICE]` or `null`, among those built in.
   `tools/make_sample_library.sh [LIBRARY_DIR] [MUSIC_DIR]` makes a spoken sample library and some tone "music".
 - **Script mode:** `--script "ok down ok wait:3000 right:long play:long quit"`
@@ -596,9 +597,9 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 
 ## 11. Headless front end (`app/headless/`) and the Linux device
 
-- **Arguments:** `oap-headless [--config FILE] [--state FILE] [--music DIR] [--audio NAME] [--input LIST]
+- **Arguments:** `oap-headless [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--audio NAME] [--input LIST]
   [--evdev-device PATH] [--script STEPS] [LIBRARY_DIR]`. The config defaults to
-  `~/.config/oap/config.yaml`, the state to `state.tsv` next to it (section 9).
+  `~/.config/oap/config.yaml`, the state to `state.tsv` next to it (section 9), the cache of downloaded tracks to `cache/` next to the state.
 - **Inputs** (`--input evdev,terminal,none`; default `evdev` without a tty; on a tty the CMake
   setting `OAP_HEADLESS_TTY_INPUT`: `terminal`, or `evdev,terminal` in the Pi toolchains, since
   a desktop would see each key twice):
@@ -625,7 +626,7 @@ Still to do for the device:
 | Input | Key map from `hal.toml` instead of the built-in table; MCU serial events. |
 | Power | Replace simulated sleep with real suspend (`/sys/power/state` or a request to the MCU). |
 | Status | Battery from the fuel gauge (sysfs `power_supply`), Wi-Fi from iwd. See the HAL plan in [hal.md](hal.md). |
-| Paths | Library under `/data/library`, `config.yaml` and `state.tsv` under `/data/config` (`--config /data/config/config.yaml`). |
+| Paths | Library under `/data/library`, `config.yaml` and `state.tsv` under `/data/config` (`--config /data/config/config.yaml`), the download cache in `/data/library/cache` (`--cache /data/library/cache`; without `--cache` it is `cache/` next to `state.tsv`). `scanLibrary()` skips it. |
 
 Nothing in `app/core/` uses macOS APIs.
 

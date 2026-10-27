@@ -160,6 +160,21 @@ TEST(SubsonicJson, AlbumTracks) {
     EXPECT_DOUBLE_EQ(list.items[1].duration, 214.5);
 }
 
+TEST(SubsonicJson, TrackSuffixAndSize) {
+    auto list = parseAlbum(subsonicFixture("album.json"));
+    ASSERT_EQ(list.error, Error::None);
+    ASSERT_EQ(list.items.size(), 2u);
+    EXPECT_EQ(list.items[0].suffix, "flac");
+    EXPECT_EQ(list.items[0].size, 7020000);
+    EXPECT_EQ(list.items[1].suffix, "flac");
+    EXPECT_EQ(list.items[1].size, 0); // the server did not say
+    auto playlist = parsePlaylist(subsonicFixture("playlist.json"));
+    ASSERT_EQ(playlist.error, Error::None);
+    ASSERT_FALSE(playlist.items.empty());
+    EXPECT_EQ(playlist.items[0].suffix, "");
+    EXPECT_EQ(playlist.items[0].size, 0);
+}
+
 TEST(SubsonicJson, Playlists) {
     auto list = parsePlaylists(subsonicFixture("playlists.json"));
     ASSERT_EQ(list.error, Error::None);

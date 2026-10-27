@@ -114,6 +114,8 @@ RemoteTrack track(const YAML::Node& node) {
     track.album = text(node, "album");
     track.duration = number(node, "duration");
     track.track = integer(node, "track");
+    track.suffix = text(node, "suffix");
+    track.size = static_cast<long long>(number(node, "size"));
     return track;
 }
 

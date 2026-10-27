@@ -46,6 +46,7 @@ add_library(oapcore STATIC
     app/core/mixer.cpp
     app/core/settings.cpp
     app/core/text.cpp
+    app/core/track_cache.cpp
 )
 target_include_directories(oapcore PUBLIC app)
 target_compile_options(oapcore PRIVATE -Wall -Wextra)
@@ -241,6 +242,7 @@ if(OAP_BUILD_TESTS)
         tests/test_settings.cpp
         tests/test_terminal_keys.cpp
         tests/test_text.cpp
+        tests/test_track_cache.cpp
     )
     target_link_libraries(oap-tests PRIVATE oapcore oapconfig oapmusicserver oapaudio GTest::gtest_main)
     if(OAP_BUILD_NET)

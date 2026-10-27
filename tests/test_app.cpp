@@ -50,7 +50,7 @@ protected:
     }
 
     void start() {
-        app = std::make_unique<App>(speech, player, sounds, volume, server, settings, state, clock, root, music);
+        app = std::make_unique<App>(speech, player, sounds, volume, server, settings, state, clock, root, music, cache);
         app->start();
     }
 
@@ -107,6 +107,7 @@ protected:
     Settings settings{&configFile};
     Settings state{&stateFile};
     fs::path base;
+    fs::path cache; // empty: no cache folder
     fs::path root;
     fs::path music;
     std::unique_ptr<App> app;
@@ -141,6 +142,15 @@ TEST_F(AppTest, ResumesLastBookAtSavedPosition) {
     EXPECT_DOUBLE_EQ(player.pos, 42.5);
     EXPECT_FALSE(player.playing());
     EXPECT_EQ(speech.last(), "Alpha, paused. Press play to continue.");
+}
+
+TEST_F(AppTest, DoesNotResumeABookInsideTheCacheFolder) {
+    cache = root / "cache";
+    touch(cache / "server-1" / "al1" / "01.flac");
+    state.setString("last_book", cache.string());
+    start();
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(player.file, "");
 }
 
 TEST_F(AppTest, StartsAtHomeWhenTheLastBookCannotBeOpened) {
@@ -768,6 +778,21 @@ TEST_F(AppTest, EmptyMusicFolderExplainsWhereMusicGoes) {
     open("Music");
     open("No music");
     EXPECT_EQ(speech.last(), "Copy music into " + music.string() + ". One folder per album.");
+}
+
+TEST_F(AppTest, CacheFolderInsideLibraryOrMusicIsNotListed) {
+    cache = root / "cache";
+    touch(cache / "server-1" / "al1" / "01.flac");
+    start();
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta"}));
+    press(Button::Home);
+    app.reset();
+    cache = music / "downloads";
+    touch(cache / "server-1" / "al1" / "01.flac");
+    start();
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip"}));
 }
 
 TEST_F(AppTest, ChoosingATrackPlaysTheRestOfTheAlbum) {

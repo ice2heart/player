@@ -208,7 +208,7 @@ Hold a control for a long press. To remap, edit `defaultGamepadLayout()` in
 ### Headless
 
 ```sh
-oap-headless [--config FILE] [--state FILE] [--music DIR] [--audio NAME] [--input LIST]
+oap-headless [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--audio NAME] [--input LIST]
              [--evdev-device PATH] [--script STEPS] [LIBRARY_DIR]
 ```
 
