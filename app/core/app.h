@@ -22,6 +22,14 @@
 
 namespace oap {
 
+// The queue entries the music player has skipped in a row, said once when it reaches one that plays.
+struct SkippedRun {
+    size_t count = 0;
+    std::optional<size_t> first; // the first one skipped
+    std::string firstTitle;
+    bool serverDown = false; // some were skipped because their server is marked down
+};
+
 // The device's "brain": turns button gestures into navigation, playback and speech.
 // Platform independent and free of audio code: everything it talks to is an
 // interface from services.h, so tests can drive it with fakes. The simulator and
@@ -291,7 +299,11 @@ private:
     // tick() finishes it. `opened` runs once the file is open (and playing, with
     // `autoplay`); `undo` runs if it fails or is dropped, and goes back to what
     // was loaded before.
-    enum class OpenResult { Opened, Pending, Failed };
+    // Stopped: nothing from there on can play because the server is marked down; the queue is parked at
+    // the first entry that was skipped, closed, and the reason is said (parkAtSkipped()).
+    enum class OpenResult { Opened, Pending, Failed, Stopped };
+    // Why a queue entry cannot play now (availability()).
+    enum class Availability { Yes, Gone, ServerDown };
     // Who asked for an open: what a remote track says, and what drops it.
     enum class Origin {
         Menu,    // chosen in a menu: says "Loading.", and leaving that menu drops it
@@ -330,7 +342,28 @@ private:
     std::string unit() const { return music_ ? "track" : "chapter"; } // what one part is called
     OpenResult loadFile(size_t file, double position, bool autoplay, Origin origin, Then opened = {},
                         Then undo = {}); // within the loaded book; a pending open's undo runs only if this fails
-    OpenResult openFile(size_t file, double position, bool autoplay, Origin origin, Then opened, Then undo);
+    // `skipped`: entries just before `file` that already count in a run of skips (see continueAfterFailure()).
+    OpenResult openFile(size_t file, double position, bool autoplay, Origin origin, Then opened, Then undo,
+                        SkippedRun skipped = {});
+    // Music queue entries that cannot play are skipped (docs/queue.md, "Playing it"). A server that is
+    // marked down is tried again in the background; Menu (the user chose it, from a list the server just
+    // gave) tries it anyway.
+    Availability availability(size_t i, Origin origin) const;
+    void addSkipped(SkippedRun& skipped, size_t file, Availability why);
+    bool continuesAfterFailure(Origin origin) const;
+    void sayUnavailable(SkippedRun& skipped); // "Storm, source unavailable." / "3 tracks, source unavailable."
+    OpenResult parkAtSkipped(const SkippedRun& skipped, size_t startFile, double startPosition);
+    void continueAfterFailure(size_t file, const std::string& title); // a track of the queue did not open at the end of the one before
+    void markServerDown();
+    void clearServerDown();
+    bool remoteAhead() const; // some entry from the current one on is of the server set up now
+    void checkServerMark(Clock::TimePoint now); // tick(): the background pings
+    void startMarkPing(bool forPlay);
+    void cancelMarkPing();
+    void onMarkPing(bool answered, bool forPlay);
+    int resumeRewind() const;
+    void resumeClosedTrack(); // Play: opens the current track again where it was left
+    void failOpen(Origin origin, const std::string& title, size_t file, const Then& undo); // a pending open did not open
     void onOpened(bool autoplay, Origin origin, const Then& opened);
     // A remote track did not open: says so (unless `quiet`), then runs `undo`.
     void onCannotPlay(const std::string& title, bool quiet, const Then& undo);
@@ -508,6 +541,7 @@ private:
         double position = 0;   // where it opens
         TimePoint since;       // when it was asked for
         Then opened, undo;
+        size_t file = 0; // its track
     };
     std::optional<PendingOpen> pendingOpen_;
     // The stream that plays first ran dry (MediaPlayer::buffering()) at `since`.
@@ -518,6 +552,12 @@ private:
         bool said = false;   // "Waiting for network" has been said
     };
     std::optional<Dropout> dry_;
+    // The server set up now failed to open a track or a stream broke off: its queue entries are skipped
+    // until a ping answers. Pings run in the background while the music player has its entries ahead.
+    bool serverDown_ = false;
+    TimePoint pingDue_;                       // when the next background ping is sent (while serverDown_)
+    int pingStep_ = 0;                        // pings that went unanswered: picks the wait to the next
+    MusicServer::RequestId markPing_ = 0;     // in flight, 0: none
     // The track pre-opened (checkReadAhead()), if any. Only opening that track
     // takes the pre-open, and that moves fileIndex_ on to it. The player takes
     // a pre-open over only for the same URL, so opening that track at the same

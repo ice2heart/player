@@ -87,6 +87,11 @@ constexpr int kRandomAlbums = 50;
 // DNS lookup) can take longer. App gives up a little after it, so "Loading"
 // always ends.
 constexpr std::chrono::seconds kStreamOpenGiveUp{15};
+// A server that is marked down is pinged in the background (docs/queue.md, "Playing it"): this long after
+// it was marked, then this long after the first ping went unanswered, then every kPingEvery.
+constexpr std::chrono::seconds kPingFirst{10};
+constexpr std::chrono::seconds kPingSecond{30};
+constexpr std::chrono::seconds kPingEvery{60};
 // A stream that plays and has run dry (MediaPlayer::buffering()). After a seek it
 // is empty for a moment while the new part loads: only a longer gap gets the
 // buffering earcon. A dropout that lasts says so once; Player retries meanwhile,
@@ -676,6 +681,7 @@ void App::tick() {
     if (!sleeping_ && autoSleep > 0 && !player_.playing() && !pendingOpen_ && !tts_.speaking() &&
         now - lastActivity_ > std::chrono::minutes(autoSleep))
         sleep("Going to sleep.");
+    checkServerMark(now);
     checkReadAhead(); // last: it sees what this tick opened, and whether playback stopped
 }
 
@@ -837,7 +843,8 @@ std::string App::itemSpeech(const Screen& screen) const {
     const MenuItem& item = screen.items[screen.index];
     int verbosity = config_.getInt(kVerbosity, Normal);
     std::string text = item.label;
-    if (item.value) text += ", " + item.value();
+    if (item.value)
+        if (std::string value = item.value(); !value.empty()) text += ", " + value;
     if (verbosity <= Normal)
         text += ", " + std::to_string(screen.index + 1) + " of " + std::to_string(screen.items.size());
     if (verbosity == Beginner) {
@@ -1541,7 +1548,9 @@ std::vector<MenuItem> App::streamingMenu() {
         openAlbumList("Random albums", "random", kRandomAlbums, false);
     }));
     if (trackCache().enabled()) items.push_back(submenu("Downloaded", [this] { return downloadedMenu(); }));
-    items.push_back(action("Server status", [this] { checkServer(); }));
+    MenuItem status = action("Server status", [this] { checkServer(); });
+    status.value = [this] { return serverDown_ ? std::string("not reachable") : std::string(); };
+    items.push_back(std::move(status));
     return items;
 }
 
@@ -1826,6 +1835,7 @@ void App::checkServer() {
             say(errorText(error) + ".");
             return;
         }
+        clearServerDown(); // it answers
         say(connectedText(info));
     });
 }
@@ -2364,6 +2374,7 @@ bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& t
 App::OpenResult App::switchTo(const Book& book, bool music, size_t file, double position, bool autoplay,
                               Then opened, std::optional<Queue> queue) {
     dropPendingOpen(); // a failure goes back to what was loaded before it
+    cancelMarkPing();  // Play's answer is for the queue that was loaded
     size_t wasFile = fileIndex_;
     bool wasOpen = player_.isOpen(), wasPlaying = player_.playing();
     double wasAt = player_.position();
@@ -2436,10 +2447,19 @@ App::OpenResult App::loadFile(size_t file, double position, bool autoplay, Origi
 // remote track is tried once: when the server cannot be reached, every
 // following track would wait on it too. A local file opens here; a remote one
 // may still be opening on return (Pending), and finishPendingOpen() goes on.
-App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origin origin, Then opened,
-                              Then undo) {
+App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origin origin, Then opened, Then undo,
+                              SkippedRun skipped) {
     if (!book_) return OpenResult::Failed;
+    const size_t startFile = file;
+    const double startPosition = position;
     for (; file < trackCount(); ++file, position = 0) {
+        // A music queue skips what cannot play; the run is said once, when one plays.
+        if (music_)
+            if (Availability why = availability(file, origin); why != Availability::Yes) {
+                addSkipped(skipped, file, why);
+                continue;
+            }
+        sayUnavailable(skipped);
         setFile(file);
         bool opens = false;
         const bool remote = trackRemote(file);
@@ -2456,6 +2476,7 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
                 if (origin == Origin::Menu || origin == Origin::Key || origin == Origin::Resume) say("Loading.");
                 MusicServer::Stream stream = remoteStream(file);
                 opens = player_.open(stream.url, position, stream.transcoded);
+                if (opens && !player_.opening() && music_) clearServerDown(); // the stream opened at once
             }
         } else {
             opens = player_.open(key, position);
@@ -2464,11 +2485,16 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
             if (player_.opening()) {
                 std::uint64_t screen = origin == Origin::Menu && !screens_.empty() ? screens_.back().id : 0;
                 pendingOpen_ = PendingOpen{screen,    origin,         trackTitle(file), autoplay,
-                                           position,  clock_.now(),   std::move(opened),       std::move(undo)};
+                                           position,  clock_.now(),   std::move(opened),       std::move(undo), file};
                 return OpenResult::Pending;
             }
             onOpened(autoplay, origin, opened);
             return OpenResult::Opened;
+        }
+        if (remote && continuesAfterFailure(origin)) { // the next entry is tried, or the queue stops
+            markServerDown();
+            addSkipped(skipped, file, Availability::ServerDown);
+            continue;
         }
         if (remote) {
             onCannotPlay(trackTitle(file), origin == Origin::Restore, undo);
@@ -2477,8 +2503,72 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
         earcons_.play(Earcon::Error);
         say("Cannot open " + std::filesystem::path(key).filename().string());
     }
+    if (skipped.count) {
+        // Nothing from there on plays. Where the server is the reason, the queue waits at the first entry
+        // that was skipped, for Play to try the server again.
+        const bool parks = skipped.serverDown && (origin == Origin::Next || origin == Origin::Resume);
+        if (parks) return parkAtSkipped(skipped, startFile, startPosition);
+        sayUnavailable(skipped);
+    }
     if (undo) undo();
     return OpenResult::Failed;
+}
+
+// A music queue entry plays only if its file is there, or it is of the server set up now (url and user) and
+// that server is not marked down. Menu tries a server that is marked down: the user chose from what it just
+// listed, and an open that works clears the mark.
+App::Availability App::availability(size_t i, Origin origin) const {
+    const QueueEntry& e = queue_.at(i);
+    if (e.kind == QueueEntry::Kind::Local) {
+        std::error_code ec;
+        return std::filesystem::exists(e.path, ec) ? Availability::Yes : Availability::Gone;
+    }
+    if (!server_.configured() || e.serverUrl != serverIdentity(config_.getString(kServerUrl)) ||
+        e.user != config_.getString(kServerUser))
+        return Availability::Gone;
+    return serverDown_ && origin != Origin::Menu ? Availability::ServerDown : Availability::Yes;
+}
+
+void App::addSkipped(SkippedRun& skipped, size_t file, Availability why) {
+    if (!skipped.first) {
+        skipped.first = file;
+        skipped.firstTitle = trackTitle(file);
+    }
+    ++skipped.count;
+    if (why == Availability::ServerDown) skipped.serverDown = true;
+}
+
+void App::sayUnavailable(SkippedRun& skipped) {
+    if (!skipped.count) return;
+    earcons_.play(Earcon::Error);
+    say((skipped.count == 1 ? skipped.firstTitle : std::to_string(skipped.count) + " tracks") + ", source unavailable.");
+    skipped = {};
+}
+
+// The queue waits at the first skipped entry, closed: Play pings the server and opens it if it answers.
+App::OpenResult App::parkAtSkipped(const SkippedRun& skipped, size_t startFile, double startPosition) {
+    const size_t first = *skipped.first;
+    player_.pause();
+    player_.close();
+    setFile(first);
+    reopenAt_ = first == startFile ? startPosition : 0.0;
+    rememberPosition();
+    earcons_.play(Earcon::Error);
+    say("Server not reachable. Press play to try again.");
+    return OpenResult::Stopped;
+}
+
+// At the end of a track the next one opens quietly. If a server track does not open, the server is marked
+// down and the queue goes on with the entries after it that can play, or stops there.
+bool App::continuesAfterFailure(Origin origin) const { return music_ && origin == Origin::Next; }
+
+void App::continueAfterFailure(size_t file, const std::string& title) {
+    SkippedRun skipped;
+    skipped.first = file;
+    skipped.firstTitle = title;
+    skipped.count = 1;
+    skipped.serverDown = true;
+    openFile(file + 1, 0, true, Origin::Next, {}, {}, skipped);
 }
 
 void App::onOpened(bool autoplay, Origin origin, const Then& opened) {
@@ -2493,6 +2583,7 @@ void App::onOpened(bool autoplay, Origin origin, const Then& opened) {
 }
 
 void App::onCannotPlay(const std::string& title, bool quiet, const Then& undo) {
+    if (music_ && trackRemote(fileIndex_)) markServerDown(); // the track of the queue that did not open
     if (!quiet) {
         earcons_.play(Earcon::Error);
         say("Cannot play " + title + ". Server not reachable."); // never the URL: it holds the login
@@ -2510,15 +2601,30 @@ void App::leaveEmptyPlayer() {
 void App::finishPendingOpen() {
     PendingOpen open = std::move(*pendingOpen_);
     pendingOpen_.reset(); // before the callbacks, which may open again
-    if (player_.isOpen()) onOpened(open.autoplay, open.origin, open.opened);
-    else onCannotPlay(open.title, open.origin == Origin::Restore, open.undo);
+    if (player_.isOpen()) {
+        if (music_) clearServerDown(); // a stream opened: the server answers
+        onOpened(open.autoplay, open.origin, open.opened);
+    } else {
+        failOpen(open.origin, open.title, open.file, open.undo);
+    }
+}
+
+// A stream did not open. At the end of a track of the music queue that is not an error to stop on: the
+// server is marked down and the queue goes on with what can play.
+void App::failOpen(Origin origin, const std::string& title, size_t file, const Then& undo) {
+    if (continuesAfterFailure(origin)) {
+        markServerDown();
+        continueAfterFailure(file, title);
+        return;
+    }
+    onCannotPlay(title, origin == Origin::Restore, undo);
 }
 
 void App::giveUpPendingOpen() {
     PendingOpen open = std::move(*pendingOpen_);
     pendingOpen_.reset();
     player_.close(); // drops the open: its result never shows
-    onCannotPlay(open.title, open.origin == Origin::Restore, open.undo);
+    failOpen(open.origin, open.title, open.file, open.undo);
 }
 
 // The user has moved on before the track opened: no result of it is ever heard.
@@ -2544,14 +2650,22 @@ void App::togglePlay() {
     }
 }
 
-void App::play() {
+// The seconds Play goes back after a pause of more than 10 s (the setting), else 0.
+int App::resumeRewind() const {
     int rewind = config_.getInt(kRewindOnResume, 2);
-    bool rewinds = rewind > 0 && pausedAt_ && clock_.now() - *pausedAt_ > std::chrono::seconds(10);
+    return rewind > 0 && pausedAt_ && clock_.now() - *pausedAt_ > std::chrono::seconds(10) ? rewind : 0;
+}
+
+void App::play() {
     if (book_ && !player_.isOpen() && reopenAt_) {
-        pausedAt_.reset();
-        double at = std::max(0.0, *reopenAt_ - (rewinds ? rewind : 0));
-        // Or it says "Server not reachable", and Play tries again at the same place.
-        openFile(fileIndex_, at, true, Origin::Resume, [this] { if (player_.playing()) earcons_.play(Earcon::Play); }, {});
+        // The track cannot be opened now (its server is marked down, or it is a file that is gone with the
+        // server's tracks behind it): Play asks the server first, and goes on once it answers.
+        if (music_ && serverDown_ && availability(fileIndex_, Origin::Key) != Availability::Yes && remoteAhead()) {
+            say("Checking the server.");
+            startMarkPing(true);
+            return;
+        }
+        resumeClosedTrack();
         return;
     }
     if (!book_) { // after a restart: like "Now playing" on Home
@@ -2563,10 +2677,76 @@ void App::play() {
         nothingToPlay();
         return;
     }
-    if (rewinds) player_.seek(player_.position() - rewind);
+    if (int rewind = resumeRewind()) player_.seek(player_.position() - rewind);
     pausedAt_.reset();
     player_.play();
     earcons_.play(Earcon::Play);
+}
+
+// ---- a server that is marked down
+
+void App::markServerDown() {
+    if (serverDown_) return; // another failure does not restart the pings at 10 s
+    serverDown_ = true;
+    pingStep_ = 0;
+    pingDue_ = clock_.now() + kPingFirst;
+}
+
+void App::clearServerDown() { serverDown_ = false; }
+
+// Entries from the current one on that belong to the server set up now.
+bool App::remoteAhead() const {
+    if (!book_ || !music_ || !server_.configured()) return false;
+    const std::string url = serverIdentity(config_.getString(kServerUrl)), user = config_.getString(kServerUser);
+    for (size_t i = fileIndex_; i < queue_.size(); ++i)
+        if (const QueueEntry& e = queue_.at(i); e.kind == QueueEntry::Kind::Remote && e.serverUrl == url && e.user == user)
+            return true;
+    return false;
+}
+
+// tick(): while the server is marked down and the music player has its entries ahead, ping it when due. With
+// none ahead the pings stop and the schedule starts again (10 s) when there are.
+void App::checkServerMark(TimePoint now) {
+    if (!serverDown_) return;
+    if (sleeping_ || !remoteAhead()) {
+        pingDue_ = now + kPingFirst;
+        pingStep_ = 0;
+        return;
+    }
+    if (!markPing_ && now >= pingDue_) startMarkPing(false);
+}
+
+void App::startMarkPing(bool forPlay) {
+    cancelMarkPing();
+    markPing_ = server_.ping([this, forPlay](MusicServer::Error error, MusicServer::ServerInfo) {
+        markPing_ = 0;
+        onMarkPing(error == MusicServer::Error::None, forPlay);
+    });
+}
+
+// A cancelled ping never calls back (MusicServer): a new queue, sleep and power off drop Play's.
+void App::cancelMarkPing() {
+    if (markPing_) server_.cancel(std::exchange(markPing_, 0));
+}
+
+void App::onMarkPing(bool answered, bool forPlay) {
+    if (answered) clearServerDown();
+    else {
+        const auto wait = pingStep_ == 0 ? kPingSecond : kPingEvery; // the pause after this one
+        ++pingStep_;
+        pingDue_ = clock_.now() + wait;
+    }
+    if (!forPlay) return;
+    // Play: the track is opened now (skipped, if the server does not answer), unless the user has moved on.
+    if (book_ && music_ && reopenAt_ && !player_.isOpen() && !pendingOpen_) resumeClosedTrack();
+}
+
+// Play on a track that is closed (it failed, the stream broke off, or the queue ended): it opens again at
+// its place. If it fails, "Server not reachable" is said, and Play tries again at the same place.
+void App::resumeClosedTrack() {
+    double at = std::max(0.0, *reopenAt_ - resumeRewind());
+    pausedAt_.reset();
+    openFile(fileIndex_, at, true, Origin::Resume, [this] { if (player_.playing()) earcons_.play(Earcon::Play); }, {});
 }
 
 void App::nothingToPlay() {
@@ -2720,10 +2900,11 @@ void App::stepAlbum(int direction) {
         say(direction < 0 ? "First album." : "Last album.");
         return;
     }
-    std::string album = queue_.at(target).album.empty() ? queue_.at(target).title : queue_.at(target).album;
     if (!gotoChapter(int(target), Origin::Key)) return; // the error was said
     earcons_.play(Earcon::Move);
-    say(album);
+    // The album of the track that plays: a later one when the queue skipped entries that cannot play.
+    const QueueEntry& playing = queue_.at(fileIndex_);
+    say(playing.album.empty() ? playing.title : playing.album);
 }
 
 // The edge sound plays once per press: a held key repeating at its limit stays quiet.
@@ -2778,7 +2959,8 @@ bool App::gotoChapter(int index, Origin origin, Then opened) {
     if (index < 0 || index >= int(list.size())) return false;
     const ChapterRef& ch = list[size_t(index)];
     auto arrived = [this, index, opened = std::move(opened)] {
-        if (sleepAtChapterEnd_ >= 0) sleepAtChapterEnd_ = index;
+        // The track that plays, which is a later one when the queue skipped entries that cannot play.
+        if (sleepAtChapterEnd_ >= 0) sleepAtChapterEnd_ = trackCount() > 1 ? int(fileIndex_) : index;
         if (opened) opened();
     };
     // Closed: a remote track that failed, ended the list or is still opening.
@@ -2800,22 +2982,30 @@ void App::stepChapter(int direction) {
         double intoChapter = player_.position() - list[size_t(cur)].start;
         if (intoChapter > 3) target = cur;
     }
+    // Previous goes back over the entries of the queue that cannot play (Next skips them when it opens one).
+    SkippedRun skipped;
+    if (music_ && trackCount() > 1 && target < cur)
+        for (; target >= 0 && availability(size_t(target), Origin::Key) != Availability::Yes; --target)
+            addSkipped(skipped, size_t(target), availability(size_t(target), Origin::Key));
     if (target < 0 || target >= int(list.size())) {
         earcons_.play(Earcon::Edge);
         say(target < 0 ? "First " + unit() + "." : "Last " + unit() + ".");
         return;
     }
+    sayUnavailable(skipped);
     if (!gotoChapter(target, Origin::Key)) return; // the error was said
     earcons_.play(Earcon::Move);
-    say(list[size_t(target)].title);
+    // The track that plays, which is a later one when the queue skipped entries that cannot play.
+    say(list[trackCount() > 1 ? fileIndex_ : size_t(target)].title);
 }
 
 void App::onFileFinished() {
     scrobble_.reset(); // its play is over: opening it again (Play at the end of the list) is a new one
     if (std::optional<size_t> next = upcomingTrack()) {
         // Quietly: "Loading." between every two tracks of an album would be too much.
-        // If a remote one fails, "Server not reachable" is said and it stops there. The
-        // finished track was heard to the end, so Play opens the one that failed.
+        // If a remote one fails in a book, "Server not reachable" is said and it stops there. The
+        // finished track was heard to the end, so Play opens the one that failed. In a music queue the
+        // server is marked down instead and the entries after it that can play go on (openFile()).
         const size_t target = *next;
         const bool remote = trackRemote(target);
         auto failedHere = [this, target, remote] {
@@ -2823,11 +3013,13 @@ void App::onFileFinished() {
             setFile(target);
             reopenAt_ = 0.0;
         };
-        if (loadFile(target, 0, true, Origin::Next, {}, failedHere) != OpenResult::Failed || remote) return;
+        OpenResult result = loadFile(target, 0, true, Origin::Next, {}, failedHere);
+        if (result != OpenResult::Failed || (remote && !music_)) return;
     }
     player_.pause();
-    if (trackRemote(0)) { // next play starts the list again, opening it only then
-        player_.close();
+    // The first entry waits closed when it is a server track, or a queue entry that cannot play now.
+    if (trackRemote(0) || (music_ && trackCount() > 0 && availability(0, Origin::Next) != Availability::Yes)) {
+        player_.close(); // next play starts the list again, opening it only then
         setFile(0);
         reopenAt_ = 0.0;
     } else {
@@ -2844,6 +3036,7 @@ void App::onStreamFailed() {
     double at = player_.position();
     player_.close();
     reopenAt_ = at;
+    if (music_ && trackRemote(fileIndex_)) markServerDown();
     earcons_.play(Earcon::Error);
     say("Server not reachable. Press play to try again.");
 }
@@ -2884,6 +3077,7 @@ void App::checkReadAhead() {
     // transcode the server lists no length for).
     const std::optional<size_t> upcoming = upcomingTrack();
     bool wanted = player_.playing() && book_ && upcoming && trackRemote(*upcoming) && player_.duration() > 0 &&
+                  (!music_ || availability(*upcoming, Origin::Next) == Availability::Yes) &&
                   player_.duration() - player_.position() <= std::chrono::duration<double>(kReadAhead).count();
     if (wanted) {
         // A new track, or the quality changed since: pre-open the stream that will be opened.
@@ -3435,6 +3629,7 @@ void App::setSleepTimer(int minutes, bool endOfChapter) {
 
 void App::sleep(const std::string& announcement) {
     cancelResume();
+    cancelMarkPing();
     dropPendingOpen(); // nothing may start playing while the device sleeps
     pause(false);
     pauseAutoCache(); // no transfer while asleep: it goes on from its .part after the wake
@@ -3462,6 +3657,7 @@ void App::wake() {
 
 void App::powerOff() {
     cancelResume(); // the front end ticks on while "Goodbye" is spoken
+    cancelMarkPing(); // Play's answer must not start the music
     dropPendingOpen(); // nothing may start playing while the device shuts down
     pause(false);
     saveOnExit();

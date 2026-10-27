@@ -3,7 +3,7 @@
 > Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end,
 > streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)),
 > plus phase 1 of [queue.md](queue.md): volume and Options buttons, the step unit, menus that jump, and separate music and book players.
-> Phase 2 of queue.md is being built: the music player plays a `Queue` (step 2.2); shuffle, repeat, Options, the Queue list, the server checks and `queue.tsv` are not built yet. Last updated: 2026-10-27.
+> Phase 2 of queue.md is being built: the music player plays a `Queue` (step 2.2) and skips what cannot play and checks a server that failed (step 2.3); shuffle, repeat, Options, the Queue list and `queue.tsv` are not built yet. Last updated: 2026-10-27.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -379,8 +379,33 @@ does and does nothing else. Holding Home leaves the mode. The same texts
   server list); `playQueue(title, entries, start)` plays any mix and is what the tests use until
   Options exist. Read-ahead pre-opens `upcomingTrack()` when it is a remote entry (a local
   track can be the one playing). At the end of the queue (repeat off) it says "End of queue.
-  Press play to start again.", pauses and loads the first entry (a remote one is opened only on
-  Play).
+  Press play to start again.", pauses and loads the first entry (a remote one, or one that cannot
+  play now, is opened only on Play).
+- **Unavailable entries and a server marked down (step 2.3).** `openFile()` asks `availability()`
+  of every music entry before it opens it: a local file that is gone, a remote entry of another
+  server (url or user) or with no server set up (`server_.configured()`), or of the server while
+  `serverDown_` is set (not for `Origin::Menu`: the user chose it from what the server just listed,
+  so it is tried, and an open that works clears the mark) is skipped. The entries skipped in a row
+  are a `SkippedRun`, said once when an entry plays ("Storm, source unavailable." or "3 tracks,
+  source unavailable."); Previous (`stepChapter()`) goes back over them the same way. A remote
+  entry that does not open (`onCannotPlay()`, or at the end of a track `failOpen()`), or a stream
+  that breaks off after `Player`'s retries (`onStreamFailed()`), calls `markServerDown()`. At the
+  end of a track (`Origin::Next`) a failed open is not an error to stop on: `continueAfterFailure()`
+  goes on with the entries after it. When nothing from there on can play and the server is the
+  reason, `parkAtSkipped()` closes the player at the first skipped entry, says "Server not
+  reachable. Press play to try again." and `openFile()` returns `OpenResult::Stopped`. While
+  `serverDown_` and `remoteAhead()` (a remote entry of the server from the current one on),
+  `checkServerMark()` (in `tick()`) pings through `MusicServer::ping()` when `pingDue_` has passed:
+  `kPingFirst` after the mark, `kPingSecond` after the first unanswered ping, then every
+  `kPingEvery`; no ping in flight at the same time, none while asleep. An answer calls
+  `clearServerDown()`. Play on an entry that cannot open now (`play()`) says "Checking the server."
+  and pings at once (`startMarkPing(true)`); `resumeClosedTrack()` runs when it answers, or fails,
+  and then skips what is still down. `cancelMarkPing()` (new queue in `switchTo()`, `sleep()`,
+  `powerOff()`) cancels it, so a late answer never runs. The book player is not touched: a book
+  stops at the chapter that failed and Play tries it again. Server status shows "not reachable"
+  as the item's value while `serverDown_`, and a ping from there that answers clears it. Not
+  done yet: with Repeat all the skip loop and `remoteAhead()` do not wrap (no way to set repeat
+  before step 2.6).
 - `mode()` is derived from the stack: `Player` when the top screen is a
   player, `Menu` otherwise, and `Sleeping` while asleep. Playback continues
   in the background on any screen.
@@ -444,7 +469,7 @@ Home
 │   ├── Playlists → <playlist> → Play playlist · Download playlist · <tracks>
 │   ├── Random albums → <albums>   (one page of 50)
 │   ├── Downloaded                 (only with a cache folder; built from the manifests, not the server: <name> → Play album|Play playlist · Delete download → [Cancel, Yes, delete] · <tracks>)
-│   └── Server status              ("Checking the server.", then "Connected to Navidrome 0.64.2." or the error)
+│   └── Server status              ("Checking the server.", then "Connected to Navidrome 0.64.2." or the error; the item says "not reachable" while the server is marked down)
 │       <album> → Play album · Download album · <tracks>   (Download only with a cache folder and a downloader; OK plays from that track to the end, via playRemote())
 │       No server: one item, "No server set up" (OK says how to add one);
 │       a server this build cannot use (another type, or no OAP_BUILD_NET): "Server not supported"

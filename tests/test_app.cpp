@@ -107,6 +107,14 @@ protected:
         app->tick();
     }
 
+    // The server answers the ping App sent last (Play on a track whose server is marked down, or the
+    // background check); the answer reaches App on the next tick.
+    void answerPing() {
+        ASSERT_EQ(server.lastRequest().kind, FakeMusicServer::Kind::Ping) << "App asked the server";
+        ASSERT_TRUE(server.replyPing(server.lastRequest().id, {"navidrome", "0.64.2"}));
+        app->tick();
+    }
+
     // Home > Library > Alpha: starts playing the first file.
     void playAlpha() {
         start();
@@ -1617,10 +1625,14 @@ IndexItem savedItem(const std::string& id, IndexItem::Kind kind, const std::stri
 } // namespace
 
 TEST_F(AppTest, LibraryAndMusicListTheSavedIndexBeforeTheScanIsDelivered) {
+    auto saved = [this](const std::string& name) { // a file that is there: an album track that is gone is skipped
+        touch(base / "saved" / (name + ".mp3"));
+        return (base / "saved" / (name + ".mp3")).string();
+    };
     indexStore.items["local:book:/saved/Old Book"] =
         savedItem("local:book:/saved/Old Book", IndexItem::Kind::Book, "Old Book", {"/saved/Old Book/1.mp3", "/saved/Old Book/2.mp3"});
     indexStore.items["local:album:Band\x1fOld Album"] =
-        savedItem("local:album:Band\x1fOld Album", IndexItem::Kind::Music, "Old Album", {"/saved/a.mp3", "/saved/b.mp3", "/saved/c.mp3"});
+        savedItem("local:album:Band\x1fOld Album", IndexItem::Kind::Music, "Old Album", {saved("a"), saved("b"), saved("c")});
     start(false);
     EXPECT_EQ(scanner.pendingCount(), 1u) << "the scan runs in the background";
     open("Library");
@@ -1635,7 +1647,7 @@ TEST_F(AppTest, LibraryAndMusicListTheSavedIndexBeforeTheScanIsDelivered) {
     press(Button::Ok);
     press(Button::Down);
     press(Button::Ok);
-    EXPECT_EQ(player.file, "/saved/b.mp3") << "the album plays the files of the index";
+    EXPECT_EQ(player.file, (base / "saved" / "b.mp3").string()) << "the album plays the files of the index";
 }
 
 TEST_F(AppTest, WithNoIndexYetTheListsSayScanningNotEmptyUntilTheScanIsDone) {
@@ -1864,6 +1876,7 @@ TEST_F(AppTest, ARemoteTrackSaysLoadingBeforeItIsOpened) {
     player.unopenable.clear();
     lastSaidAtOpen.clear();
     press(Button::PlayPause);
+    answerPing(); // the failure marked the server down: Play asks it first
     EXPECT_EQ(lastSaidAtOpen, (std::vector<std::string>{"Loading."}));
     EXPECT_EQ(player.file, "fake://stream/t2");
     expectNoUrlSpoken(speech);
@@ -1964,7 +1977,7 @@ TEST_F(AppTest, ARemoteTrackThatFailsWhenTheOneBeforeEndsStopsThere) {
     player.pos = 200;
     player.atEnd = true;
     app->tick(); // Storm Front ends, Rain cannot be opened
-    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
+    EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.") << "the queue stops at Rain";
     EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1", "fake://stream/t2"}))
         << "no other track tried, and no second wait on the server";
     EXPECT_FALSE(player.playing());
@@ -1973,6 +1986,7 @@ TEST_F(AppTest, ARemoteTrackThatFailsWhenTheOneBeforeEndsStopsThere) {
     EXPECT_EQ(app->nowPlaying().chapter, "Rain");
     player.unopenable.clear(); // the server is back
     press(Button::PlayPause);
+    answerPing();
     EXPECT_EQ(player.file, "fake://stream/t2");
     EXPECT_DOUBLE_EQ(player.pos, 0);
     EXPECT_TRUE(player.playing());
@@ -1992,6 +2006,7 @@ TEST_F(AppTest, AStreamThatBreaksOffSaysServerNotReachableAndPlayResumesThere) {
     EXPECT_FALSE(player.playing());
     EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
     press(Button::PlayPause);
+    answerPing();
     EXPECT_EQ(player.file, "fake://stream/t1");
     EXPECT_DOUBLE_EQ(player.pos, 120);
     EXPECT_TRUE(player.playing());
@@ -2148,6 +2163,7 @@ TEST_F(AppTest, ADropoutThatLastsEndsInServerNotReachable) {
     EXPECT_EQ(countOf(speech.said, "Waiting for network."), 1);
     EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1"})) << "no other track";
     press(Button::PlayPause);
+    answerPing();
     EXPECT_EQ(player.file, "fake://stream/t1");
     EXPECT_DOUBLE_EQ(player.pos, 80);
     EXPECT_TRUE(player.playing());
@@ -2209,6 +2225,7 @@ TEST_F(AppTest, SkippingToAnUnreachableRemoteTrackStaysOnThisOne) {
     EXPECT_FALSE(player.playing());
     EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
     press(Button::PlayPause); // Storm Front again, where it was
+    answerPing();
     EXPECT_EQ(player.file, "fake://stream/t1");
     EXPECT_DOUBLE_EQ(player.pos, 42);
     EXPECT_TRUE(player.playing());
@@ -2227,6 +2244,7 @@ TEST_F(AppTest, ARemoteListThatFailsKeepsTheRemoteListBeforeItWithoutOpeningItAg
     EXPECT_EQ(app->nowPlaying().title, "Weather");
     EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
     press(Button::PlayPause);
+    answerPing();
     EXPECT_EQ(player.file, "fake://stream/t1");
     EXPECT_DOUBLE_EQ(player.pos, 42);
     EXPECT_TRUE(player.playing());
@@ -2246,6 +2264,7 @@ TEST_F(AppTest, TheEndOfARemoteListOpensTheFirstTrackOnlyOnPlay) {
     EXPECT_EQ(speech.last(), "Cannot play Storm Front. Server not reachable.");
     player.unopenable.clear();
     press(Button::PlayPause);
+    answerPing();
     EXPECT_EQ(player.file, "fake://stream/t1");
     EXPECT_DOUBLE_EQ(player.pos, 0);
     EXPECT_TRUE(player.playing());
@@ -2361,6 +2380,7 @@ TEST_F(AsyncOpenTest, ATrackChosenWhileAnotherOpensFallsBackToWhatPlayedBefore) 
     EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
     EXPECT_FALSE(player.playing());
     press(Button::PlayPause); // opens Storm Front again, where it was
+    answerPing();
     EXPECT_EQ(speech.last(), "Loading.");
     finishOpen();
     EXPECT_EQ(player.file, "fake://stream/t1");
@@ -2391,11 +2411,13 @@ TEST_F(AsyncOpenTest, TheNextTrackFailingInTheBackgroundStopsThere) {
     app->tick();
     player.unopenable = {"fake://stream/t2"};
     finishOpen();
-    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
+    EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.") << "nothing else is left to play";
+    EXPECT_EQ(sounds.last(), Earcon::Error);
     EXPECT_FALSE(player.playing());
     EXPECT_EQ(app->nowPlaying().chapter, "Rain") << "Storm Front was heard to the end";
     player.unopenable.clear();
     press(Button::PlayPause);
+    answerPing();
     finishOpen();
     EXPECT_EQ(player.file, "fake://stream/t2");
     EXPECT_DOUBLE_EQ(player.pos, 0);
@@ -2520,6 +2542,7 @@ TEST_F(AsyncOpenTest, PlayOpensAFailedTrackAgainRewoundAfterALongPause) {
     finishOpen();
     player.unopenable.clear();
     press(Button::PlayPause);
+    answerPing();
     finishOpen();
     EXPECT_EQ(player.file, "fake://stream/t1");
     EXPECT_DOUBLE_EQ(player.pos, 48) << "2 s back, as after any long pause";
@@ -2610,6 +2633,7 @@ TEST_F(AsyncOpenTest, TheRemoteTrackBehindAFailedLocalBookFailsQuietly) {
     EXPECT_TRUE(sounds.played.empty());
     player.unopenable.clear();
     press(Button::PlayPause); // Play tries it again, where it was
+    answerPing();
     finishOpen();
     EXPECT_EQ(player.file, "fake://stream/t1");
     EXPECT_DOUBLE_EQ(player.pos, 42);
@@ -2985,6 +3009,7 @@ TEST_F(ScrobbleTest, ATrackOpenedAgainAfterItBrokeOffGoesOnWithItsPlay) {
     ASSERT_EQ(speech.last(), "Server not reachable. Press play to try again.");
     listen(1min);
     press(Button::PlayPause);
+    answerPing();
     finishOpen();
     ASSERT_DOUBLE_EQ(player.pos, 60);
     listen(35s);
@@ -3007,6 +3032,7 @@ TEST_F(ScrobbleTest, ATrackOpenedAgainAtItsStartAfterAFailedChoiceGoesOnWithItsP
     finishOpen();
     player.unopenable.clear();
     press(Button::PlayPause);
+    answerPing();
     finishOpen();
     ASSERT_EQ(player.file, "fake://stream/t1");
     ASSERT_DOUBLE_EQ(player.pos, 0) << "rewound 2 s";
@@ -3408,6 +3434,48 @@ TEST_F(StreamingTest, ServerStatusAfterGoingDeeperAndBackSaysNothing) {
     EXPECT_FALSE(server.replyPing(id, {"navidrome", "0.64.2"})) << "cancelled when the user moved on";
     app->tick();
     EXPECT_FALSE(speech.heard("Connected to Navidrome 0.64.2."));
+}
+
+// A server that failed to open a track is marked down (queue.md, "Playing it"): Server status says so until it answers.
+TEST_F(StreamingTest, ServerStatusSaysNotReachableWhileTheServerIsMarkedDownAndAnAnswerClearsIt) {
+    start();
+    player.unopenable = {"fake://stream/t1"};
+    EXPECT_FALSE(app->playRemote("Weather", weather(), 0));
+    ASSERT_TRUE(speech.heard("Cannot play Storm Front. Server not reachable."));
+    press(Button::Home);
+    open("Server");
+    ASSERT_EQ(level().title, "Server");
+    for (int i = 0; i < 5; ++i) press(Button::Down);
+    EXPECT_EQ(speech.last(), "Server status, not reachable, 6 of 6");
+    press(Button::Ok);
+    ASSERT_TRUE(server.replyPing(server.lastRequest().id, {"navidrome", "0.64.2"}));
+    app->tick();
+    EXPECT_EQ(speech.last(), "Connected to Navidrome 0.64.2.");
+    press(Button::Up);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Server status, 6 of 6") << "the answer cleared the mark";
+}
+
+TEST_F(StreamingTest, ServerStatusStaysNotReachableWhenThePingDoesNotAnswer) {
+    start();
+    player.unopenable = {"fake://stream/t1"};
+    EXPECT_FALSE(app->playRemote("Weather", weather(), 0));
+    press(Button::Home);
+    open("Server");
+    for (int i = 0; i < 5; ++i) press(Button::Down);
+    press(Button::Ok);
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    press(Button::Up);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Server status, not reachable, 6 of 6");
+}
+
+TEST_F(StreamingTest, ServerStatusSaysNothingExtraWhileTheServerIsNotMarkedDown) {
+    openServer();
+    for (int i = 0; i < 5; ++i) press(Button::Down);
+    EXPECT_EQ(speech.last(), "Server status, 6 of 6");
 }
 
 TEST_F(StreamingTest, ChoosingATrackPlaysFromItToTheEndOfTheAlbum) {
@@ -4545,6 +4613,7 @@ TEST_F(AppTest, PlayAfterATranscodeBrokeOffOpensItAsATranscodeAtItsPlace) {
     ASSERT_TRUE(speech.heard("Server not reachable. Press play to try again."));
     player.transcoded.reset();
     press(Button::PlayPause);
+    answerPing();
     EXPECT_EQ(player.file, "fake://stream/t1?maxBitRate=128");
     EXPECT_DOUBLE_EQ(player.pos, 42);
     ASSERT_TRUE(player.transcoded);
@@ -8020,6 +8089,28 @@ TEST_F(ServerBookTest, OpeningABookShowsLoadingThenPlaysItAsChaptersAndSaysChapt
     EXPECT_EQ(labels(), (std::vector<std::string>{"Storm Front", "Rain", "Sunshine"}));
 }
 
+// Only the music queue skips what cannot play and pings the server (queue.md): a book stops at the chapter.
+TEST_F(ServerBookTest, ANextChapterThatCannotBeOpenedStopsThereAndPlayOpensItAgainWithoutAsking) {
+    start();
+    syncWithFolder({dune()}, {dune()});
+    openServerBook("Dune");
+    ASSERT_EQ(player.file, "fake://stream/t1");
+    const size_t requests = server.requests.size();
+    player.unopenable = {"fake://stream/t2"};
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t3"), 0) << "no other chapter tried";
+    EXPECT_FALSE(player.playing());
+    player.unopenable.clear();
+    press(Button::PlayPause);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(server.requests.size(), requests) << "no ping: the book player does not mark the server down";
+    idle(5min);
+    EXPECT_EQ(server.requests.size(), requests);
+}
+
 TEST_F(ServerBookTest, PauseAnotherBookThenThisBookAgainResumesThePlace) {
     start();
     syncWithFolder({dune()}, {dune()});
@@ -8727,6 +8818,11 @@ TEST_F(MenuJumpTest, AServerListThatIsNotSortedByNameJumpsByTenWithNoLetter) {
 // playQueue(), as playRemote() is given a list.
 class MusicQueueTest : public ScrobbleTest {
 protected:
+    void SetUp() override {
+        ScrobbleTest::SetUp();
+        settings.setString("server.url", "https://music.example"); // the server the remote entries belong to
+        settings.setString("server.user", "ann");
+    }
     QueueEntry localEntry(const std::string& path, const std::string& title, const std::string& album = "Mixed") const {
         QueueEntry e;
         e.path = path;
@@ -8797,21 +8893,17 @@ TEST_F(MusicQueueTest, StartingInTheMiddleOfAMixedQueuePlaysFromThere) {
     EXPECT_EQ(player.file, alphaFile(2));
 }
 
-TEST_F(MusicQueueTest, ARemoteTrackThatCannotBeReachedInTheMiddleOfAQueueStopsThereAndPlayTriesItAgain) {
+TEST_F(MusicQueueTest, ARemoteTrackThatCannotBeReachedInTheMiddleOfAQueueIsSkippedAndTheQueueGoesOn) {
     playMixed();
     player.unopenable = {"fake://stream/t2"};
     trackEnds();
     finishOpen();
-    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
-    EXPECT_FALSE(player.playing());
-    EXPECT_EQ(app->nowPlaying().chapter, "Rain") << "the failed track is the current one";
-    player.unopenable.clear();
-    press(Button::PlayPause);
-    finishOpen();
-    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_EQ(speech.last(), "Rain, source unavailable.");
+    EXPECT_EQ(player.file, alphaFile(2)) << "the local track after it plays";
     EXPECT_TRUE(player.playing());
-    trackEnds();
-    EXPECT_EQ(player.file, alphaFile(2)) << "and the queue goes on";
+    EXPECT_EQ(app->nowPlaying().chapter, "Calm");
+    EXPECT_FALSE(speech.heard("Cannot play Rain. Server not reachable.")) << "the skip says it";
+    expectNoUrlSpoken(speech);
 }
 
 TEST_F(MusicQueueTest, TheEndOfTheQueuePausesAtItsFirstEntry) {
@@ -9045,4 +9137,560 @@ TEST_F(MusicQueueTest, TheMusicQueueIsKeptWhenABookTakesTheTurnAndContinueBrings
     EXPECT_EQ(app->nowPlaying().chapterCount, 3);
     trackEnds();
     EXPECT_EQ(player.file, alphaFile(2)) << "the rest of the queue follows";
+}
+
+// ---------------------------------------------------------------- unavailable sources and server checks
+
+// Entries that cannot play are skipped, a server that fails is marked down and pinged until it answers
+// (queue.md, "Playing it").
+class UnavailableTest : public MusicQueueTest {
+protected:
+    std::string lullaby() const { return (music / "Lullaby.mp3").string(); }
+    QueueEntry ofServer(const std::string& url, const std::string& user, const std::string& id, const std::string& title) const {
+        QueueEntry e = remoteEntry(id, title);
+        e.serverUrl = url;
+        e.user = user;
+        return e;
+    }
+    int pings() const {
+        return int(std::count_if(server.requests.begin(), server.requests.end(),
+                                 [](const FakeMusicServer::Request& r) { return r.kind == FakeMusicServer::Kind::Ping; }));
+    }
+    // The ping App sent last gets no answer.
+    void failPing() {
+        ASSERT_EQ(server.lastRequest().kind, FakeMusicServer::Kind::Ping);
+        ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable));
+        app->tick();
+    }
+    // Storm (local), Rain and Fog (server), Calm (local), Dusk (server): Rain cannot be opened when Storm ends,
+    // so the server is marked down and Calm plays, with Dusk ahead.
+    void rainFails() {
+        start_();
+        ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), remoteEntry("t2", "Rain"),
+                                             remoteEntry("t3", "Fog"), localEntry(alphaFile(2), "Calm"),
+                                             remoteEntry("t5", "Dusk")}));
+        player.unopenable = {"fake://stream/t2"};
+        trackEnds();
+        finishOpen();
+        ASSERT_EQ(player.file, alphaFile(2));
+        ASSERT_TRUE(player.playing());
+        player.unopenable.clear();
+    }
+    // Calm (local), Rain (server) plays and breaks off at 120 s: the queue waits at Rain.
+    void rainBreaksOff() {
+        start_();
+        ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(2), "Calm"), remoteEntry("t2", "Rain")}, 1));
+        finishOpen();
+        player.pos = 120;
+        player.broken = true;
+        app->tick();
+        ASSERT_EQ(speech.last(), "Server not reachable. Press play to try again.");
+    }
+};
+
+TEST_F(UnavailableTest, AMissingLocalFileIsSkippedWithSourceUnavailable) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm"),
+                                         localEntry(lullaby(), "Lullaby")}));
+    fs::remove(alphaFile(2));
+    trackEnds();
+    EXPECT_EQ(speech.last(), "Calm, source unavailable.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(player.file, lullaby());
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Lullaby");
+    EXPECT_FALSE(speech.heard("Cannot open 02 - Calm.mp3"));
+}
+
+TEST_F(UnavailableTest, AQueueWhoseFirstFileIsMissingStartsAtTheNextOne) {
+    start_();
+    fs::remove(alphaFile(1));
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm")}));
+    EXPECT_TRUE(speech.heard("Storm, source unavailable."));
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_EQ(app->nowPlaying().chapter, "Calm");
+}
+
+TEST_F(UnavailableTest, ATrackOfAnotherServerIsSkipped) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"),
+                                         ofServer("https://other.example", "ann", "t2", "Rain"), localEntry(alphaFile(2), "Calm")}));
+    trackEnds();
+    EXPECT_EQ(speech.last(), "Rain, source unavailable.");
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t2"), 0) << "not even tried";
+    EXPECT_TRUE(server.requests.empty() || pings() == 0) << "another server is not a failure of this one";
+}
+
+TEST_F(UnavailableTest, ATrackOfAnotherUserOfTheServerIsSkipped) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"),
+                                         ofServer("https://music.example", "bob", "t2", "Rain"), localEntry(alphaFile(2), "Calm")}));
+    trackEnds();
+    EXPECT_EQ(speech.last(), "Rain, source unavailable.");
+    EXPECT_EQ(player.file, alphaFile(2));
+}
+
+TEST_F(UnavailableTest, ServerTracksAreSkippedWhenNoServerIsSetUp) {
+    start_();
+    server.isConfigured = false;
+    ASSERT_TRUE(app->playQueue("Mixed", mixed()));
+    trackEnds();
+    EXPECT_EQ(speech.last(), "Rain, source unavailable.");
+    EXPECT_EQ(player.file, alphaFile(2));
+}
+
+TEST_F(UnavailableTest, ARunOfSkippedEntriesIsSaidOnceWithTheCount) {
+    start_();
+    fs::remove(alphaFile(2));
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"),
+                                         ofServer("https://other.example", "ann", "t2", "Rain"), localEntry(alphaFile(2), "Calm"),
+                                         ofServer("https://music.example", "bob", "t4", "Fog"), localEntry(lullaby(), "Lullaby")}));
+    speech.said.clear();
+    trackEnds();
+    EXPECT_EQ(speech.said, (std::vector<std::string>{"3 tracks, source unavailable."}));
+    EXPECT_EQ(player.file, lullaby());
+}
+
+TEST_F(UnavailableTest, WhenNothingAfterTheLastTrackCanPlayTheQueueEndsAfterTheSkip) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), ofServer("https://other.example", "ann", "t2", "Rain")}));
+    trackEnds();
+    const auto& said = speech.said;
+    ASSERT_GE(said.size(), 2u);
+    EXPECT_EQ(said[said.size() - 2], "Rain, source unavailable.");
+    EXPECT_EQ(said.back(), "End of queue. Press play to start again.");
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm");
+}
+
+TEST_F(UnavailableTest, ASkipIsSaidOnceEvenWhenTheNextFileCannotBeOpenedEither) {
+    start_();
+    player.unopenable = {alphaFile(2)};
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), ofServer("https://other.example", "ann", "t2", "Rain"),
+                                         localEntry(alphaFile(2), "Calm"), localEntry(lullaby(), "Lullaby")}));
+    hold(Button::Forward);
+    EXPECT_EQ(countOf(speech.said, "Rain, source unavailable."), 1);
+    EXPECT_TRUE(speech.heard("Cannot open 02 - Calm.mp3"));
+    EXPECT_EQ(player.file, lullaby());
+}
+
+TEST_F(UnavailableTest, TheSleepTimerAtTheEndOfATrackWaitsForTheTrackThatPlaysAfterASkip) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), ofServer("https://other.example", "ann", "t2", "Rain"),
+                                         localEntry(alphaFile(2), "Calm"), localEntry(lullaby(), "Lullaby")}));
+    press(Button::Ok); // Player menu
+    open("Sleep timer");
+    open("End of track");
+    ASSERT_TRUE(speech.heard("Sleep timer set to end of track."));
+    while (!app->screens().back().isPlayer() && app->screens().size() > 1) press(Button::Home); // out of the menus
+    ASSERT_TRUE(app->screens().back().isPlayer());
+    hold(Button::Forward); // Rain is skipped: Calm plays
+    ASSERT_EQ(player.file, alphaFile(2));
+    idle(1s);
+    EXPECT_NE(app->mode(), App::Mode::Sleeping) << "Calm has only just begun";
+    trackEnds();
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_TRUE(speech.heard("End of track. Sleep timer ended."));
+}
+
+TEST_F(UnavailableTest, PreviousGoesBackOverAnEntryThatCannotPlay) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(lullaby(), "Lullaby"), ofServer("https://other.example", "ann", "t2", "Rain"),
+                                         localEntry(alphaFile(2), "Calm")}, 2));
+    hold(Button::Back);
+    EXPECT_TRUE(speech.heard("Rain, source unavailable."));
+    EXPECT_EQ(player.file, lullaby()) << "the track before the one that was skipped, not Calm again";
+    EXPECT_EQ(speech.last(), "Lullaby");
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(UnavailableTest, PreviousWithNothingPlayableBeforeItSaysFirstTrack) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {ofServer("https://other.example", "ann", "t2", "Rain"), localEntry(alphaFile(2), "Calm")}, 1));
+    hold(Button::Back);
+    EXPECT_EQ(speech.last(), "First track.");
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_FALSE(speech.heard("Rain, source unavailable.")) << "nothing is skipped when nothing plays";
+}
+
+TEST_F(UnavailableTest, TheAlbumUnitSaysTheAlbumThatPlaysWhenTheNextOneIsSkipped) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm", "One"),
+                                         ofServer("https://other.example", "ann", "t2", "Rain"),
+                                         localEntry(alphaFile(2), "Calm", "Three")}));
+    albumUnit();
+    press(Button::Forward);
+    EXPECT_TRUE(speech.heard("Rain, source unavailable."));
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_EQ(speech.last(), "Three");
+}
+
+TEST_F(UnavailableTest, PlayAsksTheServerWhenTheQueueWaitsAtAMissingFileWithServerTracksBehindIt) {
+    rainBreaksOff(); // the server is marked down; the queue waits at Rain
+    ASSERT_TRUE(app->playQueue("Again", {localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm"),
+                                         remoteEntry("t3", "Fog"), remoteEntry("t4", "Mist")}, 0));
+    fs::remove(alphaFile(2));
+    trackEnds(); // Calm is gone, Fog and Mist are skipped: the queue waits at Calm
+    ASSERT_EQ(speech.last(), "Server not reachable. Press play to try again.");
+    ASSERT_EQ(app->nowPlaying().chapter, "Calm");
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Checking the server.");
+    answerPing();
+    EXPECT_EQ(speech.last(), "Loading.") << "Calm is skipped and Fog opens";
+    EXPECT_TRUE(speech.heard("Calm, source unavailable."));
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(UnavailableTest, PlayDoesNotAskTheServerWhenNoServerTrackIsLeftAhead) {
+    rainFails(); // the server is marked down
+    ASSERT_TRUE(app->playQueue("Again", {localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm")}, 1));
+    fs::remove(alphaFile(1));
+    trackEnds(); // the end of the queue: it waits at Storm, which is gone
+    ASSERT_EQ(speech.last(), "End of queue. Press play to start again.");
+    const int asked = pings();
+    press(Button::PlayPause);
+    EXPECT_EQ(pings(), asked);
+    EXPECT_TRUE(speech.heard("Storm, source unavailable."));
+    EXPECT_EQ(player.file, alphaFile(2));
+}
+
+TEST_F(UnavailableTest, OnlyTracksOfAnotherUserAheadAreNotWorthPinging) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), remoteEntry("t2", "Rain"), localEntry(alphaFile(2), "Calm"),
+                                         ofServer("https://music.example", "bob", "t4", "Fog")}));
+    player.unopenable = {"fake://stream/t2"};
+    trackEnds();
+    finishOpen();
+    ASSERT_EQ(player.file, alphaFile(2));
+    idle(10min);
+    EXPECT_EQ(pings(), 0);
+}
+
+TEST_F(UnavailableTest, WithoutAServerSetUpNothingIsPinged) {
+    rainFails();
+    server.isConfigured = false;
+    idle(10min);
+    EXPECT_EQ(pings(), 0);
+}
+
+TEST_F(UnavailableTest, AnotherFailureWhileTheServerIsMarkedDownDoesNotRestartThePings) {
+    rainFails();
+    idle(10s);
+    failPing();
+    idle(30s);
+    ASSERT_EQ(pings(), 2);
+    failPing(); // the next one is 60 s from now
+    player.unopenable = {"fake://stream/t4"};
+    ASSERT_TRUE(app->playQueue("Again", {remoteEntry("t4", "Mist")})); // the user tries; it fails again
+    finishOpen();
+    ASSERT_EQ(speech.last(), "Cannot play Mist. Server not reachable.");
+    idle(59900ms);
+    EXPECT_EQ(pings(), 2) << "not 10 s after that failure";
+    idle(100ms);
+    EXPECT_EQ(pings(), 3);
+}
+
+TEST_F(UnavailableTest, AfterOneFailedOpenTheNextServerTracksAreSkippedWithoutAnOpenAndALocalOnePlays) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), remoteEntry("t2", "Rain"),
+                                         remoteEntry("t3", "Fog"), localEntry(alphaFile(2), "Calm")}));
+    player.unopenable = {"fake://stream/t2"};
+    trackEnds();
+    ASSERT_TRUE(player.opening());
+    finishOpen();
+    EXPECT_EQ(speech.last(), "2 tracks, source unavailable.") << "the one that failed and the one behind it";
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t2"), 1);
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t3"), 0) << "no second wait on the server";
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(UnavailableTest, AServerTrackThatFailsAtOnceMarksTheServerDownToo) {
+    start_();
+    player.holdStreams = false; // the open fails in the call, not in the background
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), remoteEntry("t2", "Rain"),
+                                         remoteEntry("t3", "Fog"), localEntry(alphaFile(2), "Calm")}));
+    player.unopenable = {"fake://stream/t2"};
+    trackEnds();
+    EXPECT_EQ(speech.last(), "2 tracks, source unavailable.");
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t3"), 0);
+}
+
+TEST_F(UnavailableTest, SkippingToAMarkedDownServerTrackWithAKeyPassesItToo) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", mixed()));
+    player.unopenable = {"fake://stream/t2"};
+    hold(Button::Forward); // Rain: tried, because the user asked for it
+    finishOpen();
+    ASSERT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
+    ASSERT_EQ(app->nowPlaying().chapter, "Storm");
+    player.unopenable.clear();
+    hold(Button::Forward); // Rain again: the server is marked down now, so Calm plays
+    EXPECT_TRUE(speech.heard("Rain, source unavailable."));
+    EXPECT_EQ(speech.last(), "Calm") << "the track that plays, not the one that was skipped";
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t2"), 1);
+}
+
+TEST_F(UnavailableTest, AnAnsweredPingClearsTheMarkAndTheNextServerTrackOpens) {
+    rainFails();
+    idle(10s);
+    ASSERT_EQ(pings(), 1);
+    answerPing();
+    EXPECT_TRUE(player.playing()) << "the ping does not interrupt what plays";
+    EXPECT_EQ(player.file, alphaFile(2));
+    trackEnds(); // Calm ends: Dusk is next
+    EXPECT_EQ(player.file, "fake://stream/t5") << "no longer skipped";
+    finishOpen();
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Dusk");
+}
+
+TEST_F(UnavailableTest, WithoutAnAnswerTheNextServerTrackStaysSkipped) {
+    rainFails();
+    idle(10s);
+    failPing();
+    trackEnds(); // Calm ends: Dusk is skipped, and nothing else is left
+    EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.");
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Dusk") << "the queue waits at the first entry it skipped";
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t5"), 0);
+}
+
+TEST_F(UnavailableTest, TheServerIsPingedAfter10Then30ThenEvery60Seconds) {
+    rainFails();
+    idle(9900ms);
+    EXPECT_EQ(pings(), 0);
+    idle(100ms);
+    ASSERT_EQ(pings(), 1);
+    failPing();
+    idle(29900ms);
+    EXPECT_EQ(pings(), 1);
+    idle(100ms);
+    ASSERT_EQ(pings(), 2);
+    failPing();
+    idle(59900ms);
+    EXPECT_EQ(pings(), 2);
+    idle(100ms);
+    ASSERT_EQ(pings(), 3);
+    failPing();
+    idle(59900ms);
+    EXPECT_EQ(pings(), 3);
+    idle(100ms);
+    EXPECT_EQ(pings(), 4);
+}
+
+TEST_F(UnavailableTest, NoSecondPingIsSentWhileOneWaitsForTheServer) {
+    rainFails();
+    idle(10s);
+    ASSERT_EQ(pings(), 1);
+    idle(5min);
+    EXPECT_EQ(pings(), 1);
+}
+
+TEST_F(UnavailableTest, PingsStopWhenNoServerTrackIsAhead) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", mixed()));
+    player.unopenable = {"fake://stream/t2"};
+    trackEnds();
+    finishOpen();
+    ASSERT_EQ(player.file, alphaFile(2)) << "Calm plays; Rain is behind it";
+    idle(10min);
+    EXPECT_EQ(pings(), 0);
+}
+
+TEST_F(UnavailableTest, PingsStartAgainWhenAServerTrackIsAheadAgain) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", mixed()));
+    player.unopenable = {"fake://stream/t2"};
+    trackEnds();
+    finishOpen();
+    idle(10min);
+    ASSERT_EQ(pings(), 0);
+    ASSERT_TRUE(app->playQueue("Again", {localEntry(alphaFile(1), "Storm"), remoteEntry("t3", "Fog")}));
+    idle(9900ms);
+    EXPECT_EQ(pings(), 0) << "the schedule starts at 10 s again";
+    idle(100ms);
+    EXPECT_EQ(pings(), 1);
+}
+
+TEST_F(UnavailableTest, OnlyServerTracksLeftStopsAtTheFirstOneAndPlayPingsAndPlays) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), remoteEntry("t2", "Rain"),
+                                         remoteEntry("t3", "Fog")}));
+    player.unopenable = {"fake://stream/t2"};
+    trackEnds();
+    finishOpen();
+    EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_FALSE(player.playing());
+    EXPECT_FALSE(player.isOpen());
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain") << "the first one that was skipped";
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t3"), 0);
+    player.unopenable.clear();
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Checking the server.");
+    EXPECT_FALSE(player.playing()) << "it waits for the answer";
+    answerPing();
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_TRUE(player.playing());
+    trackEnds();
+    EXPECT_EQ(player.file, "fake://stream/t3") << "the server is no longer marked down";
+}
+
+TEST_F(UnavailableTest, PlayWhenTheServerStillDoesNotAnswerStopsAgainAndKeepsThePlace) {
+    rainBreaksOff();
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Checking the server.");
+    failPing();
+    EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.");
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain");
+    press(Button::PlayPause);
+    answerPing();
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 120) << "where it broke off";
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(UnavailableTest, PlayWhenTheServerDoesNotAnswerGoesOnWithWhatCanPlay) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(2), "Calm"), remoteEntry("t2", "Rain"),
+                                         localEntry(alphaFile(1), "Storm")}, 1));
+    finishOpen();
+    player.pos = 120;
+    player.broken = true;
+    app->tick();
+    press(Button::PlayPause);
+    failPing();
+    EXPECT_EQ(speech.last(), "Rain, source unavailable.");
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(UnavailableTest, AStreamThatBreaksOffMarksTheServerDownAndItIsPinged) {
+    rainBreaksOff();
+    idle(9900ms);
+    EXPECT_EQ(pings(), 0);
+    idle(100ms);
+    ASSERT_EQ(pings(), 1);
+    answerPing();
+    EXPECT_FALSE(player.playing()) << "an answer does not start the music";
+    press(Button::PlayPause);
+    EXPECT_NE(speech.last(), "Checking the server.") << "the server answered: Play opens the track";
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 120);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(UnavailableTest, ChoosingAQueueTriesAMarkedDownServerAndAnOpenThatWorksClearsTheMark) {
+    rainFails();
+    ASSERT_TRUE(app->playQueue("Again", {remoteEntry("t4", "Mist"), remoteEntry("t5", "Dusk")}));
+    EXPECT_EQ(player.file, "fake://stream/t4") << "the user chose it";
+    finishOpen();
+    ASSERT_TRUE(player.playing());
+    trackEnds();
+    EXPECT_EQ(player.file, "fake://stream/t5") << "the open worked, so the server is not marked down any more";
+    finishOpen();
+    EXPECT_TRUE(player.playing());
+    idle(10min);
+    EXPECT_EQ(pings(), 0);
+}
+
+TEST_F(UnavailableTest, AnOpenThatWorksAtOnceClearsTheMarkToo) {
+    start_();
+    player.holdStreams = false;
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), remoteEntry("t2", "Rain"),
+                                         localEntry(alphaFile(2), "Calm")}));
+    player.unopenable = {"fake://stream/t2"};
+    trackEnds();
+    ASSERT_EQ(speech.last(), "Rain, source unavailable.");
+    player.unopenable.clear();
+    ASSERT_TRUE(app->playQueue("Again", {remoteEntry("t4", "Mist"), remoteEntry("t5", "Dusk")}));
+    ASSERT_TRUE(player.playing());
+    trackEnds();
+    EXPECT_EQ(player.file, "fake://stream/t5");
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(UnavailableTest, TheServerTrackAfterAMarkedDownOneIsNotPreOpened) {
+    rainFails();
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_TRUE(player.preloads.empty()) << "Dusk is next, but the server is marked down";
+}
+
+TEST_F(UnavailableTest, TheServerTrackOfAnotherServerIsNotPreOpened) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), ofServer("https://other.example", "ann", "t2", "Rain")}));
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_TRUE(player.preloads.empty());
+}
+
+TEST_F(UnavailableTest, TheEndOfAQueueWhoseFirstFileIsMissingWaitsThereAndPlaySkipsIt) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm")}, 1));
+    fs::remove(alphaFile(1));
+    trackEnds();
+    EXPECT_EQ(speech.last(), "End of queue. Press play to start again.");
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm");
+    EXPECT_FALSE(speech.heard("Cannot open 01 - Storm.mp3"));
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Storm, source unavailable.");
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(UnavailableTest, ChoosingANewQueueWhilePlayAsksTheServerDropsTheAnswer) {
+    rainBreaksOff();
+    press(Button::PlayPause);
+    auto ping = server.lastRequest().id;
+    ASSERT_TRUE(app->playQueue("Again", {localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm")}));
+    EXPECT_FALSE(server.replyPing(ping, {"navidrome", "0.64.2"})) << "cancelled";
+    app->tick();
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm");
+}
+
+TEST_F(UnavailableTest, SleepWhilePlayAsksTheServerDropsTheAnswer) {
+    rainBreaksOff();
+    press(Button::PlayPause);
+    auto ping = server.lastRequest().id;
+    idle(6min); // automatic sleep
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_FALSE(server.replyPing(ping, {"navidrome", "0.64.2"})) << "cancelled";
+    app->tick();
+    EXPECT_FALSE(player.playing()) << "nothing starts while the device sleeps";
+}
+
+TEST_F(UnavailableTest, PowerOffWhilePlayAsksTheServerDropsTheAnswer) {
+    rainBreaksOff();
+    press(Button::PlayPause);
+    auto ping = server.lastRequest().id;
+    hold(Button::Power);
+    open("Power off");
+    ASSERT_TRUE(app->quitRequested());
+    EXPECT_FALSE(server.replyPing(ping, {"navidrome", "0.64.2"})) << "cancelled";
+    app->tick();
+    EXPECT_FALSE(player.playing());
+}
+
+TEST_F(UnavailableTest, NoPingsWhileTheDeviceSleeps) {
+    rainBreaksOff();
+    idle(6min); // automatic sleep, before the first ping is due: the tick that sleeps sends none
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    idle(10min);
+    EXPECT_EQ(pings(), 0);
 }
