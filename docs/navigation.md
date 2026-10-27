@@ -220,8 +220,8 @@ these rules too ([streaming.md](streaming.md) has the plan).
 
 ## Music and Library (planned for phase 4)
 
-Not built yet. Today Music lists the folders on the device, Library lists local
-books, and Streaming is its own Home entry. [streaming.md](streaming.md) phase 4
+Not built yet. Today Music lists the albums of the library index (tags, else the
+folder), Library lists local books, and Streaming is its own Home entry. [streaming.md](streaming.md) phase 4
 builds one library from files and server. Until then the rules above and the
 tree in [architecture.md](architecture.md#current-menu-tree) are what the device
 does. The rules below are the contract for phase 4.

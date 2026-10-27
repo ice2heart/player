@@ -2,6 +2,7 @@
 
 #include "buttons.h"
 #include "library.h"
+#include "library_index.h"
 #include "menu.h"
 #include "services.h"
 #include "settings.h"
@@ -42,13 +43,17 @@ public:
     // the book to resume (state.tsv). State is written only on exit and on sleep.
     // `server` gives the stream URLs of remote tracks; a front end without one
     // passes a server that is not configured. `downloader` fetches tracks of
-    // that server into the cache (Download album / playlist). `cacheRoot` is the folder of
+    // that server into the cache (Download album / playlist). `libraryStore` keeps the library
+    // index between runs: the App loads it and Library and Music list it.
+    // `scanner` lists the local files in the background: start() asks for a scan, and a finished
+    // one replaces the local items of the index, which is saved only if it changed. Both must
+    // outlive the App. `cacheRoot` is the folder of
     // downloaded tracks (empty: none, and none without `files` either, which reads and
     // writes their manifests); it is left out of Library and Music
     // when it lies inside them.
     App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
-        Downloader& downloader, Settings& config, Settings& state, Clock& clock, std::filesystem::path libraryRoot,
-        std::filesystem::path musicRoot, std::filesystem::path cacheRoot = {}, TextFiles* files = nullptr);
+        Downloader& downloader, LibraryStore& libraryStore, LibraryScanner& scanner, Settings& config, Settings& state,
+        Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot, std::filesystem::path cacheRoot = {}, TextFiles* files = nullptr);
 
     // How much room is left on the disk of a folder, in bytes; none if that cannot
     // be told. Downloads check it before they start. The default asks
@@ -131,6 +136,10 @@ private:
     std::vector<MenuItem> libraryMenu();
     std::vector<MenuItem> musicMenu();
     std::vector<MenuItem> albumMenu(const Book& album);
+    Book bookOf(const IndexItem& item) const;
+    void startScan();
+    void onScanned(std::vector<IndexItem> items);
+    std::optional<Book> resumableBook(const std::string& path) const;
     std::vector<MenuItem> streamingMenu();
     std::vector<MenuItem> sleepTimerMenu();
     size_t sleepTimerIndex() const;
@@ -337,6 +346,9 @@ private:
     VolumeControl& volume_;
     MusicServer& server_;
     Downloader& downloader_;
+    LibraryIndex index_;
+    LibraryScanner& scanner_;
+    LibraryScanner::RequestId scanRequest_ = 0; // 0: none running
     Settings& config_;
     Settings& state_;
     SettingsMap savedState_; // what state.tsv holds

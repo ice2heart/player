@@ -125,6 +125,11 @@ struct ScanRequest {
     std::vector<IndexItem> previous;
 };
 
+// The prefixes of the ids of local items (the rest is the path, or the tags).
+inline constexpr const char* kLocalBookPrefix = "local:book:";
+inline constexpr const char* kLocalFolderPrefix = "local:folder:";
+inline constexpr const char* kLocalAlbumPrefix = "local:album:";
+
 // Lists the local files as index items, in the background. Like MusicServer it never
 // blocks: scan() returns its id at once, and the callback runs later, on the UI thread,
 // from poll(). Once cancel(id) is called that scan's callback never runs.

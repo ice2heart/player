@@ -1,6 +1,7 @@
 #include "core/app.h"
 #include "core/track_cache.h"
 #include "fakes.h"
+#include "frontend/threaded_scanner.h"
 #include "temp_dir.h"
 
 #include <gtest/gtest.h>
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <fstream>
 #include <memory>
+#include <thread>
 
 using namespace oap;
 using namespace oap::test;
@@ -57,9 +59,32 @@ protected:
     }
 
     TextFiles* textFiles = &diskFiles(); // what start() gives the App
-    void start() {
-        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache, textFiles);
+    // Starts the App and, unless `scan` is false, lets its background scan finish.
+    void start(bool scan = true) {
+        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache, textFiles);
         app->start();
+        if (scan) ASSERT_NO_FATAL_FAILURE(deliverScan());
+    }
+
+    // Runs a real scan of the folders on disk, as the request of the App's last scan says
+    // (tags from `tags`), and hands it to the App as the background scan would.
+    void deliverScan() {
+        ASSERT_GT(scanner.pendingCount(), 0u) << "the App asked for no scan";
+        const auto request = scanner.lastRequest();
+        std::vector<IndexItem> items;
+        bool done = false;
+        ThreadedScanner real(tags);
+        real.scan(request.request, [&](std::vector<IndexItem> found) {
+            items = std::move(found);
+            done = true;
+        });
+        for (int i = 0; i < 2000 && !done; ++i) {
+            real.poll();
+            if (!done) std::this_thread::sleep_for(5ms);
+        }
+        ASSERT_TRUE(done);
+        ASSERT_TRUE(scanner.finish(request.id, std::move(items)));
+        app->tick();
     }
 
     void press(Button b) {
@@ -110,6 +135,9 @@ protected:
     FakeVolume volume;
     FakeMusicServer server;
     FakeDownloader downloader;
+    FakeLibraryStore indexStore;    // library.db
+    FakeLibraryScanner scanner; // the background scan: the test delivers it (deliverScan())
+    FakeTagReader tags;         // what the real scan reads from the files
     FakeClock clock;
     FakeStore configFile; // config.yaml
     FakeStore stateFile;  // state.tsv
@@ -914,6 +942,223 @@ TEST_F(AppTest, RestartAfterMusicResumesTheBook) {
     EXPECT_DOUBLE_EQ(player.pos, 20);
     EXPECT_FALSE(player.playing());
     EXPECT_EQ(speech.last(), "Alpha, paused. Press play to continue.");
+}
+
+// ---------------------------------------------------------------- library index
+
+namespace {
+// One local item as a scan leaves it.
+IndexItem savedItem(const std::string& id, IndexItem::Kind kind, const std::string& title, std::vector<std::string> files) {
+    IndexItem item;
+    item.id = id;
+    item.kind = kind;
+    item.title = title;
+    item.firstSeen = 100;
+    for (const std::string& f : files) {
+        IndexTrack t;
+        t.location = f;
+        t.title = fs::path(f).stem().string();
+        item.tracks.push_back(t);
+    }
+    return item;
+}
+} // namespace
+
+TEST_F(AppTest, LibraryAndMusicListTheSavedIndexBeforeTheScanIsDelivered) {
+    indexStore.items["local:book:/saved/Old Book"] =
+        savedItem("local:book:/saved/Old Book", IndexItem::Kind::Book, "Old Book", {"/saved/Old Book/1.mp3", "/saved/Old Book/2.mp3"});
+    indexStore.items["local:album:Band\x1fOld Album"] =
+        savedItem("local:album:Band\x1fOld Album", IndexItem::Kind::Music, "Old Album", {"/saved/a.mp3", "/saved/b.mp3", "/saved/c.mp3"});
+    start(false);
+    EXPECT_EQ(scanner.pendingCount(), 1u) << "the scan runs in the background";
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Old Book"}));
+    EXPECT_EQ(speech.last(), "Library. Old Book, 2 parts, 1 of 1");
+    press(Button::Home);
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Old Album"}));
+    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 2");
+    press(Button::Down);
+    press(Button::Ok);
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "/saved/b.mp3") << "the album plays the files of the index";
+}
+
+TEST_F(AppTest, WithNoIndexYetTheListsSayScanningNotEmptyUntilTheScanIsDone) {
+    start(false);
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Scanning"}));
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Looking for books. Try again in a moment.");
+    press(Button::Home);
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Scanning"}));
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Looking for music. Try again in a moment.");
+    press(Button::Home);
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta"}));
+}
+
+TEST_F(AppTest, TheScanStartsFromTheRootsTheCacheAndTheLocalItemsOfTheIndex) {
+    cache = base / "cache";
+    indexStore.items["local:book:/saved/Old"] = savedItem("local:book:/saved/Old", IndexItem::Kind::Book, "Old", {"/saved/Old/1.mp3"});
+    IndexItem server = savedItem("srv:album:1", IndexItem::Kind::Music, "On the server", {});
+    server.source = IndexItem::Source::Server;
+    indexStore.items[server.id] = server;
+    start(false);
+    ASSERT_EQ(scanner.requests.size(), 1u);
+    const ScanRequest& request = scanner.lastRequest().request;
+    EXPECT_EQ(request.libraryRoot, root);
+    EXPECT_EQ(request.musicRoot, music);
+    EXPECT_EQ(request.skip, cache);
+    ASSERT_EQ(request.previous.size(), 1u) << "only the local items are handed back";
+    EXPECT_EQ(request.previous[0].id, "local:book:/saved/Old");
+    // The server item is not a local one: a scan does not remove it.
+    deliverScan();
+    EXPECT_TRUE(indexStore.items.count("srv:album:1"));
+    EXPECT_FALSE(indexStore.items.count("local:book:/saved/Old")) << "it is no longer on disk";
+}
+
+TEST_F(AppTest, ABookAddedOnDiskAppearsAfterTheScanIsDelivered) {
+    start();
+    app->shutdown();
+    app.reset();
+    touch(root / "Gamma" / "01.mp3");
+    start(false);
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta"})) << "the saved index, not a rescan";
+    press(Button::Home);
+    deliverScan();
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta", "Gamma"}));
+    press(Button::Down);
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(player.file, (root / "Gamma" / "01.mp3").string());
+    EXPECT_TRUE(indexStore.items.count("local:book:" + (root / "Gamma").string())) << "and it is saved";
+}
+
+TEST_F(AppTest, ABookRemovedFromDiskLeavesTheLibraryAfterTheScan) {
+    start();
+    app->shutdown();
+    app.reset();
+    fs::remove_all(alpha());
+    start();
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Beta"}));
+    EXPECT_FALSE(indexStore.items.count("local:book:" + alpha().string()));
+}
+
+TEST_F(AppTest, TwoFoldersTaggedAsOneAlbumGiveOneAlbum) {
+    touch(music / "Big Album CD1" / "a.mp3");
+    touch(music / "Big Album CD2" / "b.mp3");
+    for (const char* f : {"Big Album CD1/a.mp3", "Big Album CD2/b.mp3"}) {
+        TrackTags t;
+        t.album = "Big Album";
+        t.albumArtist = "The Band";
+        t.title = "Name";
+        tags.tags[music / f] = t;
+    }
+    start();
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Big Album", "Lullaby", "Road Trip"}));
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Big Album, 2 tracks, 2 of 4");
+    press(Button::Ok);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"a", "b"}));
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(player.file, (music / "Big Album CD2" / "b.mp3").string());
+}
+
+TEST_F(AppTest, AFolderOfUntaggedFilesIsOneAlbumWithTheNameOfTheFolder) {
+    touch(music / "Mix" / "disc 1" / "x.mp3");
+    touch(music / "Mix" / "disc 2" / "y.mp3");
+    touch(music / "Mix" / "z.flac");
+    start();
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Mix", "Road Trip"}));
+    press(Button::Down);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Mix, 3 tracks, 3 of 4");
+    press(Button::Ok);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"z", "x", "y"}));
+}
+
+TEST_F(AppTest, LibraryAndMusicAreSortedByTitleWithNumbersAsNumbers) {
+    touch(root / "Part 10" / "1.mp3");
+    touch(root / "Part 2" / "1.mp3");
+    touch(music / "Vol 10" / "1.mp3");
+    touch(music / "Vol 2" / "1.mp3");
+    start();
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta", "Part 2", "Part 10"}));
+    press(Button::Home);
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Lullaby", "Road Trip", "Vol 2", "Vol 10"}));
+}
+
+TEST_F(AppTest, AScanThatChangesNothingWritesNoIndex) {
+    start();
+    EXPECT_GT(indexStore.saves, 0) << "the first scan fills the index";
+    app->shutdown();
+    app.reset();
+    const int saves = indexStore.saves;
+    clock.setWallTime(1'700'100'000); // a day later: times are not what a scan changes
+    start();
+    EXPECT_EQ(indexStore.saves, saves);
+    EXPECT_TRUE(indexStore.removedIds.empty());
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta"}));
+}
+
+TEST_F(AppTest, ABookPlaysAndKeepsItsPlaceLikeBeforeTheIndex) {
+    start();
+    open("Library");
+    press(Button::Ok);
+    EXPECT_EQ(player.file, alphaFile(1));
+    player.pos = 12;
+    press(Button::PlayPause);
+    app->shutdown();
+    EXPECT_EQ(state.getString("last_book"), alpha().string());
+    EXPECT_EQ(state.getString("pos:" + alpha().string()), "0:12.0");
+}
+
+TEST_F(AppTest, TheBookToResumeComesFromTheSavedIndexBeforeTheScanIsDelivered) {
+    playAlpha();
+    player.pos = 30;
+    app->shutdown();
+    app.reset();
+    player.file.clear();
+    // The index says what the book is made of: here its first part has gone from the list.
+    auto& alphaItem = indexStore.items.at("local:book:" + alpha().string());
+    alphaItem.tracks.erase(alphaItem.tracks.begin());
+    start(false);
+    EXPECT_EQ(speech.last(), "Alpha, paused. Press play to continue.");
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_DOUBLE_EQ(player.pos, 30);
+}
+
+TEST_F(AppTest, ABookToResumeThatIsGoneFromTheDiskIsNotResumed) {
+    playAlpha();
+    app->shutdown();
+    app.reset();
+    fs::remove_all(alpha());
+    speech.said.clear();
+    start(false); // the saved index still lists it
+    for (const std::string& said : speech.said) EXPECT_EQ(said.find("paused"), std::string::npos) << said;
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+}
+
+TEST_F(AppTest, ShuttingDownCancelsTheScan) {
+    start(false);
+    const auto id = scanner.lastRequest().id;
+    app->shutdown();
+    EXPECT_EQ(scanner.cancelled, (std::vector<LibraryScanner::RequestId>{id}));
+    EXPECT_EQ(scanner.pendingCount(), 0u);
 }
 
 // ---------------------------------------------------------------- streaming
@@ -3498,7 +3743,7 @@ TEST_F(AppTest, TheStreamingQualityIsSavedAndKeptAcrossARestart) {
     app.reset();
     Settings reloaded{&configFile}; // config.yaml as the next start reads it
     reloaded.load();
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, reloaded, state, clock, root, music);
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, reloaded, state, clock, root, music);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
     EXPECT_EQ(player.file, "fake://stream/t1?maxBitRate=320");
@@ -3784,7 +4029,7 @@ TEST_F(DownloadTest, NoDownloadItemWithoutACacheFolderAServerOrADownloader) {
 }
 
 TEST_F(DownloadTest, AnAppWithoutTextFilesHasNoCacheEvenWithAFolder) {
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache);
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache);
     app->start();
     open("Server");
     open("Recently added");
@@ -5378,7 +5623,7 @@ TEST_F(AutoCacheLimitTest, CachingATrackDoesNotScanTheManifestsAgainWhileTheCach
     cacheTrack("x", false, 100, 5, albumSource("other1"), "One");
     cacheTrack("y", false, 100, 5, albumSource("other2"), "Two");
     CountingFiles counting;
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache, &counting);
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache, &counting);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
     listen(11s);
@@ -5454,7 +5699,7 @@ TEST_F(AutoCacheLimitTest, EvictionDoesNotMakeTheNextLookupScanTheManifestsAgain
     cacheTrack("a", false, 100, 5, albumSource("other1"), "One");
     cacheTrack("b", false, 100, 5, albumSource("other2"), "Two");
     CountingFiles counting;
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache, &counting);
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache, &counting);
     app->setCacheGigabyte(10);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
@@ -5472,7 +5717,7 @@ TEST_F(AutoCacheLimitTest, PoweringOffTrimsOnce) {
     cacheTrack("a", false, 100, 5, albumSource("other1"), "One");
     cacheTrack("b", false, 100, 5, albumSource("other2"), "Two");
     CountingFiles counting;
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, settings, state, clock, root, music, cache, &counting);
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache, &counting);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
     app->shutdown(); // the first exit scans, and the plays go to the manifests
@@ -5503,7 +5748,7 @@ TEST_F(AutoCacheLimitTest, TheSizeIsSavedAndKeptAcrossARestart) {
     Settings reloaded{&configFile};
     reloaded.load();
     EXPECT_EQ(reloaded.getInt("cache.limit_gb", 1), 4);
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, reloaded, state, clock, root, music, cache, &diskFiles());
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, reloaded, state, clock, root, music, cache, &diskFiles());
     app->start();
     open("Settings");
     open("Cache size");
@@ -5513,7 +5758,7 @@ TEST_F(AutoCacheLimitTest, TheSizeIsSavedAndKeptAcrossARestart) {
     app.reset();
     Settings off{&configFile};
     off.load();
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, off, state, clock, root, music, cache, &diskFiles());
+    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, off, state, clock, root, music, cache, &diskFiles());
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1")));
     listen(60s);

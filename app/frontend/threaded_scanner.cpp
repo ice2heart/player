@@ -136,10 +136,10 @@ private:
         std::string id = e.keptIn;
         if (id.empty()) {
             if (e.tags && !e.tags->album.empty())
-                id = "local:album:" + (e.tags->albumArtist.empty() ? e.tags->artist : e.tags->albumArtist) +
+                id = std::string(kLocalAlbumPrefix) + (e.tags->albumArtist.empty() ? e.tags->artist : e.tags->albumArtist) +
                      kAlbumSeparator + e.tags->album;
             else
-                id = "local:folder:" + folder.path.string();
+                id = std::string(kLocalFolderPrefix) + folder.path.string();
         }
         auto [it, added] = groups_.try_emplace(id);
         Group& group = it->second;
@@ -170,7 +170,7 @@ private:
         });
     }
 
-    static std::string bookId(const Book& book) { return "local:book:" + book.path.string(); }
+    static std::string bookId(const Book& book) { return std::string(kLocalBookPrefix) + book.path.string(); }
 
     TagReader& reader_;
     const ScanRequest& request_;

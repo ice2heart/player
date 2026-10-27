@@ -80,6 +80,8 @@ std::string_view digitRun(std::string_view s, size_t& i) {
     return nonZero == std::string_view::npos ? std::string_view{} : run.substr(nonZero);
 }
 
+} // namespace
+
 // Natural, case-insensitive order: runs of digits compare as numbers ("3" before "10") and
 // letters compare folded. Names that fold equal fall back to their bytes, so the order is total.
 bool naturalLess(std::string_view a, std::string_view b) {
@@ -98,6 +100,7 @@ bool naturalLess(std::string_view a, std::string_view b) {
     return a < b;
 }
 
+namespace {
 // The cache folder is not a book.
 bool isSkipped(const fs::path& dir, const fs::path& skip) {
     std::error_code ec;

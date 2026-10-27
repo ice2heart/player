@@ -220,7 +220,7 @@ if(OAP_BUILD_SIM)
     target_link_libraries(imgui PUBLIC PkgConfig::SDL2)
 
     add_executable(oap-sim app/sim/main.cpp)
-    target_link_libraries(oap-sim PRIVATE oapmusicserver oapconfig oapmedia oapaudio imgui)
+    target_link_libraries(oap-sim PRIVATE oapmusicserver oapconfig oaplibrary oapmedia oapaudio imgui)
     target_compile_options(oap-sim PRIVATE -Wall -Wextra)
 endif()
 
@@ -234,7 +234,7 @@ if(OAP_BUILD_HEADLESS)
         app/headless/main.cpp
         app/headless/evdev_input.cpp
     )
-    target_link_libraries(oap-headless PRIVATE oapmusicserver oapconfig oapmedia oapaudio)
+    target_link_libraries(oap-headless PRIVATE oapmusicserver oapconfig oaplibrary oapmedia oapaudio)
     target_compile_options(oap-headless PRIVATE -Wall -Wextra)
     # Inputs when stdin is a terminal and --input is not given. A desktop would see each
     # key twice from evdev and the terminal; the Pi toolchains add evdev for its gamepad and buttons.

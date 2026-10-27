@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace oap {
@@ -33,6 +34,10 @@ struct Book {
     std::vector<long long> sizes;
     std::string artist;
 };
+
+// Natural, case-insensitive order of names: runs of digits compare as numbers ("3" before
+// "10"). A total order. The order of the Library and Music lists.
+bool naturalLess(std::string_view a, std::string_view b);
 
 // Natural order of paths: folder by folder, digits as numbers, case and accents ignored
 // ("cd2/01" before "cd10/01"). The order of the files of a book.

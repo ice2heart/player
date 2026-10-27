@@ -242,9 +242,11 @@ MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn) {
 } // namespace
 
 App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
-         Downloader& downloader, Settings& config, Settings& state, Clock& clock, std::filesystem::path libraryRoot,
-         std::filesystem::path musicRoot, std::filesystem::path cacheRoot, TextFiles* files)
-    : tts_(speech), player_(player), earcons_(sounds), volume_(volume), server_(server), downloader_(downloader), config_(config), state_(state),
+         Downloader& downloader, LibraryStore& libraryStore, LibraryScanner& scanner, Settings& config, Settings& state,
+         Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot, std::filesystem::path cacheRoot,
+         TextFiles* files)
+    : tts_(speech), player_(player), earcons_(sounds), volume_(volume), server_(server), downloader_(downloader),
+      index_(libraryStore), scanner_(scanner), config_(config), state_(state),
       savedState_(state.values()), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)),
       freeSpace_(spaceOnDisk), lastActivity_(clock.now()) {
     textFiles_ = files;
@@ -260,6 +262,7 @@ void App::start() {
 
     earcons_.play(Earcon::Boot);
     say("Ready.");
+    startScan(); // the menus use the saved index until it is done
 
     // A stream played last: "Now playing" on Home resumes it. Nothing is asked
     // of the server now, and nothing plays until the user chooses it.
@@ -268,16 +271,49 @@ void App::start() {
         return;
     }
     std::string last = state_.getString(kLastBook);
-    for (const Book& b : scanLibrary(libraryRoot_, cacheRoot_)) {
-        if (!last.empty() && b.path.string() == last && openBook(b, false)) {
-            closeScreens(0);
-            pushScreen(menuScreen("Home", [this] { return homeMenu(); }));
-            pushScreen(playerScreen());
-            say(b.title + ", paused. Press play to continue.");
-            return;
-        }
+    if (auto b = resumableBook(last); b && openBook(*b, false)) {
+        closeScreens(0);
+        pushScreen(menuScreen("Home", [this] { return homeMenu(); }));
+        pushScreen(playerScreen());
+        say(b->title + ", paused. Press play to continue.");
+        return;
     }
     goHome();
+}
+
+// The book `last_book` names, if it is still there: from the index, and when the index does not
+// know it yet (the first start after an update, before the first scan is done) from the disk.
+std::optional<Book> App::resumableBook(const std::string& path) const {
+    if (path.empty()) return std::nullopt;
+    if (const IndexItem* item = index_.find(kLocalBookPrefix + path)) {
+        Book book = bookOf(*item);
+        std::error_code ec;
+        for (const auto& file : book.files)
+            if (!std::filesystem::exists(file, ec)) return std::nullopt; // gone since the last scan
+        return book;
+    }
+    for (const Book& b : scanLibrary(libraryRoot_, cacheRoot_))
+        if (b.path.string() == path) return b;
+    return std::nullopt;
+}
+
+void App::startScan() {
+    ScanRequest request;
+    request.libraryRoot = libraryRoot_;
+    request.musicRoot = musicRoot_;
+    request.skip = cacheRoot_;
+    for (const auto& [id, item] : index_.items())
+        if (item.source == IndexItem::Source::Local) request.previous.push_back(item);
+    scanRequest_ = scanner_.scan(std::move(request), [this](std::vector<IndexItem> items) {
+        scanRequest_ = 0;
+        onScanned(std::move(items));
+    });
+}
+
+// The scan is the local files as they are now: the index is made to match, and written only if that changed it.
+void App::onScanned(std::vector<IndexItem> items) {
+    index_.replaceSource(IndexItem::Source::Local, items, clock_.wallTime());
+    index_.save();
 }
 
 void App::shutdown() {
@@ -288,6 +324,7 @@ void App::shutdown() {
     if (autoRequest_) downloader_.cancel(std::exchange(autoRequest_, 0));
     autoJob_.reset();
     autoQueue_.clear();
+    if (scanRequest_) scanner_.cancel(std::exchange(scanRequest_, 0));
     pendingOpen_.reset();
     player_.cancelPreload();
     player_.close();
@@ -338,6 +375,7 @@ void App::tick() {
     for (const ButtonEvent& ev : gestures_.poll(now)) onGesture(ev);
     server_.poll(); // answers from the server fill their lists
     downloader_.poll(); // a finished track starts the next one
+    scanner_.poll();    // a finished scan updates the index
     if (pendingOpen_ && !player_.opening()) finishPendingOpen();
     else if (pendingOpen_ && now - pendingOpen_->since > kStreamOpenGiveUp) giveUpPendingOpen();
 
@@ -815,19 +853,47 @@ std::vector<MenuItem> App::homeMenu() {
     return items;
 }
 
+namespace {
+// The items of one kind from the files on this device, in the order of the lists (by title).
+std::vector<const IndexItem*> localItems(const LibraryIndex& index, IndexItem::Kind kind) {
+    std::vector<const IndexItem*> out;
+    for (const auto& [id, item] : index.items())
+        if (item.source == IndexItem::Source::Local && item.kind == kind) out.push_back(&item);
+    std::stable_sort(out.begin(), out.end(), [](const IndexItem* a, const IndexItem* b) { return naturalLess(a->title, b->title); });
+    return out;
+}
+
+} // namespace
+
+// The Book a local item plays as: the files in the order of the index, no part titles (the
+// player names a local file by its file name). A book keeps its folder (or file) as its path,
+// which is the key of its saved place (`pos:`) and `last_book`.
+Book App::bookOf(const IndexItem& item) const {
+    Book book;
+    book.title = item.title;
+    for (const IndexTrack& t : item.tracks) book.files.emplace_back(t.location);
+    if (item.id.starts_with(kLocalBookPrefix)) book.path = item.id.substr(std::string(kLocalBookPrefix).size());
+    else if (item.id.starts_with(kLocalFolderPrefix)) book.path = item.id.substr(std::string(kLocalFolderPrefix).size());
+    else if (!book.files.empty()) book.path = book.files.front().parent_path(); // an album of tags
+    return book;
+}
+
 std::vector<MenuItem> App::libraryMenu() {
     std::vector<MenuItem> items;
-    for (const Book& b : scanLibrary(libraryRoot_, cacheRoot_)) {
-        MenuItem item = action(b.title, [this, b] {
+    for (const IndexItem* item : localItems(index_, IndexItem::Kind::Book)) {
+        Book b = bookOf(*item);
+        MenuItem entry = action(b.title, [this, b] {
             if (openBook(b, true)) enterPlayer();
         });
         if (b.files.size() > 1) {
             size_t n = b.files.size();
-            item.value = [n] { return std::to_string(n) + " parts"; };
+            entry.value = [n] { return std::to_string(n) + " parts"; };
         }
-        items.push_back(item);
+        items.push_back(entry);
     }
-    if (items.empty())
+    if (items.empty() && scanRequest_) // a first start has no index until the scan is done: do not call it empty
+        items.push_back(action("Scanning", [this] { say("Looking for books. Try again in a moment."); }));
+    else if (items.empty())
         items.push_back(action("Library is empty", [this] {
             say("Copy audio books into " + libraryRoot_.string() + ". One folder per book.");
         }));
@@ -835,11 +901,16 @@ std::vector<MenuItem> App::libraryMenu() {
 }
 
 std::vector<MenuItem> App::musicMenu() {
-    std::vector<Book> albums = scanLibrary(musicRoot_, cacheRoot_);
+    std::vector<Book> albums;
     Book all;
     all.title = "All music";
     all.path = musicRoot_;
-    for (const Book& a : albums) all.files.insert(all.files.end(), a.files.begin(), a.files.end());
+    for (const IndexItem* item : localItems(index_, IndexItem::Kind::Music)) {
+        albums.push_back(bookOf(*item));
+        all.files.insert(all.files.end(), albums.back().files.begin(), albums.back().files.end());
+    }
+    if (all.files.empty() && scanRequest_)
+        return {action("Scanning", [this] { say("Looking for music. Try again in a moment."); })};
     if (all.files.empty())
         return {action("No music", [this] { say("Copy music into " + musicRoot_.string() + ". One folder per album."); })};
 

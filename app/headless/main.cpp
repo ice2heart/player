@@ -11,6 +11,7 @@
 #include "frontend/presses.h"
 #include "frontend/terminal_keys.h"
 #include "frontend/threaded_scanner.h"
+#include "library/sqlite_library_store.h"
 #include "headless/evdev_input.h"
 #include "media/player.h"
 #include "media/tag_reader.h"
@@ -162,11 +163,12 @@ int main(int argc, char** argv) {
     SettingsFiles settings(config, state);
     std::unique_ptr<MusicServer> server = makeMusicServer(settings.config());
     std::unique_ptr<Downloader> downloader = makeDownloader(settings.config());
-    // The local-file scanner of the library index. App does not use it until step 4.6; it only exists here.
+    // The library index (library.db) and the background scan of the local files that keeps it up to date.
+    SqliteLibraryStore libraryStore(libraryDb);
     FfmpegTagReader tagReader;
     ThreadedScanner scanner(tagReader);
     DiskTextFiles manifests; // the cache's manifests, written atomically
-    App app(tts, player, earcons, mixer, *server, *downloader, settings.config(), settings.state(), clock, library, music, cache,
+    App app(tts, player, earcons, mixer, *server, *downloader, libraryStore, scanner, settings.config(), settings.state(), clock, library, music, cache,
             &manifests);
 
     EvdevInput evdev;
