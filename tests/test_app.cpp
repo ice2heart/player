@@ -591,7 +591,7 @@ TEST_F(AppTest, AnUnopenableLastTrackEndsTheAlbum) {
     EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
     EXPECT_TRUE(player.isOpen());
     EXPECT_FALSE(player.playing());
-    EXPECT_EQ(speech.last(), "End of music. Press play to start again.");
+    EXPECT_EQ(speech.last(), "End of queue. Press play to start again.");
 }
 
 TEST_F(AppTest, SkipForwardAndBack) {
@@ -1392,7 +1392,7 @@ TEST_F(AppTest, PlayAllPlaysEveryTrackInOrder) {
     player.atEnd = true;
     app->tick();
     EXPECT_FALSE(player.playing());
-    EXPECT_EQ(speech.last(), "End of music. Press play to start again.");
+    EXPECT_EQ(speech.last(), "End of queue. Press play to start again.");
 }
 
 TEST_F(AppTest, MusicTalksAboutTracksNotChapters) {
@@ -2004,7 +2004,7 @@ TEST_F(AppTest, TheLastStreamBreakingOffIsNotTheEndOfTheMusic) {
     player.pos = 100;
     player.broken = true;
     app->tick();
-    EXPECT_FALSE(speech.heard("End of music. Press play to start again."));
+    EXPECT_FALSE(speech.heard("End of queue. Press play to start again."));
     EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.");
     press(Button::PlayPause);
     EXPECT_EQ(player.file, "fake://stream/t3");
@@ -2237,7 +2237,7 @@ TEST_F(AppTest, TheEndOfARemoteListOpensTheFirstTrackOnlyOnPlay) {
     ASSERT_TRUE(app->playRemote("Weather", weather(), 2));
     player.atEnd = true;
     app->tick();
-    EXPECT_EQ(speech.last(), "End of music. Press play to start again.");
+    EXPECT_EQ(speech.last(), "End of queue. Press play to start again.");
     EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t3"})) << "no network until Play";
     EXPECT_FALSE(player.playing());
     EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
@@ -2967,7 +2967,7 @@ TEST_F(ScrobbleTest, PlayingTheListAgainAfterItsEndCountsAgain) {
     listen(100s);
     player.atEnd = true;
     app->tick();
-    ASSERT_TRUE(speech.heard("End of music. Press play to start again."));
+    ASSERT_TRUE(speech.heard("End of queue. Press play to start again."));
     player.atEnd = false;
     press(Button::PlayPause);
     listen(1s);
@@ -4141,7 +4141,7 @@ TEST_F(ResumeStreamTest, ATitleWithALineBreakIsKeptOnOneLine) {
 TEST_F(ResumeStreamTest, AStreamThatEndedResumesAtTheStartOfTheList) {
     playFromAlbum("Sunshine");
     player.atEnd = true;
-    app->tick(); // End of music
+    app->tick(); // End of queue
     reboot();
     EXPECT_EQ(stateFile.onDisk("last_stream.track"), "0");
     EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "0.0");
@@ -7259,6 +7259,22 @@ TEST_F(MergeTest, ADownloadOfAnAlbumTheServerDroppedStaysWithoutAReference) {
     EXPECT_EQ(albumInfo("Weather"), "Downloaded. Band. 3 tracks.");
 }
 
+TEST_F(MergeTest, ADownloadedAlbumPlaysFromMusicAndIsNamedByItsTrackTitlesNotItsFiles) {
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Weather"));
+    start();
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    open("Weather");
+    open("Song 2");
+    EXPECT_EQ(app->nowPlaying().title, "Weather");
+    EXPECT_EQ(app->nowPlaying().chapter, "Song 2");
+    EXPECT_EQ(app->nowPlaying().chapterIndex, 1);
+    EXPECT_EQ(player.file, downloadedFile("al1", 2));
+    EXPECT_TRUE(player.playing());
+    EXPECT_TRUE(server.scrobbles.empty()) << "a file on the device is not scrobbled";
+}
+
 TEST_F(MergeTest, AlbumInfoNamesEachSource) {
     tagRoadTrip();
     ASSERT_NO_FATAL_FAILURE(download("al1", "Weather"));
@@ -8691,4 +8707,330 @@ TEST_F(MenuJumpTest, AServerListThatIsNotSortedByNameJumpsByTenWithNoLetter) {
     EXPECT_EQ(speech.last(), "Album 25, Band, 25 of 25") << "stops at the last item";
     press(Button::Back);
     EXPECT_EQ(speech.last(), "Album 15, Band, 15 of 25");
+}
+
+// ---------------------------------------------------------------- the music queue
+
+// The music player plays a queue that mixes local files and server tracks. Nothing in the menus builds
+// a mixed one before Options (queue.md, step 2.4), so these tests give App one through its public
+// playQueue(), as playRemote() is given a list.
+class MusicQueueTest : public ScrobbleTest {
+protected:
+    QueueEntry localEntry(const std::string& path, const std::string& title, const std::string& album = "Mixed") const {
+        QueueEntry e;
+        e.path = path;
+        e.title = title;
+        e.album = album;
+        return e;
+    }
+    QueueEntry remoteEntry(const std::string& id, const std::string& title, const std::string& album = "Mixed",
+                           double duration = 200) const {
+        QueueEntry e;
+        e.kind = QueueEntry::Kind::Remote;
+        e.serverUrl = "https://music.example";
+        e.user = "ann";
+        e.trackId = id;
+        e.title = title;
+        e.album = album;
+        e.duration = duration;
+        return e;
+    }
+    // Storm (local), Rain (server), Calm (local).
+    std::vector<QueueEntry> mixed() const {
+        return {localEntry(alphaFile(1), "Storm"), remoteEntry("t2", "Rain"), localEntry(alphaFile(2), "Calm")};
+    }
+    void playMixed(size_t start = 0) {
+        start_();
+        ASSERT_TRUE(app->playQueue("Mixed", mixed(), start));
+    }
+    void start_() {
+        start();
+        player.holdStreams = true;
+    }
+    // The track that plays ends; a server track then opens in the background.
+    void trackEnds() {
+        player.atEnd = true;
+        app->tick();
+    }
+    // Down to the Album unit.
+    void albumUnit() {
+        press(Button::Down);
+        press(Button::Down);
+        ASSERT_EQ(speech.last(), "Album");
+    }
+};
+
+TEST_F(MusicQueueTest, AMixedQueuePlaysLocalRemoteLocalInOrder) {
+    playMixed();
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm");
+    EXPECT_EQ(app->nowPlaying().chapterCount, 3);
+    trackEnds();
+    ASSERT_EQ(player.file, "fake://stream/t2");
+    finishOpen();
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain");
+    EXPECT_FALSE(speech.heard("Loading.")) << "quiet between two tracks";
+    trackEnds();
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Calm");
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(MusicQueueTest, StartingInTheMiddleOfAMixedQueuePlaysFromThere) {
+    playMixed(1);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    finishOpen();
+    trackEnds();
+    EXPECT_EQ(player.file, alphaFile(2));
+}
+
+TEST_F(MusicQueueTest, ARemoteTrackThatCannotBeReachedInTheMiddleOfAQueueStopsThereAndPlayTriesItAgain) {
+    playMixed();
+    player.unopenable = {"fake://stream/t2"};
+    trackEnds();
+    finishOpen();
+    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain") << "the failed track is the current one";
+    player.unopenable.clear();
+    press(Button::PlayPause);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_TRUE(player.playing());
+    trackEnds();
+    EXPECT_EQ(player.file, alphaFile(2)) << "and the queue goes on";
+}
+
+TEST_F(MusicQueueTest, TheEndOfTheQueuePausesAtItsFirstEntry) {
+    playMixed(2);
+    ASSERT_EQ(player.file, alphaFile(2));
+    trackEnds();
+    EXPECT_EQ(speech.last(), "End of queue. Press play to start again.");
+    EXPECT_EQ(sounds.last(), Earcon::Close);
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(player.file, alphaFile(1)) << "the first entry is loaded";
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm");
+    press(Button::PlayPause);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(player.file, alphaFile(1));
+}
+
+TEST_F(MusicQueueTest, TheEndOfAQueueThatStartsWithAServerTrackOpensItOnlyOnPlay) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {remoteEntry("t1", "Storm Front"), localEntry(alphaFile(2), "Calm")}));
+    finishOpen();
+    trackEnds();
+    ASSERT_EQ(player.file, alphaFile(2));
+    trackEnds();
+    EXPECT_EQ(speech.last(), "End of queue. Press play to start again.");
+    EXPECT_FALSE(player.isOpen()) << "no stream is opened for a paused queue";
+    EXPECT_FALSE(player.opening());
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t1"), 1) << "only the first play opened it";
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
+    press(Button::PlayPause);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(MusicQueueTest, ChoosingATrackReplacesTheQueue) {
+    playMixed();
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    open("Road Trip");
+    open("Sunrise");
+    ASSERT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    EXPECT_EQ(app->nowPlaying().title, "Road Trip");
+    EXPECT_EQ(app->nowPlaying().chapterCount, 2) << "the old entries are gone";
+    trackEnds();
+    EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
+    trackEnds();
+    EXPECT_EQ(speech.last(), "End of queue. Press play to start again.");
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+}
+
+TEST_F(MusicQueueTest, PlayAllReplacesTheQueueToo) {
+    playMixed();
+    hold(Button::Home);
+    open("Music");
+    open("Play all");
+    EXPECT_EQ(player.file, (music / "Lullaby.mp3").string());
+    EXPECT_EQ(app->nowPlaying().title, "All music");
+    EXPECT_EQ(app->nowPlaying().chapterCount, 3);
+}
+
+TEST_F(MusicQueueTest, ThePlayerMenuListsTheEntriesOfTheQueue) {
+    playMixed();
+    press(Button::Ok);
+    open("Tracks");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Storm", "Rain", "Calm"}));
+    EXPECT_EQ(level().index, 0u);
+    press(Button::Down);
+    press(Button::Ok); // Rain
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain");
+}
+
+TEST_F(MusicQueueTest, TheNextServerTrackIsPreOpenedNearTheEndOfALocalOne) {
+    playMixed();
+    player.pos = player.length - 12;
+    app->tick();
+    EXPECT_TRUE(player.preloads.empty()) << "not yet";
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_EQ(player.preloads, (std::vector<std::string>{"fake://stream/t2"}));
+    trackEnds();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_EQ(player.adopted, 1);
+    EXPECT_FALSE(player.opening()) << "starts at once";
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(MusicQueueTest, NothingIsPreOpenedWhenTheNextEntryIsLocal) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {remoteEntry("t1", "Storm Front"), localEntry(alphaFile(2), "Calm"),
+                                         remoteEntry("t3", "Sunshine")}));
+    finishOpen();
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_TRUE(player.preloads.empty()) << "Calm is local; Sunshine is not next";
+    trackEnds();
+    ASSERT_EQ(player.file, alphaFile(2));
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_EQ(player.preloads, (std::vector<std::string>{"fake://stream/t3"}));
+}
+
+TEST_F(MusicQueueTest, TheLastEntryPreOpensNothing) {
+    playMixed(1);
+    finishOpen();
+    trackEnds(); // Calm, the last
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_TRUE(player.preloads.empty());
+}
+
+TEST_F(MusicQueueTest, ALocalTrackIsNeverScrobbledButAServerTrackInTheSameQueueIs) {
+    playMixed();
+    listen(10min);
+    EXPECT_TRUE(server.scrobbles.empty()) << "Storm is a local file";
+    trackEnds();
+    finishOpen();
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t2")}));
+    listen(310s); // more than half of the 600 s the player reports
+    EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t2"), played("t2")}));
+    trackEnds();
+    ASSERT_EQ(player.file, alphaFile(2));
+    listen(10min);
+    EXPECT_EQ(server.scrobbles.size(), 2u) << "Calm is local again: nothing new";
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(MusicQueueTest, TheAlbumUnitGoesToTheFirstEntryOfTheNextAlbumInTheQueue) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm", "Alpha"), localEntry(alphaFile(2), "Calm", "Alpha"),
+                                         remoteEntry("t1", "Rain", "Weather"), remoteEntry("t2", "Snow", "Weather"),
+                                         localEntry((roadTrip() / "01 - Sunrise.mp3").string(), "Sunrise", "Road Trip")}));
+    albumUnit();
+    press(Button::Forward);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t1") << "the first of Weather";
+    EXPECT_EQ(speech.last(), "Weather");
+    EXPECT_EQ(sounds.last(), Earcon::Move);
+    trackEnds(); // Snow, in the middle of Weather
+    finishOpen();
+    ASSERT_EQ(player.file, "fake://stream/t2");
+    press(Button::Forward);
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    EXPECT_EQ(speech.last(), "Road Trip");
+    press(Button::Forward);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "Last album.");
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    press(Button::Back);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t1") << "the first of the album before";
+    EXPECT_EQ(speech.last(), "Weather");
+    trackEnds(); // Snow again
+    finishOpen();
+    press(Button::Back);
+    EXPECT_EQ(player.file, alphaFile(1)) << "from the middle of Weather: the first of Alpha";
+    EXPECT_EQ(speech.last(), "Alpha");
+    trackEnds(); // Calm, in the middle of the first album
+    ASSERT_EQ(player.file, alphaFile(2));
+    press(Button::Back);
+    EXPECT_EQ(sounds.last(), Earcon::Edge) << "no album before the first, even from its middle";
+    EXPECT_EQ(speech.last(), "First album.");
+    EXPECT_EQ(player.file, alphaFile(2));
+}
+
+TEST_F(MusicQueueTest, TheAlbumUnitOfAPlaylistMovesBetweenTheAlbumsOfItsTracks) {
+    start_();
+    std::vector<RemoteTrack> playlist = {{"p1", "One", "Band", "Red", 100, 1},
+                                         {"p2", "Two", "Band", "Red", 100, 2},
+                                         {"p3", "Three", "Band", "Blue", 100, 3}};
+    ASSERT_TRUE(app->playRemote("Mix", playlist, 0));
+    finishOpen();
+    albumUnit();
+    press(Button::Forward);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/p3");
+    EXPECT_EQ(speech.last(), "Blue");
+}
+
+TEST_F(MusicQueueTest, AServerAlbumIsOneAlbumWhateverItsTracksSayTheirAlbumIs) {
+    start_();
+    std::vector<RemoteTrack> tracks = {{"d1", "One", "Band", "Weather", 100, 1}, {"d2", "Two", "Band", "Weather (Disc 2)", 100, 2}};
+    ASSERT_TRUE(app->playRemote("Weather", tracks, 0, RemoteSource{RemoteSource::Kind::Album, "al1"}));
+    finishOpen();
+    albumUnit();
+    press(Button::Forward);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "Last album.");
+    EXPECT_EQ(player.file, "fake://stream/d1");
+}
+
+TEST_F(MusicQueueTest, LocalFilesThatCannotBeOpenedLeaveTheServerTrackThatWasPlayingForPlay) {
+    start_();
+    player.unopenable = {alphaFile(2), (roadTrip() / "01 - Sunrise.mp3").string()};
+    ASSERT_TRUE(app->playQueue("Mixed", {remoteEntry("t2", "Rain"), localEntry(alphaFile(2), "Calm"),
+                                         localEntry((roadTrip() / "01 - Sunrise.mp3").string(), "Sunrise")}));
+    finishOpen();
+    ASSERT_EQ(app->nowPlaying().chapter, "Rain");
+    player.pos = 42;
+    hold(Button::Forward); // Calm: cannot be opened; neither can Sunrise
+    EXPECT_TRUE(speech.heard("Cannot open 02 - Calm.mp3"));
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain") << "the server track is still the current one";
+    player.unopenable.clear();
+    press(Button::PlayPause);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(MusicQueueTest, TheMusicQueueIsKeptWhenABookTakesTheTurnAndContinueBringsItBack) {
+    playMixed();
+    trackEnds();
+    finishOpen();
+    player.pos = 42;
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    ASSERT_EQ(app->screens().back().kind, Screen::Kind::BookPlayer);
+    hold(Button::Home);
+    ASSERT_EQ(labels()[1], "Continue");
+    press(Button::Down);
+    press(Button::Ok);
+    finishOpen();
+    ASSERT_EQ(app->screens().back().kind, Screen::Kind::MusicPlayer);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_EQ(app->nowPlaying().chapterCount, 3);
+    trackEnds();
+    EXPECT_EQ(player.file, alphaFile(2)) << "the rest of the queue follows";
 }

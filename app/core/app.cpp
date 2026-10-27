@@ -2087,6 +2087,55 @@ std::vector<MenuItem> App::chaptersMenu() {
 
 // ---------------------------------------------------------------- playback
 
+// ---- the tracks of the loaded player (the queue for music, the files of a book)
+
+size_t App::trackCount() const {
+    if (music_) return queue_.size();
+    return book_ ? book_->files.size() : 0;
+}
+
+bool App::trackRemote(size_t i) const {
+    if (i >= trackCount()) return false;
+    return music_ ? queue_.at(i).kind == QueueEntry::Kind::Remote : book_->remote;
+}
+
+std::string App::trackKey(size_t i) const {
+    if (music_) return queue_.at(i).kind == QueueEntry::Kind::Remote ? queue_.at(i).trackId : queue_.at(i).path;
+    return book_->files[i].string();
+}
+
+// The spoken name of a track. A remote one is never named after its file, which is the server's track id.
+std::string App::trackTitle(size_t i) const {
+    if (!music_) return partTitle(*book_, i);
+    const QueueEntry& e = queue_.at(i);
+    if (!e.title.empty()) return e.title;
+    return e.kind == QueueEntry::Kind::Remote ? "Track " + std::to_string(i + 1) : chapterTitle(e.path);
+}
+
+double App::trackDuration(size_t i) const {
+    if (music_) return i < queue_.size() ? queue_.at(i).duration : 0;
+    return book_ && i < book_->durations.size() ? book_->durations[i] : 0;
+}
+
+std::optional<size_t> App::upcomingTrack() const {
+    if (music_) return queue_.upcoming();
+    if (book_ && fileIndex_ + 1 < book_->files.size()) return fileIndex_ + 1;
+    return std::nullopt;
+}
+
+void App::setFile(size_t i) {
+    fileIndex_ = i;
+    if (music_) queue_.setCurrent(i);
+}
+
+std::optional<size_t> App::listIndexOf(const std::string& id, size_t hint) const {
+    if (!book_ || !book_->remote) return std::nullopt;
+    if (hint < book_->files.size() && book_->files[hint] == id) return hint; // a track can be in a list twice
+    for (size_t i = 0; i < book_->files.size(); ++i)
+        if (book_->files[i] == id) return i;
+    return std::nullopt;
+}
+
 std::pair<size_t, double> App::savedPlace(const Book& book) const {
     size_t file = 0;
     double pos = 0;
@@ -2223,7 +2272,7 @@ bool App::playServerBook(const Book& book, size_t file, double position, Then op
 // Music plays from the chosen track. Local music is never resumed later, so it
 // neither saves a position nor replaces the book that start() resumes; a remote
 // list keeps its place as last_stream (rememberPosition()).
-bool App::playMusic(const Book& album, size_t track, Then opened, double position) {
+bool App::playEntries(const Book& list, std::vector<QueueEntry> entries, size_t track, Then opened, double position) {
     if (book_) rememberPosition();
     // Only once it plays: if it fails, the book before it keeps its sleep timer and rewind.
     auto playing = [this, opened = std::move(opened)] {
@@ -2231,7 +2280,43 @@ bool App::playMusic(const Book& album, size_t track, Then opened, double positio
         pausedAt_.reset();
         if (opened) opened();
     };
-    return switchTo(album, true, track, position, true, std::move(playing)) != OpenResult::Failed;
+    Queue queue;
+    queue.replace(std::move(entries), track);
+    return switchTo(list, true, track, position, true, std::move(playing), std::move(queue)) != OpenResult::Failed;
+}
+
+bool App::playMusic(const Book& album, size_t track, Then opened, double position) {
+    return playEntries(album, entriesOf(album), track, std::move(opened), position);
+}
+
+// The entries of a local list: its files in order, each in the album it belongs to (a list of albums, like
+// Play all, has the title of each; any other list is one album). A server list is built in playRemote().
+std::vector<QueueEntry> App::entriesOf(const Book& list) {
+    std::vector<QueueEntry> entries;
+    for (size_t i = 0; i < list.files.size(); ++i) {
+        QueueEntry e;
+        e.path = list.files[i].string();
+        if (i < list.titles.size() && !list.titles[i].empty()) e.title = list.titles[i];
+        else e.title = chapterTitle(list.files[i]);
+        e.album = list.title;
+        for (const Book::Album& album : list.albums)
+            if (album.first <= i) e.album = album.title;
+        e.artist = list.artist;
+        entries.push_back(std::move(e));
+    }
+    return entries;
+}
+
+bool App::playQueue(const std::string& title, std::vector<QueueEntry> entries, size_t start) {
+    if (start >= entries.size()) {
+        earcons_.play(Earcon::Error);
+        say("Nothing to play.");
+        return false;
+    }
+    Book list;
+    list.title = title;
+    std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
+    return playEntries(list, std::move(entries), start, [this, screen] { enterPlayerFrom(screen); });
 }
 
 bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index,
@@ -2253,8 +2338,23 @@ bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& t
         list.titles.push_back(t.title);
         list.durations.push_back(t.duration);
     }
+    std::vector<QueueEntry> entries;
+    for (const RemoteTrack& t : tracks) {
+        QueueEntry e;
+        e.kind = QueueEntry::Kind::Remote;
+        e.serverUrl = serverIdentity(config_.getString(kServerUrl));
+        e.user = config_.getString(kServerUser);
+        e.trackId = t.id;
+        e.title = t.title;
+        // A server album is one album, whatever its tracks say (a disc 2 tag); a playlist has the albums of its tracks.
+        const bool ofAlbum = list.source && list.source->kind == RemoteSource::Kind::Album;
+        e.album = ofAlbum || t.album.empty() ? title : t.album;
+        e.artist = t.artist.empty() ? artist : t.artist;
+        e.duration = t.duration;
+        entries.push_back(std::move(e));
+    }
     std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
-    return playMusic(list, index, [this, screen] { enterPlayerFrom(screen); }, position);
+    return playEntries(list, std::move(entries), index, [this, screen] { enterPlayerFrom(screen); }, position);
 }
 
 // Loads `book` into the music player (`music`) or the book player from `file`. If none of its
@@ -2262,30 +2362,33 @@ bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& t
 // is where they were. The other player's book is parked with its place, so Continue brings it
 // back; a book of the same kind replaces the loaded one and leaves the parked one alone.
 App::OpenResult App::switchTo(const Book& book, bool music, size_t file, double position, bool autoplay,
-                              Then opened) {
+                              Then opened, std::optional<Queue> queue) {
     dropPendingOpen(); // a failure goes back to what was loaded before it
     size_t wasFile = fileIndex_;
     bool wasOpen = player_.isOpen(), wasPlaying = player_.playing();
     double wasAt = player_.position();
     std::optional<Parked> wasParked = parked_;
-    if (book_ && music_ != music) parked_ = Parked{*book_, music_, fileIndex_, place()};
-    auto undo = [this, previous = std::exchange(book_, book), wasMusic = std::exchange(music_, music), wasFile,
-                 wasOpen, wasPlaying, wasAt, wasParked = std::move(wasParked), remote = book.remote] {
+    if (book_ && music_ != music) parked_ = Parked{*book_, music_, fileIndex_, place(), music_ ? queue_ : Queue{}};
+    auto undo = [this, previous = std::exchange(book_, book), wasMusic = std::exchange(music_, music),
+                 wasQueue = std::exchange(queue_, music && queue ? std::move(*queue) : Queue{}), wasFile, wasOpen,
+                 wasPlaying, wasAt, wasParked = std::move(wasParked)] {
+        const bool failedRemote = trackRemote(fileIndex_); // the track of the new list that did not open
         book_ = previous;
         music_ = wasMusic;
+        queue_ = wasQueue;
         fileIndex_ = wasFile;
         parked_ = wasParked;
         if (!book_ || !wasOpen) return;
-        if (book_->remote && remote) {
+        if (trackRemote(wasFile) && failedRemote) {
             reopenAt_ = wasAt; // its server is likely gone too: open it on Play, not now
-        } else if (book_->remote) {
-            // A local book failed: the server had nothing to do with it. The track opens
+        } else if (trackRemote(wasFile)) {
+            // A local file failed: the server had nothing to do with it. The track opens
             // again in the background; if that fails, Play tries it again.
             openFile(wasFile, wasAt, wasPlaying, Origin::Restore, {}, [this, wasAt] { reopenAt_ = wasAt; });
-        } else if (player_.open(book_->files[wasFile].string(), wasAt)) {
-            if (wasPlaying && !remote) player_.play(); // the server is gone: stay paused
+        } else if (player_.open(trackKey(wasFile), wasAt)) {
+            if (wasPlaying && !failedRemote) player_.play(); // the server is gone: stay paused
         } else {
-            book_.reset(), music_ = false;
+            book_.reset(), music_ = false, queue_ = Queue{};
         }
     };
     // The player used last: a music list that cannot be resumed later (local files) does not count.
@@ -2316,8 +2419,10 @@ App::OpenResult App::loadFile(size_t file, double position, bool autoplay, Origi
     bool wasOpen = player_.isOpen();
     double wasAt = player_.position();
     auto restore = [this, wasFile, wasOpen, wasAt, undo = std::move(undo), earlier = std::move(earlier)] {
-        if (book_ && book_->remote) {
-            fileIndex_ = wasFile;
+        // A remote track failed, or the one that was playing is a remote one that the failed local
+        // open has closed: it is the current track again, opened on Play.
+        if (book_ && (trackRemote(fileIndex_) || trackRemote(wasFile))) {
+            setFile(wasFile);
             if (wasOpen) reopenAt_ = wasAt; // opened on Play: not a second wait on the server now
         }
         if (undo) undo();
@@ -2334,15 +2439,17 @@ App::OpenResult App::loadFile(size_t file, double position, bool autoplay, Origi
 App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origin origin, Then opened,
                               Then undo) {
     if (!book_) return OpenResult::Failed;
-    for (; file < book_->files.size(); ++file, position = 0) {
-        fileIndex_ = file;
+    for (; file < trackCount(); ++file, position = 0) {
+        setFile(file);
         bool opens = false;
-        if (book_->remote) {
+        const bool remote = trackRemote(file);
+        const std::string key = trackKey(file);
+        if (remote) {
             // A downloaded track is a local file: it opens at once and seeks by itself. If it
             // cannot be opened after all, the stream is the way.
-            if (std::optional<std::filesystem::path> cached = cachedFile(book_->files[file].string(), true)) {
+            if (std::optional<std::filesystem::path> cached = cachedFile(key, true)) {
                 opens = player_.open(cached->string(), position);
-                if (!opens && cacheIndex_) cacheIndex_->erase(book_->files[file].string()); // not tried again at every play
+                if (!opens && cacheIndex_) cacheIndex_->erase(key); // not tried again at every play
             }
             if (!opens) {
                 // A stream takes a moment to open: say why nothing plays yet.
@@ -2351,24 +2458,24 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
                 opens = player_.open(stream.url, position, stream.transcoded);
             }
         } else {
-            opens = player_.open(book_->files[file].string(), position);
+            opens = player_.open(key, position);
         }
         if (opens) {
             if (player_.opening()) {
                 std::uint64_t screen = origin == Origin::Menu && !screens_.empty() ? screens_.back().id : 0;
-                pendingOpen_ = PendingOpen{screen,    origin,         partTitle(*book_, file), autoplay,
+                pendingOpen_ = PendingOpen{screen,    origin,         trackTitle(file), autoplay,
                                            position,  clock_.now(),   std::move(opened),       std::move(undo)};
                 return OpenResult::Pending;
             }
             onOpened(autoplay, origin, opened);
             return OpenResult::Opened;
         }
-        if (book_->remote) {
-            onCannotPlay(partTitle(*book_, file), origin == Origin::Restore, undo);
+        if (remote) {
+            onCannotPlay(trackTitle(file), origin == Origin::Restore, undo);
             return OpenResult::Failed;
         }
         earcons_.play(Earcon::Error);
-        say("Cannot open " + book_->files[file].filename().string());
+        say("Cannot open " + std::filesystem::path(key).filename().string());
     }
     if (undo) undo();
     return OpenResult::Failed;
@@ -2379,7 +2486,7 @@ void App::onOpened(bool autoplay, Origin origin, const Then& opened) {
     // The current track opened again (Play after it broke off, or it is back
     // behind a choice that failed) goes on with its play.
     bool goesOn = scrobble_ && (origin == Origin::Resume || origin == Origin::Restore);
-    if (!book_->remote) scrobble_.reset();
+    if (!trackRemote(fileIndex_)) scrobble_.reset();
     else if (!goesOn) startTrackPlay();
     if (autoplay) player_.play();
     if (opened) opened();
@@ -2521,11 +2628,13 @@ void App::continueParked() {
     Parked target = *parked_;
     if (book_) rememberPosition();
     std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
-    switchTo(target.book, target.music, target.file, target.position, true, [this, screen] {
-        sleepAtChapterEnd_ = -1;
-        pausedAt_.reset();
-        enterPlayerFrom(screen);
-    });
+    switchTo(target.book, target.music, target.file, target.position, true,
+             [this, screen] {
+                 sleepAtChapterEnd_ = -1;
+                 pausedAt_.reset();
+                 enterPlayerFrom(screen);
+             },
+             target.music ? std::optional<Queue>(std::move(target.queue)) : std::nullopt);
 }
 
 void App::pause(bool announce) {
@@ -2586,26 +2695,35 @@ void App::stepByUnit(int direction) {
     }
 }
 
-// To the first track of the previous / next album of the loaded list (Play all spans albums;
-// any other list is one album, so there is no other to go to).
+// To the first track of the previous / next album of the queue: a run of tracks of the same album (by its
+// name) in the play order. A list of one album has no other to go to.
 void App::stepAlbum(int direction) {
-    if (!book_) {
+    if (!book_ || queue_.empty()) {
         earcons_.play(Earcon::Edge);
         return;
     }
-    const auto& albums = book_->albums;
-    size_t current = 0;
-    for (size_t i = 0; i < albums.size(); ++i)
-        if (albums[i].first <= fileIndex_) current = i;
-    long target = long(current) + direction;
-    if (albums.empty() || target < 0 || target >= long(albums.size())) {
+    const size_t last = queue_.size() - 1;
+    auto runStart = [this](size_t i) { // the first track of the album that track i is in
+        while (i > 0 && queue_.at(i - 1).album == queue_.at(i).album) --i;
+        return i;
+    };
+    size_t current = queue_.position();
+    size_t target = current;
+    if (direction > 0) {
+        while (target <= last && queue_.at(target).album == queue_.at(current).album) ++target;
+    } else {
+        target = runStart(current);
+        if (target > 0) target = runStart(target - 1);
+    }
+    if ((direction > 0 && target > last) || (direction < 0 && runStart(current) == 0)) {
         earcons_.play(Earcon::Edge);
         say(direction < 0 ? "First album." : "Last album.");
         return;
     }
-    if (!gotoChapter(int(albums[size_t(target)].first), Origin::Key)) return; // the error was said
+    std::string album = queue_.at(target).album.empty() ? queue_.at(target).title : queue_.at(target).album;
+    if (!gotoChapter(int(target), Origin::Key)) return; // the error was said
     earcons_.play(Earcon::Move);
-    say(albums[size_t(target)].title);
+    say(album);
 }
 
 // The edge sound plays once per press: a held key repeating at its limit stays quiet.
@@ -2632,20 +2750,20 @@ void App::changeVolume(int delta, Gesture gesture) {
 std::vector<App::ChapterRef> App::chapters() const {
     std::vector<ChapterRef> out;
     if (!book_) return out;
-    if (book_->files.size() > 1) {
-        for (size_t i = 0; i < book_->files.size(); ++i)
-            out.push_back({partTitle(*book_, i), i, 0});
+    if (trackCount() > 1) {
+        for (size_t i = 0; i < trackCount(); ++i)
+            out.push_back({trackTitle(i), i, 0});
     } else if (!player_.chapters().empty()) {
         for (const Chapter& c : player_.chapters()) out.push_back({c.title, 0, c.start});
     } else {
-        out.push_back({book_->remote ? partTitle(*book_, 0) : book_->title, 0, 0});
+        out.push_back({trackRemote(0) ? trackTitle(0) : book_->title, 0, 0});
     }
     return out;
 }
 
 int App::currentChapter() const {
     if (!book_) return 0;
-    if (book_->files.size() > 1) return int(fileIndex_);
+    if (trackCount() > 1) return int(fileIndex_);
     double pos = player_.position() + 0.25;
     int cur = 0;
     const auto& list = player_.chapters();
@@ -2668,7 +2786,7 @@ bool App::gotoChapter(int index, Origin origin, Then opened) {
         return loadFile(ch.file, ch.start, willPlay(), origin, std::move(arrived)) != OpenResult::Failed;
     player_.seek(ch.start);
     // The whole track from its start (not a chapter in it): heard again.
-    if (book_->remote && (book_->files.size() > 1 || player_.chapters().empty())) startTrackPlay();
+    if (trackRemote(fileIndex_) && (trackCount() > 1 || player_.chapters().empty())) startTrackPlay();
     arrived();
     return true;
 }
@@ -2694,29 +2812,30 @@ void App::stepChapter(int direction) {
 
 void App::onFileFinished() {
     scrobble_.reset(); // its play is over: opening it again (Play at the end of the list) is a new one
-    if (fileIndex_ + 1 < book_->files.size()) {
-        size_t next = fileIndex_ + 1;
+    if (std::optional<size_t> next = upcomingTrack()) {
         // Quietly: "Loading." between every two tracks of an album would be too much.
         // If a remote one fails, "Server not reachable" is said and it stops there. The
         // finished track was heard to the end, so Play opens the one that failed.
-        auto failedHere = [this, next] {
-            if (!book_ || !book_->remote) return;
-            fileIndex_ = next;
+        const size_t target = *next;
+        const bool remote = trackRemote(target);
+        auto failedHere = [this, target, remote] {
+            if (!book_ || !remote) return;
+            setFile(target);
             reopenAt_ = 0.0;
         };
-        if (loadFile(next, 0, true, Origin::Next, {}, failedHere) != OpenResult::Failed || book_->remote) return;
+        if (loadFile(target, 0, true, Origin::Next, {}, failedHere) != OpenResult::Failed || remote) return;
     }
     player_.pause();
-    if (book_->remote) { // next play starts the list again, opening it only then
+    if (trackRemote(0)) { // next play starts the list again, opening it only then
         player_.close();
-        fileIndex_ = 0;
+        setFile(0);
         reopenAt_ = 0.0;
     } else {
         loadFile(0, 0, false, Origin::Next); // next play starts the book again
     }
     rememberPosition();
     earcons_.play(Earcon::Close);
-    say(music_ ? "End of music. Press play to start again." : "End of book. Press play to start again.");
+    say(music_ ? "End of queue. Press play to start again." : "End of book. Press play to start again.");
 }
 
 // What was buffered has been heard. Moving on to the next track would only wait
@@ -2763,13 +2882,13 @@ void App::checkBuffering(TimePoint now) {
 void App::checkReadAhead() {
     // No length while it is closed or opening, nor for a stream that does not say (a
     // transcode the server lists no length for).
-    bool wanted = player_.playing() && book_ && book_->remote && fileIndex_ + 1 < book_->files.size() &&
-                  player_.duration() > 0 &&
+    const std::optional<size_t> upcoming = upcomingTrack();
+    bool wanted = player_.playing() && book_ && upcoming && trackRemote(*upcoming) && player_.duration() > 0 &&
                   player_.duration() - player_.position() <= std::chrono::duration<double>(kReadAhead).count();
     if (wanted) {
         // A new track, or the quality changed since: pre-open the stream that will be opened.
-        size_t next = fileIndex_ + 1;
-        const std::string id = book_->files[next].string();
+        size_t next = *upcoming;
+        const std::string id = trackKey(next);
         if (cachedFile(id)) { // a file on disk opens at once: nothing to read ahead, and a stream pre-opened before it was cached is dropped
             if (readAhead_) {
                 player_.cancelPreload();
@@ -2788,7 +2907,7 @@ void App::checkReadAhead() {
 
 void App::startTrackPlay() {
     scrobble_ = TrackPlay{};
-    scrobble_->trackId = book_->files[fileIndex_].string();
+    scrobble_->trackId = trackKey(fileIndex_);
     scrobble_->startedAt = clock_.wallTime();
     // A cached track that plays is kept longer: the time goes to its manifest with the next trimCache().
     // (trimCache() ignores a time before kEarliestPlayTime: a clock that was not set.)
@@ -2812,9 +2931,7 @@ void App::checkScrobble(TimePoint now) {
     if (play.heardSince) play.heard += now - *play.heardSince;
     play.heardSince = now;
     // The player knows the length once open; a transcode has the server's (or none).
-    double length = player_.duration() > 0 ? player_.duration()
-                    : fileIndex_ < book_->durations.size() ? book_->durations[fileIndex_]
-                                                           : 0;
+    double length = player_.duration() > 0 ? player_.duration() : trackDuration(fileIndex_);
     Clock::TimePoint::duration enough = kScrobbleAtMost;
     if (length > 0)
         enough = std::min(enough, std::chrono::duration_cast<Clock::TimePoint::duration>(
@@ -3086,9 +3203,12 @@ void App::checkAutoCache() {
     scrobble_->cacheAsked = true;
     // A server book is not cached on its own: its tracks would be listed in Music as an album and
     // would push the music out of the limit (downloading books for offline is 4.12).
-    if (!book_ || !book_->remote || book_->serverBook || !book_->source || fileIndex_ >= book_->files.size() ||
-        book_->files[fileIndex_].string() != scrobble_->trackId)
+    if (!book_ || !book_->remote || book_->serverBook || !book_->source || !trackRemote(fileIndex_) ||
+        trackKey(fileIndex_) != scrobble_->trackId)
         return;
+    // Only a track of the list the queue came from: its details and its folder are that list's.
+    const std::optional<size_t> inList = listIndexOf(scrobble_->trackId, fileIndex_);
+    if (!inList) return;
     std::uintmax_t limit = cacheLimit();
     if (limit == 0) return; // (pumpAutoCache() skips what is cached, and asks about the downloader)
     AutoCache job;
@@ -3097,10 +3217,10 @@ void App::checkAutoCache() {
     job.artist = book_->artist;
     job.playedAt = scrobble_->startedAt;
     job.track.id = scrobble_->trackId;
-    if (fileIndex_ < book_->titles.size()) job.track.title = book_->titles[fileIndex_];
-    if (fileIndex_ < book_->durations.size()) job.track.duration = book_->durations[fileIndex_];
-    if (fileIndex_ < book_->suffixes.size()) job.track.suffix = book_->suffixes[fileIndex_];
-    if (fileIndex_ < book_->sizes.size()) job.track.size = book_->sizes[fileIndex_];
+    if (*inList < book_->titles.size()) job.track.title = book_->titles[*inList];
+    if (*inList < book_->durations.size()) job.track.duration = book_->durations[*inList];
+    if (*inList < book_->suffixes.size()) job.track.suffix = book_->suffixes[*inList];
+    if (*inList < book_->sizes.size()) job.track.size = book_->sizes[*inList];
     if (job.track.size > 0 && std::uintmax_t(job.track.size) > limit) return; // would be evicted at once: fetched at every play
     autoQueue_.push_back(std::move(job));
 }
@@ -3201,8 +3321,8 @@ void App::trimCache(bool flushPlays) {
     bool over = limit > 0 && (trimDirty_ || !cacheBytes_ || *cacheBytes_ > limit);
     if (!over && !(flushPlays && !played_.empty())) return;
     std::vector<std::filesystem::path> keep = partsInUse(); // and the file the player has open
-    if (book_ && book_->remote && fileIndex_ < book_->files.size() && player_.isOpen())
-        if (auto open = cachedFile(book_->files[fileIndex_].string())) keep.push_back(*open);
+    if (book_ && trackRemote(fileIndex_) && player_.isOpen())
+        if (auto open = cachedFile(trackKey(fileIndex_))) keep.push_back(*open);
     TrackCache::TrimInfo info;
     store.trim(limit > 0 ? limit : std::numeric_limits<std::uintmax_t>::max(), played_, keep, &info);
     played_.clear();
@@ -3215,15 +3335,15 @@ void App::trimCache(bool flushPlays) {
 int App::streamingBitrate() const { return std::max(kOriginalQuality, config_.getInt(kStreamingBitrate, kOriginalQuality)); }
 
 MusicServer::Stream App::remoteStream(size_t file) {
-    const std::string id = book_->files[file].string();
+    const std::string id = trackKey(file);
     if (readAhead_ && readAhead_->trackId == id && readAhead_->bitrate == streamingBitrate()) return readAhead_->stream;
     return newStream(file);
 }
 
 MusicServer::Stream App::newStream(size_t file) {
-    MusicServer::Stream stream = server_.stream(book_->files[file].string(), streamingBitrate());
+    MusicServer::Stream stream = server_.stream(trackKey(file), streamingBitrate());
     // A transcode often has no length of its own: the server's listing has it.
-    if (stream.transcoded && file < book_->durations.size()) stream.transcoded->duration = book_->durations[file];
+    if (stream.transcoded && trackDuration(file) > 0) stream.transcoded->duration = trackDuration(file);
     return stream;
 }
 
@@ -3234,7 +3354,9 @@ void App::rememberPosition() {
         return;
     }
     if (book_ && book_->remote) { // a stream list: resumed after a restart, if it can be loaded again
-        if (!book_->source) return;
+        if (!book_->source || !trackRemote(fileIndex_)) return;
+        const std::optional<size_t> inList = listIndexOf(trackKey(fileIndex_), fileIndex_);
+        if (!inList) return; // not a track of that list (the queue was built from other tracks)
         state_.setString(kLastStreamServer, serverIdentity(config_.getString(kServerUrl)));
         state_.setString(kLastStreamUser, config_.getString(kServerUser));
         state_.setString(kLastStreamKind, book_->source->kind == RemoteSource::Kind::Album ? "album" : "playlist");
@@ -3242,8 +3364,8 @@ void App::rememberPosition() {
         std::string title = book_->title; // one TSV line: a line break would split it
         std::replace_if(title.begin(), title.end(), [](char c) { return c == '\n' || c == '\r'; }, ' ');
         state_.setString(kLastStreamTitle, title);
-        state_.setString(kLastStreamTrack, std::to_string(fileIndex_));
-        state_.setString(kLastStreamTrackId, book_->files[fileIndex_].string());
+        state_.setString(kLastStreamTrack, std::to_string(*inList));
+        state_.setString(kLastStreamTrackId, trackKey(fileIndex_));
         state_.setString(kLastStreamPos, tenths(place()));
         return;
     }
@@ -3266,9 +3388,9 @@ std::string App::playerStatus() const {
                 list[size_t(cur)].title + ". ";
     if (player_.isOpen()) { // else a remote track opened on Play: no place or length yet
         double chapterEnd = player_.duration();
-        if (book_->files.size() == 1 && size_t(cur) + 1 < list.size()) chapterEnd = list[size_t(cur) + 1].start;
+        if (trackCount() == 1 && size_t(cur) + 1 < list.size()) chapterEnd = list[size_t(cur) + 1].start;
         text += spokenDuration(chapterEnd - pos) + " left in " + unit() + ". ";
-        if (!music_ && book_->files.size() == 1 && list.size() > 1)
+        if (!music_ && trackCount() == 1 && list.size() > 1)
             text += spokenDuration(player_.duration() - pos) + " left in book. ";
     }
     text += pendingOpen_ ? "Loading." : player_.playing() ? "Playing." : "Paused.";
@@ -3353,6 +3475,7 @@ void App::restart(bool saveFirst) {
     pendingOpen_.reset();
     player_.close();
     book_.reset();
+    queue_ = Queue{};
     parked_.reset();
     music_ = false;
     closeScreens(0);

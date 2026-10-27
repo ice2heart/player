@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -165,6 +166,20 @@ TEST(Queue, RepeatTrackAtTheLastEntryStillRepeatsIt) {
     q.setCurrent(4);
     EXPECT_EQ(q.advance(), Queue::Step::Repeated);
     EXPECT_EQ(currentTitle(q), "e");
+}
+
+TEST(Queue, UpcomingIsWhereAdvanceWouldGoAndMovesNothing) {
+    Queue q = abcde();
+    q.setCurrent(1);
+    EXPECT_EQ(q.upcoming(), std::optional<std::size_t>(2));
+    EXPECT_EQ(currentTitle(q), "b") << "looking ahead does not move";
+    q.setCurrent(4);
+    EXPECT_EQ(q.upcoming(), std::nullopt) << "the end of the queue";
+    q.setRepeat(QueueRepeat::All);
+    EXPECT_EQ(q.upcoming(), std::optional<std::size_t>(0));
+    q.setRepeat(QueueRepeat::Track);
+    EXPECT_EQ(q.upcoming(), std::optional<std::size_t>(4)) << "the same entry again";
+    EXPECT_EQ(Queue{}.upcoming(), std::nullopt);
 }
 
 TEST(Queue, SetCurrentOutOfRangeChangesNothing) {

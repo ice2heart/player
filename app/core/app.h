@@ -5,6 +5,7 @@
 #include "library.h"
 #include "library_index.h"
 #include "menu.h"
+#include "queue.h"
 #include "services.h"
 #include "settings.h"
 #include "track_cache.h"
@@ -86,6 +87,11 @@ public:
     bool playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index,
                     std::optional<RemoteSource> source = std::nullopt, double position = 0,
                     const std::string& artist = {});
+
+    // Plays `entries` (local files and server tracks mixed) as the music queue, from `start`, like
+    // playRemote(): `title` is what the queue is called. Replaces the queue; nothing is saved for a
+    // restart (no `last_stream`). False if it failed at once or `entries` is empty.
+    bool playQueue(const std::string& title, std::vector<QueueEntry> entries, size_t start = 0);
 
     // Read-only state for the simulator's visualisation.
     Mode mode() const;
@@ -301,7 +307,26 @@ private:
     bool playServerBook(const Book& book, size_t file, double position, Then opened);
     bool playMusic(const Book& album, size_t track, Then opened = {},
                    double position = 0); // false if it failed at once
-    OpenResult switchTo(const Book& book, bool music, size_t file, double position, bool autoplay, Then opened = {});
+    // Replaces the music queue with `entries` and plays from `track`. `list` is what they came from
+    // (its title, and for a server album or playlist its `source` and track details).
+    bool playEntries(const Book& list, std::vector<QueueEntry> entries, size_t track, Then opened = {}, double position = 0);
+    static std::vector<QueueEntry> entriesOf(const Book& list); // the queue entries of a local or server list
+    // `queue` is the music queue when `music`; the book player has none.
+    OpenResult switchTo(const Book& book, bool music, size_t file, double position, bool autoplay, Then opened = {},
+                        std::optional<Queue> queue = std::nullopt);
+
+    // The tracks of the loaded player: the play order of the queue (music), or the files of the book.
+    // fileIndex_ is the current one in both.
+    size_t trackCount() const;
+    bool trackRemote(size_t i) const;           // a track of the server (its key is the track id)
+    std::string trackKey(size_t i) const;       // the file, or the server's track id
+    std::string trackTitle(size_t i) const;
+    double trackDuration(size_t i) const;       // from the server's listing, 0 if unknown
+    std::optional<size_t> upcomingTrack() const; // the track that follows this one at the end of it
+    void setFile(size_t i);                     // fileIndex_ and the queue's current entry
+    // The index in the list the queue came from (book_) of the remote track `id`, if it is one of its
+    // tracks; `hint` is tried first, since a list can hold a track twice.
+    std::optional<size_t> listIndexOf(const std::string& id, size_t hint) const;
     std::string unit() const { return music_ ? "track" : "chapter"; } // what one part is called
     OpenResult loadFile(size_t file, double position, bool autoplay, Origin origin, Then opened = {},
                         Then undo = {}); // within the loaded book; a pending open's undo runs only if this fails
@@ -453,8 +478,11 @@ private:
     bool volumeEdgeHeard_ = false; // a held volume key already played the edge sound at its limit
     // The loaded player: its book (or the album / playlist when music_), the player it is, and
     // its file. There is one MediaPlayer, so only this one is open.
+    // For the music player `book_` is the list the queue came from (title, server source and track
+    // details); the tracks that play are queue_'s.
     std::optional<Book> book_;
     bool music_ = false; // the music player, else the book player
+    Queue queue_;        // the music player's queue; empty for the book player (the parked one is in parked_)
     size_t fileIndex_ = 0;
     // The other player's book, paused where it stopped (a remote one opens again on Continue). It
     // is of the other kind than book_ (when one is loaded); none until the other player has been used.
@@ -463,6 +491,7 @@ private:
         bool music = false;
         size_t file = 0;
         double position = 0;
+        Queue queue; // the music queue of a parked music player
     };
     std::optional<Parked> parked_;
     // Set while a remote track is loaded but closed: after a failed open (opening

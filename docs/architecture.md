@@ -3,7 +3,7 @@
 > Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end,
 > streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)),
 > plus phase 1 of [queue.md](queue.md): volume and Options buttons, the step unit, menus that jump, and separate music and book players.
-> The queue itself (queue.md phase 2) is not built. Last updated: 2026-10-27.
+> Phase 2 of queue.md is being built: the music player plays a `Queue` (step 2.2); shuffle, repeat, Options, the Queue list, the server checks and `queue.tsv` are not built yet. Last updated: 2026-10-27.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -291,8 +291,8 @@ key / GPIO ─► App::keyDown(b) ─► GestureDetector.press   ─► Deep ─
 - **Step unit:** Up / Down in a player call `changeStepUnit()`, and a light press of Left / Right
   calls `stepByUnit()` (`stepUnit()` reads the unit of the loaded player). The units are an index:
   0 Skip (`skip()`, the Settings skip), 1 Track (music) or Chapter (book), 2 Album (music,
-  `stepAlbum()`: the first track of the previous / next entry of `Book::albums`, which only
-  Play all fills, so any other list is one album and gives the edge sound and "Last album.") or
+  `stepAlbum()`: the first entry of the previous / next album in the queue, an album being a run of
+  entries with the same album name in the play order; a queue of one album gives the edge sound and "Last album.") or
   10 minutes (book, `skip()` by `kLargeBookStep`, 600 s). Down moves to the next unit and Up to
   the previous, speaking it; past the first or last unit the edge sound plays and the unit is
   spoken again. `Deep` and `Long` on Left / Right go to the previous / next track or chapter
@@ -353,9 +353,9 @@ does and does nothing else. Holding Home leaves the mode. The same texts
   OK pushes and Home pops. Home is always at the bottom. Popping back to a menu rebuilds it with
   `build`, keeping the selected label. There is at most one player screen, of the loaded player:
   `enterPlayer()` returns to it if it is on the stack.
-- **Two players.** `book_` / `music_` / `fileIndex_` are the loaded player: the music player (the
-  album, playlist or "Play all" list) or the book player (a local or server book). There is one
-  `MediaPlayer`, so the other player is **parked** in `parked_` (its `Book`, file and seconds), and
+- **Two players.** `book_` / `music_` / `fileIndex_` are the loaded player: the music player or the
+  book player (a local or server book). There is one
+  `MediaPlayer`, so the other player is **parked** in `parked_` (its `Book`, queue, file and seconds), and
   starting a player of the other kind parks the loaded one in `switchTo()` (undone, with the old
   `parked_`, if the open fails or is dropped). `continueParked()` (Home "Continue", or Play with
   nothing loaded) opens the parked book again at its place and plays it. Each player has its own
@@ -366,6 +366,21 @@ does and does nothing else. Holding Home leaves the mode. The same texts
   `last_book`); `openPlayer()` enters, continues or resumes it. A parked place is not kept across a restart except what
   state.tsv holds: the book (`pos:` + `last_book`) and a remote music list (`last_stream.*`); local
   music is not resumed.
+- **The music queue.** The music player's tracks are `queue_` (`app/core/queue.h`), local and remote
+  entries mixed; `fileIndex_` is the current position in its play order (`setFile()` keeps the two
+  together). For the music player `book_` is only the list the queue came from: its title, its
+  server `source` (for `last_stream.*`) and the track details the automatic cache needs
+  (`listIndexOf()` finds a queue entry in it). Playback goes through `trackCount()`,
+  `trackRemote()`, `trackKey()` (the file, or the server's track id), `trackTitle()`,
+  `trackDuration()` and `upcomingTrack()`, which read the queue for music and `book_->files` for a
+  book, so a queue entry decides per track whether it streams, is read ahead or is scrobbled
+  (only remote ones). OK on a track, Play album / playlist / all replace the queue
+  (`playEntries()`; `entriesOf()` makes the entries of a local list, `playRemote()` those of a
+  server list); `playQueue(title, entries, start)` plays any mix and is what the tests use until
+  Options exist. Read-ahead pre-opens `upcomingTrack()` when it is a remote entry (a local
+  track can be the one playing). At the end of the queue (repeat off) it says "End of queue.
+  Press play to start again.", pauses and loads the first entry (a remote one is opened only on
+  Play).
 - `mode()` is derived from the stack: `Player` when the top screen is a
   player, `Menu` otherwise, and `Sleeping` while asleep. Playback continues
   in the background on any screen.
@@ -636,7 +651,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   into albums (see "The index" above): an untagged file is grouped by its folder under the
   music root, and a top-level untagged file is a loose track. Music reuses the book playback code (`book_` holds the album or the
   "Play all" list, `music_` is set), but it says "track" instead of "chapter", ends with
-  "End of music", and **saves no position and does not change `last_book`**. Playing music
+  "End of queue", and **saves no position and does not change `last_book`**. Playing music
   never makes you lose your place in a book.
 - Previous chapter: if more than 3 s into the chapter, the first press goes to
   its start, like a CD player.

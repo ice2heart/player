@@ -125,7 +125,7 @@ The layering rules in CLAUDE.md still hold:
   A URL fits in it, but the chapter titles would be made from the URL. So `Book` gets
   an optional list of track titles (or `files` becomes a list of `{location, title}`).
   A streamed album is played like a local album (`music_ = true`): it says "track",
-  ends with "End of music", saves no position and does not change `last_book`.
+  ends with "End of queue", saves no position and does not change `last_book`.
 - **A remote track that fails to open stops playback.** For a local book,
   `App::loadFile` tries each following file until one opens. For streams that would
   block the UI for up to 10 s per track when the network is gone. So for remote

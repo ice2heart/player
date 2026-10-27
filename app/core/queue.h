@@ -4,6 +4,7 @@
 // The random generator is passed in, so tests choose the shuffle.
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,9 @@ public:
     // The user moves on / back. Repeat track does not matter; repeat all wraps around.
     Step next();
     Step previous();
+    // The position advance() would move to, without moving: the same one with repeat track, the first with
+    // repeat all past the last entry, none at the end of the queue (and when empty).
+    std::optional<std::size_t> upcoming() const;
     // Makes the entry at `position` current (not an edit). False if out of range.
     bool setCurrent(std::size_t position);
 

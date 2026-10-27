@@ -109,6 +109,14 @@ Queue::Step Queue::previous() {
     return Step::End;
 }
 
+std::optional<std::size_t> Queue::upcoming() const {
+    if (empty()) return std::nullopt;
+    if (repeat_ == QueueRepeat::Track) return pos_;
+    if (pos_ + 1 < order_.size()) return pos_ + 1;
+    if (repeat_ == QueueRepeat::All) return 0;
+    return std::nullopt;
+}
+
 bool Queue::setCurrent(std::size_t position) {
     if (position >= order_.size()) return false;
     pos_ = position;
