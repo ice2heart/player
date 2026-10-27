@@ -216,6 +216,8 @@ oap-headless [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--audio
   positions in `state.tsv` next to it (`--state` to move it). An old `settings.tsv`
   is not read.
   `config.yaml` can be edited by hand; see [docs/streaming.md](docs/streaming.md#configuration-one-yaml-file).
+- Downloaded and cached tracks are kept in `cache/` next to `state.tsv`; `--cache DIR` moves
+  them (`oap-sim` has the same option). The device uses `/data/library/cache`.
 - `--input` is a comma-separated list of `evdev`, `terminal` and `none`. The default is
   `terminal` when stdin is a terminal, and `evdev` otherwise (for example under systemd).
   Use `--input evdev,terminal` to have both.

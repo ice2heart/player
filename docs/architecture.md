@@ -1,7 +1,7 @@
 # Software Architecture
 
 > Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end,
-> streaming from a Subsonic server: phases 1 and 2 of [streaming.md](streaming.md)). Last updated: 2026-10-25.
+> streaming from a Subsonic server, with a local cache and downloads: phases 1 to 3 of [streaming.md](streaming.md)). Last updated: 2026-10-27.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -23,14 +23,16 @@ core depends on none of them:
 │    ├── Library           scans folders into books                     │
 │    ├── Settings          dotted keys in memory, SettingsStore for I/O │
 │    └── services.h        Speech · MediaPlayer · SoundEffects ·        │
-│                          VolumeControl · Clock · MusicServer          │
-│                          (interfaces)                                 │
+│                          VolumeControl · Clock · MusicServer ·        │
+│                          Downloader · TextFiles (interfaces)          │
+│   TrackCache             downloaded and cached tracks, manifests      │
 │   Earcons                synthesized  → effects stream                │
 │   Mixer                  content + speech + effects → PCM, ducking    │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Config  (app/config/, library "oapconfig", yaml-cpp)                  │
 │   YamlStore : SettingsStore   config.yaml (settings, server)          │
 │   TsvStore  : SettingsStore   state.tsv (positions, what to resume)   │
+│   DiskTextFiles : TextFiles   cache manifests, written atomically     │
 ├───────────────────────────────────────────────────────────────────────┤
 │ Net  (app/net/, library "oapnet", libcurl + yaml-cpp)                 │
 │   Subsonic : MusicServer   URLs with token auth, JSON answers         │
@@ -50,12 +52,13 @@ Only `app/platform/`, `app/sim/` and `app/headless/` know which OS they run on.
 The two front ends wire the same core, config, net, media and audio code together;
 they differ only in where button presses come from and whether there is a window.
 Config and net read YAML and JSON with yaml-cpp, and net uses libcurl; core sees
-neither, only `SettingsStore` and `MusicServer`.
+neither, only `SettingsStore`, `TextFiles`, `MusicServer` and `Downloader`.
 
 `App` has no audio code. It only sees the interfaces in `services.h`, and the
 front end wires in the real implementations (`Tts`, `Player`, `Earcons`, `Mixer`,
-`SystemClock`, and from `makeMusicServer()` a `Subsonic` for the server in `config.yaml` when built with
-`OAP_BUILD_NET`, else a `NoMusicServer`).
+`SystemClock`, `DiskTextFiles`, and from `makeMusicServer()` / `makeDownloader()` a `Subsonic` and an
+`HttpDownloader` for the server in `config.yaml` when built with `OAP_BUILD_NET`, else a `NoMusicServer`
+and a `NoDownloader`).
 The unit tests wire in fakes instead (section 12).
 
 ## 2. Source layout
@@ -66,7 +69,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture`, `GestureDetector`. |
 | `app/core/menu.h` | `MenuItem`, `MenuLevel` data model. |
-| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), and `Downloader` (queues a track download into `<dest>.part`, renamed when complete; the same `RequestId` / `poll()` / `cancel()` contract as `MusicServer`, results `Ok` / `NotConfigured` / `Unreachable` / `Server` / `Disk`; `App` takes one for Download album / playlist), and `MusicServer` with its `RemoteTrack` (with the original's `suffix` and `size`) / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&`: the Streaming menu asks it for lists, `tick()` calls its `poll()`, and opening a remote track asks it for `stream(id, maxBitRate)`: the URL, and for a transcode a `Transcoded` (offset URL, and the length `App` fills in from the listing) that `MediaPlayer::open()` takes. |
+| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), `TextFiles` (whole text files for the cache manifests: `read()` and `writeAtomically()`, which leaves the old or the new contents after a crash; core does no file I/O of its own), and `Downloader` (queues a track download into `<dest>.part`, renamed when complete; the same `RequestId` / `poll()` / `cancel()` contract as `MusicServer`, results `Ok` / `NotConfigured` / `Unreachable` / `Server` / `Disk`; `App` takes one for Download album / playlist), and `MusicServer` with its `RemoteTrack` (with the original's `suffix` and `size`) / `RemoteAlbum` / `RemoteArtist` / `RemotePlaylist` structs (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `MusicServer&`: the Streaming menu asks it for lists, `tick()` calls its `poll()`, and opening a remote track asks it for `stream(id, maxBitRate)`: the URL, and for a transcode a `Transcoded` (offset URL, and the length `App` fills in from the listing) that `MediaPlayer::open()` takes. |
 | `app/net/http_client.{h,cpp}` | `Http`: asynchronous GET whose handler runs on the client's thread (tests use a fake). `HttpClient`: libcurl multi on one worker thread; 10 s connect timeout, 10 s without data or 60 s in all ends a request, answers over 16 MB fail; cancellable; the destructor aborts transfers and never waits on a socket. |
 | `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `stream()`: the original file with no `format` / `maxBitRate`, or an MP3 transcode (`format=mp3&maxBitRate=<kbps>`) whose offset URL adds `&timeOffset=` once `getOpenSubsonicExtensions` (asked with the first transcode) lists `transcodeOffset`. `scrobble()` sends `scrobble?id=&submission=` and only logs a failure to stderr (by its kind, never the URL). `downloadUrls(Config)` gives the `download?id=` URL of a track for `HttpDownloader`. `configFrom(Settings)` reads `server.*`. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
 | `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, getAlbumList2, getArtists, getArtist, getAlbum, getPlaylists, getPlaylist and getOpenSubsonicExtensions answers, and `parseStatus()` for an answer with only a status (scrobble) (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
@@ -127,8 +130,8 @@ Rules:
   So is the read-ahead: `preload()` returns at once. Scrobbles go out like
   any other request, with no callback.
 - Threads exchange data only through `AudioStream` (mutex-protected), atomics,
-  and mutex-protected queues: the `Tts` text queue, the `HttpClient` job queue
-  and the `Subsonic` inbox of finished requests.
+  and mutex-protected queues: the `Tts` text queue, the `HttpClient` job queue,
+  the `Subsonic` inbox of finished requests and the `HttpDownloader` list of progress and results.
 - The audio callback only reads streams and atomics, and never blocks for long.
   It still takes the `AudioStream` mutex, which is acceptable for the simulator.
   A lock-free SPSC ring would be the upgrade if the device ever glitches.
@@ -523,7 +526,8 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   updated when a download saves a track (and when one drops a track). The open of a track passes `verify`, which
   also checks that the file is still there. A file added to the cache by anything
   but `App`'s own downloads is not seen until the index is rebuilt (Delete download
-  and an eviction reset it; a finished download and a cached track update it).
+  resets it; a finished download and a cached track add to it, an eviction or a dropped track
+  erase their entries).
 - **Downloaded (3.5):** Streaming > Downloaded (`downloadedMenu()`, a menu with a
   `build`, so it is rebuilt when the user comes back) lists `TrackCache::lists(true)`:
   the lists of the server in the config that have a complete pinned track (what the user
@@ -552,9 +556,9 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   limit is never queued (it would be evicted at once and fetched at every play), and a
   track that would leave less than `kAutoCacheReserve` (256 MiB: state, config and
   manifest writes on a small card, with margin for an unlisted size) free is skipped
-  silently (`setFreeSpace()` as for explicit downloads). `sleep()` cancels the running
-  transfer like an explicit download does (it goes back to the queue head and continues
-  from its `.part` after the wake). `startDownload()` calls `pauseAutoCache()`:
+  silently (`setFreeSpace()` as for explicit downloads). `sleep()` calls `pauseAutoCache()` too (nothing is fetched
+  for the cache while the device sleeps; the job continues from its `.part` after the wake). An
+  explicit download is not paused by sleep and ends silently. `startDownload()` calls `pauseAutoCache()`:
   the running transfer is cancelled (its `.part` stays and continues later), its job
   goes back to the head of the queue, and the queue waits until `download_` is gone.
   Download progress ("Downloading, 3 of 9 tracks") counts only the download's own list
@@ -598,9 +602,10 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   default `std::filesystem::space()`; an unknown size counts as 0, a failed query
   as room enough) and holds one `Download` in `download_`. It asks the
   `Downloader` for one track at a time into `<list folder>/<safe id>.<suffix>`; each
-  `Ok` (file size checked against `RemoteTrack.size` when known, a mismatch
-  deletes the file and fails) is added to `manifest.tsv` pinned, and updates the cache
-  index. A failure is spoken once and drops the `Download`; OK on the item starts again
+  `Ok` (whole by the downloader's own check, see `Downloader` in `services.h`; `App`
+  compares no sizes) is added to `manifest.tsv` pinned, and updates the cache index. The
+  manifest then follows the server's order, and pinned tracks the server no longer lists
+  are dropped with their files (`followServerOrder()`); a track listed twice counts once. A failure is spoken once and drops the `Download`; OK on the item starts again
   and skips what is whole, the `.part` continuing. The download belongs to no screen,
   so leaving menus never cancels it; `tick()` calls `downloader_.poll()`, and
   `shutdown()` cancels the transfer (the `.part` stays). `whereAmI()` adds
@@ -675,8 +680,8 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   saved track among them) plays at once with `playResumed()`: nothing is asked of
   the server and "Loading." is not said, because offline the question would wait for
   the connect timeout (10 s). Otherwise the server is asked first (a partly cached
-  album, e.g. from the automatic cache, would lose its other tracks; step 3.7 caches
-  tracks unpinned, so they never make a "whole download"); on an error,
+  album, e.g. from the automatic cache, would lose its other tracks; automatically cached
+  tracks are unpinned, so they never make a "whole download"); on an error,
   if any track of the list is on disk, those play (the saved track and position if it
   is among them, else the first from its start) and nothing is spoken but the usual
   "Now playing". With none on disk the error is spoken as in step 2.6. A whole
@@ -799,8 +804,8 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 
 - Speed control (libavfilter `atempo`, or Sonic), skip silence.
 - Bookmarks, podcasts (RSS), sync (Audiobookshelf).
-- Streaming phases 2a to 5 in [streaming.md](streaming.md): star / unstar and a Starred
-  list, a local cache, one library with the server, and sync.
+- Streaming phases 2a, 4 and 5 in [streaming.md](streaming.md): star / unstar and a Starred
+  list, one library with the server, and sync.
 - STT (Talk button): push-to-talk capture plus sherpa-onnx, Vosk or whisper.cpp.
 - Localisation of spoken strings; a choice of TTS voice.
 - Hardware abstraction (battery, headphone jack, Wi-Fi, Bluetooth, suspend): planned in [hal.md](hal.md).

@@ -1,9 +1,10 @@
 # Streaming from a Subsonic server: plan
 
-> Status: **phases 1 and 2 built** (stream and play, see [What phase 1 built differently](#what-phase-1-built-differently);
-> robust streaming, see [Phase 2](#phase-2-robust-streaming)). Phases 2a to 5 are a plan. The code is described in [architecture.md](architecture.md), and the
+> Status: **phases 1 to 3 built** (stream and play, see [What phase 1 built differently](#what-phase-1-built-differently);
+> robust streaming, see [Phase 2](#phase-2-robust-streaming); local cache and downloads, see
+> [Phase 3 as built](#phase-3-as-built)). Phases 2a, 4 and 5 are a plan. The code is described in [architecture.md](architecture.md), and the
 > rules for lists from the server are in [navigation.md](navigation.md#lists-from-the-server).
-> Last updated: 2026-10-25.
+> Last updated: 2026-10-27.
 > Target server: Navidrome 0.64 (Subsonic API 1.16.1, OpenSubsonic). Test server:
 > `https://navidrome.microserver`. The credentials are kept in `.env` (git ignores it) only so
 > they are at hand during development; the program does not read it.
@@ -392,63 +393,82 @@ the album's Download item and by "where am I?".
 | ✅ 3.5 | **Streaming → Downloaded** lists the albums and playlists in the manifests; they play like the server lists. **Delete download** sits in a list that opens on Cancel. | The list matches the manifests. Playing from it opens files. Delete opens on Cancel, removes the folder, and the list updates. An empty list says why. |
 | ✅ 3.6 | **Offline.** When the server cannot be reached, Streaming still offers Downloaded, and the error list gets a "Downloaded" item. `last_stream` resumes from the cache with the server down. | Server unreachable: Downloaded works and plays. Resume after a restart with the server down plays the cached album. |
 | ✅ 3.7 | **Automatic cache with an LRU limit.** Setting (0 / 1 / 4 / 16 GB, default 1 GB) in Settings, saved in `config.yaml`. A streamed track is queued to the downloader unpinned; above the limit the least recently played unpinned tracks are evicted. | A streamed track ends up cached. Over the limit the least recently played unpinned track goes first; pinned tracks never go. With 0 nothing is cached. The setting persists. |
-| 3.8 | Docs: architecture.md, navigation.md, SPEC where needed, and what phase 3 built differently. | – |
+| ✅ 3.8 | Docs: architecture.md, navigation.md, SPEC where needed, and what phase 3 built differently. | – |
 
-Step 3.7 as built: a streamed track is queued to the downloader, unpinned, once it
-has been heard for 10 s (so a skipped track costs no bandwidth), into the folder of the
-list it plays from. An explicit download goes first: it cancels the running automatic
-transfer, which waits and continues after it; the progress speech counts only the
-download's own list. The automatic cache is silent and ignores failures. Eviction is
-LRU over the unpinned tracks only: pinned tracks never go and do not count toward the
-limit (setting "Cache size", `cache.limit_gb`, 0 / 1 / 4 / 16 GB, default 1; 0 caches
-nothing new and evicts nothing). The file the player has open is kept. `lastPlayed` is kept in memory and
-written to the manifests on exit and on sleep (a newly cached track has its play time in its entry), not at every play.
-A lowered size takes effect on the next exit or cached track. Downloaded lists only
-what the user downloaded (a list with at least one pinned track); the automatic cache's
-tracks still play from their files whenever they are met in a server list or on resume.
+### Phase 3 as built
 
-Review fixes for 3.7 as built:
-- The automatic cache never fills the card: a track that would leave less than
-  `kAutoCacheReserve` (256 MiB, room for state, config and manifest writes) free is
-  skipped silently. A track bigger than the limit is not cached at all.
-- A `.part` left by an abandoned automatic transfer counts toward the limit and is
-  evicted first; the `.part` of a running or waiting transfer is never touched.
-- The `.part` of the explicit download that failed last is kept in this session (OK on
-  Download continues it); after a restart it is an abandoned `.part` like the others.
-- The latest play replaces `lastPlayed` (not the maximum); a wall time before
-  2020-01-01 (a clock never set) is not recorded as a play.
-- Cache size "off" keeps what is cached: nothing new is cached and nothing is evicted.
-- Nothing is fetched while the device sleeps: sleep cancels the running transfer, which
-  continues from its `.part` after the wake.
-- Trimming scans the manifests only when needed (plays to write, an abandoned transfer,
-  or the counted bytes over the limit), keeps the cache index up to date instead of
-  rebuilding it, and runs once at power off.
+The plan above is kept as it was written. Where the code differs, the code is right:
 
-Review fixes for 3.1 to 3.6 as built:
-- Core does no file I/O: manifests go through `TextFiles` (`services.h`), implemented by
-  `DiskTextFiles` (`app/config/`, `fsync` before the rename). `App` takes it after the
-  cache root; with none the cache is off.
-- A manifest that is there but not valid is replaced on the next save, and the files in
-  that folder the new manifest does not list are deleted (a `.part` never; another folder
-  never), so no orphan is left that nothing lists or deletes. One that cannot be read at
-  all (an I/O error) is not replaced: the save fails and nothing is deleted.
-- `HttpDownloader::cancel()` waits for the file operation in flight (one write at most)
-  and the job then creates no folder or file, so Delete download can remove the folder
-  at once.
-- Completeness is the downloader's: the server's `Content-Length`, or the total of
-  `Content-Range` for a continued `.part`, is authoritative (a short body is
-  `Unreachable`). Only a server that sends no length is compared with the size passed to
-  `download()` (`RemoteTrack.size`; 0 accepts anything): a shorter body is cut short
-  (`Unreachable`, the `.part` is kept), a longer one is taken as a stale size. `App` no longer checks sizes itself, also not for the automatic cache.
-- Downloading a list again makes its manifest follow the server's order; pinned tracks the
-  server no longer lists are dropped with their files, and unpinned (automatically cached)
-  ones stay after the others until the LRU limit evicts them. A track listed twice is
-  fetched and counted once.
-- A pre-opened stream is cancelled when the next track turns out to be cached.
+- **Manifest.** `manifest.tsv` has the header `oap-cache 2`, a list line (kind, id, name,
+  artist) and one line per track: id, file, title, duration, server `changed` time,
+  pinned, last-played wall time. The folder is `<cache>/<server key>/<kind>%3A<id>/`, so an
+  album and a playlist with one id do not meet. Format 1 (no list line) reads as empty;
+  no device ever held one. Core does no file I/O: manifests go through `TextFiles`
+  (`services.h`), which `DiskTextFiles` (`app/config/`) implements with an atomic
+  write. `App` takes it after the cache root; with no cache root the cache is off.
+- **A damaged manifest.** One that is there but not valid is replaced on the next save,
+  and the files in that folder the new manifest does not list are deleted (never a
+  `.part`, never another folder). One that cannot be read at all (an I/O error) is not
+  replaced: the save fails and nothing is deleted.
+- **Complete means the downloader says so.** The server's `Content-Length`, or the total of
+  `Content-Range` for a continued `.part`, is authoritative; a short body is
+  `Unreachable` and keeps the `.part`. Only when the server sends no length is the body
+  compared with the size from the listing (0 accepts anything): shorter fails the same
+  way, longer is taken as a stale size. `App` checks no sizes itself, except the free
+  space before a download.
+- **Delete waits for cancel.** `HttpDownloader::cancel()` waits for the file operation in
+  flight (one write at most), and the job then creates no folder or file, so Delete
+  download can remove the folder at once. Deleting the list that downloads cancels the
+  download; deleting the list loaded in the player is refused.
+- **Order, dropped tracks, duplicates.** Downloading a list again makes its manifest
+  follow the server's order. Pinned tracks the server no longer lists are dropped with
+  their files; unpinned (automatically cached) ones stay after the others until the LRU
+  limit evicts them. A track listed twice is fetched and counted once. The `.part` of the
+  explicit download that failed last is kept in this session (OK on Download goes on from
+  it); after a restart it is an abandoned `.part` like the others.
+- **Resume after a restart.** A download that is whole (every manifest track pinned and
+  complete on disk, the saved track among them) plays at once, with no question to the
+  server and no "Loading.". Anything else asks the server first, so a partly cached album
+  loses no tracks. If that fails, the tracks on disk play (the saved track and place if
+  it is among them, else the first), and nothing is spoken but the usual "Now playing";
+  with none on disk the error is spoken as in step 2.6. A whole download is not compared
+  with the server.
+- **Downloaded** lists only what the user downloaded (a list with at least one pinned
+  track). The automatic cache's tracks play from their files wherever they are met
+  (a server list, a resume), but make no entry there. An error list gets a "Downloaded"
+  item when there is one. A pre-opened stream is cancelled when the next track turns out
+  to be cached.
+- **Automatic cache.** A streamed track is queued once it has been heard for 10 s (a
+  skipped track costs no bandwidth), unpinned, into the folder of the list it plays from.
+  It is silent (no speech, no earcon, failures forgotten) and counts nothing in the
+  download progress. An explicit download goes first: it cancels the running automatic
+  transfer, which waits and continues from its `.part` afterwards. Sleep pauses the
+  automatic cache the same way (an explicit download goes on). It never fills the card:
+  a track that would leave less than 256 MiB free is skipped. A track bigger than the
+  limit is not cached at all.
+- **LRU.** Only unpinned complete files count toward the limit (`cache.limit_gb`, 0 / 1 /
+  4 / 16, default 1); pinned tracks never go and are not counted. A `.part` left by an
+  abandoned transfer counts and is evicted first, then the least recently played (never
+  played counts as oldest); the `.part` of a running or waiting transfer is never
+  touched, and neither is the file the player has open. Trimming runs after a cached track
+  and on exit and sleep, so a lowered size takes effect then. It scans the manifests only
+  when there is a reason (plays to write, an abandoned transfer, bytes over the limit).
+  Off keeps what is cached: nothing new is cached and nothing is evicted.
+- **`lastPlayed`.** The latest play replaces the old time (it is not a maximum, so one play
+  with a clock that was ahead cannot pin a track). It is kept in memory and written
+  with the manifests, not at every play. A wall time before 2020-01-01 (a clock that was
+  never set) is ignored.
 
 **Device check (manual):** download an album, pull the Wi-Fi, and it still plays
 from Streaming → Downloaded and from "Now playing" after a restart. "Where am I?"
 during a download says the progress. A streamed album plays offline the second time.
+
+Known limits after phase 3: there is no Wi-Fi-only check (decided: not now, the device
+has only Wi-Fi). A server that sends no `Content-Length` and a stale listed size can
+leave a file of the wrong size. Re-downloading a list deletes the file of a dropped
+track even if the player has it open (harmless on POSIX, the open file stays readable).
+Scrobbles made offline are lost. The server's `changed` time is not written yet, so a
+track changed on the server is not fetched again.
 
 ## Phase 4: one library (local files and server)
 

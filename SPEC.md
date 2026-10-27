@@ -28,7 +28,8 @@ the audio user interface, features, and an implementation roadmap. Sections mark
 - Streaming music services (Spotify etc.). A music server the user hosts
   (Subsonic, such as Navidrome) is not one of these: it is private and needs no
   account with a company. Streaming from it is built (Home → Streaming, see
-  [docs/streaming.md](docs/streaming.md)).
+  [docs/streaming.md](docs/streaming.md)). Albums and playlists can be downloaded
+  and play offline, and streamed tracks are cached up to a size set in Settings.
 - Phone calls, messaging, general-purpose assistant features.
 - Cloud STT/TTS (may be optional plugins later, never required).
 

@@ -171,6 +171,12 @@ these rules too ([streaming.md](streaming.md) has the plan).
   list that is downloading cancels the download. With nothing downloaded the list
   has one item, "No downloads"; OK says "Nothing is downloaded. Choose Download
   album in an album."
+- **Cache size** (Settings) is a `choice()`: off, 1, 4 or 16 gigabytes for the tracks
+  cached while streaming. A streamed track is cached silently after 10 s of
+  listening: it says nothing and plays no earcon, and a download you asked for goes
+  first. A lower size takes effect on the next exit or cached track. Off caches nothing
+  new but keeps what is cached. Downloads you asked for never count toward the size
+  and are never removed by it.
 - **Offline.** When a list from the server fails with an error ("Server not
   reachable", "Server error" and so on), the list is "the error", "Try again" and, if
   anything is downloaded (not just cached by playing), "Downloaded" (the same list as in the Streaming menu, which
