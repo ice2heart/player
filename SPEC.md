@@ -253,6 +253,11 @@ Requirements:
 - Time-to-first-audio < 100 ms for UI speech.
 - Cancel within 20 ms on any key press.
 - Adjustable rate, pitch, volume, voice; per-language voices.
+- Names in other scripts (Cyrillic, Greek, Chinese, Japanese, Korean, Hebrew, Arabic) are spoken
+  with that script's voice when it is installed, else transliterated into Latin letters
+  (Cyrillic, Greek, kana, Hangul), else named once ("Chinese text", "Japanese text", ...),
+  never spelled letter by letter. Kanji have no reading, so they are always named. Details in
+  [docs/architecture.md](docs/architecture.md#5-speech-tts).
 - Pre-render frequent phrases ("Paused", "Playing", menu names) to a cache at first boot.
 - Speak numbers/times naturally ("3 hours 12 minutes left").
 
@@ -462,7 +467,7 @@ States:
   keyboard keys map to device buttons, laptop speakers used for audio. An SDL2 + Dear ImGui
   window visualises the menu stack, playback state, speech log and **per-button usage
   counts** (to decide how many buttons the hardware really needs). A `--script` mode
-  replays button sequences. Most work happens here; then port to Linux.
+  replays button sequences. The window draws names in any script (`--font TTF` picks the font; by default a system font with Cyrillic and CJK glyphs). Most work happens here; then port to Linux.
 - Hardware-abstraction layer for: input source, power/MCU, battery, Wi-Fi, Bluetooth,
   audio routing. Plan: [docs/hal.md](docs/hal.md).
 - CI: unit tests for ui-core state machine (scripted key sequences → expected speech output

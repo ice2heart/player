@@ -1,6 +1,6 @@
 # Fixes from NOTES.md: plan
 
-> Status: **a plan; steps marked ✅ in the phase tables are built** (phases 2 and 3 are, with their docs; the "Today" column below says what the device did when the notes were checked). It turns the notes in [NOTES.md](../NOTES.md) into work groups:
+> Status: **a plan; steps marked ✅ in the phase tables are built** (phases 2, 3 and 4 are, with their docs; the "Today" column below says what the device did when the notes were checked). It turns the notes in [NOTES.md](../NOTES.md) into work groups:
 > discovery first where the cause or the design is not known, fixes where it is. The rules are in
 > [navigation.md](navigation.md), the code is described in [architecture.md](architecture.md),
 > streaming in [streaming.md](streaming.md), the queue in [queue.md](queue.md).
@@ -334,7 +334,7 @@ Latin (plan B); a script with neither is named once, not spelled.
 | ✅ 4.3 | **Script runs** (`scriptRuns()`, [rules](#names-in-other-scripts)). | `test_text.cpp`: "Artist Агата Кристи, 3 of 10" gives Latin "Artist ", Cyrillic "Агата Кристи", Latin ", 3 of 10"; "Кино и Ко" one Cyrillic run; "Кино 1989" gives Cyrillic "Кино" and Latin " 1989"; "宇多田ヒカル" one Japanese run; "周杰伦" Han; a broken UTF-8 byte does not crash and stays in its run. |
 | ✅ 4.4 | **Transliteration (plan B)** (`transliterate()`, [rules](#names-in-other-scripts)): Cyrillic, Greek, kana and Hangul to Latin; any other script gives nothing (the caller names it). | `test_text.cpp`: "Агата Кристи" → "Agata Kristi", "Жуков" → "Zhukov", "Щербаков" → "Shcherbakov", "Ёлка" → "Yolka", "Їжак" → "Yizhak", "Ωμέγα" → "Omega", "ひらがな" → "hiragana", "カタカナ" → "katakana", "ラッキー" → "rakkii", "しんぶん" → "shinbun", "きょうと" → "kyouto", "아이유" → "aiyu", "한국" → "hanguk"; "周杰伦" gives nothing. |
 | ✅ 4.5 | **Each script with its voice, else transliterated.** `speechMarkup(text, voices)` in `app/core/text.{h,cpp}` builds the SSML: one `<voice xml:lang>` per run whose voice is installed (plan A), the transliteration for a run whose voice is not (plan B), "Chinese text" (and so on) for a run with neither; XML escaped; plain text when no markup is needed. `Tts` lists the installed voices at start and speaks with `espeakSSML` when the text has markup. | `test_text.cpp`, `speechMarkup`: Cyrillic with `ru` installed gives one `ru` voice element and the rest outside it, ", 3 of 10" included; without `ru` it gives "Agata Kristi" with no markup; Han without `cmn` gives "Chinese text"; the kanji of a Japanese run give "Japanese text" and its kana the `ja` voice; `&` and `<` in a name are escaped; all-Latin text is unchanged. |
-| 4.6 | **Docs for phase 4 as built:** architecture.md (speech: voices per script, transliteration, the shared fold, the sim's font), SPEC. | – |
+| ✅ 4.6 | **Docs for phase 4 as built:** architecture.md (speech: voices per script, transliteration, the shared fold, the sim's font), SPEC. | – |
 
 **Device check (manual):** Music → Artists with Russian, Chinese, Japanese and Korean
 artists: each is spoken in its language within the English sentence, Left / Right jump to

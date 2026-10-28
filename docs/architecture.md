@@ -88,7 +88,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/net/md5.{h,cpp}` | `md5Hex()` for the auth token. |
 | `app/media/player.{h,cpp}` | `Player`: one audio file or stream URL, decoded on its own thread (FFmpeg). A local file opens in `open()`; a URL opens on the decoder thread (`opening()` until it is done), with a 10 s read timeout and HTTP reconnects, and the whole open gives up after 10 s (`kStreamOpenTimeout`). `preload()` opens the next track's stream the same way in the background, and `open()` of that URL takes it over. A stream whose connection is lost while it plays is retried with backoff at the same place for 30 s (`kStreamRetryGiveUp`); `buffering()` says when it has run dry meanwhile. A transcode (`open()` with `Transcoded`) has no byte ranges: a seek, a retry and an open at a place open it again (see Streams in section 4), and its length is the server's. An interrupt callback lets `close()` abort any network wait at once, and `close()` or a newer `open()` drops an open still running. Its error messages print a local path but never a URL (`://`), which would hold the server login, and FFmpeg's own messages pass through `redactUrls()`. |
 | `app/media/tag_reader.{h,cpp}` | `FfmpegTagReader : TagReader`: title, artist, album artist, album, genre, track and disc number ("3/12" is 3), year, duration and MusicBrainz album id of a local file, from the container's and the audio stream's metadata (ID3, Vorbis comments, MP4 atoms), keys compared without case, spaces, `_` and `-`. None for a file that cannot be opened or has no audio; a file without tags gives its duration and empty fields. Each call has its own `AVFormatContext`, so it may run on any thread, also several at once (the library scan of 4.5 reads off the UI thread). `FakeTagReader` (tests/fakes.h) maps path to tags and counts reads per path. |
-| `app/media/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. |
+| `app/media/tts.{h,cpp}` | `Tts`: eSpeak NG on a worker thread. `start()` reads the language codes of every installed voice into a `VoiceSet` before the worker starts; the worker turns each utterance into `speechMarkup(text, voices)` and passes `espeakSSML` to `espeak_Synth` when `ssml` is set (section 5). |
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
@@ -105,7 +105,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/queue.{h,cpp}` | `Queue`, the music queue (docs/queue.md), a plain class with no `App` and no I/O; `App` plays it (step 2.2). `QueueEntry` is a local track (path) or a remote one (server url + user, track id, length; never a password or stream URL), with title, album and artist. It keeps the entries in the original order and a play order (`playOrder()`, indexes into `originalEntries()`), the current position, `QueueShuffle` (off / tracks / albums), `QueueRepeat` (off / all / album / track) and `edited()` (set by `playNext`, `append`, `remove`, `move`; cleared by `replace`, which also resets shuffle and repeat). `advance()` is a track that ended (repeat track: `Repeated`; repeat album: the next entry of the current album in the play order, the album's first after its last, `Repeated` for an album of one entry), `next()` / `previous()` are the user moving (`Moved`, or `End`: past the last entry with repeat off, which makes the first entry current). `setShuffle(mode, random)` keeps what was played and the current entry and shuffles what follows (albums: runs of the same album name stay together); `append(entries, random)` with Shuffle on mixes the new entries into what has not played yet the same way (tracks one by one; albums run by run between two runs, cut by the same `cutRuns()`), and `playNext` keeps its entries in order right after the current one; the `QueueRandom` is passed in. `restore()` rebuilds a saved queue and says whether it kept the saved order and position (a play order other than the original one with shuffle off is refused: `move()` relies on it); `revision()` is a stamp that is new at every change and shared by copies, the key of `App::remoteAheadMemo()` (so `checkServerMark()` does not scan the queue at every tick). |
 | `app/core/scrobble_file.{h,cpp}` | `formatScrobbles()` / `parseScrobbles()`: the scrobble outbox as the text of `scrobbles.tsv` and back, with no I/O. Section 9 has the format. |
 | `app/core/queue_file.{h,cpp}` | `formatQueue()` / `parseQueue()`: the queue as the text of `queue.tsv` and back, with no I/O (`App` reads and writes the file through `TextFiles`). Section 9 has the format. |
-| `app/core/text.{h,cpp}` | Text for speech, such as `spokenDuration()`, and `parseIsoTime()` (an ISO 8601 time as seconds since 1970, 0 if it is not one; pure arithmetic, used for a server album's `created`). |
+| `app/core/text.{h,cpp}` | Text for speech and names, no I/O. `spokenDuration()`; `parseIsoTime()` (an ISO 8601 time as seconds since 1970, 0 if it is not one; pure arithmetic, used for a server album's `created`); `nextCodePoint()` / `appendUtf8()` (UTF-8 decoding and encoding; a malformed byte stands for itself); `foldCase()` (the shared case fold, section 8); `Script`, `ScriptRun` and `scriptRuns()`; `transliterate()`; `VoiceSet`, `SpeechMarkup` and `speechMarkup()` (section 5). |
 | `app/core/album_merge.{h,cpp}` | Duplicates (4.8), plain functions on the index. `mergeAlbums(items)` groups the `Music` items that share a `seenOn` reference into `MergedAlbum`s (`primary`: local, else cached, else server; `items`; `onServer`): the merged view, computed when a menu is built, never stored. `sameAlbumByName(a, b)` is the name rule (same MusicBrainz album id, else artist + album + track count with case and spaces ignored, ASCII, Latin-1 and Cyrillic folded; unknown count or empty name never match); `linkByName(key, items)` gives the `AlbumLink`s (local or cached item, server reference) for items with no reference to that server, matched against server albums that no local item holds; `albumInfoText(merged)` is what Album info says. `trackCountOf()` is a server item's `trackCount`, else its tracks. |
 | `app/platform/audio_output.{h,cpp}` | `AudioOutput` interface and `open(name)`, which picks a built-in backend at run time (`--audio`). |
 | `app/platform/audio_thread.h` | Base for blocking-write backends: a thread renders 10 ms blocks and writes them. When a write fails it closes the device, keeps discarding the mix in real time (so speech and playback still finish) and reopens the device with a growing delay (250 ms up to 4 s). |
@@ -120,7 +120,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/frontend/no_downloader.{h,cpp}` | `NoDownloader`: the `Downloader` for the same cases; every download finishes with `NotConfigured` on the next `poll()` and writes nothing. |
 | `app/frontend/make_music_server.{h,cpp}` | `makeDownloader()` (an `HttpDownloader` for a Subsonic server, else `NoDownloader`) and `makeMusicServer()`: the `MusicServer` both front ends give `App`: `Subsonic::fromConfig()` when built with `OAP_BUILD_NET` (`OAP_HAVE_NET`), else `NoMusicServer`, with a line on stderr when `config.yaml` sets up a server it cannot use. Its own library, `oapmusicserver`, so `oapfrontend` keeps no dependencies. |
 | `app/frontend/gamepad.{h,cpp}` | `GamepadMapper`: game controller buttons → device buttons, with the layout in `defaultGamepadLayout()`. Used by the simulator (SDL) and headless (evdev). |
-| `app/frontend/pick_font.{h,cpp}` | `pickFont(candidates, exists)`: the first font file that exists. The simulator loads it with Latin, Greek, Cyrillic, Japanese, Chinese and Korean glyph ranges (`--font PATH` first). |
+| `app/frontend/pick_font.{h,cpp}` | `pickFont(candidates, exists)`: the first of the candidates for which `exists` is true (a parameter, so tests need no files). The simulator's font choice is in section 10. |
 | `app/sim/main.cpp` | Simulator: window, key mapping, visualisation. |
 | `app/headless/main.cpp` | Headless front end: poll loop, terminal raw mode, signals. |
 | `app/headless/evdev_input.{h,cpp}` | `EvdevInput`: `/dev/input` devices → `keyDown`/`keyUp`/`setHold`, with hot-plug rescans. |
@@ -273,6 +273,33 @@ Rules:
 - **`App::onButton()` calls `tts.stop()` first on every key press**, so speech is
   always interruptible.
 - Rate is applied per utterance (`Settings → Speech rate`).
+- **Names in other scripts (4.5).** The core speaks any string; `Tts::run()` first calls
+  `speechMarkup(text, voices)` (`app/core/text.{h,cpp}`, plain functions, no eSpeak). `scriptRuns()`
+  cuts the text into runs of Latin, Cyrillic, Greek, Han, Japanese (kana, and Han touching kana),
+  Hangul, Hebrew, Arabic and Other. Digits, spaces and punctuation have no script: between two letters of
+  the same script they stay in that run, otherwise they join a Latin run. Latin runs stay in the
+  engine's own voice (English, from `tts.start("en")`). Every other run is spoken by the first of:
+  - **Plan A, its own voice:** a `<voice xml:lang="CODE">` element around the run when that code is in
+    the `VoiceSet`: Cyrillic `ru`, Greek `el`, Han `cmn`, Japanese `ja`, Hangul `ko`, Hebrew `he`,
+    Arabic `ar`.
+  - **Plan B, transliteration:** `transliterate(run)` in Latin letters for the English voice. Cyrillic
+    is BGN/PCGN without diacritics ("Жуков" is "Zhukov"), Greek ELOT 743 without accents, kana
+    Hepburn without macrons, Hangul Revised Romanization of each syllable on its own. A letter with a
+    capital keeps it (first letter of a word, "Zh", "ZH" in an all-capitals word). Spaces, digits and
+    punctuation pass through; letters with no entry (ъ, ь, half-width kana, lone jamo) give nothing.
+    Han, Hebrew, Arabic and Other give "".
+  - **Named once:** "Chinese text", "Japanese text", "Korean text", "Hebrew text", "Arabic text",
+    "Greek text", "Cyrillic text", "foreign text" (Other).
+  Kanji have no reading in any voice or table, so a Japanese run is split at them: each stretch of
+  kanji is named "Japanese text" (once, with a neighbouring kana stretch that has no reading), and
+  the kana stretches take the `ja` voice or their transliteration.
+  Pieces of different scripts that touch get a space between them. When no run needs a voice element
+  the result is the input, plain, with `ssml` false. Otherwise `ssml` is true, the XML characters
+  `& < > " '` are escaped, a malformed UTF-8 byte becomes a space, and there is no `<speak>` root.
+  `Tts::start()` collects the language codes of every voice eSpeak lists
+  (`espeak_ListVoices`, plus the part before "-" so "en-gb" counts as "en") once, before the worker
+  starts; the worker only reads the set. A machine without the `ru` voice therefore transliterates
+  Cyrillic, with no setting. The speech log and the `say:` lines show the original text, not the markup.
 - Every spoken string goes to `App::speechLog()`, which the simulator displays.
   `Tts` also prints it to stdout (`say: …`).
 
@@ -610,6 +637,12 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
 
 ## 8. Library and books
 
+- **One case fold (4.2).** `foldCase()` in `app/core/text.{h,cpp}` lowers ASCII, Latin-1, Latin
+  Extended-A, Greek and Cyrillic; ё and Ё become е, Ό Ύ Ώ their lower forms and the final ς σ;
+  other scripts are unchanged. `library.cpp` sorts with it and then drops Latin-1 accents and folds
+  ß to s ("Ä" sorts as "a"); `album_merge.cpp` builds the album and artist keys with it, accents kept
+  ("é" and "e" stay two artists). Both decode with `nextCodePoint()` and encode with `appendUtf8()`
+  from the same file. The keys are not persisted.
 - **The index.** `App` takes a `LibraryStore&` and a `LibraryScanner&` (after the
   `Downloader`) and owns a `LibraryIndex` loaded from the store when it is built.
   Library and Music are built from the local items of that index, never from the disk:
@@ -712,7 +745,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   error with "Try again", "Play album" first); `focusTrack` opens it on that track (`MenuItem::key`, `RemoteList::focusKey`); the server's album id
   is cut from the item's reference `<key>:album:<id>`. A merged album plays from its device files
   and never asks the server. `artistsMenu()` groups the merged entries by `artistKey()` (case and
-  spacing ignored, so "Band" and "band" are one) and sorts with `artistLess()`: natural,
+  spacing ignored, so "Band" and "band" are one; `foldCase()`, accents kept) and sorts with `artistLess()`: natural,
   case-insensitive order without a leading "The" (`kIgnoredArticles`; the server's own
   `ignoredArticles` is not read yet), Cyrillic and other scripts by code point after Latin,
   entries with no artist last as "Unknown artist". An artist's list is its merged entries. Play
@@ -1079,9 +1112,19 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 - **Game controller:** SDL game controllers (DualSense, Xbox, ...) go through `GamepadMapper`,
   the same map as `oap-headless`: D-pad = arrows, Square = Play/Pause, Cross = OK,
   Circle = Home, Triangle = Options, R1 / R2 = volume up / down, L1 + Left/Right = deep press. Pads can be plugged in while it runs.
-- **Arguments:** `oap-sim [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--library-db FILE] [--audio NAME] [--script STEPS] [LIBRARY_DIR]`.
+- **Arguments:** `oap-sim [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--library-db FILE] [--audio NAME] [--font TTF] [--script STEPS] [LIBRARY_DIR]`.
   `--library-db` moves the library index (default `library.db` next to the state file). `--audio` is `auto` (default), `coreaudio`, `pulse`, `alsa[:DEVICE]` or `null`, among those built in.
+  `--font TTF` is the font of the window (below).
   `tools/make_sample_library.sh [LIBRARY_DIR] [MUSIC_DIR]` makes a spoken sample library and some tone "music".
+- **Font (4.1):** names in any script must show, not "?". `addSimFont()` asks `pickFont()` for the first
+  existing regular file of: the `--font` path, `/System/Library/Fonts/Supplemental/Arial Unicode.ttf` (macOS),
+  `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`, `/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`.
+  ImGui 1.91 bakes a static atlas, so the glyph ranges are named: Latin-1 and Extended-A, Greek,
+  Cyrillic, Japanese, Chinese simplified common and Korean. A font draws only the ranges it has
+  (DejaVu has no CJK). A `--font` path that does not exist prints `sim: font PATH not found` and the
+  next candidate is tried; a file that is not a font prints `sim: cannot load font PATH` and the next
+  is tried. With none left it prints `sim: no font with Cyrillic and CJK found; use --font` and uses
+  ImGui's built-in font.
 - **Script mode:** `--script "ok down ok wait:3000 right:long play:long quit"`
   presses buttons automatically, for repeatable walkthroughs and future UI tests.
   Steps: `play left right up down ok home talk power volup voldown options`, with `:long` for a long
@@ -1186,7 +1229,7 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   list, and sync. The limits of phase 4 (one library) are listed under "Known limits after
   phase 4" there.
 - STT (Talk button): push-to-talk capture plus sherpa-onnx, Vosk or whisper.cpp.
-- Localisation of spoken strings; a choice of TTS voice.
+- Localisation of spoken strings; a choice of TTS voice. Kanji and Han text without the `cmn` voice are only named ("Japanese text", "Chinese text"): there is no reading table. Hebrew and Arabic need their voice, else they are named.
 - Hardware abstraction (battery, headphone jack, Wi-Fi, Bluetooth, suspend): planned in [hal.md](hal.md).
 - Queue: the Previous queue is not kept across a restart; a restored queue does not cache tracks
   automatically until another list plays; Star / Unstar in the player's Options (streaming.md 2a.1);
