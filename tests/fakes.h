@@ -392,11 +392,11 @@ public:
         cancelled.push_back(id); // poll() skips it, even if answered or polled right now
         pending_.erase(id);
     }
-    // "fake://stream/<id>" for the original file; a transcode adds "?maxBitRate=<kbps>",
+    // "fake://<streamHost>/<id>" ("fake://stream/<id>") for the original file; a transcode adds "?maxBitRate=<kbps>",
     // and its offset URL "&timeOffset=" after that. With saltUrls each call gives
     // another URL ("#<n>" at the end), as a real server's fresh salt does.
     Stream stream(const std::string& trackId, int maxBitRate) override {
-        std::string url = "fake://stream/" + trackId;
+        std::string url = "fake://" + streamHost + "/" + trackId;
         if (maxBitRate > 0) url += "?maxBitRate=" + std::to_string(maxBitRate);
         if (saltUrls) url += "#" + std::to_string(++streams_);
         if (maxBitRate <= 0) return {url, std::nullopt};
@@ -506,6 +506,7 @@ public:
     };
     std::vector<Scrobble> scrobbles; // every scrobble() call, in order
     bool isConfigured = true;
+    std::string streamHost = "stream"; // "fake://<streamHost>/<id>": what tells two fakes' streams apart
     bool saltUrls = false;
     Error scrobbleError = Error::None; // what the answer to a scrobble() says
     bool holdScrobbles = false;        // answers wait for answerScrobble()

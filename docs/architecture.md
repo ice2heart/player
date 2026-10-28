@@ -80,7 +80,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
 | `app/core/buttons.{h,cpp}` | `Button`, `Gesture` (`Short`, `Long`, `Deep`, `Repeat`), `GestureDetector` (with `kRepeatDelay` 400 ms and `kRepeatInterval` 150 ms for the volume keys). |
 | `app/core/menu.h` | `MenuItem` (no `adjust` part: a value is changed only in its list), `ListOrder` (`None`, `ByName`, `ByArtist`: how a list is sorted, for the letter jump), `Screen` data model. |
-| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), `TextFiles` (whole text files for the cache manifests: `read()` and `writeAtomically()`, which leaves the old or the new contents after a crash; core does no file I/O of its own), `TagReader` (tags and length of a local audio file, `TrackTags`, none if unreadable; callable from any thread; `FfmpegTagReader` in `app/media/`, whose constructor lowers FFmpeg's log level to errors), `LibraryScanner` (`ScanRequest` in, local `IndexItem`s out, asynchronous like `MusicServer`: `scan()` / `cancel()` / `poll()`; `ThreadedScanner` in `app/frontend/`), and `Downloader` (queues a track download into `<dest>.part`, renamed when complete; the same `RequestId` / `poll()` / `cancel()` contract as `MusicServer`, results `Ok` / `NotConfigured` / `Unreachable` / `Server` / `Disk`; `App` takes one for Download album / playlist), and `MusicServer` (with `musicFolders(done)` and `albums(..., musicFolderId)`, and `catalogueVersion(done)`: a token that changes when the server's catalogue does, empty when it says none) with its `RemoteTrack` (with the original's `suffix` and `size`) / `RemoteAlbum` (with `genre`, `year`, `created`, `musicBrainzId`) / `RemoteArtist` / `RemotePlaylist` structs, and `createPlaylist(name, trackIds, done)` (a new server playlist; at most `kMaxPlaylistTracks` = 150 ids, as they all go in the GET URL; `done` gets only an `Error`) (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `std::vector<ServerLink>` (`ServerLink`: the server's `ServerConfig`, its key `TrackCache::serverKey(url, user)`, its spoken name, its `MusicServer&` and its `Downloader&`; the objects belong to the front end and outlive `App`). For now it uses only the first link, and with an empty list it behaves as with a server that is not configured. Its identity in saved state (queue entries, the cache folder, `catalogue.*` keys) comes from that link, not from `server.*` in the settings. The Streaming menu asks the `MusicServer` for lists, `tick()` calls its `poll()`, and opening a remote track asks it for `stream(id, maxBitRate)`: the URL, and for a transcode a `Transcoded` (offset URL, and the length `App` fills in from the listing) that `MediaPlayer::open()` takes. |
+| `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), `TextFiles` (whole text files for the cache manifests: `read()` and `writeAtomically()`, which leaves the old or the new contents after a crash; core does no file I/O of its own), `TagReader` (tags and length of a local audio file, `TrackTags`, none if unreadable; callable from any thread; `FfmpegTagReader` in `app/media/`, whose constructor lowers FFmpeg's log level to errors), `LibraryScanner` (`ScanRequest` in, local `IndexItem`s out, asynchronous like `MusicServer`: `scan()` / `cancel()` / `poll()`; `ThreadedScanner` in `app/frontend/`), and `Downloader` (queues a track download into `<dest>.part`, renamed when complete; the same `RequestId` / `poll()` / `cancel()` contract as `MusicServer`, results `Ok` / `NotConfigured` / `Unreachable` / `Server` / `Disk`; `App` takes one for Download album / playlist), and `MusicServer` (with `musicFolders(done)` and `albums(..., musicFolderId)`, and `catalogueVersion(done)`: a token that changes when the server's catalogue does, empty when it says none) with its `RemoteTrack` (with the original's `suffix` and `size`) / `RemoteAlbum` (with `genre`, `year`, `created`, `musicBrainzId`) / `RemoteArtist` / `RemotePlaylist` structs, and `createPlaylist(name, trackIds, done)` (a new server playlist; at most `kMaxPlaylistTracks` = 150 ids, as they all go in the GET URL; `done` gets only an `Error`) (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `App` takes a `std::vector<ServerLink>` (`ServerLink`: the server's `ServerConfig`, its key `TrackCache::serverKey(url, user)`, its spoken name, its `MusicServer&` and its `Downloader&`; the objects belong to the front end and outlive `App`). With an empty list it behaves as with a server that is not configured. Browsing (step 1.4) and playing (step 1.5: streams, scrobbles, read-ahead, the automatic cache, the marked-down state) use the link of the list or of the queue entry; downloads, Downloaded and the catalogue still use only the first link until steps 1.6 and 1.7. Its identity in saved state (queue entries, the cache folder, `catalogue.*` keys) comes from the link, not from `server.*` in the settings. The Streaming menu asks the `MusicServer` for lists, `tick()` calls its `poll()`, and opening a remote track asks it for `stream(id, maxBitRate)`: the URL, and for a transcode a `Transcoded` (offset URL, and the length `App` fills in from the listing) that `MediaPlayer::open()` takes. |
 | `app/net/http_client.{h,cpp}` | `Http`: asynchronous GET whose handler runs on the client's thread (tests use a fake). `HttpClient`: libcurl multi on one worker thread; 10 s connect timeout, 10 s without data or 60 s in all ends a request, answers over 16 MB fail; cancellable; the destructor aborts transfers and never waits on a socket. `finish(deadline)` (also on `Http`, a no-op in fakes) is the way out at exit: it rejects new requests, waits until the queued and running ones are answered or the deadline has passed, then aborts the rest. |
 | `app/net/subsonic.{h,cpp}` | `Subsonic : MusicServer`: API 1.16.1, token auth (`u`, `t` = md5(password + salt), a fresh random `s` per request, never `p`), percent-encoded URLs, `stream()`: the original file with no `format` / `maxBitRate`, or an MP3 transcode (`format=mp3&maxBitRate=<kbps>`) whose offset URL adds `&timeOffset=` once `getOpenSubsonicExtensions` (asked with the first transcode) lists `transcodeOffset`. `catalogueVersion()` sends `getArtists` and gives its `lastModified` as text. `createPlaylist()` sends `createPlaylist?name=&songId=...` (one `songId` per track; more than `kMaxPlaylistTracks` fail with `Server` and send nothing; `HttpClient` has GET only; a failure is never logged). `scrobble(id, submission, timeMs, done)` sends `scrobble?id=&submission=` (and `&time=<ms>` when `timeMs` is set), logs a failure to stderr (by its kind, never the URL) and gives the error to `done` (may be empty; not called when no server is set up). `finish(deadline)` forwards to `HttpClient::finish()` (not on `MusicServer`); the answers to scrobbles that come in during it are delivered to their callbacks (no other callback runs), so the outbox drops what the server took. `downloadUrls(Config)` gives the `download?id=` URL of a track for `HttpDownloader`. `configFrom(ServerConfig)` takes the url, user and password of an entry. `finish(deadline)` forwards to `HttpClient::finish`; the front ends call it through `Servers::finish()` (`make_music_server.h`, `kServerFinishDeadline` = 3 s) after `app.shutdown()`, so `App` and the `MusicServer` interface do not know about it. Answers are parsed on the HTTP thread; callbacks run from `poll()`. |
 | `app/net/subsonic_json.{h,cpp}` | Pure parsers for ping, `parseCatalogueVersion()` (`lastModified` of getArtists), getAlbumList2 (with genre, year, created and MusicBrainz id), getArtists, getArtist, getAlbum, getPlaylists, getPlaylist and getOpenSubsonicExtensions answers, and `parseStatus()` for an answer with only a status (scrobble) (yaml-cpp). Error 40 is `BadLogin`, other Subsonic errors and non-Subsonic bodies `Server`. `parseMusicFolders()` (getMusicFolders). `jsonForYaml()` rewrites `\uD83C\uDFB5` surrogate pairs, which yaml-cpp 0.8 rejects. |
@@ -416,28 +416,29 @@ does and does nothing else. Holding Home leaves the mode. The same texts
   play now, is opened only on Play).
 - **Unavailable entries and a server marked down (step 2.3).** `openFile()` asks `availability()`
   of every music entry before it opens it: a local file that is gone, a remote entry of another
-  server (url or user) or with no server set up (`server_.configured()`), or of the server while
-  `serverDown_` is set and the track has no complete cached copy (`cachedFile()`; not for `Origin::Menu`:
+  server (url or user) or with no server set up (`linkOf()` finds no configured link: `Availability::NoServer`), or of
+  a server while its `LinkState::down` is set and the track has no complete cached copy (`cachedFile()`; not for `Origin::Menu`:
   the user chose it from what the server just listed, so it is tried, and an open that works clears the
   mark) is skipped. The entries skipped in a row
   are a `SkippedRun`, said once when an entry plays ("Storm, source unavailable." or "3 tracks,
-  source unavailable."); Previous (`stepChapter()`) goes back over them the same way. A remote
+  source unavailable."; when every entry of the run was skipped because its server is not set up,
+  `SkippedRun::noServer == count`: "Cannot play Storm. Server not set up."); Previous (`stepChapter()`) goes back over them the same way. A remote
   entry that does not open (`onCannotPlay()`, or at the end of a track `failOpen()`), or a stream
-  that breaks off after `Player`'s retries (`onStreamFailed()`), calls `markServerDown()`. At the
+  that breaks off after `Player`'s retries (`onStreamFailed()`), calls `markServerDown(link)` for the server of that track. At the
   end of a track (`Origin::Next`) a failed open is not an error to stop on: `continueAfterFailure()`
   goes on with the entries after it. When nothing from there on can play and the server is the
   reason, `parkAtSkipped()` closes the player at the first skipped entry, says "Server not
   reachable. Press play to try again." and `openFile()` returns `OpenResult::Stopped`. While
-  `serverDown_` and `remoteAhead()` (a remote entry of the server from the current one on),
-  `checkServerMark()` (in `tick()`) pings through `MusicServer::ping()` when `pingDue_` has passed:
+  a server is down (`LinkState::down`) and `remoteAhead(link)` (a remote entry of that server from the current one on),
+  `checkServerMark()` (in `tick()`, for every link) pings through its `MusicServer::ping()` when its `pingDue` has passed:
   `kPingFirst` after the mark, `kPingSecond` after the first unanswered ping, then every
   `kPingEvery`; no ping in flight at the same time, none while asleep. An answer calls
-  `clearServerDown()`. Play on an entry that cannot open now (`play()`) says "Checking the server."
-  and pings at once (`startMarkPing(true)`); `resumeClosedTrack()` runs when it answers, or fails,
+  `clearServerDown(link)`. Play on an entry that cannot open now (`play()`) says "Checking the server."
+  and pings at once the server of the current entry if it is down, else the first down server with entries ahead (`linkToCheck()`, `startMarkPing(link, true)`); `resumeClosedTrack()` runs when it answers, or fails,
   and then skips what is still down. `cancelMarkPing()` (new queue in `switchTo()`, `sleep()`,
   `powerOff()`) cancels it, so a late answer never runs. The book player is not touched: a book
   stops at the chapter that failed and Play tries it again. Server status shows "not reachable"
-  as the item's value while `serverDown_`, and a ping from there that answers clears it. **Repeat all (step 2.6):** `openFile()` scans from
+  as the item's value while that link is down, and a ping from there that answers clears it. **Repeat all (step 2.6):** `openFile()` scans from
   the target and wraps past the last entry, trying each entry once (`skipped.count` from a failed
   open counts as tried), so a queue with nothing that plays ends with "End of queue" instead of going
   round; `remoteAhead()` looks at the whole queue; `stepChapter()` wraps Left / Right on the
@@ -625,8 +626,19 @@ Power menu (hold Power): Sleep · Power off · Restart · Cancel
 **Several servers (step 1.4):** the browsing menus of each server's Streaming menu carry the index of
 their link (`streamingMenu(link)`, `openRemoteList(link, ...)`, `Pick::link`, `RemoteList::link`,
 `pingLink_`) and ask `serverAt(link)`; a request is cancelled on the link it was made on. `tick()` polls
-every link. Playing, downloads, Downloaded, the catalogue and the "marked down" state still use the first link
-(`server_`) until steps 1.5 to 1.7; a second server's menu has no Downloaded entry and never answers an album from the first server's downloads.
+every link. **Playing from the right server (step 1.5):** a remote `QueueEntry` names its server by `serverUrl` + `user`
+(`queue.tsv` keeps exactly that); `linkOf(entry)` finds the configured link, `trackLink(i)` the link of track `i`. Everything
+that plays asks the link, never `server_`: `newStream()` (`serverAt(link).stream()`), `checkReadAhead()` (`ReadAhead::link`, so
+the same track id on another server is not taken for the pre-opened one), `TrackPlay::link` (the "now playing" scrobble and the
+submission go to that server), `AutoCache::link` (its downloader, its cache folder `<cache>/<server key>/...`, its manifest), and the
+`LinkState` of each link (`links_`): marked-down state with its ping schedule, `AheadMemo`, the play times for the cache, the
+cache byte count, the `TrackCache` and its index (`trackCacheOf(link)`, `cachedFile(link, id)`; the same track id on two servers
+is two tracks). `trimCache()` trims each server's cache on its own, to the same limit. `playRemote()`, `trackItems()`, `remoteSelection()` and
+Options picks carry the link, so a list of the second server queues entries of the second server. A track of a server
+that is not set up cannot play ("Cannot play Storm. Server not set up."); its entry stays in the queue and in `queue.tsv`.
+Still the first link's until steps 1.6 and 1.7: Download album / playlist, Downloaded (a second server's menu has none, and
+offers no Download item), `startDownload()`, the catalogue sync, Save as playlist, and playlists. A scrobble in the outbox
+whose server is not set up stays in `scrobbles.tsv` (bounded by `kMaxScrobbles`) and is sent when that server is back.
 
 **Lists from the server** (`App::openRemoteList`) open at once with one item,
 "Loading", and the request goes out. Each screen has an `id`; the request's
@@ -872,9 +884,10 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   sleep and the end-of-track sleep timer wait while a track opens.
 - **Play from the cache:** `openFile()` opens a remote track from its complete
   cached file when `App::cachedFile()` finds one (the `TrackCache` that `trackCache()`
-  makes once, from the cache root and the first server's url and user (its `ServerLink`): the
-  server cannot change while the player runs and a factory reset keeps `server:`, so
-  another server's downloads are never used), else from `remoteStream()` as above.
+  makes once per link, from the cache root and that server's url and user (its `ServerLink`): the
+  servers cannot change while the player runs and a factory reset keeps `servers:`, so
+  another server's downloads are never used: the index and the cache are per link, and a
+  track id is looked up only in its own server's), else from `remoteStream()` as above.
   The file is a local path: it opens at once (no "Loading."), seeks by itself and
   has no transcode offset, whatever the Streaming quality. A file that is gone is
   not found, and one that fails to open falls back to the stream. Read-ahead
@@ -998,12 +1011,12 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   are never scrobbled. Nothing about a scrobble is ever spoken. "Now playing" is sent once
   with no time and no `done`, and is never kept. A submission goes through the **scrobble
   outbox** (`outbox_`, fixes.md "Scrobbles"): `submitScrobble()` puts it in with the time it
-  was heard (`clock_.wallTime()` in ms) and the key of the server set up
-  (`catalogueServerKey()`, never the token), writes `scrobbles.tsv` at once, and only then
-  `sendScrobbles()` sends the oldest entry of this server with `scrobble(id, true, timeMs,
-  done)`, one at a time, unless the server is marked down. The entry leaves the outbox
+  was heard (`clock_.wallTime()` in ms) and the key of the server that played it
+  (`servers_[link].key`, never the token), writes `scrobbles.tsv` at once, and only then
+  `sendScrobbles()` sends the oldest entry of the first server in the list that has one and is not marked down,
+  to that server, with `scrobble(id, true, timeMs, done)`, one at a time. The entry leaves the outbox
   (and the file) when the server answers: `Error::None` or `Error::Server` (a refusal is not
-  sent for ever); `Unreachable`, `BadLogin` and `NotConfigured` keep it and stop the round.
+  sent for ever); `Unreachable`, `BadLogin` and `NotConfigured` keep it and stop the round for that server (`scrobbleFailed_`: the entries of the other servers still go; a server that answers, or `sendScrobbles()` from any event, tries all again).
   A round starts again whenever the server answers: `start()` (after `loadScrobbles()`),
   `clearServerDown()` (a ping, or a stream that opens), a finished sync, a loaded page or
   pick, and a successful scrobble (the next entry). More than `kMaxScrobbles` (1000) entries

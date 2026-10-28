@@ -326,7 +326,8 @@ that touch navigation:
   comes after them.
 - At the end of the queue: "End of queue", paused at the first entry, unless Repeat is on.
 - **An entry that cannot play is skipped**: "Storm, source unavailable." (a run: "3
-  tracks, source unavailable."). A server that fails is marked down and checked in the
+  tracks, source unavailable."); one whose server is no longer set up says "Cannot play
+  Storm. Server not set up." A server that fails is marked down and checked in the
   background; with nothing ahead that can play the device says "Server not reachable.
   Press play to try again."
 - The music Player menu:

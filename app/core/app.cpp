@@ -304,6 +304,7 @@ App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeContro
       freeSpace_(spaceOnDisk), random_(clockRandom(clock)), lastActivity_(clock.now()) {
     textFiles_ = files;
     scrobbleFile_ = std::move(scrobbleFile);
+    links_.resize(std::max<size_t>(1, servers_.size()));
 }
 
 // ---------------------------------------------------------------- lifecycle
@@ -649,9 +650,9 @@ void App::shutdown() {
     shutDown_ = true;
     saveOnExit();
     cancelResume();
-    if (download_) downloader_.cancel(download_->request); // the .part stays: OK on Download goes on from it
+    if (download_) downloader_.cancel(download_->request); // (a download is the first server's until step 1.6) the .part stays: OK on Download goes on from it
     download_.reset();
-    if (autoRequest_) downloader_.cancel(std::exchange(autoRequest_, 0));
+    if (autoRequest_) cancelAutoRequest();
     autoJob_.reset();
     autoQueue_.clear();
     if (scanRequest_) scanner_.cancel(std::exchange(scanRequest_, 0));
@@ -1686,8 +1687,7 @@ std::vector<MenuItem> App::streamingMenu(size_t link) {
     // The cache is the first server's until step 1.6 makes it per server: a second server has no Downloaded yet.
     if (link == 0 && trackCache().enabled()) items.push_back(submenu("Downloaded", [this] { return downloadedMenu(); }));
     MenuItem status = action("Server status", [this, link] { checkServer(link); });
-    // serverDown_ is about the first server, the one that plays (steps 1.5 and later make it per server).
-    status.value = [this, link] { return link == 0 && serverDown_ ? std::string("not reachable") : std::string(); };
+    status.value = [this, link] { return serverDown(link) ? std::string("not reachable") : std::string(); };
     items.push_back(std::move(status));
     return items;
 }
@@ -1822,8 +1822,8 @@ void App::openRemoteAlbum(const RemoteAlbum& album, const std::string& playedId,
                        [this, link, id = album.id](int, MusicServer::Done<RemoteTrack> done) {
                            return serverAt(link).albumTracks(id, std::move(done));
                        },
-                       [this, name = album.name, artist = album.artist, id = album.id, playedId](const std::vector<RemoteTrack>& tracks) {
-                           return trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id}, artist, std::nullopt, playedId);
+                       [this, name = album.name, artist = album.artist, id = album.id, playedId, link](const std::vector<RemoteTrack>& tracks) {
+                           return trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id}, artist, std::nullopt, playedId, link);
                        }),
                    0, "No tracks", "This album has no tracks on the server.", ListOrder::None, focusTrack);
 }
@@ -1846,10 +1846,10 @@ std::vector<MenuItem> App::albumItems(const std::vector<RemoteAlbum>& albums, bo
 std::vector<MenuItem> App::trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
                                       const std::string& playAll, const RemoteSource& source,
                                       const std::string& artist, std::optional<MenuItem> second,
-                                      const std::string& playedId) {
+                                      const std::string& playedId, size_t link) {
     if (tracks.empty()) return {};
-    auto play = [this, title, artist, source, playedId](const std::shared_ptr<const std::vector<RemoteTrack>>& list, size_t from) {
-        if (playRemote(title, *list, from, source, 0, artist) && !playedId.empty()) markPlayed(playedId);
+    auto play = [this, title, artist, source, playedId, link](const std::shared_ptr<const std::vector<RemoteTrack>>& list, size_t from) {
+        if (playRemote(title, *list, from, source, 0, artist, link) && !playedId.empty()) markPlayed(playedId);
     };
     auto list = std::make_shared<const std::vector<RemoteTrack>>(tracks); // one copy for all the items
     std::vector<MenuItem> items;
@@ -1858,7 +1858,7 @@ std::vector<MenuItem> App::trackItems(const std::string& title, const std::vecto
     items.push_back(all);
     if (second) {
         items.push_back(std::move(*second));
-    } else if (canDownload()) {
+    } else if (link == 0 && canDownload()) { // downloads are the first server's until step 1.6
         const char* what = source.kind == RemoteSource::Kind::Album ? "Download album" : "Download playlist";
         items.push_back(action(what, [this, title, artist, list, source] { startDownload(title, artist, *list, source); }));
     }
@@ -1868,10 +1868,10 @@ std::vector<MenuItem> App::trackItems(const std::string& title, const std::vecto
         track.okHint = "play";
         track.key = tracks[i].id;
         Pick pick;
-        pick.make = [this, title, artist, source, list, i, label, playedId] {
+        pick.make = [this, title, artist, source, list, i, label, playedId, link] {
             const RemoteTrack& t = (*list)[i];
             Selection selection = remoteSelection(title, {t}, std::nullopt, artist, source.kind == RemoteSource::Kind::Album,
-                                                  source.kind == RemoteSource::Kind::Album ? source.id : std::string());
+                                                  source.kind == RemoteSource::Kind::Album ? source.id : std::string(), link);
             selection.title = selection.list.title = label;
             selection.playedId = playedId;
             return selection;
@@ -1961,14 +1961,15 @@ void App::goToAlbum() {
         say("No album for this track.");
         return;
     }
-    const IndexItem* item = index_.findBySeen(LibraryIndex::seenRef(catalogueServerKey(), SeenKind::Album, track.albumId));
+    const size_t link = linkOf(track).value_or(0); // availability() found it
+    const IndexItem* item = index_.findBySeen(LibraryIndex::seenRef(servers_[link].key, SeenKind::Album, track.albumId));
     RemoteAlbum album;
     album.id = track.albumId;
     album.name = track.album;
     album.artist = track.artist;
     const std::string playedId = item ? item->id : std::string();
     popScreen();
-    openRemoteAlbum(album, playedId, track.trackId);
+    openRemoteAlbum(album, playedId, track.trackId, link);
 }
 
 MenuItem App::withOptions(MenuItem item, Pick pick) {
@@ -1998,7 +1999,7 @@ RemoteSource App::sourceOf(const Pick& pick) {
 // whole on the device (every track pinned and complete: nothing is left to fetch).
 bool App::offersDownload(const Pick& pick) const {
     if (pick.kind != Pick::Kind::Album && pick.kind != Pick::Kind::Playlist) return false;
-    if (!canDownload()) return false;
+    if (pick.link != 0 || !canDownload()) return false; // downloads are the first server's until step 1.6
     const TrackCache& store = trackCache();
     const RemoteSource source = sourceOf(pick);
     if (download_ && sameList(download_->source, source)) return true; // its manifest holds only what has arrived
@@ -2042,11 +2043,11 @@ App::Pick App::remotePick(Pick::Kind kind, const std::string& id, const std::str
 
 App::Selection App::remoteSelection(const std::string& title, const std::vector<RemoteTrack>& tracks,
                                     std::optional<RemoteSource> source, const std::string& artist, bool ofAlbum,
-                                    const std::string& albumId) const {
+                                    const std::string& albumId, size_t link) const {
     Selection selection;
     selection.title = title;
     selection.list = remoteBook(title, tracks, std::move(source), artist);
-    selection.entries = remoteEntries(title, tracks, ofAlbum, artist, albumId);
+    selection.entries = remoteEntries(title, tracks, ofAlbum, artist, albumId, link);
     return selection;
 }
 
@@ -2154,13 +2155,13 @@ void App::onPickLoaded(std::uint64_t screen, MusicServer::Error error, std::vect
     Selection selection;
     switch (pick.kind) {
     case Pick::Kind::Album:
-        selection = remoteSelection(pick.title, tracks, RemoteSource{RemoteSource::Kind::Album, pick.id}, pick.artist, true, pick.id);
+        selection = remoteSelection(pick.title, tracks, RemoteSource{RemoteSource::Kind::Album, pick.id}, pick.artist, true, pick.id, pick.link);
         break;
     case Pick::Kind::Playlist:
-        selection = remoteSelection(pick.title, tracks, RemoteSource{RemoteSource::Kind::Playlist, pick.id}, "", false);
+        selection = remoteSelection(pick.title, tracks, RemoteSource{RemoteSource::Kind::Playlist, pick.id}, "", false, {}, pick.link);
         break;
     default: // an artist: no list on the server to resume
-        selection = remoteSelection(pick.title, tracks, std::nullopt, pick.title, false);
+        selection = remoteSelection(pick.title, tracks, std::nullopt, pick.title, false, {}, pick.link);
         break;
     }
     selection.playedId = pick.playedId;
@@ -2402,7 +2403,7 @@ void App::deleteDownload(const RemoteSource& source, const std::string& title) {
         say("Cannot delete " + title + ".");
         return;
     }
-    cacheIndex_.reset(); // its files are gone: the index is made again from the manifests left
+    linkState(0).cacheIndex.reset(); // its files are gone: the index is made again from the manifests left
     popScreen();         // the confirmation, then the list that is gone, back to Downloaded (rebuilt)
     popScreen();
     earcons_.play(Earcon::Close);
@@ -2426,7 +2427,7 @@ void App::checkServer(size_t link) {
             say(errorText(error) + ".");
             return;
         }
-        if (link == 0) clearServerDown(); // it answers (serverDown_ is about the first server)
+        clearServerDown(link); // it answers
         say(connectedText(info));
     });
 }
@@ -2789,14 +2790,14 @@ std::string queuePlaylistName(std::time_t when) {
 }
 } // namespace
 
-// Saves the tracks of the server set up now, in play order, as a playlist on it. The queue is not touched,
+// Saves the tracks of the first server, in play order, as a playlist on it. The queue is not touched,
 // whatever the answer is; the answer is spoken on the Queue list it was asked from, and dropped if the
 // user has left it (closeScreens(), sleep, power off).
 void App::saveAsPlaylist() {
     if (saving_.request) return say("Saving.");
     std::vector<std::string> ids;
     for (size_t i = 0; i < queue_.size(); ++i)
-        if (ofServerNow(queue_.at(i))) ids.push_back(queue_.at(i).trackId);
+        if (linkOf(queue_.at(i)) == std::optional<size_t>(0)) ids.push_back(queue_.at(i).trackId); // the first server's (playlists of other servers: later)
     if (ids.empty()) {
         earcons_.play(Earcon::Error);
         return say("Only tracks from the server can be saved.");
@@ -2973,6 +2974,20 @@ size_t App::trackCount() const {
 bool App::trackRemote(size_t i) const {
     if (i >= trackCount()) return false;
     return music_ ? queue_.at(i).kind == QueueEntry::Kind::Remote : book_->remote;
+}
+
+// Where a remote entry plays from: the server of that url and user, if it is set up now.
+std::optional<size_t> App::linkOf(const QueueEntry& e) const {
+    if (e.kind != QueueEntry::Kind::Remote) return std::nullopt;
+    for (size_t i = 0; i < servers_.size(); ++i)
+        if (servers_[i].server.configured() && servers_[i].config.url == e.serverUrl && servers_[i].config.user == e.user) return i;
+    return std::nullopt;
+}
+
+std::optional<size_t> App::trackLink(size_t i) const {
+    if (!trackRemote(i)) return std::nullopt;
+    if (music_) return linkOf(queue_.at(i));
+    return servers_.empty() ? std::nullopt : std::optional<size_t>(0);
 }
 
 std::string App::trackKey(size_t i) const {
@@ -3220,13 +3235,15 @@ Book App::remoteBook(const std::string& title, const std::vector<RemoteTrack>& t
 
 // A server album is one album, whatever its tracks say (a disc 2 tag); a playlist has the albums of its tracks.
 std::vector<QueueEntry> App::remoteEntries(const std::string& title, const std::vector<RemoteTrack>& tracks, bool ofAlbum,
-                                           const std::string& artist, const std::string& albumId) const {
+                                           const std::string& artist, const std::string& albumId, size_t link) const {
+    // The entry names its server by url and user, as queue.tsv keeps it: never a password or a stream URL.
+    const ServerConfig config = link < servers_.size() ? servers_[link].config : ServerConfig{};
     std::vector<QueueEntry> entries;
     for (const RemoteTrack& t : tracks) {
         QueueEntry e;
         e.kind = QueueEntry::Kind::Remote;
-        e.serverUrl = serverConfig_.url;
-        e.user = serverConfig_.user;
+        e.serverUrl = config.url;
+        e.user = config.user;
         e.trackId = t.id;
         e.albumId = ofAlbum && !albumId.empty() ? albumId : t.albumId;
         e.title = t.title;
@@ -3239,7 +3256,7 @@ std::vector<QueueEntry> App::remoteEntries(const std::string& title, const std::
 }
 
 bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index,
-                     std::optional<RemoteSource> source, double position, const std::string& artist) {
+                     std::optional<RemoteSource> source, double position, const std::string& artist, size_t link) {
     if (index >= tracks.size()) {
         earcons_.play(Earcon::Error);
         say("Nothing to play.");
@@ -3248,7 +3265,7 @@ bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& t
     const bool ofAlbum = source && source->kind == RemoteSource::Kind::Album;
     const std::string albumId = ofAlbum ? source->id : std::string();
     Book list = remoteBook(title, tracks, std::move(source), artist);
-    std::vector<QueueEntry> entries = remoteEntries(title, tracks, ofAlbum, artist, albumId);
+    std::vector<QueueEntry> entries = remoteEntries(title, tracks, ofAlbum, artist, albumId, link);
     std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
     return playEntries(list, std::move(entries), index, [this, screen] { enterPlayerFrom(screen); }, position);
 }
@@ -3390,19 +3407,20 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
         bool opens = false;
         const bool remote = trackRemote(file);
         const std::string key = trackKey(file);
+        const size_t link = trackLink(file).value_or(0); // (a music entry that gets here has a server)
         if (remote) {
             // A downloaded track is a local file: it opens at once and seeks by itself. If it
             // cannot be opened after all, the stream is the way.
-            if (std::optional<std::filesystem::path> cached = cachedFile(key, true)) {
+            if (std::optional<std::filesystem::path> cached = cachedFile(link, key, true)) {
                 opens = player_.open(cached->string(), position);
-                if (!opens && cacheIndex_) cacheIndex_->erase(key); // not tried again at every play
+                if (!opens && linkState(link).cacheIndex) linkState(link).cacheIndex->erase(key); // not tried again at every play
             }
             if (!opens) {
                 // A stream takes a moment to open: say why nothing plays yet.
                 if (origin == Origin::Menu || origin == Origin::Key || origin == Origin::Resume) say("Loading.");
                 MusicServer::Stream stream = remoteStream(file);
                 opens = player_.open(stream.url, position, stream.transcoded);
-                if (opens && !player_.opening() && music_) clearServerDown(); // the stream opened at once
+                if (opens && !player_.opening() && music_) clearServerDown(link); // the stream opened at once
             }
         } else {
             opens = player_.open(key, position);
@@ -3418,7 +3436,7 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
             return OpenResult::Opened;
         }
         if (remote && continuesAfterFailure(origin)) { // the next entry is tried, or the queue stops
-            markServerDown();
+            markServerDown(link);
             addSkipped(skipped, file, Availability::ServerDown);
             continue;
         }
@@ -3440,7 +3458,7 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
     return OpenResult::Failed;
 }
 
-// A music queue entry plays only if its file is there, or it is of the server set up now (url and user) and
+// A music queue entry plays only if its file is there, or it is of a server set up now (url and user) and
 // that server is not marked down or the track is downloaded. Menu tries a server that is marked down: the user chose from what it just
 // listed, and an open that works clears the mark.
 App::Availability App::availability(size_t i, Origin origin) const {
@@ -3449,16 +3467,11 @@ App::Availability App::availability(size_t i, Origin origin) const {
         std::error_code ec;
         return std::filesystem::exists(e.path, ec) ? Availability::Yes : Availability::Gone;
     }
-    if (!ofServerNow(e)) return Availability::Gone;
-    if (!serverDown_ || origin == Origin::Menu) return Availability::Yes;
+    const std::optional<size_t> link = linkOf(e);
+    if (!link) return Availability::NoServer;
+    if (!serverDown(*link) || origin == Origin::Menu) return Availability::Yes;
     // A downloaded track plays from its file, whatever the server does.
-    return cachedFile(e.trackId, true) ? Availability::Yes : Availability::ServerDown;
-}
-
-// A remote entry of the server in the config: the same address and user (a cached copy of it is too).
-bool App::ofServerNow(const QueueEntry& e) const {
-    return e.kind == QueueEntry::Kind::Remote && server_.configured() &&
-           e.serverUrl == serverConfig_.url && e.user == serverConfig_.user;
+    return cachedFile(*link, e.trackId, true) ? Availability::Yes : Availability::ServerDown;
 }
 
 void App::addSkipped(SkippedRun& skipped, size_t file, Availability why) {
@@ -3468,12 +3481,16 @@ void App::addSkipped(SkippedRun& skipped, size_t file, Availability why) {
     }
     ++skipped.count;
     if (why == Availability::ServerDown) skipped.serverDown = true;
+    if (why == Availability::NoServer) ++skipped.noServer;
 }
 
 void App::sayUnavailable(SkippedRun& skipped) {
     if (!skipped.count) return;
     earcons_.play(Earcon::Error);
-    say((skipped.count == 1 ? skipped.firstTitle : std::to_string(skipped.count) + " tracks") + ", source unavailable.");
+    const std::string what = skipped.count == 1 ? skipped.firstTitle : std::to_string(skipped.count) + " tracks";
+    // A run whose servers were all removed from the config says so; any other mix is just unavailable.
+    if (skipped.noServer == skipped.count) say("Cannot play " + what + ". Server not set up.");
+    else say(what + ", source unavailable.");
     skipped = {};
 }
 
@@ -3518,7 +3535,8 @@ void App::onOpened(bool autoplay, Origin origin, const Then& opened) {
 }
 
 void App::onCannotPlay(const std::string& title, bool quiet, const Then& undo) {
-    if (music_ && trackRemote(fileIndex_)) markServerDown(); // the track of the queue that did not open
+    if (music_)
+        if (const std::optional<size_t> link = trackLink(fileIndex_)) markServerDown(*link); // the track of the queue that did not open
     if (!quiet) {
         earcons_.play(Earcon::Error);
         say("Cannot play " + title + ". Server not reachable."); // never the URL: it holds the login
@@ -3537,7 +3555,8 @@ void App::finishPendingOpen() {
     PendingOpen open = std::move(*pendingOpen_);
     pendingOpen_.reset(); // before the callbacks, which may open again
     if (player_.isOpen()) {
-        if (music_) clearServerDown(); // a stream opened: the server answers
+        if (music_)
+            if (const std::optional<size_t> link = trackLink(open.file)) clearServerDown(*link); // a stream opened: the server answers
         onOpened(open.autoplay, open.origin, open.opened);
     } else {
         failOpen(open.origin, open.title, open.file, open.undo);
@@ -3548,7 +3567,7 @@ void App::finishPendingOpen() {
 // server is marked down and the queue goes on with what can play.
 void App::failOpen(Origin origin, const std::string& title, size_t file, const Then& undo) {
     if (continuesAfterFailure(origin)) {
-        markServerDown();
+        if (const std::optional<size_t> link = trackLink(file)) markServerDown(*link);
         continueAfterFailure(file, title);
         return;
     }
@@ -3595,9 +3614,9 @@ void App::play() {
     if (book_ && !player_.isOpen() && reopenAt_) {
         // The track cannot be opened now (its server is marked down, or it is a file that is gone with the
         // server's tracks behind it): Play asks the server first, and goes on once it answers.
-        if (music_ && serverDown_ && availability(fileIndex_, Origin::Key) != Availability::Yes && remoteAhead()) {
+        if (const std::optional<size_t> link = linkToCheck(); link && availability(fileIndex_, Origin::Key) != Availability::Yes) {
             say("Checking the server.");
-            startMarkPing(true);
+            startMarkPing(*link, true);
             return;
         }
         resumeClosedTrack();
@@ -3620,25 +3639,40 @@ void App::play() {
 
 // ---- a server that is marked down
 
-void App::markServerDown() {
-    if (serverDown_) return; // another failure does not restart the pings at 10 s
-    serverDown_ = true;
-    pingStep_ = 0;
-    pingDue_ = clock_.now() + kPingFirst;
+App::LinkState& App::linkState(size_t link) const { return links_[link < servers_.size() ? link : 0]; }
+
+bool App::serverDown(size_t link) const { return link < servers_.size() && linkState(link).down; }
+
+void App::markServerDown(size_t link) {
+    if (link >= servers_.size()) return;
+    LinkState& state = linkState(link);
+    if (state.down) return; // another failure does not restart the pings at 10 s
+    state.down = true;
+    state.pingStep = 0;
+    state.pingDue = clock_.now() + kPingFirst;
 }
 
-void App::clearServerDown() {
-    serverDown_ = false;
+void App::clearServerDown(size_t link) {
+    if (link < servers_.size()) linkState(link).down = false;
     sendScrobbles(); // it answers
+}
+
+// Play at a track that cannot open: the server to ask first. The current track's own server if it is marked
+// down, else any server marked down that has entries ahead (the queue waits at a missing file before them).
+std::optional<size_t> App::linkToCheck() {
+    if (!book_ || !music_) return std::nullopt;
+    if (const std::optional<size_t> own = trackLink(fileIndex_); own && serverDown(*own) && remoteAhead(*own)) return own;
+    for (size_t link = 0; link < servers_.size(); ++link)
+        if (serverDown(link) && remoteAhead(link)) return link;
+    return std::nullopt;
 }
 
 // ---- the scrobble outbox
 
 // A submission is kept first, then sent: it leaves the outbox only when the server answers it.
-void App::submitScrobble(const std::string& trackId) {
-    const std::string key = catalogueServerKey();
-    if (key.empty() || !server_.configured()) return;
-    outbox_.push_back({key, trackId, static_cast<std::int64_t>(clock_.wallTime()) * 1000});
+void App::submitScrobble(size_t link, const std::string& trackId) {
+    if (link >= servers_.size() || servers_[link].key.empty() || !servers_[link].server.configured()) return;
+    outbox_.push_back({servers_[link].key, trackId, static_cast<std::int64_t>(clock_.wallTime()) * 1000});
     if (outbox_.size() > kMaxScrobbles) outbox_.erase(outbox_.begin(), outbox_.end() - kMaxScrobbles);
     saveScrobbles();
     sendScrobbles();
@@ -3661,14 +3695,23 @@ void App::saveScrobbles() {
 
 // One at a time, oldest first, with the time it was heard. Called whenever the server answers.
 void App::sendScrobbles() {
-    if (scrobbleOut_ || serverDown_ || shutDown_ || !server_.configured()) return;
-    const std::string key = catalogueServerKey();
-    if (key.empty()) return;
-    const auto next = std::find_if(outbox_.begin(), outbox_.end(), [&](const ScrobbleEntry& e) { return e.server == key; });
-    if (next == outbox_.end()) return;
-    scrobbleOut_ = true;
-    server_.scrobble(next->trackId, true, next->timeMs,
-                     [this, sent = *next](MusicServer::Error error) { onScrobbleAnswer(sent, error); });
+    scrobbleFailed_.clear(); // a server answered, or something new is waiting: every server is tried again
+    sendNextScrobble();
+}
+
+void App::sendNextScrobble() {
+    if (scrobbleOut_ || shutDown_) return;
+    // The first server, in config order, that is up and has an entry waiting; each entry goes to its own server.
+    for (size_t link = 0; link < servers_.size(); ++link) {
+        if (serverDown(link) || scrobbleFailed_.count(link) || !servers_[link].server.configured() || servers_[link].key.empty()) continue;
+        const std::string& key = servers_[link].key;
+        const auto next = std::find_if(outbox_.begin(), outbox_.end(), [&](const ScrobbleEntry& e) { return e.server == key; });
+        if (next == outbox_.end()) continue;
+        scrobbleOut_ = true;
+        servers_[link].server.scrobble(next->trackId, true, next->timeMs,
+                                       [this, sent = *next](MusicServer::Error error) { onScrobbleAnswer(sent, error); });
+        return;
+    }
 }
 
 // The entry leaves the outbox when the server took it, or refused it (Server: not sent for ever). Not
@@ -3676,16 +3719,25 @@ void App::sendScrobbles() {
 // answer from the server starts it again.
 void App::onScrobbleAnswer(const ScrobbleEntry& sent, MusicServer::Error error) {
     scrobbleOut_ = false;
-    if (error != MusicServer::Error::None && error != MusicServer::Error::Server) return;
+    if (error != MusicServer::Error::None && error != MusicServer::Error::Server) {
+        // That server stops the round, but the entries of the others still go (it may not be marked down).
+        for (size_t link = 0; link < servers_.size(); ++link)
+            if (servers_[link].key == sent.server) scrobbleFailed_.insert(link);
+        sendNextScrobble();
+        return;
+    }
     if (const auto it = std::find(outbox_.begin(), outbox_.end(), sent); it != outbox_.end()) outbox_.erase(it);
     saveScrobbles();
-    sendScrobbles();
+    for (size_t link = 0; link < servers_.size(); ++link)
+        if (servers_[link].key == sent.server) scrobbleFailed_.erase(link); // it answered
+    sendNextScrobble(); // (a server that failed before waits for its own answer, not for this one)
 }
 
-// Entries that can come up that belong to the server set up now.
-bool App::remoteAhead() const {
-    if (!book_ || !music_ || !server_.configured()) return false;
-    const std::string url = serverConfig_.url, user = serverConfig_.user;
+// Entries that can come up that belong to server `link`.
+bool App::remoteAhead(size_t link) const {
+    if (!book_ || !music_ || link >= servers_.size() || !servers_[link].server.configured()) return false;
+    const std::string& url = servers_[link].config.url;
+    const std::string& user = servers_[link].config.user;
     // With Repeat all or album the entries before the current one come up again (after the last / the album's last).
     const size_t from = queue_.repeat() == QueueRepeat::All || queue_.repeat() == QueueRepeat::Album ? 0 : fileIndex_;
     for (size_t i = from; i < queue_.size(); ++i)
@@ -3694,11 +3746,12 @@ bool App::remoteAhead() const {
     return false;
 }
 
-bool App::remoteAheadMemo() {
-    AheadMemo& m = aheadMemo_;
+bool App::remoteAheadMemo(size_t link) {
+    AheadMemo& m = linkState(link).ahead;
+    const bool configured = serverAt(link).configured();
     if (!m.known || m.revision != queue_.revision() || m.file != fileIndex_ || m.music != music_ || m.loaded != !!book_ ||
-        m.configured != server_.configured()) {
-        m = AheadMemo{queue_.revision(), fileIndex_, music_, !!book_, server_.configured(), true, remoteAhead()};
+        m.configured != configured) {
+        m = AheadMemo{queue_.revision(), fileIndex_, music_, !!book_, configured, true, remoteAhead(link)};
     }
     return m.ahead;
 }
@@ -3706,34 +3759,39 @@ bool App::remoteAheadMemo() {
 // tick(): while the server is marked down and the music player has its entries ahead, ping it when due. With
 // none ahead the pings stop and the schedule starts again (10 s) when there are.
 void App::checkServerMark(TimePoint now) {
-    if (!serverDown_) return;
-    if (sleeping_ || !remoteAheadMemo()) {
-        pingDue_ = now + kPingFirst;
-        pingStep_ = 0;
-        return;
+    for (size_t link = 0; link < servers_.size(); ++link) {
+        LinkState& state = linkState(link);
+        if (!state.down) continue;
+        if (sleeping_ || !remoteAheadMemo(link)) {
+            state.pingDue = now + kPingFirst;
+            state.pingStep = 0;
+            continue;
+        }
+        if (!state.markPing && now >= state.pingDue) startMarkPing(link, false);
     }
-    if (!markPing_ && now >= pingDue_) startMarkPing(false);
 }
 
-void App::startMarkPing(bool forPlay) {
-    cancelMarkPing();
-    markPing_ = server_.ping([this, forPlay](MusicServer::Error error, MusicServer::ServerInfo) {
-        markPing_ = 0;
-        onMarkPing(error == MusicServer::Error::None, forPlay);
+void App::startMarkPing(size_t link, bool forPlay) {
+    if (linkState(link).markPing) serverAt(link).cancel(std::exchange(linkState(link).markPing, 0)); // (another server's ping goes on)
+    linkState(link).markPing = serverAt(link).ping([this, link, forPlay](MusicServer::Error error, MusicServer::ServerInfo) {
+        linkState(link).markPing = 0;
+        onMarkPing(link, error == MusicServer::Error::None, forPlay);
     });
 }
 
 // A cancelled ping never calls back (MusicServer): a new queue, sleep and power off drop Play's.
 void App::cancelMarkPing() {
-    if (markPing_) server_.cancel(std::exchange(markPing_, 0));
+    for (size_t link = 0; link < servers_.size(); ++link)
+        if (linkState(link).markPing) serverAt(link).cancel(std::exchange(linkState(link).markPing, 0));
 }
 
-void App::onMarkPing(bool answered, bool forPlay) {
-    if (answered) clearServerDown();
+void App::onMarkPing(size_t link, bool answered, bool forPlay) {
+    if (answered) clearServerDown(link);
     else {
-        const auto wait = pingStep_ == 0 ? kPingSecond : kPingEvery; // the pause after this one
-        ++pingStep_;
-        pingDue_ = clock_.now() + wait;
+        LinkState& state = linkState(link);
+        const auto wait = state.pingStep == 0 ? kPingSecond : kPingEvery; // the pause after this one
+        ++state.pingStep;
+        state.pingDue = clock_.now() + wait;
     }
     if (!forPlay) return;
     // Play: the track is opened now (skipped, if the server does not answer), unless the user has moved on.
@@ -4052,7 +4110,8 @@ void App::onStreamFailed() {
     double at = player_.position();
     player_.close();
     reopenAt_ = at;
-    if (music_ && trackRemote(fileIndex_)) markServerDown();
+    if (music_)
+        if (const std::optional<size_t> link = trackLink(fileIndex_)) markServerDown(*link);
     earcons_.play(Earcon::Error);
     say("Server not reachable. Press play to try again.");
 }
@@ -4099,15 +4158,16 @@ void App::checkReadAhead() {
         // A new track, or the quality changed since: pre-open the stream that will be opened.
         size_t next = *upcoming;
         const std::string id = trackKey(next);
-        if (cachedFile(id)) { // a file on disk opens at once: nothing to read ahead, and a stream pre-opened before it was cached is dropped
+        const size_t link = trackLink(next).value_or(0);
+        if (cachedFile(link, id)) { // a file on disk opens at once: nothing to read ahead, and a stream pre-opened before it was cached is dropped
             if (readAhead_) {
                 player_.cancelPreload();
                 readAhead_.reset();
             }
             return;
         }
-        if (readAhead_ && readAhead_->trackId == id && readAhead_->bitrate == streamingBitrate()) return;
-        readAhead_ = ReadAhead{id, streamingBitrate(), newStream(next)};
+        if (readAhead_ && readAhead_->link == link && readAhead_->trackId == id && readAhead_->bitrate == streamingBitrate()) return;
+        readAhead_ = ReadAhead{link, id, streamingBitrate(), newStream(next)};
         player_.preload(readAhead_->stream.url);
     } else if (readAhead_) {
         player_.cancelPreload();
@@ -4117,11 +4177,12 @@ void App::checkReadAhead() {
 
 void App::startTrackPlay() {
     scrobble_ = TrackPlay{};
+    scrobble_->link = trackLink(fileIndex_).value_or(0);
     scrobble_->trackId = trackKey(fileIndex_);
     scrobble_->startedAt = clock_.wallTime();
     // A cached track that plays is kept longer: the time goes to its manifest with the next trimCache().
     // (trimCache() ignores a time before kEarliestPlayTime: a clock that was not set.)
-    if (cachedFile(scrobble_->trackId)) played_[scrobble_->trackId] = scrobble_->startedAt;
+    if (cachedFile(scrobble_->link, scrobble_->trackId)) linkState(scrobble_->link).played[scrobble_->trackId] = scrobble_->startedAt;
 }
 
 // Heard time is counted with clock_ while the track plays and is not dry, not
@@ -4136,7 +4197,7 @@ void App::checkScrobble(TimePoint now) {
     }
     if (!play.nowPlayingSent) {
         play.nowPlayingSent = true;
-        server_.scrobble(play.trackId, false, std::nullopt, {}); // "now playing" is never kept
+        serverAt(play.link).scrobble(play.trackId, false, std::nullopt, {}); // "now playing" is never kept
     }
     if (play.heardSince) play.heard += now - *play.heardSince;
     play.heardSince = now;
@@ -4148,24 +4209,26 @@ void App::checkScrobble(TimePoint now) {
                                       std::chrono::duration<double>(length * kScrobbleShare)));
     if (!play.submitted && play.heard >= enough) {
         play.submitted = true;
-        submitScrobble(play.trackId);
+        submitScrobble(play.link, play.trackId);
     }
 }
 
 // The complete downloaded file of remote track `id`, if the cache is set up for the
 // server in the config and has one.
-std::optional<std::filesystem::path> App::cachedFile(const std::string& id, bool verify) const {
+std::optional<std::filesystem::path> App::cachedFile(size_t link, const std::string& id, bool verify) const {
     if (cacheRoot_.empty()) return std::nullopt;
-    const TrackCache& store = trackCache();
+    const TrackCache& store = trackCacheOf(link);
     if (!store.enabled()) return std::nullopt;
-    if (!cacheIndex_) cacheIndex_ = store.index();
-    auto it = cacheIndex_->find(id);
-    if (it == cacheIndex_->end()) return std::nullopt;
+    LinkState& state = linkState(link);
+    auto& cacheIndex = state.cacheIndex;
+    if (!cacheIndex) cacheIndex = store.index();
+    auto it = cacheIndex->find(id);
+    if (it == cacheIndex->end()) return std::nullopt;
     if (verify) {
         std::error_code ec;
         auto size = std::filesystem::file_size(it->second, ec);
         if (ec || size == 0) { // gone or emptied since the index was made
-            cacheIndex_->erase(it);
+            cacheIndex->erase(it);
             return std::nullopt;
         }
     }
@@ -4181,20 +4244,24 @@ public:
 };
 } // namespace
 
-// The server in the config is set up before the player starts and no menu changes it (a factory
-// reset keeps it), so the cache is made once.
-const TrackCache& App::trackCache() const {
+// The servers in the config are set up before the player starts and no menu changes them (a factory
+// reset keeps them), so each cache is made once. With no server the cache has an empty url: it stores nothing.
+const TrackCache& App::trackCacheOf(size_t link) const {
     static NoTextFiles none;
-    if (!trackCache_)
-        trackCache_.emplace(textFiles_ ? *textFiles_ : none, textFiles_ ? cacheRoot_ : std::filesystem::path(),
-                            serverConfig_.url, serverConfig_.user);
-    return *trackCache_;
+    std::optional<TrackCache>& cache = linkState(link).cache;
+    if (!cache) {
+        const ServerConfig config = link < servers_.size() ? servers_[link].config : ServerConfig{};
+        cache.emplace(textFiles_ ? *textFiles_ : none, textFiles_ ? cacheRoot_ : std::filesystem::path(), config.url, config.user);
+    }
+    return *cache;
 }
 
 // ---------------------------------------------------------------- downloads
 
-bool App::canDownload() const {
-    return downloader_.configured() && trackCache().enabled(); // no cache folder: not enabled
+bool App::canDownload() const { return canDownloadFrom(0); }
+
+bool App::canDownloadFrom(size_t link) const {
+    return link < servers_.size() && servers_[link].downloader.configured() && trackCacheOf(link).enabled(); // no cache folder: not enabled
 }
 
 std::string App::downloadProgress() const {
@@ -4242,27 +4309,28 @@ bool App::markTracks(CachedList& cached, const char* mark) {
     return changed;
 }
 
-void App::deleteDropped(const RemoteSource& source, const std::vector<CachedTrack>& dropped) {
-    const TrackCache& store = trackCache();
+void App::deleteDropped(const RemoteSource& source, const std::vector<CachedTrack>& dropped, size_t link) {
+    const TrackCache& store = trackCacheOf(link);
     for (const CachedTrack& t : dropped) {
         std::error_code ec;
         std::filesystem::path file = store.listFolder(source) / t.file;
         std::filesystem::remove(file, ec);
-        forgetCached(t.id, file);
+        forgetCached(t.id, file, link);
     }
 }
 
-std::string App::trackDestination(const RemoteSource& source, const RemoteTrack& track) const {
-    return (trackCache().listFolder(source) / downloadFileName(track)).string();
+std::string App::trackDestination(const RemoteSource& source, const RemoteTrack& track, size_t link) const {
+    return (trackCacheOf(link).listFolder(source) / downloadFileName(track)).string();
 }
 
 // The index has one file per track id, and a track can be in two lists (an album and a playlist).
-void App::forgetCached(const std::string& id, const std::filesystem::path& file) {
-    if (!cacheIndex_) return;
-    auto it = cacheIndex_->find(id);
-    if (it == cacheIndex_->end() || it->second != file) return;
-    cacheIndex_->erase(it);
-    if (auto other = trackCache().find(id)) (*cacheIndex_)[id] = *other;
+void App::forgetCached(const std::string& id, const std::filesystem::path& file, size_t link) {
+    auto& cacheIndex = linkState(link).cacheIndex;
+    if (!cacheIndex) return;
+    auto it = cacheIndex->find(id);
+    if (it == cacheIndex->end() || it->second != file) return;
+    cacheIndex->erase(it);
+    if (auto other = trackCacheOf(link).find(id)) (*cacheIndex)[id] = *other;
 }
 
 // A fetched track goes into its list's manifest: the entry is added or replaced, keeping what the
@@ -4271,8 +4339,8 @@ void App::forgetCached(const std::string& id, const std::filesystem::path& file)
 // list as the server has it, which the manifest then follows (the pinned tracks it drops are
 // deleted). `replaceName`: the list is called `title` even if the manifest has another name, else
 // a list that has a name keeps it (a list the user downloaded). False if the manifest cannot be written.
-bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, const ManifestUpdate& update) {
-    const TrackCache& store = trackCache();
+bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, const ManifestUpdate& update, size_t link) {
+    const TrackCache& store = trackCacheOf(link);
     if (!store.enabled()) return false;
     CachedList cached = store.load(source);
     cached.source = source;
@@ -4295,8 +4363,8 @@ bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, co
     std::vector<CachedTrack> dropped;
     if (update.order) dropped = followServerOrder(cached, *update.order).second;
     if (!store.save(cached)) return false;
-    deleteDropped(source, dropped);
-    if (cacheIndex_) (*cacheIndex_)[track.id] = store.listFolder(source) / fileName;
+    deleteDropped(source, dropped, link);
+    if (auto& cacheIndex = linkState(link).cacheIndex) (*cacheIndex)[track.id] = store.listFolder(source) / fileName;
     return true;
 }
 
@@ -4350,7 +4418,7 @@ void App::startDownload(const std::string& title, const std::string& artist, con
         say("Cannot write the download.");
         return;
     }
-    deleteDropped(source, dropped);
+    deleteDropped(source, dropped, 0); // (downloads are the first server's until step 1.6)
     if (job.todo.empty()) {
         say("Already downloaded.");
         return;
@@ -4379,7 +4447,7 @@ void App::startDownload(const std::string& title, const std::string& artist, con
 void App::fetchNextTrack() {
     Download& job = *download_;
     const RemoteTrack& track = job.todo[job.next].track;
-    job.request = downloader_.download(track.id, trackDestination(job.source, track), track.size, {}, [this](Downloader::Result result) { onTrackDownloaded(result); });
+    job.request = downloader_.download(track.id, trackDestination(job.source, track, 0), track.size, {}, [this](Downloader::Result result) { onTrackDownloaded(result); });
 }
 
 void App::onTrackDownloaded(Downloader::Result result) {
@@ -4395,9 +4463,9 @@ void App::onTrackDownloaded(Downloader::Result result) {
     case Downloader::Result::Server: failDownload(track, item.number, "Server error"); return;
     case Downloader::Result::Disk: failDownload(track, item.number, "Cannot write the file"); return;
     }
-    if (!addToManifest(job.source, track, {job.title, job.artist, true, true, 0, &job.order})) {
+    if (!addToManifest(job.source, track, {job.title, job.artist, true, true, 0, &job.order}, 0)) {
         std::error_code ec; // the whole file is in place but unlisted: nothing would count or evict it
-        std::filesystem::remove(trackDestination(job.source, track), ec);
+        std::filesystem::remove(trackDestination(job.source, track, 0), ec);
         failDownload(track, item.number, "Cannot write the file");
         return;
     }
@@ -4408,7 +4476,7 @@ void App::onTrackDownloaded(Downloader::Result result) {
 
 // Spoken once; the download is dropped. OK on Download again tries what is missing.
 void App::failDownload(const RemoteTrack& track, size_t number, const std::string& reason) {
-    if (download_) failedPart_ = trackDestination(download_->source, track) + ".part";
+    if (download_) failedPart_ = trackDestination(download_->source, track, 0) + ".part";
     download_.reset();
     if (sleeping_) return;
     earcons_.play(Earcon::Error);
@@ -4453,6 +4521,7 @@ void App::checkAutoCache() {
     job.title = book_->title;
     job.artist = book_->artist;
     job.playedAt = scrobble_->startedAt;
+    job.link = scrobble_->link;
     job.track.id = scrobble_->trackId;
     if (*inList < book_->titles.size()) job.track.title = book_->titles[*inList];
     if (*inList < book_->durations.size()) job.track.duration = book_->durations[*inList];
@@ -4464,13 +4533,14 @@ void App::checkAutoCache() {
 
 void App::pumpAutoCache() {
     if (autoRequest_ || download_ || sleeping_ || autoQueue_.empty()) return;
-    if (cacheLimit() == 0 || !canDownload()) { // switched off since, or no server
-        autoQueue_.clear();
-        trimDirty_ = true; // a .part of the dropped jobs may be left
-        return;
-    }
+    // Switched off since, or the job's server cannot download (no cache folder): the jobs are dropped.
+    const size_t jobs = autoQueue_.size();
+    if (cacheLimit() == 0) autoQueue_.clear();
+    else std::erase_if(autoQueue_, [&](const AutoCache& job) { return !canDownloadFrom(job.link); });
+    if (autoQueue_.size() != jobs) trimDirty_ = true; // a .part of the dropped jobs may be left
+    if (autoQueue_.empty()) return;
     // A download has fetched it meanwhile.
-    while (!autoQueue_.empty() && cachedFile(autoQueue_.front().track.id, true)) autoQueue_.pop_front();
+    while (!autoQueue_.empty() && cachedFile(autoQueue_.front().link, autoQueue_.front().track.id, true)) autoQueue_.pop_front();
     if (autoQueue_.empty()) return;
     // Never fill the card: a track that leaves less than the reserve is skipped, silently, and
     // nothing else starts in this tick (the next one looks at the next track).
@@ -4484,23 +4554,29 @@ void App::pumpAutoCache() {
     }
     autoJob_ = std::move(autoQueue_.front());
     autoQueue_.pop_front();
-    autoRequest_ = downloader_.download(autoJob_->track.id, trackDestination(autoJob_->source, autoJob_->track),
+    autoRequest_ = servers_[autoJob_->link].downloader.download(autoJob_->track.id, trackDestination(autoJob_->source, autoJob_->track, autoJob_->link),
                                         autoJob_->track.size, {}, [this](Downloader::Result r) { onAutoCached(r); });
+}
+
+// The transfer in flight is cancelled on the downloader it was started on.
+void App::cancelAutoRequest() {
+    servers_[autoJob_->link].downloader.cancel(std::exchange(autoRequest_, 0));
 }
 
 // The transfer in flight stops (its .part stays) and is the next one when the download is over
 // or the device wakes.
 void App::pauseAutoCache() {
     if (!autoRequest_) return;
-    downloader_.cancel(std::exchange(autoRequest_, 0));
+    cancelAutoRequest();
     autoQueue_.push_front(std::move(*autoJob_));
     autoJob_.reset();
 }
 
 void App::dropAutoCache(const RemoteSource& list) {
-    std::erase_if(autoQueue_, [&](const AutoCache& job) { return sameList(job.source, list); });
-    if (autoRequest_ && sameList(autoJob_->source, list)) {
-        downloader_.cancel(std::exchange(autoRequest_, 0));
+    // (Called by a download of the first server: its cache folder is where the list is.)
+    std::erase_if(autoQueue_, [&](const AutoCache& job) { return job.link == 0 && sameList(job.source, list); });
+    if (autoRequest_ && autoJob_->link == 0 && sameList(autoJob_->source, list)) {
+        cancelAutoRequest();
         autoJob_.reset();
         trimDirty_ = true; // its .part is abandoned
     }
@@ -4516,18 +4592,18 @@ void App::onAutoCached(Downloader::Result result) {
         trimDirty_ = true; // the .part is abandoned unless the track is heard again
         return;
     }
-    const TrackCache& store = trackCache();
+    const TrackCache& store = trackCacheOf(job.link);
     if (!store.enabled()) return;
     std::filesystem::path file = store.listFolder(job.source) / downloadFileName(job.track);
-    if (!addToManifest(job.source, job.track, {job.title, job.artist, false, false, job.playedAt, nullptr})) {
+    if (!addToManifest(job.source, job.track, {job.title, job.artist, false, false, job.playedAt, nullptr}, job.link)) {
         std::error_code ec;
         std::filesystem::remove(file, ec);
         return;
     }
-    if (cacheBytes_) {
+    if (auto& cacheBytes = linkState(job.link).cacheBytes) {
         std::error_code ec;
         auto size = std::filesystem::file_size(file, ec);
-        if (!ec) *cacheBytes_ += size;
+        if (!ec) *cacheBytes += size;
     }
     trimCache(false);
 }
@@ -4536,13 +4612,13 @@ void App::onAutoCached(Downloader::Result result) {
 std::vector<std::filesystem::path> App::partsInUse() const {
     std::vector<std::filesystem::path> parts;
     if (!failedPart_.empty()) parts.push_back(failedPart_);
-    auto add = [&](const RemoteSource& source, const RemoteTrack& track) {
-        parts.push_back(trackDestination(source, track) + ".part");
+    auto add = [&](const RemoteSource& source, const RemoteTrack& track, size_t link) {
+        parts.push_back(trackDestination(source, track, link) + ".part");
     };
     if (download_)
-        for (size_t i = download_->next; i < download_->todo.size(); ++i) add(download_->source, download_->todo[i].track);
-    if (autoJob_) add(autoJob_->source, autoJob_->track);
-    for (const AutoCache& job : autoQueue_) add(job.source, job.track);
+        for (size_t i = download_->next; i < download_->todo.size(); ++i) add(download_->source, download_->todo[i].track, 0);
+    if (autoJob_) add(autoJob_->source, autoJob_->track, autoJob_->link);
+    for (const AutoCache& job : autoQueue_) add(job.source, job.track, job.link);
     return parts;
 }
 
@@ -4551,34 +4627,45 @@ std::vector<std::filesystem::path> App::partsInUse() const {
 // or the unpinned bytes (counted at the last scan, plus the tracks cached since) are or may be
 // over the limit. Called when a track was cached and on exit and sleep, never from a key or a tick.
 // A limit of 0 (off) evicts nothing: what is cached stays, only nothing new is added.
+// Each server's cache is trimmed on its own, to the same limit.
 void App::trimCache(bool flushPlays) {
-    const TrackCache& store = trackCache();
-    if (cacheRoot_.empty() || !store.enabled()) return;
-    std::uintmax_t limit = cacheLimit();
-    bool over = limit > 0 && (trimDirty_ || !cacheBytes_ || *cacheBytes_ > limit);
-    if (!over && !(flushPlays && !played_.empty())) return;
-    std::vector<std::filesystem::path> keep = partsInUse(); // and the file the player has open
-    if (book_ && trackRemote(fileIndex_) && player_.isOpen())
-        if (auto open = cachedFile(trackKey(fileIndex_))) keep.push_back(*open);
-    TrackCache::TrimInfo info;
-    store.trim(limit > 0 ? limit : std::numeric_limits<std::uintmax_t>::max(), played_, keep, &info);
-    played_.clear();
-    trimDirty_ = false;
-    cacheBytes_ = info.remaining;
-    if (cacheIndex_)
-        for (const auto& [id, file] : info.evicted) forgetCached(id, file);
+    if (cacheRoot_.empty()) return;
+    const std::uintmax_t limit = cacheLimit();
+    std::optional<std::vector<std::filesystem::path>> parts; // worked out when a server needs a trim
+    bool dirty = false;
+    for (size_t link = 0; link < servers_.size(); ++link) {
+        const TrackCache& store = trackCacheOf(link);
+        if (!store.enabled()) continue;
+        LinkState& state = linkState(link);
+        bool over = limit > 0 && (trimDirty_ || !state.cacheBytes || *state.cacheBytes > limit);
+        if (!over && !(flushPlays && !state.played.empty())) continue;
+        if (!parts) parts = partsInUse();
+        std::vector<std::filesystem::path> keep = *parts; // and the file the player has open
+        if (book_ && trackRemote(fileIndex_) && player_.isOpen() && trackLink(fileIndex_) == std::optional<size_t>(link))
+            if (auto open = cachedFile(link, trackKey(fileIndex_))) keep.push_back(*open);
+        TrackCache::TrimInfo info;
+        store.trim(limit > 0 ? limit : std::numeric_limits<std::uintmax_t>::max(), state.played, keep, &info);
+        state.played.clear();
+        dirty = true;
+        state.cacheBytes = info.remaining;
+        if (state.cacheIndex)
+            for (const auto& [id, file] : info.evicted) forgetCached(id, file, link);
+    }
+    if (dirty) trimDirty_ = false;
 }
 
 int App::streamingBitrate() const { return std::max(kOriginalQuality, config_.getInt(kStreamingBitrate, kOriginalQuality)); }
 
 MusicServer::Stream App::remoteStream(size_t file) {
     const std::string id = trackKey(file);
-    if (readAhead_ && readAhead_->trackId == id && readAhead_->bitrate == streamingBitrate()) return readAhead_->stream;
+    const size_t link = trackLink(file).value_or(0);
+    if (readAhead_ && readAhead_->link == link && readAhead_->trackId == id && readAhead_->bitrate == streamingBitrate())
+        return readAhead_->stream;
     return newStream(file);
 }
 
 MusicServer::Stream App::newStream(size_t file) {
-    MusicServer::Stream stream = server_.stream(trackKey(file), streamingBitrate());
+    MusicServer::Stream stream = serverAt(trackLink(file).value_or(0)).stream(trackKey(file), streamingBitrate());
     // A transcode often has no length of its own: the server's listing has it.
     if (stream.transcoded && trackDuration(file) > 0) stream.transcoded->duration = trackDuration(file);
     return stream;

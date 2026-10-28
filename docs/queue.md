@@ -175,10 +175,13 @@ random generator is passed in, so tests choose the shuffle.
   unavailable."** and goes on with the next entry. A run of entries skipped together is
   said once: "3 tracks, source unavailable." An entry is unavailable when:
   - its local file is missing;
-  - its server is not the one set up now (another url or user), there is no server, or
-    the build has no network support;
+  - its server is not set up now (no server of that url and user in `servers:`, or no server at
+    all, or the build has no network support): **"Cannot play Storm. Server not set up."** (a run
+    of such entries: "Cannot play 3 tracks. Server not set up."; a run that mixes reasons says
+    "3 tracks, source unavailable."). The entry stays in the queue and plays again when the
+    server is set up again;
   - its server is **marked down** (below) and it is not downloaded: a track with a complete copy in the
-    cache plays from that file whatever the server does.
+    cache plays from that file whatever the server does. Each server is marked down on its own.
 - **A server that fails is marked down.** When a remote track does not open because
   the server cannot be reached, or a stream breaks off and `Player`'s retries give up,
   the server is marked down. Its entries are then skipped without being opened, since
@@ -402,8 +405,10 @@ Phase 2 is built as planned, with these differences. The code is described in
   sorted by name, else by 10 items (to be confirmed on a device, open question 1).
 - **OK in a player opens the Player menu, and Options gives the playing track's actions.**
 - **Music and books (and later podcasts) have separate players.** Only music has a queue.
-- **A queue mixes any sources.** An entry that cannot play is skipped with "Storm,
-  source unavailable." (a run: "3 tracks, source unavailable.").
+- **A queue mixes any sources**, tracks of several servers too: each entry is played, scrobbled
+  and cached through its own server. An entry that cannot play is skipped with "Storm,
+  source unavailable." (a run: "3 tracks, source unavailable."), or, when its server is not
+  set up, "Cannot play Storm. Server not set up."
 - **A server that fails is marked down** and checked in the background until it answers.
 - **Shuffle and repeat reset with each new queue.**
 - **The queue is saved on sleep and on exit**, in `queue.tsv`.

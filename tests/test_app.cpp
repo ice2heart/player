@@ -3687,6 +3687,30 @@ TEST_F(TwoServersTest, EachEntryOpensTheStreamingMenuOfItsServer) {
     EXPECT_EQ(level().title, "Audiobooks");
 }
 
+TEST_F(TwoServersTest, TheOptionsOfASecondServersAlbumOfferNoDownloadUntilDownloadsArePerServer) {
+    cache = base / "cache";
+    start();
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 1}}, false));
+    app->tick();
+    press(Button::Options);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play now", "Play next", "Add to queue"})) << "a download would use the first server";
+}
+
+TEST_F(TwoServersTest, ASecondServersAlbumPageOffersNoDownload) {
+    cache = base / "cache";
+    start();
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 1}}, false));
+    app->tick();
+    open("Dune");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteTrack>{{"c1", "Part one", "Herbert", "Dune", 300, 1}}, false));
+    app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play album", "Part one"}));
+}
+
 TEST_F(TwoServersTest, RecentlyAddedOnTheSecondServerAsksOnlyTheSecond) {
     start();
     const size_t asked = server.requests.size(); // the catalogue sync of the first
@@ -4651,7 +4675,7 @@ TEST_F(ResumeStreamTest, AQueueOfAnotherServerIsKeptButItsTracksAreUnavailable) 
     reboot([this] { settings.setString("server.url", "https://other.example"); });
     EXPECT_EQ(labels().front(), "Now playing") << "the queue is the user's, whatever server it came from";
     press(Button::Ok);
-    EXPECT_TRUE(speech.heard("2 tracks, source unavailable.")) << "skipped, as in any queue";
+    EXPECT_TRUE(speech.heard("Cannot play 2 tracks. Server not set up.")) << "skipped, as in any queue";
     EXPECT_TRUE(player.opened.empty());
 }
 
@@ -4660,7 +4684,7 @@ TEST_F(ResumeStreamTest, AQueueOfAnotherUserIsKeptButItsTracksAreUnavailable) {
     reboot([this] { settings.setString("server.user", "guest"); });
     EXPECT_EQ(labels().front(), "Now playing");
     press(Button::Ok);
-    EXPECT_TRUE(speech.heard("2 tracks, source unavailable."));
+    EXPECT_TRUE(speech.heard("Cannot play 2 tracks. Server not set up."));
     EXPECT_TRUE(player.opened.empty());
 }
 
@@ -4669,7 +4693,7 @@ TEST_F(ResumeStreamTest, WithoutAServerTheQueueIsKeptButItsTracksAreUnavailable)
     reboot([this] { server.isConfigured = false; });
     EXPECT_EQ(labels().front(), "Now playing");
     press(Button::Ok);
-    EXPECT_TRUE(speech.heard("2 tracks, source unavailable."));
+    EXPECT_TRUE(speech.heard("Cannot play 2 tracks. Server not set up."));
     EXPECT_TRUE(player.opened.empty());
 }
 
@@ -10674,7 +10698,7 @@ TEST_F(UnavailableTest, ATrackOfAnotherServerIsSkipped) {
     ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"),
                                          ofServer("https://other.example", "ann", "t2", "Rain"), localEntry(alphaFile(2), "Calm")}));
     trackEnds();
-    EXPECT_EQ(speech.last(), "Rain, source unavailable.");
+    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not set up.");
     EXPECT_EQ(player.file, alphaFile(2));
     EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t2"), 0) << "not even tried";
     EXPECT_TRUE(server.requests.empty() || pings() == 0) << "another server is not a failure of this one";
@@ -10685,7 +10709,7 @@ TEST_F(UnavailableTest, ATrackOfAnotherUserOfTheServerIsSkipped) {
     ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"),
                                          ofServer("https://music.example", "bob", "t2", "Rain"), localEntry(alphaFile(2), "Calm")}));
     trackEnds();
-    EXPECT_EQ(speech.last(), "Rain, source unavailable.");
+    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not set up.");
     EXPECT_EQ(player.file, alphaFile(2));
 }
 
@@ -10694,7 +10718,7 @@ TEST_F(UnavailableTest, ServerTracksAreSkippedWhenNoServerIsSetUp) {
     server.isConfigured = false;
     ASSERT_TRUE(app->playQueue("Mixed", mixed()));
     trackEnds();
-    EXPECT_EQ(speech.last(), "Rain, source unavailable.");
+    EXPECT_EQ(speech.last(), "Cannot play Rain. Server not set up.");
     EXPECT_EQ(player.file, alphaFile(2));
 }
 
@@ -10716,7 +10740,7 @@ TEST_F(UnavailableTest, WhenNothingAfterTheLastTrackCanPlayTheQueueEndsAfterTheS
     trackEnds();
     const auto& said = speech.said;
     ASSERT_GE(said.size(), 2u);
-    EXPECT_EQ(said[said.size() - 2], "Rain, source unavailable.");
+    EXPECT_EQ(said[said.size() - 2], "Cannot play Rain. Server not set up.");
     EXPECT_EQ(said.back(), "End of queue. Press play to start again.");
     EXPECT_FALSE(player.playing());
     EXPECT_EQ(app->nowPlaying().chapter, "Storm");
@@ -10728,7 +10752,7 @@ TEST_F(UnavailableTest, ASkipIsSaidOnceEvenWhenTheNextFileCannotBeOpenedEither) 
     ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), ofServer("https://other.example", "ann", "t2", "Rain"),
                                          localEntry(alphaFile(2), "Calm"), localEntry(lullaby(), "Lullaby")}));
     hold(Button::Forward);
-    EXPECT_EQ(countOf(speech.said, "Rain, source unavailable."), 1);
+    EXPECT_EQ(countOf(speech.said, "Cannot play Rain. Server not set up."), 1);
     EXPECT_TRUE(speech.heard("Cannot open 02 - Calm.mp3"));
     EXPECT_EQ(player.file, lullaby());
 }
@@ -10757,7 +10781,7 @@ TEST_F(UnavailableTest, PreviousGoesBackOverAnEntryThatCannotPlay) {
     ASSERT_TRUE(app->playQueue("Mixed", {localEntry(lullaby(), "Lullaby"), ofServer("https://other.example", "ann", "t2", "Rain"),
                                          localEntry(alphaFile(2), "Calm")}, 2));
     hold(Button::Back);
-    EXPECT_TRUE(speech.heard("Rain, source unavailable."));
+    EXPECT_TRUE(speech.heard("Cannot play Rain. Server not set up."));
     EXPECT_EQ(player.file, lullaby()) << "the track before the one that was skipped, not Calm again";
     EXPECT_EQ(speech.last(), "Lullaby");
     EXPECT_TRUE(player.playing());
@@ -10780,7 +10804,7 @@ TEST_F(UnavailableTest, TheAlbumUnitSaysTheAlbumThatPlaysWhenTheNextOneIsSkipped
                                          localEntry(alphaFile(2), "Calm", "Three")}));
     albumUnit();
     press(Button::Forward);
-    EXPECT_TRUE(speech.heard("Rain, source unavailable."));
+    EXPECT_TRUE(speech.heard("Cannot play Rain. Server not set up."));
     EXPECT_EQ(player.file, alphaFile(2));
     EXPECT_EQ(speech.last(), "Three");
 }
@@ -13578,4 +13602,539 @@ TEST_F(KeepQueueTest, TheQueueWinsOverOldLastStreamKeys) {
     EXPECT_EQ(valueOf(level().items[0]), "Mixed");
     app->shutdown();
     for (const auto& [key, value] : stateFile.file) EXPECT_NE(key.rfind("last_stream.", 0), 0u) << key;
+}
+
+// ---------------------------------------------------------------- playing from the right server
+
+// Two servers: the fixture's `server` (music.example, user ann) and `second` (books.example, user ben, which
+// streams as "fake://books/<id>"). Both are given tracks with the same ids, so only the server tells them apart.
+class TwoServerPlayTest : public MusicQueueTest {
+protected:
+    void SetUp() override {
+        MusicQueueTest::SetUp();
+        cache = base / "cache";
+        clock.setWallTime(kNow);
+        player.length = 200;
+        second.streamHost = "books";
+        moreLinks.push_back(secondLink());
+    }
+    static constexpr std::time_t kNow = 1'800'000'000;
+    ServerLink secondLink() {
+        ServerConfig config;
+        config.name = "Audiobooks";
+        config.url = "https://books.example";
+        config.user = "ben";
+        config.password = "hunter2";
+        return ServerLink{config, TrackCache::serverKey(config.url, config.user), "Audiobooks", second, secondDownloader};
+    }
+    QueueEntry onFirst(const std::string& id, const std::string& title) const { return remoteEntry(id, title); }
+    QueueEntry onSecond(const std::string& id, const std::string& title) const {
+        QueueEntry e = remoteEntry(id, title);
+        e.serverUrl = "https://books.example";
+        e.user = "ben";
+        return e;
+    }
+    std::string firstKey() const { return TrackCache::serverKey("https://music.example", "ann"); }
+    std::string secondKey() const { return TrackCache::serverKey("https://books.example", "ben"); }
+    // Exit, and a new App on what was written, as after a reboot; `offline` runs between the two.
+    void reboot(const std::function<void()>& offline = {}) {
+        app->shutdown();
+        app.reset();
+        if (offline) offline();
+        state = Settings(&stateFile);
+        state.load();
+        player = FakePlayer{};
+        player.length = 200;
+        speech.said.clear();
+        sounds.played.clear();
+        start_();
+    }
+    size_t submissionsTo(FakeMusicServer& fake) const {
+        return size_t(std::count_if(fake.scrobbles.begin(), fake.scrobbles.end(), [](const auto& s) { return s.submission; }));
+    }
+    // Everything the App wrote that survives a restart: no URL of a stream and no password.
+    void expectNothingSavedHoldsAUrl() const {
+        std::vector<std::string> texts;
+        for (const auto& [key, value] : stateFile.file) texts.push_back(key + "=" + value);
+        for (const fs::path& file : {queueFile, scrobbleFile}) texts.push_back(diskFiles().read(file).value_or(""));
+        for (const std::string& text : texts) {
+            EXPECT_EQ(text.find("fake://"), std::string::npos) << text;
+            EXPECT_EQ(text.find("hunter2"), std::string::npos) << text;
+        }
+    }
+    // Track `id` of the second server's album b1 is in its cache folder; returns the cache and the file.
+    std::pair<TrackCache, fs::path> cacheOnSecond(const std::string& id) {
+        TrackCache booksCache(diskFiles(), cache, "https://books.example", "ben");
+        fs::create_directories(booksCache.listFolder(albumSource("b1")));
+        const fs::path file = booksCache.listFolder(albumSource("b1")) / (id + ".mp3");
+        touch(file);
+        EXPECT_TRUE(booksCache.save(CachedList{albumSource("b1"), "Dune", "Herbert", {{id, id + ".mp3", "Part one", 100, "", true, 0}}}));
+        return {booksCache, file};
+    }
+    // Player menu > Queue > Options on `label` > Remove.
+    void removeFromQueue(const std::string& label) {
+        press(Button::Ok);
+        open("Queue");
+        for (size_t i = 0; i < level().items.size() && level().items[level().index].label != label; ++i) press(Button::Down);
+        ASSERT_EQ(level().items[level().index].label, label);
+        press(Button::Options);
+        open("Remove");
+    }
+    int pingsOf(FakeMusicServer& fake) const {
+        return int(std::count_if(fake.requests.begin(), fake.requests.end(),
+                                 [](const FakeMusicServer::Request& r) { return r.kind == FakeMusicServer::Kind::Ping; }));
+    }
+    FakeMusicServer second;
+    FakeDownloader secondDownloader;
+};
+
+TEST_F(TwoServerPlayTest, ATrackFromEachServerOpensItsStreamFromItsOwnServer) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t1", "Storm"), onSecond("t1", "Dune"), onFirst("t2", "Rain")}));
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    finishOpen();
+    trackEnds();
+    EXPECT_EQ(player.file, "fake://books/t1") << "the same id, the other server";
+    finishOpen();
+    trackEnds();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain");
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(TwoServerPlayTest, ATrackChosenFromTheSecondServersListPlaysFromIt) {
+    start_();
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 2}}, false));
+    app->tick();
+    open("Dune");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteTrack>{{"c1", "Part one", "Herbert", "Dune", 300, 1},
+                                                                               {"c2", "Part two", "Herbert", "Dune", 300, 2}},
+                             false));
+    app->tick();
+    open("Part two");
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://books/c2");
+    app->shutdown();
+    const SavedQueue saved = parseQueue(diskFiles().read(queueFile).value_or("")).value_or(SavedQueue{});
+    ASSERT_EQ(saved.queue.size(), 2u);
+    EXPECT_EQ(saved.queue.current()->serverUrl, "https://books.example");
+    EXPECT_EQ(saved.queue.current()->user, "ben");
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(TwoServerPlayTest, AScrobbleGoesToTheServerThatPlayedTheTrack) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onSecond("t1", "Dune")}));
+    finishOpen();
+    listen(101s);
+    ASSERT_EQ(second.scrobbles.size(), 2u);
+    EXPECT_EQ(second.scrobbles[0], (FakeMusicServer::Scrobble{"t1", false})) << "now playing";
+    EXPECT_EQ(second.scrobbles[1], (FakeMusicServer::Scrobble{"t1", true}));
+    EXPECT_TRUE(server.scrobbles.empty()) << "the other server heard nothing";
+    EXPECT_TRUE(parseScrobbles(diskFiles().read(scrobbleFile).value_or("")).empty()) << "its server took it";
+}
+
+TEST_F(TwoServerPlayTest, ATrackOfTheFirstServerIsScrobbledOnlyThere) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t1", "Storm")}));
+    finishOpen();
+    listen(101s);
+    EXPECT_EQ(submissionsTo(server), 1u);
+    EXPECT_TRUE(second.scrobbles.empty());
+}
+
+TEST_F(TwoServerPlayTest, AScrobbleKeptForASecondServerIsSentToItAtStartUp) {
+    ASSERT_TRUE(diskFiles().writeAtomically(scrobbleFile, formatScrobbles({{secondKey(), "b7", 7000}, {firstKey(), "t8", 8000}})));
+    start_();
+    app->tick(); // the answers arrive and the next entry goes out
+    ASSERT_EQ(submissionsTo(server), 1u);
+    EXPECT_EQ(server.scrobbles[0].trackId, "t8");
+    EXPECT_EQ(server.scrobbles[0].timeMs, 8000);
+    ASSERT_EQ(submissionsTo(second), 1u);
+    EXPECT_EQ(second.scrobbles[0].trackId, "b7");
+    EXPECT_EQ(second.scrobbles[0].timeMs, 7000);
+    app->tick();
+    EXPECT_TRUE(parseScrobbles(diskFiles().read(scrobbleFile).value_or("")).empty());
+}
+
+TEST_F(TwoServerPlayTest, AScrobbleWaitsWhileItsServerIsMarkedDownAndGoesWhenItAnswers) {
+    player.length = 200;
+    second.scrobbleError = MusicServer::Error::Unreachable; // its answer keeps the entry
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onSecond("b1", "Dune"), onSecond("b2", "Arrakis"), onFirst("t3", "Rain"), onSecond("b4", "Sand")}));
+    finishOpen();
+    listen(101s);
+    ASSERT_EQ(submissionsTo(second), 1u);
+    ASSERT_EQ(parseScrobbles(diskFiles().read(scrobbleFile).value_or("")).size(), 1u) << "kept: the server did not take it";
+    player.unopenable = {"fake://books/b2"};
+    trackEnds();
+    finishOpen(); // the second server cannot be reached: it is marked down, Rain plays from the first
+    finishOpen();
+    ASSERT_EQ(player.file, "fake://stream/t3");
+    listen(101s);
+    EXPECT_EQ(submissionsTo(server), 1u) << "the first server's entry goes";
+    EXPECT_EQ(submissionsTo(second), 1u) << "nothing is sent to a server that is marked down";
+    ASSERT_EQ(parseScrobbles(diskFiles().read(scrobbleFile).value_or("")).size(), 1u);
+    second.scrobbleError = MusicServer::Error::None;
+    ASSERT_EQ(second.lastRequest().kind, FakeMusicServer::Kind::Ping) << "its pings are running";
+    ASSERT_TRUE(second.replyPing(second.lastRequest().id, {"abs", "2.30"}));
+    app->tick();
+    app->tick();
+    EXPECT_EQ(submissionsTo(second), 2u) << "it answers: the kept entry is sent";
+    EXPECT_TRUE(parseScrobbles(diskFiles().read(scrobbleFile).value_or("")).empty());
+}
+
+TEST_F(TwoServerPlayTest, TheNextTrackIsPreOpenedOnItsOwnServer) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t1", "Storm"), onSecond("t1", "Dune")}));
+    finishOpen();
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_EQ(player.preloads, (std::vector<std::string>{"fake://books/t1"}));
+    trackEnds();
+    EXPECT_EQ(player.file, "fake://books/t1");
+    EXPECT_EQ(player.adopted, 1);
+}
+
+TEST_F(TwoServerPlayTest, APreOpenedTrackOfOneServerIsNotTakenForTheSameIdOnTheOther) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t0", "Intro"), onSecond("t1", "Dune"), onFirst("t1", "Storm")}));
+    finishOpen();
+    player.pos = player.length - 5;
+    app->tick();
+    ASSERT_EQ(player.preloads, (std::vector<std::string>{"fake://books/t1"})); // Dune is next
+    press(Button::Ok);
+    open("Queue");
+    press(Button::Down);
+    press(Button::Down);
+    press(Button::Ok); // Storm, the first server's t1
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t1") << "not the stream pre-opened for the other server's t1";
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm");
+}
+
+TEST_F(TwoServerPlayTest, ATrackThatFailsOnOneServerMarksOnlyThatServerDown) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t1", "Storm"), onSecond("t2", "Dune"), onSecond("t3", "Arrakis"), onFirst("t4", "Rain")}));
+    finishOpen();
+    player.unopenable = {"fake://books/t2"};
+    trackEnds();
+    finishOpen();
+    EXPECT_EQ(speech.last(), "2 tracks, source unavailable.") << "the second server's two tracks";
+    EXPECT_EQ(player.file, "fake://stream/t4") << "the first server is not marked down";
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://books/t3"), 0) << "not even tried";
+}
+
+TEST_F(TwoServerPlayTest, AServerMarkedDownIsPingedAndNoOtherServerIsAsked) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t1", "Storm"), onSecond("t2", "Dune"), onSecond("t3", "Arrakis")}));
+    finishOpen();
+    player.unopenable = {"fake://books/t2"};
+    trackEnds();
+    finishOpen(); // marked down; the queue waits at Dune
+    const size_t before = server.requests.size();
+    idle(11s);
+    ASSERT_FALSE(second.requests.empty());
+    EXPECT_EQ(second.lastRequest().kind, FakeMusicServer::Kind::Ping);
+    EXPECT_EQ(server.requests.size(), before) << "the first server is not asked";
+    ASSERT_TRUE(second.replyPing(second.lastRequest().id, {"abs", "2.30"}));
+    app->tick();
+    player.unopenable.clear();
+    press(Button::PlayPause);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://books/t2") << "the mark is gone";
+}
+
+TEST_F(TwoServerPlayTest, TheMixedQueueResumesAfterARestartOnBothServers) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t1", "Storm"), onSecond("t1", "Dune"), onFirst("t3", "Rain")}, 1));
+    finishOpen();
+    player.pos = 42;
+    reboot();
+    ASSERT_EQ(labels().front(), "Now playing");
+    press(Button::Ok);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://books/t1") << "the entry it stopped at, on its own server";
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    trackEnds();
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    hold(Button::Back);
+    finishOpen();
+    hold(Button::Back);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t1") << "the first entry plays from the first server";
+    expectNoUrlSpoken(speech);
+    expectNothingSavedHoldsAUrl();
+}
+
+TEST_F(TwoServerPlayTest, TheQueueFileNamesTheServerOfEachEntryByUrlAndUser) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t1", "Storm"), onSecond("t1", "Dune")}));
+    finishOpen();
+    app->shutdown();
+    const SavedQueue saved = parseQueue(diskFiles().read(queueFile).value_or("")).value_or(SavedQueue{});
+    ASSERT_EQ(saved.queue.size(), 2u);
+    EXPECT_EQ(saved.queue.at(0).serverUrl, "https://music.example");
+    EXPECT_EQ(saved.queue.at(0).user, "ann");
+    EXPECT_EQ(saved.queue.at(1).serverUrl, "https://books.example");
+    EXPECT_EQ(saved.queue.at(1).user, "ben");
+    expectNothingSavedHoldsAUrl();
+}
+
+TEST_F(TwoServerPlayTest, EntriesOfAServerRemovedFromTheConfigAreSkippedAndTheOthersPlay) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onSecond("t1", "Dune"), onSecond("t2", "Arrakis"), onFirst("t3", "Rain")}));
+    finishOpen();
+    reboot([this] { moreLinks.clear(); });
+    ASSERT_EQ(labels().front(), "Now playing");
+    press(Button::Ok);
+    EXPECT_TRUE(speech.heard("Cannot play 2 tracks. Server not set up."));
+    EXPECT_GE(std::count(sounds.played.begin(), sounds.played.end(), Earcon::Error), 1);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain");
+    EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://books/t1"), 0);
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(TwoServerPlayTest, ASingleEntryOfARemovedServerIsNamedInTheSkip) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t0", "Intro"), onSecond("t1", "Dune"), onFirst("t3", "Rain")}));
+    finishOpen();
+    reboot([this] { moreLinks.clear(); });
+    press(Button::Ok);
+    finishOpen();
+    trackEnds();
+    EXPECT_TRUE(speech.heard("Cannot play Dune. Server not set up."));
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    EXPECT_FALSE(speech.heard("Dune, source unavailable."));
+}
+
+TEST_F(TwoServerPlayTest, TheQueueOfARemovedServerIsKeptAndPlaysAgainWhenTheServerIsBack) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onSecond("t1", "Dune"), onFirst("t3", "Rain")}));
+    finishOpen();
+    reboot([this] { moreLinks.clear(); });
+    reboot([this] { moreLinks.push_back(secondLink()); });
+    press(Button::Ok);
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://books/t1");
+}
+
+TEST_F(TwoServerPlayTest, AStreamedTrackIsCachedThroughItsOwnServersDownloaderIntoItsOwnFolder) {
+    start_();
+    ASSERT_TRUE(app->playRemote("Dune", {{"t1", "Part one", "Herbert", "Dune", 200, 1, "mp3", 5}}, 0, albumSource("b1"), 0, "Herbert", 1));
+    finishOpen();
+    listen(11s);
+    ASSERT_EQ(secondDownloader.requests.size(), 1u);
+    EXPECT_TRUE(downloader.requests.empty()) << "the first server's downloader is not used";
+    const TrackCache booksCache(diskFiles(), cache, "https://books.example", "ben");
+    EXPECT_EQ(secondDownloader.lastRequest().trackId, "t1");
+    EXPECT_EQ(secondDownloader.lastRequest().dest, (booksCache.listFolder(albumSource("b1")) / "t1.mp3").string());
+    ASSERT_TRUE(secondDownloader.finish(secondDownloader.lastRequest().id, Downloader::Result::Ok, true));
+    app->tick();
+    EXPECT_TRUE(booksCache.find("t1")) << "in the second server's manifest";
+    EXPECT_FALSE(TrackCache(diskFiles(), cache, "https://music.example", "ann").find("t1")) << "not in the first's";
+}
+
+TEST_F(TwoServerPlayTest, ACachedTrackOfOneServerIsNotPlayedForTheSameIdOnTheOther) {
+    // The second server's t1 is in the cache; the first server's t1 is not.
+    const auto [booksCache, booksFile] = cacheOnSecond("t1");
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t1", "Storm"), onSecond("t1", "Part one")}));
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t1") << "the first server's t1 streams";
+    trackEnds();
+    EXPECT_EQ(player.file, booksFile.string()) << "the second's plays from its file";
+}
+
+TEST_F(TwoServerPlayTest, ThePlayOfACachedTrackIsWrittenToTheManifestOfItsOwnServer) {
+    const auto [booksCache, booksFile] = cacheOnSecond("t1");
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onSecond("t1", "Part one")}));
+    listen(30s);
+    app->shutdown();
+    EXPECT_EQ(booksCache.load(albumSource("b1")).tracks.at(0).lastPlayed, kNow);
+}
+
+TEST_F(TwoServerPlayTest, GoToAlbumOfATrackOfTheSecondServerLoadsItFromThatServer) {
+    QueueEntry track = onSecond("t1", "Part one");
+    track.albumId = "b1";
+    track.album = "Dune";
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {track}));
+    finishOpen();
+    const size_t asked = server.requests.size();
+    press(Button::Options);
+    open("Go to album");
+    ASSERT_EQ(second.lastRequest().kind, FakeMusicServer::Kind::AlbumTracks);
+    EXPECT_EQ(second.lastRequest().arg, "b1");
+    EXPECT_EQ(server.requests.size(), asked) << "the first server is not asked";
+}
+
+TEST_F(TwoServerPlayTest, NothingSpokenOrSavedHoldsAUrlAfterPlayingFromBothServers) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t1", "Storm"), onSecond("t2", "Dune")}));
+    finishOpen();
+    listen(101s);
+    trackEnds();
+    finishOpen();
+    listen(101s);
+    app->shutdown();
+    expectNoUrlSpoken(speech);
+    expectNothingSavedHoldsAUrl();
+}
+
+TEST_F(TwoServerPlayTest, ServerStatusSaysNotReachableOnlyForTheServerThatIsMarkedDown) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t1", "Storm"), onSecond("t2", "Dune"), onFirst("t3", "Rain")}));
+    finishOpen();
+    player.unopenable = {"fake://books/t2"};
+    trackEnds();
+    finishOpen();
+    finishOpen();
+    hold(Button::Home);
+    open("Audiobooks");
+    EXPECT_EQ(valueOf(level().items.back()), "not reachable");
+    hold(Button::Home);
+    open("Server");
+    ASSERT_EQ(labels().back(), "Server status");
+    EXPECT_EQ(valueOf(level().items.back()), "") << "the first server is fine";
+    hold(Button::Home);
+    open("Audiobooks");
+    open("Server status");
+    ASSERT_EQ(second.lastRequest().kind, FakeMusicServer::Kind::Ping);
+    ASSERT_TRUE(second.replyPing(second.lastRequest().id, {"abs", "2.30"}));
+    app->tick();
+    EXPECT_EQ(valueOf(level().items.back()), "") << "an answer from that server clears its mark";
+}
+
+TEST_F(TwoServerPlayTest, ADownloadedTrackOfAServerThatIsMarkedDownStillPlaysFromItsFile) {
+    const auto [booksCache, booksFile] = cacheOnSecond("b9");
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t1", "Storm"), onSecond("b2", "Dune"), onSecond("b9", "Part one")}));
+    finishOpen();
+    player.unopenable = {"fake://books/b2"};
+    trackEnds();
+    finishOpen(); // the second server is marked down
+    EXPECT_EQ(player.file, booksFile.string()) << "its downloaded track plays whatever the server does";
+    EXPECT_FALSE(speech.heard("Part one, source unavailable."));
+}
+
+TEST_F(TwoServerPlayTest, TheAutomaticCacheOfASecondServerCountsItsBytesAgainstTheLimit) {
+    TrackCache booksCache(diskFiles(), cache, "https://books.example", "ben");
+    fs::create_directories(booksCache.listFolder(albumSource("b1")));
+    std::ofstream(booksCache.listFolder(albumSource("b1")) / "x.mp3", std::ios::binary) << std::string(5, 'x');
+    ASSERT_TRUE(booksCache.save(CachedList{albumSource("b1"), "Dune", "Herbert", {{"x", "x.mp3", "Old", 100, "", false, 100}}}));
+    start_();
+    app->setCacheGigabyte(12); // a limit of 12 bytes
+    const std::vector<RemoteTrack> tracks = {{"t1", "One", "Herbert", "Dune", 200, 1, "mp3", 5}, {"t2", "Two", "Herbert", "Dune", 200, 2, "mp3", 5}};
+    ASSERT_TRUE(app->playRemote("Dune", tracks, 0, albumSource("b1"), 0, "Herbert", 1));
+    finishOpen();
+    listen(11s);
+    ASSERT_EQ(secondDownloader.requests.size(), 1u);
+    ASSERT_TRUE(secondDownloader.finish(secondDownloader.lastRequest().id, Downloader::Result::Ok, true));
+    app->tick();
+    ASSERT_TRUE(booksCache.find("x")) << "10 bytes of 12: nothing goes yet";
+    hold(Button::Forward);
+    finishOpen();
+    listen(11s);
+    ASSERT_EQ(secondDownloader.requests.size(), 2u);
+    ASSERT_TRUE(secondDownloader.finish(secondDownloader.lastRequest().id, Downloader::Result::Ok, true));
+    app->tick();
+    EXPECT_FALSE(booksCache.find("x")) << "15 bytes: the track played longest ago goes";
+    EXPECT_TRUE(booksCache.find("t2"));
+}
+
+TEST_F(TwoServerPlayTest, ExitCancelsTheTransferOnTheDownloaderItRunsOn) {
+    start_();
+    ASSERT_TRUE(app->playRemote("Dune", {{"t1", "One", "Herbert", "Dune", 200, 1, "mp3", 5}}, 0, albumSource("b1"), 0, "Herbert", 1));
+    finishOpen();
+    listen(11s);
+    ASSERT_EQ(secondDownloader.requests.size(), 1u);
+    const auto id = secondDownloader.lastRequest().id;
+    app->shutdown();
+    EXPECT_EQ(secondDownloader.cancelled, (std::vector<Downloader::RequestId>{id}));
+    EXPECT_TRUE(downloader.cancelled.empty());
+}
+
+TEST_F(TwoServerPlayTest, ASecondServerWhoseDownloaderIsNotSetUpCachesNothing) {
+    secondDownloader.isConfigured = false;
+    start_();
+    ASSERT_TRUE(app->playRemote("Dune", {{"t1", "One", "Herbert", "Dune", 200, 1, "mp3", 5}}, 0, albumSource("b1"), 0, "Herbert", 1));
+    finishOpen();
+    listen(11s);
+    EXPECT_TRUE(secondDownloader.requests.empty());
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(TwoServerPlayTest, ASecondServerCachesEvenWhenTheFirstServersDownloaderIsNotSetUp) {
+    downloader.isConfigured = false;
+    start_();
+    ASSERT_TRUE(app->playRemote("Dune", {{"t1", "One", "Herbert", "Dune", 200, 1, "mp3", 5}}, 0, albumSource("b1"), 0, "Herbert", 1));
+    finishOpen();
+    listen(11s);
+    EXPECT_EQ(secondDownloader.requests.size(), 1u);
+}
+
+TEST_F(TwoServerPlayTest, WhenTheNextTrackChangesToTheSameIdOnTheOtherServerThePreOpenIsRedone) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t0", "Intro"), onSecond("t1", "Dune"), onFirst("t1", "Storm")}));
+    finishOpen();
+    player.pos = player.length - 5;
+    app->tick();
+    ASSERT_EQ(player.preloads, (std::vector<std::string>{"fake://books/t1"}));
+    ASSERT_NO_FATAL_FAILURE(removeFromQueue("Dune")); // Storm is next now
+    app->tick();
+    EXPECT_EQ(player.preloads, (std::vector<std::string>{"fake://books/t1", "fake://stream/t1"}));
+}
+
+TEST_F(TwoServerPlayTest, PlayPingsTheServerOfTheEntryItWaitsAtBeforeAnotherServerThatIsDown) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), onFirst("t2", "Rain"), onSecond("b1", "Dune"),
+                                         onFirst("t4", "Fog")}));
+    player.unopenable = {"fake://books/b1", "fake://stream/t2"};
+    trackEnds();
+    finishOpen();
+    finishOpen();
+    ASSERT_EQ(speech.last(), "Server not reachable. Press play to try again.") << "both servers are down; the queue waits at Dune";
+    const int firstBefore = pingsOf(server), secondBefore = pingsOf(second);
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Checking the server.");
+    EXPECT_EQ(pingsOf(second), secondBefore + 1) << "the server of the entry it waits at";
+    EXPECT_EQ(pingsOf(server), firstBefore);
+}
+
+TEST_F(TwoServerPlayTest, TheTrackThatPlaysIsNotEvictedFromItsOwnServersCacheOnlyBecauseTheOtherHasTheSameId) {
+    TrackCache firstCache(diskFiles(), cache, "https://music.example", "ann");
+    TrackCache booksCache(diskFiles(), cache, "https://books.example", "ben");
+    for (TrackCache* store : {&firstCache, &booksCache}) {
+        const RemoteSource source = albumSource(store == &firstCache ? "al1" : "b1");
+        fs::create_directories(store->listFolder(source));
+        std::ofstream(store->listFolder(source) / "x.mp3", std::ios::binary) << std::string(5, 'x');
+        ASSERT_TRUE(store->save(CachedList{source, "Album", "Band", {{"x", "x.mp3", "X", 100, "", false, 100}}}));
+    }
+    start_();
+    app->setCacheGigabyte(1); // a limit of one byte: nothing unpinned may stay unless it is open
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("x", "X")}));
+    ASSERT_TRUE(player.playing());
+    app->shutdown();
+    EXPECT_TRUE(firstCache.find("x")) << "the file that is open stays";
+    EXPECT_FALSE(booksCache.find("x")) << "the other server's x is only a cached copy over the limit";
+}
+
+TEST_F(TwoServerPlayTest, AServerThatCannotBeReachedDoesNotHoldBackTheScrobblesOfTheOther) {
+    ASSERT_TRUE(diskFiles().writeAtomically(scrobbleFile, formatScrobbles({{firstKey(), "t8", 8000}, {secondKey(), "b7", 7000}})));
+    server.scrobbleError = MusicServer::Error::Unreachable; // the first server never takes one, and is not marked down
+    start_();
+    app->tick();
+    EXPECT_EQ(submissionsTo(server), 1u) << "tried once";
+    EXPECT_EQ(submissionsTo(second), 1u) << "the second server's entry goes anyway";
+    const auto kept = parseScrobbles(diskFiles().read(scrobbleFile).value_or(""));
+    ASSERT_EQ(kept.size(), 1u);
+    EXPECT_EQ(kept[0].trackId, "t8") << "the unreachable server's entry stays for later";
 }
