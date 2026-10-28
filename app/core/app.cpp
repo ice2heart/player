@@ -1337,11 +1337,13 @@ std::vector<MenuItem> App::musicMenu() {
     std::vector<MenuItem> items;
     if (albums.empty() && scanRequest_) {
         items.push_back(action("Scanning", [this] { say("Looking for music. Try again in a moment."); }));
+        if (hasPlaylists()) items.push_back(submenu("Playlists", [this] { return playlistsMenu(); }, ListOrder::ByName)); // downloaded ones need no scan
         items.push_back(refresh);
         return items;
     }
     if (albums.empty()) {
         items.push_back(action("No music", [this] { say("Copy music into " + musicRoot_.string() + ". One folder per album."); }));
+        if (hasPlaylists()) items.push_back(submenu("Playlists", [this] { return playlistsMenu(); }, ListOrder::ByName)); // downloaded ones need no index
         items.push_back(refresh);
         return items;
     }
@@ -1370,6 +1372,7 @@ std::vector<MenuItem> App::musicMenu() {
     items.push_back(playAll);
     items.push_back(submenu("Artists", [this] { return artistsMenu(); }, ListOrder::ByArtist));
     items.push_back(submenu("Albums A to Z", [this] { return albumList(mergeAlbums(index_.items())); }, ListOrder::ByName));
+    items.push_back(submenu("Playlists", [this] { return playlistsMenu(); }, ListOrder::ByName));
     items.push_back(submenu("Genres", [this] { return genresMenu(); }, ListOrder::ByName));
     items.push_back(submenu("Recently added", [this] { return recentlyAddedMenu(); }));
     items.push_back(submenu("Recently played", [this] { return recentlyPlayedMenu(); }));
@@ -1630,34 +1633,6 @@ std::vector<MenuItem> App::streamingMenu() {
                            toItems),
                        0, "No artists", "The server has no music yet. Add music to the server, then come back.",
                        ListOrder::ByArtist);
-    }));
-    items.push_back(action("Playlists", [this] {
-        auto toItems = [this](const std::vector<RemotePlaylist>& playlists) {
-            std::vector<MenuItem> out;
-            for (const RemotePlaylist& p : playlists) {
-                MenuItem item = action(p.name, [this, p] {
-                    openRemoteList(p.name,
-                                   fetchPages<RemoteTrack>(
-                                       [this, id = p.id](int, MusicServer::Done<RemoteTrack> done) {
-                                           return server_.playlistTracks(id, std::move(done));
-                                       },
-                                       [this, name = p.name, id = p.id](const std::vector<RemoteTrack>& tracks) {
-                                           return trackItems(name, tracks, "Play playlist",
-                                                             {RemoteSource::Kind::Playlist, id}, "");
-                                       }),
-                                   0, "No tracks", "This playlist is empty. Add tracks to it on the server.");
-                });
-                item.okHint = "open";
-                if (p.songCount > 0) item.value = [n = size_t(p.songCount)] { return countValue(n, "track"); };
-                out.push_back(withOptions(std::move(item), remotePick(Pick::Kind::Playlist, p.id, p.name, "")));
-            }
-            return out;
-        };
-        openRemoteList("Playlists",
-                       fetchPages<RemotePlaylist>(
-                           [this](int, MusicServer::Done<RemotePlaylist> done) { return server_.playlists(std::move(done)); },
-                           toItems),
-                       0, "No playlists", "Make a playlist on the server, then come back.");
     }));
     items.push_back(action("Random albums", [this] {
         openAlbumList("Random albums", "random", kRandomAlbums, false);
@@ -2229,6 +2204,76 @@ std::vector<MenuItem> App::downloadedListMenu(const RemoteSource& source) {
     });
     return trackItems(title, tracks, source.kind == RemoteSource::Kind::Album ? "Play album" : "Play playlist", source,
                       list.artist, std::move(del));
+}
+
+// ---------------------------------------------------------- Music > Playlists
+
+namespace {
+// One playlist of Music > Playlists: the index's and the manifest's entry for it merged.
+struct PlaylistEntry {
+    std::string id, name;
+    size_t tracks = 0;
+};
+} // namespace
+
+// The playlists of the server set up now (the index holds no other server's, dropOtherServers()): those in the index, and the downloaded ones from the cache
+// manifests (a downloaded playlist deleted on the server, or never synced, is still there). One entry
+// for a playlist in both, named and counted as the index has it. Sorted by name.
+static std::vector<PlaylistEntry> playlistEntries(const LibraryIndex& index, const TrackCache& store) {
+    std::vector<PlaylistEntry> entries;
+    std::map<std::string, size_t> byId;
+    for (const auto& [ref, p] : index.playlists()) {
+        byId.emplace(p.id, entries.size());
+        entries.push_back({p.id, p.name, size_t(std::max(p.songCount, 0))});
+    }
+    if (store.enabled()) {
+        for (const CachedList& list : store.lists(true)) {
+            if (list.source.kind != RemoteSource::Kind::Playlist || byId.contains(list.source.id)) continue;
+            entries.push_back({list.source.id, downloadedName(list), list.tracks.size()});
+        }
+    }
+    std::stable_sort(entries.begin(), entries.end(),
+                     [](const PlaylistEntry& a, const PlaylistEntry& b) { return naturalLess(a.name, b.name); });
+    return entries;
+}
+
+bool App::hasPlaylists() const {
+    return !playlistEntries(index_, trackCache()).empty();
+}
+
+// Music > Playlists is a local menu: read from the index and the manifests when it is opened.
+std::vector<MenuItem> App::playlistsMenu() {
+    std::vector<MenuItem> items;
+    for (const PlaylistEntry& p : playlistEntries(index_, trackCache())) {
+        MenuItem item = action(p.name, [this, id = p.id, name = p.name] { openPlaylist(id, name); });
+        item.okHint = "open";
+        if (p.tracks > 0) item.value = [n = p.tracks] { return countValue(n, "track"); };
+        items.push_back(withOptions(std::move(item), remotePick(Pick::Kind::Playlist, p.id, p.name, "")));
+    }
+    if (items.empty())
+        items.push_back(action("No playlists", [this] { say("Make a playlist on the server, or save the queue as a playlist."); }));
+    return items;
+}
+
+// A playlist that is whole on the disk opens from its files at once, with no question to the server;
+// any other loads its tracks (Lists from the server: "Loading", the error, "Try again", "Downloaded").
+void App::openPlaylist(const std::string& id, const std::string& name) {
+    RemoteSource source{RemoteSource::Kind::Playlist, id};
+    const TrackCache& store = trackCache();
+    if (store.enabled()) {
+        CachedList cached = store.load(source);
+        if (isWholeDownload(cached, completeTracks(store, source, cached))) {
+            openMenu(name, [this, source] { return downloadedListMenu(source); });
+            return;
+        }
+    }
+    openRemoteList(name,
+                   fetchPages<RemoteTrack>(
+                       [this, id](int, MusicServer::Done<RemoteTrack> done) { return server_.playlistTracks(id, std::move(done)); },
+                       [this, name, id](const std::vector<RemoteTrack>& tracks) {
+                           return trackItems(name, tracks, "Play playlist", {RemoteSource::Kind::Playlist, id}, "");
+                       }),
+                   0, "No tracks", "This playlist is empty. Add tracks to it on the server.");
 }
 
 // Removes the list's folder. The list that is loaded in the player is refused (its

@@ -168,6 +168,9 @@ private:
     std::vector<MenuItem> musicMenu();
     static std::string artistOf(const MergedAlbum& album);
     std::vector<MenuItem> artistsMenu();
+    std::vector<MenuItem> playlistsMenu();             // Music > Playlists: the index and the downloads
+    bool hasPlaylists() const;
+    void openPlaylist(const std::string& id, const std::string& name);
     std::vector<MenuItem> genresMenu();
     std::vector<MenuItem> recentAlbums(std::int64_t (*when)(const MergedAlbum&), const std::string& empty);
     std::vector<MenuItem> recentlyAddedMenu();

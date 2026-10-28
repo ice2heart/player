@@ -496,7 +496,6 @@ Home
 │   ├── Recently added → <albums>  (one page of 500)
 │   ├── Albums A to Z → <albums>   (pages of 500, the next one fetched while the server has more)
 │   ├── Artists → <artist> → <albums>
-│   ├── Playlists → <playlist> → Play playlist · Download playlist · <tracks>   (built; planned to move to Music, fixes.md 2.5)
 │   ├── Random albums → <albums>   (one page of 50)
 │   ├── Downloaded                 (only with a cache folder; built from the manifests, not the server: <name> → Play album|Play playlist · Delete download → [Cancel, Yes, delete] · <tracks>)
 │   └── Server status              ("Checking the server.", then "Connected to Navidrome 0.64.2." or the error; the item says "not reachable" while the server is marked down)

@@ -1389,8 +1389,8 @@ TEST_F(AppTest, HomeFromThePlayerMenuReturnsToThePlayer) {
 TEST_F(AppTest, MusicMenuIsPlayAllArtistsAlbumsAToZAndRefresh) {
     start();
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Genres", "Recently added", "Recently played", "Refresh library"}));
-    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 7");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Playlists", "Genres", "Recently added", "Recently played", "Refresh library"}));
+    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 8");
     open("Albums A to Z");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
     EXPECT_EQ(speech.last(), "Albums A to Z. Lullaby, 1 of 2");
@@ -1703,8 +1703,8 @@ TEST_F(AppTest, LibraryAndMusicListTheSavedIndexBeforeTheScanIsDelivered) {
     EXPECT_EQ(speech.last(), "Library. Old Book, 2 parts, 1 of 1");
     press(Button::Home);
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Genres", "Recently added", "Recently played", "Refresh library"}));
-    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 7");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Playlists", "Genres", "Recently added", "Recently played", "Refresh library"}));
+    EXPECT_EQ(speech.last(), "Music. Play all, 3 tracks, 1 of 8");
     open("Albums A to Z");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Old Album"}));
     press(Button::Ok);
@@ -3240,6 +3240,19 @@ protected:
         start();
         open("Server");
     }
+    // Puts a playlist in the index of the server the App is set up for. Call it before start().
+    void indexPlaylist(const std::string& id, const std::string& name, int songs) {
+        if (settings.getString("server.url").empty()) settings.setString("server.url", "https://music.example");
+        indexStore.playlists.push_back({TrackCache::serverKey(settings.getString("server.url"), settings.getString("server.user")),
+                                        id, name, songs, 0});
+    }
+    // Home > Music > Playlists > `name`; its tracks are loading.
+    void openPlaylist(const std::string& name) {
+        start();
+        open("Music");
+        open("Playlists");
+        open(name);
+    }
     // Home > Server > `list`; the list is loading.
     void openList(const std::string& list) {
         openServer();
@@ -3262,7 +3275,7 @@ TEST_F(StreamingTest, StreamingIsOnHomeUnderTheServerName) {
     EXPECT_EQ(labels(), (std::vector<std::string>{"Library", "Music", "Home server", "Podcasts", "Settings", "System",
                                                   "Help"}));
     open("Home server");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Playlists",
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists",
                                                   "Random albums", "Server status"}));
     EXPECT_TRUE(server.requests.empty()) << "nothing is asked before a list is opened";
 }
@@ -3312,20 +3325,20 @@ TEST_F(StreamingTest, HoldingHomeWhileLoadingCancelsToo) {
     EXPECT_EQ(server.pendingCount(), 0u);
 }
 
-TEST_F(StreamingTest, AnAnswerForArtistsDoesNotFillPlaylistsOpenedAfterIt) {
+TEST_F(StreamingTest, AnAnswerForArtistsDoesNotFillRandomAlbumsOpenedAfterIt) {
     openList("Artists");
     auto artists = server.lastRequest().id;
     press(Button::Home);
-    open("Playlists");
-    auto playlists = server.lastRequest().id;
+    open("Random albums");
+    auto random = server.lastRequest().id;
     EXPECT_FALSE(server.reply(artists, std::vector<RemoteArtist>{{"a1", "Band", 2}}));
     app->tick();
-    EXPECT_EQ(level().title, "Playlists");
+    EXPECT_EQ(level().title, "Random albums");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Loading"}));
-    ASSERT_TRUE(server.reply(playlists, std::vector<RemotePlaylist>{{"p1", "Road", 3}}));
+    ASSERT_TRUE(server.reply(random, std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}}));
     app->tick();
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Road"}));
-    EXPECT_EQ(speech.last(), "Road, 3 tracks, 1 of 1");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Weather"}));
+    EXPECT_EQ(speech.last(), "Weather, Band, 1 of 1");
 }
 
 TEST_F(StreamingTest, AlbumsAToZLoadsTheNextPageWhileTheServerHasMore) {
@@ -3498,12 +3511,12 @@ TEST_F(StreamingTest, AServerThisPlayerCannotUseSaysSo) {
 }
 
 TEST_F(StreamingTest, AnEmptyListSaysWhyAndWhatToDo) {
-    openList("Playlists");
-    answer(std::vector<RemotePlaylist>{});
-    EXPECT_EQ(labels(), (std::vector<std::string>{"No playlists"}));
-    EXPECT_EQ(speech.last(), "No playlists, 1 of 1");
+    openList("Random albums");
+    answer(std::vector<RemoteAlbum>{});
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No albums"}));
+    EXPECT_EQ(speech.last(), "No albums, 1 of 1");
     press(Button::Ok);
-    EXPECT_EQ(speech.last(), "Make a playlist on the server, then come back.");
+    EXPECT_EQ(speech.last(), "The server has no music yet. Add music to the server, then come back.");
 }
 
 TEST_F(StreamingTest, ServerStatusSaysTheServerTypeAndVersion) {
@@ -3556,15 +3569,15 @@ TEST_F(StreamingTest, ServerStatusSaysNotReachableWhileTheServerIsMarkedDownAndA
     press(Button::Home);
     open("Server");
     ASSERT_EQ(level().title, "Server");
-    for (int i = 0; i < 5; ++i) press(Button::Down);
-    EXPECT_EQ(speech.last(), "Server status, not reachable, 6 of 6");
+    for (int i = 0; i < 4; ++i) press(Button::Down);
+    EXPECT_EQ(speech.last(), "Server status, not reachable, 5 of 5");
     press(Button::Ok);
     ASSERT_TRUE(server.replyPing(server.lastRequest().id, {"navidrome", "0.64.2"}));
     app->tick();
     EXPECT_EQ(speech.last(), "Connected to Navidrome 0.64.2.");
     press(Button::Up);
     press(Button::Down);
-    EXPECT_EQ(speech.last(), "Server status, 6 of 6") << "the answer cleared the mark";
+    EXPECT_EQ(speech.last(), "Server status, 5 of 5") << "the answer cleared the mark";
 }
 
 TEST_F(StreamingTest, ServerStatusStaysNotReachableWhenThePingDoesNotAnswer) {
@@ -3573,20 +3586,20 @@ TEST_F(StreamingTest, ServerStatusStaysNotReachableWhenThePingDoesNotAnswer) {
     EXPECT_FALSE(app->playRemote("Weather", weather(), 0));
     press(Button::Home);
     open("Server");
-    for (int i = 0; i < 5; ++i) press(Button::Down);
+    for (int i = 0; i < 4; ++i) press(Button::Down);
     press(Button::Ok);
     ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable));
     app->tick();
     EXPECT_EQ(speech.last(), "Server not reachable.");
     press(Button::Up);
     press(Button::Down);
-    EXPECT_EQ(speech.last(), "Server status, not reachable, 6 of 6");
+    EXPECT_EQ(speech.last(), "Server status, not reachable, 5 of 5");
 }
 
 TEST_F(StreamingTest, ServerStatusSaysNothingExtraWhileTheServerIsNotMarkedDown) {
     openServer();
-    for (int i = 0; i < 5; ++i) press(Button::Down);
-    EXPECT_EQ(speech.last(), "Server status, 6 of 6");
+    for (int i = 0; i < 4; ++i) press(Button::Down);
+    EXPECT_EQ(speech.last(), "Server status, 5 of 5");
 }
 
 TEST_F(StreamingTest, ChoosingATrackPlaysFromItToTheEndOfTheAlbum) {
@@ -3637,9 +3650,8 @@ TEST_F(StreamingTest, AnArtistOpensTheirAlbums) {
 }
 
 TEST_F(StreamingTest, APlaylistOpensItsTracks) {
-    openList("Playlists");
-    answer(std::vector<RemotePlaylist>{{"p1", "Road", 3}});
-    open("Road");
+    indexPlaylist("p1", "Road", 3);
+    openPlaylist("Road");
     EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
     EXPECT_EQ(server.lastRequest().arg, "p1");
     answer(weather());
@@ -3887,9 +3899,8 @@ TEST_F(ResumeStreamTest, AnUnreadablePlaceStartsTheTrackFromItsStart) {
 }
 
 TEST_F(ResumeStreamTest, APlaylistIsLoadedAgainToo) {
-    openList("Playlists");
-    answer(std::vector<RemotePlaylist>{{"p1", "Road", 3}});
-    open("Road");
+    indexPlaylist("p1", "Road", 3);
+    openPlaylist("Road");
     answer(weather());
     open("Sunshine");
     player.pos = 10;
@@ -3971,9 +3982,8 @@ TEST_F(ResumeStreamTest, AListThatGotShorterPlaysItsFirstTrackFromItsStart) {
 TEST_F(ResumeStreamTest, TheSameTrackTwiceInAPlaylistResumesTheOneThatPlayed) {
     auto tracks = weather();
     tracks.push_back(tracks[1]); // Rain again, at the end
-    openList("Playlists");
-    answer(std::vector<RemotePlaylist>{{"p1", "Road", 4}});
-    open("Road");
+    indexPlaylist("p1", "Road", 4);
+    openPlaylist("Road");
     answer(tracks);
     press(Button::Up); // the second Rain, the last item
     press(Button::Ok);
@@ -4980,12 +4990,12 @@ protected:
 };
 
 TEST_F(DownloadTest, AlbumAndPlaylistOfferDownloadRightAfterPlay) {
+    indexPlaylist("p1", "Road", 3);
     openAlbum();
     EXPECT_EQ(labels(), (std::vector<std::string>{"Play album", "Download album", "Storm Front", "Rain", "Sunshine"}));
-    press(Button::Home);
-    press(Button::Home);
+    hold(Button::Home);
+    open("Music");
     open("Playlists");
-    answer(std::vector<RemotePlaylist>{{"p1", "Road", 3}});
     open("Road");
     answer(sized());
     EXPECT_EQ(labels(), (std::vector<std::string>{"Play playlist", "Download playlist", "Storm Front", "Rain", "Sunshine"}));
@@ -5257,12 +5267,12 @@ TEST_F(DownloadTest, WhereAmISaysNothingOfDownloadsWhenNoneRuns) {
 }
 
 TEST_F(DownloadTest, AnotherListCannotStartWhileOneDownloads) {
+    indexPlaylist("p1", "Road", 3);
     openAlbum();
     startDownload();
-    press(Button::Home);
-    press(Button::Home);
+    hold(Button::Home);
+    open("Music");
     open("Playlists");
-    answer(std::vector<RemotePlaylist>{{"p1", "Road", 3}});
     open("Road");
     answer(sized());
     open("Download playlist");
@@ -5282,11 +5292,8 @@ TEST_F(DownloadTest, TheManifestKeepsTheKindNameAndArtistOfTheList) {
 }
 
 TEST_F(DownloadTest, APlaylistIsKeptApartFromAnAlbumWithTheSameId) {
-    start();
-    open("Server");
-    open("Playlists");
-    answer(std::vector<RemotePlaylist>{{"al1", "Road", 3}});
-    open("Road");
+    indexPlaylist("al1", "Road", 3);
+    openPlaylist("Road");
     answer(sized());
     open("Download playlist");
     finishLast();
@@ -5547,7 +5554,7 @@ protected:
 
 TEST_F(DownloadedTest, TheServerMenuOffersDownloadedOnlyWithACacheFolder) {
     openServer();
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Playlists",
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists",
                                                   "Random albums", "Downloaded", "Server status"}));
     EXPECT_EQ(listRequests(), 0u) << "it is not a list from the server";
 }
@@ -6006,6 +6013,185 @@ TEST_F(OfflineTest, LeavingHomeWhileTheFallbackWaitsForTheServerDropsIt) {
     EXPECT_FALSE(server.fail(id, FakeMusicServer::Error::Unreachable)) << "the request was cancelled";
     app->tick();
     EXPECT_TRUE(player.opened.empty());
+}
+
+// ---------------------------------------------------------------- Music > Playlists (docs/fixes.md 2.5)
+
+// The index's playlists and the downloaded ones in one local list, opened like a Streaming playlist.
+class MusicPlaylistsTest : public OfflineTest {
+protected:
+    // Home > Music > Playlists
+    void openPlaylists() {
+        start();
+        open("Music");
+        open("Playlists");
+    }
+    // The newest request of `kind` the App made.
+    MusicServer::RequestId lastOf(FakeMusicServer::Kind kind) const {
+        for (auto it = server.requests.rbegin(); it != server.requests.rend(); ++it)
+            if (it->kind == kind) return it->id;
+        ADD_FAILURE() << "no such request";
+        return 0;
+    }
+    // The start-up sync runs to its end: the server has no albums and these playlists.
+    void syncWith(std::vector<RemotePlaylist> playlists) {
+        ASSERT_TRUE(server.replyVersion(lastOf(Kind::CatalogueVersion), "v1"));
+        app->tick();
+        ASSERT_TRUE(server.reply(lastOf(Kind::Albums), std::vector<RemoteAlbum>{}));
+        app->tick();
+        ASSERT_TRUE(server.reply(lastOf(Kind::Playlists), std::move(playlists)));
+        app->tick();
+    }
+    std::vector<std::string> values() const {
+        std::vector<std::string> out;
+        for (const MenuItem& item : level().items) out.push_back(item.value ? item.value() : "");
+        return out;
+    }
+    RemoteSource seedRoad() { return seed(playlistSource("p1"), "Road Trip", "", {{"t1", "Sunrise"}, {"t2", "Highway"}}); }
+};
+
+TEST_F(MusicPlaylistsTest, ListsIndexedAndDownloadedPlaylistsSortedWithTheirTrackCount) {
+    indexPlaylist("p1", "Road Trip", 12);
+    indexPlaylist("p2", "chill", 3);
+    seed(playlistSource("p3"), "Alpha", "", {{"a1", "One"}, {"a2", "Two"}});
+    openPlaylists();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "chill", "Road Trip"}));
+    EXPECT_EQ(values(), (std::vector<std::string>{"2 tracks", "3 tracks", "12 tracks"}));
+    EXPECT_EQ(speech.last(), "Playlists. Alpha, 2 tracks, 1 of 3");
+    press(Button::Down);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Road Trip, 12 tracks, 3 of 3");
+    EXPECT_EQ(listRequests(), 0u) << "a local menu: the server is not asked";
+}
+
+TEST_F(MusicPlaylistsTest, APlaylistInTheIndexAndDownloadedIsOneEntryNamedByTheIndex) {
+    indexPlaylist("p1", "Road Trip", 12);
+    seed(playlistSource("p1"), "Road Trip, as it was", "", {{"t1", "Sunrise"}});
+    seed(albumSource("p5"), "An album downloaded", "Band", {{"a1", "One"}}); // not a playlist
+    openPlaylists();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Road Trip"}));
+    EXPECT_EQ(values(), (std::vector<std::string>{"12 tracks"}));
+}
+
+TEST_F(MusicPlaylistsTest, ThePlaylistsOfAnotherServerAreNotListed) {
+    indexPlaylist("p1", "Mine", 2);
+    indexStore.playlists.push_back({TrackCache::serverKey("https://other.example", "bob"), "p9", "Not mine", 4, 0});
+    openPlaylists();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Mine"}));
+}
+
+TEST_F(MusicPlaylistsTest, ADownloadedPlaylistIsListedWithNoMusicAndNoSync) {
+    fs::remove_all(music);
+    seedRoad();
+    start();
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No music", "Playlists", "Refresh library"}));
+    open("Playlists");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Road Trip"}));
+    EXPECT_EQ(speech.last(), "Playlists. Road Trip, 2 tracks, 1 of 1");
+}
+
+TEST_F(MusicPlaylistsTest, ADownloadedPlaylistIsListedWhileTheFirstScanRuns) {
+    seedRoad();
+    start(/*scan=*/false);
+    open("Music");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Scanning", "Playlists", "Refresh library"}));
+    open("Playlists");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Road Trip"}));
+}
+
+TEST_F(MusicPlaylistsTest, ADownloadedPlaylistDeletedOnTheServerIsStillListedAfterASync) {
+    indexPlaylist("p1", "Road Trip", 2);
+    indexPlaylist("p2", "Gone and not downloaded", 5);
+    seedRoad();
+    start();
+    syncWith({}); // the server has neither
+    open("Music");
+    open("Playlists");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Road Trip"}));
+    EXPECT_EQ(values(), (std::vector<std::string>{"2 tracks"}));
+}
+
+TEST_F(MusicPlaylistsTest, ASyncAddsTheServersPlaylistsToTheList) {
+    start();
+    syncWith({{"p1", "New one", 7}});
+    open("Music");
+    open("Playlists");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"New one"}));
+    EXPECT_EQ(values(), (std::vector<std::string>{"7 tracks"}));
+}
+
+TEST_F(MusicPlaylistsTest, WithTheServerDownADownloadedPlaylistPlaysFromItsFilesWithoutLoading) {
+    RemoteSource pl = seedRoad();
+    indexPlaylist("p1", "Road Trip", 2);
+    openPlaylists();
+    speech.said.clear();
+    const size_t asked = server.requests.size();
+    open("Road Trip");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play playlist", "Delete download", "Sunrise", "Highway"}));
+    EXPECT_FALSE(speech.heard("Loading."));
+    open("Highway");
+    EXPECT_EQ(player.file, fileOf(pl, "t2"));
+    EXPECT_FALSE(anyStreamOpened());
+    EXPECT_EQ(server.requests.size(), asked) << "the server is never asked";
+    EXPECT_FALSE(spokeUnreachable());
+}
+
+TEST_F(MusicPlaylistsTest, WithTheServerDownAPlaylistThatIsNotDownloadedOffersTryAgainAndDownloaded) {
+    seedRoad();
+    indexPlaylist("p2", "Chill", 3);
+    openPlaylists();
+    open("Chill");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Loading"}));
+    EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+    EXPECT_EQ(server.lastRequest().arg, "p2");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again", "Downloaded"}));
+    EXPECT_EQ(speech.last(), "Server not reachable, 1 of 3");
+    press(Button::Down);
+    press(Button::Ok); // Try again
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Loading"}));
+    EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+}
+
+TEST_F(MusicPlaylistsTest, APlaylistOnlyPartlyOnTheDiskLoadsFromTheServer) {
+    seed(playlistSource("p1"), "Road Trip", "", {{"t1", "Sunrise"}, {"t2", "Highway", false}});
+    openPlaylists();
+    open("Road Trip");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Loading"}));
+    EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+}
+
+TEST_F(MusicPlaylistsTest, AnEmptyListSaysNoPlaylistsAndOkSaysWhatToDo) {
+    openPlaylists();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No playlists"}));
+    EXPECT_EQ(speech.last(), "Playlists. No playlists, 1 of 1");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Make a playlist on the server, or save the queue as a playlist.");
+}
+
+TEST_F(MusicPlaylistsTest, LeftAndRightJumpByLetter) {
+    indexPlaylist("p1", "Alpha", 1);
+    indexPlaylist("p2", "Beta", 1);
+    indexPlaylist("p3", "Bravo", 1);
+    indexPlaylist("p4", "Delta", 1);
+    openPlaylists();
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 2 of 4");
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "D. Delta, 1 track, 4 of 4");
+    press(Button::Back);
+    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 2 of 4");
+}
+
+TEST_F(MusicPlaylistsTest, StreamingHasNoPlaylistsButDownloadedStillListsTheDownloadedOnes) {
+    seedRoad();
+    openServer();
+    EXPECT_FALSE(hasLabel("Playlists"));
+    open("Downloaded");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Road Trip"}));
+    EXPECT_EQ(values(), (std::vector<std::string>{"playlist"}));
 }
 
 // ------------------------------------------------------- automatic cache (step 3.7)
@@ -7849,7 +8035,7 @@ TEST_F(MusicTreeTest, PlayAllPlaysOnlyDeviceFilesNeverTheServer) {
     sync({album("s1", "Zeta On The Server")});
     const size_t asked = server.requests.size();
     open("Music");
-    EXPECT_EQ(speech.last(), "Music. Play all, 6 tracks, 1 of 7") << "Lullaby, Road Trip and the download: no server album";
+    EXPECT_EQ(speech.last(), "Music. Play all, 6 tracks, 1 of 8") << "Lullaby, Road Trip and the download: no server album";
     press(Button::Ok);
     std::vector<std::string> played{player.file};
     for (int i = 0; i < 5; ++i) {
@@ -7870,8 +8056,8 @@ TEST_F(MusicTreeTest, PlayAllWithOnlyServerAlbumsSaysNoMusic) {
     start();
     sync({album("s1", "Weather")});
     open("Music");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Genres", "Recently added", "Recently played", "Refresh library"}));
-    EXPECT_EQ(speech.last(), "Music. Play all, 1 of 7");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Playlists", "Genres", "Recently added", "Recently played", "Refresh library"}));
+    EXPECT_EQ(speech.last(), "Music. Play all, 1 of 8");
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "No music");
     EXPECT_EQ(app->mode(), App::Mode::Menu);
@@ -7900,7 +8086,7 @@ TEST_F(MusicTreeTest, AListYouComeBackToShowsWhatChangedMeanwhile) {
     EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
     press(Button::Home);
     sync({album("s1", "Weather")});
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Genres", "Recently added", "Recently played", "Refresh library"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play all", "Artists", "Albums A to Z", "Playlists", "Genres", "Recently added", "Recently played", "Refresh library"}));
     open("Albums A to Z");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip", "Weather"}));
     EXPECT_EQ(level().items[2].value(), "10 tracks");
@@ -10225,11 +10411,11 @@ TEST_F(OptionsTest, PlayNextAndPlayNowOnARemoteAlbum) {
 }
 
 TEST_F(OptionsTest, ARemotePlaylistIsAddedWithItsTracks) {
+    indexStore.playlists = {{key(), "p1", "Road songs", 3, 0}};
     playRoadTrip();
     hold(Button::Home);
-    open("Server");
+    open("Music");
     open("Playlists");
-    answer(std::vector<RemotePlaylist>{{"p1", "Road songs", 3}});
     options("Add to queue");
     EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
     EXPECT_EQ(server.lastRequest().arg, "p1");
@@ -10457,7 +10643,7 @@ TEST_F(OptionsTest, TheBeginnerHintNamesOptions) {
     hold(Button::Home);
     open("Music");
     press(Button::Down);
-    EXPECT_EQ(speech.last(), "Artists, 2 of 7. Press OK to open.") << "no options, no mention";
+    EXPECT_EQ(speech.last(), "Artists, 2 of 8. Press OK to open.") << "no options, no mention";
 }
 
 TEST_F(OptionsTest, ARemoteTrackAndAlbumHaveTheHintToo) {
