@@ -1,6 +1,7 @@
 #include "subsonic.h"
 
 #include "net/md5.h"
+#include "net/percent_encode.h"
 #include "net/subsonic_json.h"
 
 #include <algorithm>
@@ -22,19 +23,6 @@ constexpr const char* kTimeOffset = "timeOffset";
 // A server that answers getOpenSubsonicExtensions with an error this many times
 // has no extensions (it is not OpenSubsonic); fewer could be a passing error.
 constexpr int kExtensionErrorsForNo = 3;
-
-// RFC 3986: everything but the unreserved characters is %XX-encoded, so ids,
-// names and passwords with '&', '=', '/', spaces or UTF-8 survive.
-std::string percentEncode(const std::string& s) {
-    static const char* hex = "0123456789ABCDEF";
-    std::string out;
-    for (unsigned char c : s) {
-        if (std::isalnum(c) && c < 0x80) out += char(c);
-        else if (c == '-' || c == '.' || c == '_' || c == '~') out += char(c);
-        else out += '%', out += hex[c >> 4], out += hex[c & 0xf];
-    }
-    return out;
-}
 
 void trimTrailingSlashes(std::string& url) {
     while (!url.empty() && url.back() == '/') url.pop_back();

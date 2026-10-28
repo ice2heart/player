@@ -131,6 +131,9 @@ if(OAP_BUILD_NET)
         app/net/http_client.cpp
         app/net/http_downloader.cpp
         app/net/md5.cpp
+        app/net/percent_encode.cpp
+        app/net/audiobookshelf.cpp
+        app/net/audiobookshelf_json.cpp
         app/net/subsonic.cpp
         app/net/subsonic_json.cpp
     )
@@ -313,6 +316,8 @@ if(OAP_BUILD_TESTS)
     # tests/data/subsonic/, and HttpClient against local sockets. No internet.
     if(OAP_BUILD_NET)
         add_executable(oap-net-tests
+            tests/test_audiobookshelf.cpp
+            tests/test_audiobookshelf_json.cpp
             tests/test_http_client.cpp
             tests/test_http_downloader.cpp
             tests/test_md5.cpp
@@ -320,7 +325,8 @@ if(OAP_BUILD_TESTS)
             tests/test_subsonic_json.cpp
         )
         target_link_libraries(oap-net-tests PRIVATE oapnet GTest::gtest_main)
-        target_compile_definitions(oap-net-tests PRIVATE OAP_SUBSONIC_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/subsonic")
+        target_compile_definitions(oap-net-tests PRIVATE OAP_SUBSONIC_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/subsonic"
+            OAP_AUDIOBOOKSHELF_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/audiobookshelf")
         target_compile_options(oap-net-tests PRIVATE -Wall -Wextra)
         gtest_discover_tests(oap-net-tests ${OAP_TEST_TIMEOUTS})
     endif()
