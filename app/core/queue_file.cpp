@@ -69,7 +69,9 @@ std::optional<std::size_t> parseIndex(const std::string& s) {
 }
 
 const char* shuffleName(QueueShuffle s) { return s == QueueShuffle::Tracks ? "tracks" : s == QueueShuffle::Albums ? "albums" : "off"; }
-const char* repeatName(QueueRepeat r) { return r == QueueRepeat::All ? "all" : r == QueueRepeat::Track ? "track" : "off"; }
+const char* repeatName(QueueRepeat r) {
+    return r == QueueRepeat::All ? "all" : r == QueueRepeat::Album ? "album" : r == QueueRepeat::Track ? "track" : "off";
+}
 
 } // namespace
 
@@ -131,7 +133,10 @@ std::optional<SavedQueue> parseQueue(const std::string& text) {
         } else if (key == "shuffle" && f.size() == 2) {
             shuffle = f[1] == "tracks" ? QueueShuffle::Tracks : f[1] == "albums" ? QueueShuffle::Albums : QueueShuffle::Off;
         } else if (key == "repeat" && f.size() == 2) {
-            repeat = f[1] == "all" ? QueueRepeat::All : f[1] == "track" ? QueueRepeat::Track : QueueRepeat::Off;
+            repeat = f[1] == "all"     ? QueueRepeat::All
+                     : f[1] == "album" ? QueueRepeat::Album
+                     : f[1] == "track" ? QueueRepeat::Track
+                                       : QueueRepeat::Off;
         } else if (key == "edited" && f.size() == 2) {
             edited = f[1] == "1";
         } else if (key == "position" && f.size() == 2) {

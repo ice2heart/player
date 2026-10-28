@@ -10656,9 +10656,9 @@ TEST_F(ShuffleRepeatTest, TheRepeatListOpensOnTheCurrentValue) {
     ASSERT_NO_FATAL_FAILURE(choose("Repeat", "track"));
     press(Button::Ok);
     open("Repeat");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"off", "all", "track"}));
-    EXPECT_EQ(level().index, 2u);
-    EXPECT_EQ(valueOf(level().items[2]), "current");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"off", "all", "album", "track"}));
+    EXPECT_EQ(level().index, 3u);
+    EXPECT_EQ(valueOf(level().items[3]), "current");
     EXPECT_EQ(valueOf(level().items[0]), "");
 }
 
@@ -10709,6 +10709,63 @@ TEST_F(ShuffleRepeatTest, RepeatTrackPlaysTheTrackAgainWhenItEnds) {
         EXPECT_EQ(app->nowPlaying().chapter, "Calm");
     }
     EXPECT_FALSE(speech.heard("End of queue. Press play to start again."));
+}
+
+TEST_F(ShuffleRepeatTest, TheRepeatListSaysAlbumAndChoosingItSticks) {
+    play(four());
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "album"));
+    press(Button::Ok);
+    open("Repeat");
+    EXPECT_EQ(level().index, 2u);
+    EXPECT_EQ(valueOf(level().items[2]), "current");
+    EXPECT_EQ(level().items[2].label, "album");
+    EXPECT_EQ(settingValue("Repeat"), "album");
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAlbumPlaysTheAlbumsFirstTrackWhenItsLastEnds) {
+    play(four(), 1);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "album"));
+    trackEnds();
+    EXPECT_EQ(player.file, alphaFile(1)) << "Calm is the last of One: Storm plays, not Lullaby";
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm");
+    trackEnds();
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_FALSE(speech.heard("End of queue. Press play to start again."));
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAlbumOnTheQueuesLastTrackRepeatsItWhenItIsAloneInItsAlbum) {
+    play(four(), 3);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "album"));
+    trackEnds();
+    EXPECT_EQ(player.file, sunrise());
+    EXPECT_TRUE(player.playing());
+    EXPECT_FALSE(speech.heard("End of queue. Press play to start again."));
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAlbumStillMovesWithRightAndTheAlbumMovedToRepeats) {
+    play({localEntry(alphaFile(1), "Storm", "One"), localEntry(alphaFile(2), "Calm", "One"),
+          localEntry(sunrise(), "Sunrise", "Three"), localEntry(highway(), "Highway", "Three")},
+         1);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "album"));
+    hold(Button::Forward);
+    ASSERT_EQ(player.file, sunrise());
+    trackEnds();
+    EXPECT_EQ(player.file, highway());
+    trackEnds();
+    EXPECT_EQ(player.file, sunrise()) << "Three repeats, One does not come back";
+}
+
+TEST_F(ShuffleRepeatTest, PingsGoOnForAServerTrackBehindTheCurrentOneWithRepeatAlbum) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", mixed()));
+    player.unopenable = {"fake://stream/t2"};
+    trackEnds();
+    finishOpen();
+    ASSERT_EQ(player.file, alphaFile(2)) << "Calm plays; the server is marked down and Rain is behind it";
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "album"));
+    idle(10min);
+    EXPECT_EQ(pings(), 1) << "Rain comes up again after Calm: all three are the album Mixed";
 }
 
 TEST_F(ShuffleRepeatTest, RepeatTrackStillMovesWithLeftAndRightAndTheTrackMovedToRepeats) {

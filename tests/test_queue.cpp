@@ -61,6 +61,22 @@ Queue abcde() {
     return q;
 }
 
+QueueEntry inAlbum(const std::string& title, const std::string& album, const std::string& albumId = "") {
+    QueueEntry e = local(title, album);
+    e.albumId = albumId;
+    return e;
+}
+
+// The titles reached by advance() from the current entry, `n` times.
+std::string advanced(Queue& q, int n) {
+    std::string s;
+    for (int i = 0; i < n; ++i) {
+        q.advance();
+        s += currentTitle(q);
+    }
+    return s;
+}
+
 } // namespace
 
 TEST(Queue, StartsEmpty) {
@@ -664,4 +680,95 @@ TEST(QueueAround, AShuffledQueueKeepsItsPlayOrderAndOriginalOrderInTheWindow) {
         EXPECT_LT(std::stoi(previous.empty() ? "-1" : previous), std::stoi(e.title));
         previous = e.title;
     }
+}
+
+// ---------------------------------------------------------------- Repeat album (fixes.md 2.2)
+
+TEST(Queue, RepeatAlbumWithShuffleOffGoesFromTheAlbumsLastTrackToItsFirst) {
+    Queue q;
+    q.replace({inAlbum("x", "X"), inAlbum("a1", "A"), inAlbum("a2", "A"), inAlbum("a3", "A"), inAlbum("y", "Y")}, 1);
+    q.setRepeat(QueueRepeat::Album);
+    EXPECT_EQ(q.advance(), Queue::Step::Moved);
+    EXPECT_EQ(currentTitle(q), "a2");
+    EXPECT_EQ(q.advance(), Queue::Step::Moved);
+    EXPECT_EQ(currentTitle(q), "a3");
+    EXPECT_EQ(q.upcoming(), std::optional<std::size_t>(1)) << "the first track of the album, not y";
+    EXPECT_EQ(q.advance(), Queue::Step::Moved);
+    EXPECT_EQ(currentTitle(q), "a1");
+    EXPECT_EQ(q.position(), 1u);
+}
+
+TEST(Queue, RepeatAlbumWithShuffleTracksPlaysTheAlbumInPlayOrderAndSkipsTheOthers) {
+    Queue q;
+    // Original a1 a2 a3 x y; play order a1 x a2 y a3.
+    q.restore({inAlbum("a1", "A"), inAlbum("a2", "A"), inAlbum("a3", "A"), inAlbum("x", "X"), inAlbum("y", "Y")},
+              {0, 3, 1, 4, 2}, 0, QueueShuffle::Tracks, QueueRepeat::Album, false);
+    EXPECT_EQ(advanced(q, 4), "a2a3a1a2");
+}
+
+TEST(Queue, RepeatAlbumTellsTwoAlbumsWithTheSameNameApartByAlbumId) {
+    Queue q;
+    q.replace({inAlbum("p1", "Hits", "id1"), inAlbum("q1", "Hits", "id2"), inAlbum("p2", "Hits", "id1"),
+               inAlbum("q2", "Hits", "id2")});
+    q.setRepeat(QueueRepeat::Album);
+    EXPECT_EQ(advanced(q, 4), "p2p1p2p1");
+}
+
+TEST(Queue, RepeatAlbumUsesTheNameWhenAnEntryHasNoAlbumId) {
+    Queue q;
+    // One side has an id, the other has none: the name decides. Different names are different albums.
+    q.replace({inAlbum("p1", "Hits", "id1"), inAlbum("z", "Other"), inAlbum("p2", "Hits"), inAlbum("w", "Other", "id9")});
+    q.setRepeat(QueueRepeat::Album);
+    EXPECT_EQ(advanced(q, 3), "p2p1p2");
+    q.setCurrent(1);
+    EXPECT_EQ(advanced(q, 2), "wz") << "the two Other entries, one with an id, one without";
+}
+
+TEST(Queue, RepeatAlbumOfAnEntryWithNoAlbumRepeatsItAlone) {
+    Queue q;
+    q.replace({inAlbum("a", ""), inAlbum("b", ""), inAlbum("c", "C")});
+    q.setRepeat(QueueRepeat::Album);
+    EXPECT_EQ(q.advance(), Queue::Step::Repeated);
+    EXPECT_EQ(currentTitle(q), "a") << "b has no album either, but it is not a's album";
+    EXPECT_EQ(q.upcoming(), std::optional<std::size_t>(0));
+    q.setCurrent(2);
+    EXPECT_EQ(q.advance(), Queue::Step::Repeated) << "the only track of its album";
+    EXPECT_EQ(currentTitle(q), "c");
+}
+
+TEST(Queue, RepeatAlbumNextOnTheAlbumsLastTrackGoesOnInPlayOrderAndThatAlbumRepeats) {
+    Queue q;
+    q.replace({inAlbum("a1", "A"), inAlbum("a2", "A"), inAlbum("b1", "B"), inAlbum("b2", "B")}, 1);
+    q.setRepeat(QueueRepeat::Album);
+    EXPECT_EQ(q.next(), Queue::Step::Moved);
+    EXPECT_EQ(currentTitle(q), "b1");
+    EXPECT_EQ(advanced(q, 3), "b2b1b2");
+    EXPECT_EQ(q.previous(), Queue::Step::Moved);
+    EXPECT_EQ(currentTitle(q), "b1");
+    EXPECT_EQ(q.previous(), Queue::Step::Moved);
+    EXPECT_EQ(currentTitle(q), "a2") << "Previous leaves the album too";
+    EXPECT_EQ(q.advance(), Queue::Step::Moved);
+    EXPECT_EQ(currentTitle(q), "a1");
+}
+
+TEST(Queue, RepeatAlbumNextAndPreviousDoNotWrapLikeRepeatAll) {
+    Queue q;
+    q.replace({inAlbum("a", "A"), inAlbum("b", "B")}, 1);
+    q.setRepeat(QueueRepeat::Album);
+    EXPECT_EQ(q.next(), Queue::Step::End);
+    EXPECT_EQ(q.previous(), Queue::Step::End);
+}
+
+TEST(Queue, RepeatAlbumOnAnEmptyQueueRepeatsNothing) {
+    Queue q;
+    q.setRepeat(QueueRepeat::Album);
+    EXPECT_EQ(q.advance(), Queue::Step::End);
+    EXPECT_EQ(q.upcoming(), std::nullopt);
+}
+
+TEST(Queue, RepeatAlbumIsKeptWhenTheQueueIsCut) {
+    Queue q;
+    q.replace({inAlbum("a1", "A"), inAlbum("a2", "A"), inAlbum("b", "B")});
+    q.setRepeat(QueueRepeat::Album);
+    EXPECT_EQ(q.around(2).repeat(), QueueRepeat::Album);
 }

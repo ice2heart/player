@@ -2515,7 +2515,7 @@ MenuItem App::shuffleItem() {
 
 MenuItem App::repeatItem() {
     // Read when a track ends, so there is nothing to apply now.
-    return queueSetting("Repeat", {"off", "all", "track"}, [this] { return size_t(queue_.repeat()); },
+    return queueSetting("Repeat", {"off", "all", "album", "track"}, [this] { return size_t(queue_.repeat()); },
                         [this](size_t i) {
                             queue_.setRepeat(QueueRepeat(i));
                             return true;
@@ -3431,8 +3431,8 @@ void App::clearServerDown() { serverDown_ = false; }
 bool App::remoteAhead() const {
     if (!book_ || !music_ || !server_.configured()) return false;
     const std::string url = serverIdentity(config_.getString(kServerUrl)), user = config_.getString(kServerUser);
-    // With Repeat all the entries before the current one come up again after the last.
-    const size_t from = queue_.repeat() == QueueRepeat::All ? 0 : fileIndex_;
+    // With Repeat all or album the entries before the current one come up again (after the last / the album's last).
+    const size_t from = queue_.repeat() == QueueRepeat::All || queue_.repeat() == QueueRepeat::Album ? 0 : fileIndex_;
     for (size_t i = from; i < queue_.size(); ++i)
         if (const QueueEntry& e = queue_.at(i); e.kind == QueueEntry::Kind::Remote && e.serverUrl == url && e.user == user)
             return true;

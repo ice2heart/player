@@ -75,6 +75,30 @@ TEST(QueueFile, KeepsAlbumsShuffleAndRepeatTrack) {
     EXPECT_FALSE(back->queue.edited());
 }
 
+TEST(QueueFile, KeepsRepeatAlbumAndWritesItAsAlbum) {
+    Queue q;
+    q.replace({local("a", "X"), local("b", "X")}, 0);
+    q.setRepeat(QueueRepeat::Album);
+    const std::string text = formatQueue({"Q", q, 0});
+    EXPECT_NE(text.find("repeat\talbum\n"), std::string::npos);
+    auto back = parseQueue(text);
+    ASSERT_TRUE(back);
+    EXPECT_EQ(back->queue.repeat(), QueueRepeat::Album);
+}
+
+TEST(QueueFile, AnUnknownRepeatValueReadsAsOff) {
+    Queue q;
+    q.replace({local("a", "X"), local("b", "X")}, 0);
+    q.setRepeat(QueueRepeat::Album);
+    std::string text = formatQueue({"Q", q, 0});
+    const std::size_t at = text.find("repeat\talbum");
+    ASSERT_NE(at, std::string::npos);
+    text.replace(at, 12, "repeat\tmagic");
+    auto back = parseQueue(text);
+    ASSERT_TRUE(back);
+    EXPECT_EQ(back->queue.repeat(), QueueRepeat::Off);
+}
+
 TEST(QueueFile, TabsNewlinesAndBackslashesInTextSurvive) {
     QueueEntry e = local("Wind\tand\nRain\r\\n end\\");
     e.album = "Al\tbum";

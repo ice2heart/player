@@ -26,7 +26,8 @@ struct QueueEntry {
 };
 
 enum class QueueShuffle { Off, Tracks, Albums };
-enum class QueueRepeat { Off, All, Track };
+// The order is the order of the Repeat list in the Player menu (the menu index is the enum value).
+enum class QueueRepeat { Off, All, Album, Track };
 
 // Returns a number in [0, bound), bound > 0. Tests pass one that makes the shuffle known.
 using QueueRandom = std::function<std::size_t(std::size_t bound)>;
@@ -38,7 +39,7 @@ public:
     // What a move to another entry did.
     enum class Step {
         Moved,    // another entry (or, with one entry and repeat all, the same one) is current
-        Repeated, // advance() with repeat track: the current entry plays again
+        Repeated, // advance() with repeat track (or repeat album and an album of one entry): the current entry plays again
         End,      // next(): past the last entry with repeat off; the first entry is current again.
                   // previous(): nothing before the first entry; the current entry did not change.
     };
@@ -70,13 +71,15 @@ public:
     // Moves the entry at `from` to `to`; the current entry stays current wherever it ends up.
     bool move(std::size_t from, std::size_t to);
 
-    // The track ended: repeat track plays it again, else as next().
+    // The track ended: repeat track plays it again; repeat album goes to the next entry of the current album in
+    // the play order (skipping other albums) and after the album's last entry to its first; else as next().
     Step advance();
     // The user moves on / back. Repeat track does not matter; repeat all wraps around.
     Step next();
     Step previous();
-    // The position advance() would move to, without moving: the same one with repeat track, the first with
-    // repeat all past the last entry, none at the end of the queue (and when empty).
+    // The position advance() would move to, without moving: the same one with repeat track, the album's next
+    // (or first) with repeat album, the first with repeat all past the last entry, none at the end of the queue
+    // (and when empty).
     std::optional<std::size_t> upcoming() const;
     // Makes the entry at `position` current (not an edit). False if out of range.
     bool setCurrent(std::size_t position);
@@ -115,6 +118,9 @@ public:
 
 private:
     void touch();
+    // Repeat album: the position, after `pos_` in the play order and wrapping, of the next entry of the current
+    // entry's album; `pos_` itself when the album is the current entry alone.
+    std::size_t albumUpcoming() const;
     void insertAt(std::size_t originalIndex, std::size_t orderPos, const std::vector<QueueEntry>& entries);
 
     std::vector<QueueEntry> entries_; // original order

@@ -17,6 +17,13 @@ void shuffleWith(std::vector<T>& v, const QueueRandom& random) {
         std::swap(v[i - 1], v[random(i) % i]); // Fisher-Yates
 }
 
+// The same albumId when both entries have one, else the same album name. An entry with neither is an album of
+// its own: it is the same as no other.
+bool inSameAlbum(const QueueEntry& a, const QueueEntry& b) {
+    if (!a.albumId.empty() && !b.albumId.empty()) return a.albumId == b.albumId;
+    return !a.album.empty() && a.album == b.album;
+}
+
 } // namespace
 
 void Queue::touch() { revision_ = ++lastRevision; }
@@ -137,8 +144,26 @@ bool Queue::move(std::size_t from, std::size_t to) {
     return true;
 }
 
+std::size_t Queue::albumUpcoming() const {
+    const QueueEntry& current = entries_[order_[pos_]];
+    const std::size_t n = order_.size();
+    for (std::size_t step = 1; step < n; ++step) {
+        const std::size_t p = (pos_ + step) % n; // after the last entry the scan goes on from the first
+        if (inSameAlbum(current, entries_[order_[p]])) return p;
+    }
+    return pos_;
+}
+
 Queue::Step Queue::advance() {
-    if (repeat_ == QueueRepeat::Track && !empty()) return Step::Repeated;
+    if (empty()) return next();
+    if (repeat_ == QueueRepeat::Track) return Step::Repeated;
+    if (repeat_ == QueueRepeat::Album) {
+        const std::size_t to = albumUpcoming();
+        if (to == pos_) return Step::Repeated;
+        pos_ = to;
+        touch();
+        return Step::Moved;
+    }
     return next();
 }
 
@@ -172,6 +197,7 @@ Queue::Step Queue::previous() {
 std::optional<std::size_t> Queue::upcoming() const {
     if (empty()) return std::nullopt;
     if (repeat_ == QueueRepeat::Track) return pos_;
+    if (repeat_ == QueueRepeat::Album) return albumUpcoming();
     if (pos_ + 1 < order_.size()) return pos_ + 1;
     if (repeat_ == QueueRepeat::All) return 0;
     return std::nullopt;
