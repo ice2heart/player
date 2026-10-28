@@ -70,6 +70,7 @@ constexpr const char* kServerUser = "server.user";
 // The remote list that played last, resumed by "Now playing" after a restart.
 // The server is named by its url and user (never the password, nor a stream
 // URL, which holds the login), so a place on another server is not resumed.
+constexpr const char* kLastStreamPrefix = "last_stream."; // all the keys below
 constexpr const char* kLastStreamServer = "last_stream.server";
 constexpr const char* kLastStreamUser = "last_stream.user";
 constexpr const char* kLastStreamKind = "last_stream.kind"; // "album" or "playlist"
@@ -2402,21 +2403,18 @@ std::vector<MenuItem> App::helpMenu() {
 
 std::vector<MenuItem> App::playerMenu() { return music_ ? musicPlayerMenu() : bookPlayerMenu(); }
 
-// What both Player menus have: the parts of the book or album, the sleep timer, its info and its start.
-std::vector<MenuItem> App::playerMenuBase(const std::string& parts, const std::string& info, const std::string& start) {
-    std::vector<MenuItem> items;
-    MenuItem list = submenu(parts, [this] { return chaptersMenu(); });
-    list.selected = [this] { return size_t(currentChapter()); };
-    items.push_back(list);
+// What both Player menus have in common.
+MenuItem App::sleepTimerItem() {
     MenuItem timer = submenu("Sleep timer", [this] { return sleepTimerMenu(); });
     timer.selected = [this] { return sleepTimerIndex(); };
-    items.push_back(timer);
-    if (!info.empty()) items.push_back(action(info, [this] { sayPlayerInfo(); }));
-    items.push_back(action(start, [this] {
+    return timer;
+}
+
+MenuItem App::goToStartItem(const std::string& label) {
+    return action(label, [this] {
         // Once it is open; if it fails, the error is said and the user stays in the menu.
         loadFile(0, 0, willPlay(), Origin::Menu, [this, screen = screens_.back().id] { enterPlayerFrom(screen); });
-    }));
-    return items;
+    });
 }
 
 void App::sayPlayerInfo() {
@@ -2425,13 +2423,11 @@ void App::sayPlayerInfo() {
     say(book_->title + ". " + std::to_string(ch.size()) + " " + unit() + "s. " + playerStatus());
 }
 
-// The music player: "Tracks" lists the album until the queue (queue.md, step 2.7) takes its place. Shuffle and
-// Repeat come after it, before the sleep timer, as in the plan.
+// The music player (docs/queue.md, "Player menu (music)").
 std::vector<MenuItem> App::musicPlayerMenu() {
-    std::vector<MenuItem> items = playerMenuBase("Tracks", "", "Go to first track");
-    items.insert(items.begin() + 1, repeatItem());
-    items.insert(items.begin() + 1, shuffleItem());
-    return items;
+    MenuItem queue = submenu("Queue", [this] { return queueMenu(); });
+    queue.selected = [this] { return fileIndex_; }; // the play order position of the current entry
+    return {std::move(queue), shuffleItem(), repeatItem(), goToStartItem("Go to first track"), sleepTimerItem()};
 }
 
 // A "Setting with list" item that the queue backs instead of config.yaml: OK opens the list on the current
@@ -2473,13 +2469,22 @@ MenuItem App::repeatItem() {
 // The current entry stays current and keeps playing; what follows is shuffled (or put back in order).
 void App::setShuffle(QueueShuffle mode) {
     queue_.setShuffle(mode, random_);
-    fileIndex_ = queue_.position(); // Off puts the original order back: the current entry may have moved
-    if (sleepAtChapterEnd_ >= 0 && trackCount() > 1) sleepAtChapterEnd_ = int(fileIndex_);
+    followQueue();
+}
+
+// The queue was reordered: what the player holds by the position of its track follows the current entry.
+// Shuffle off, Move and Remove all come here.
+void App::followQueue() {
+    fileIndex_ = queue_.position();
+    if (sleepAtChapterEnd_ >= 0) sleepAtChapterEnd_ = trackCount() > 1 ? int(fileIndex_) : currentChapter();
     if (pendingOpen_) pendingOpen_->file = fileIndex_; // the track that is opening is the current one
 }
 
 std::vector<MenuItem> App::bookPlayerMenu() {
-    std::vector<MenuItem> items = playerMenuBase("Chapters", "Book info", "Go to start of book");
+    MenuItem chapters = submenu("Chapters", [this] { return chaptersMenu(); });
+    chapters.selected = [this] { return size_t(currentChapter()); };
+    std::vector<MenuItem> items = {std::move(chapters), sleepTimerItem(), action("Book info", [this] { sayPlayerInfo(); }),
+                                   goToStartItem("Go to start of book")};
     items.push_back(action("Speed", [this] { say("Speed control is coming later."); }));
     items.push_back(action("Add bookmark", [this] { say("Bookmarks are coming later."); }));
     return items;
@@ -2494,13 +2499,167 @@ std::vector<MenuItem> App::chaptersMenu() {
             gotoChapter(int(i), Origin::Menu, [this, screen = screens_.back().id] { enterPlayerFrom(screen); });
         }));
     }
-    // Until the Queue list (queue.md step 2.7) takes this list's place and holds it.
-    if (music_ && previous_) {
+    return items;
+}
+
+// ---- the Queue list
+
+std::vector<MenuItem> App::queueMenu() {
+    std::vector<MenuItem> items;
+    for (size_t i = 0; i < queue_.size(); ++i) {
+        // Once it is open; if it fails, the error is said and the user stays in the list.
+        MenuItem entry = action(trackTitle(i), [this, i] {
+            gotoChapter(int(i), Origin::Menu, [this, screen = screens_.back().id] { enterPlayerFrom(screen); });
+        });
+        if (i == fileIndex_) entry.value = [] { return std::string("current"); };
+        entry.okHint = "play";
+        entry.options = [this, i] { return queueEntryOptions(i); };
+        items.push_back(std::move(entry));
+    }
+    items.push_back(action("Save as playlist", [this] { say("Not available yet."); })); // queue.md step 2.9
+    if (previous_) {
         MenuItem previous = action("Previous queue", [this] { restorePrevious(); });
         previous.value = [n = previous_->queue.size()] { return countValue(n, "track"); };
         items.push_back(std::move(previous));
     }
+    // A dangerous action: behind a list that opens on Cancel.
+    items.push_back(submenu("Clear queue", [this] {
+        return std::vector<MenuItem>{
+            action("Cancel", [this] { back(); }),
+            action("Clear queue", [this] { clearQueue("Queue cleared."); }),
+        };
+    }));
     return items;
+}
+
+// `position` is in the play order. The Queue list under these Options is built from the queue as it is
+// now and nothing changes the queue while they are open, so the position still names the same entry.
+std::vector<MenuItem> App::queueEntryOptions(size_t position) {
+    MenuItem move = submenu("Move", [this, position] { return queueMovePositions(position); });
+    move.selected = [position] { return position; }; // opens on the entry's own place
+    return {
+        action("Play next", [this, position] { queuePlayNext(position); }),
+        std::move(move),
+        action("Remove", [this, position] { queueRemove(position); }),
+    };
+}
+
+// Every place of the queue, spoken "3, Rain": a setting with a list, on the entry's own place.
+std::vector<MenuItem> App::queueMovePositions(size_t from) {
+    std::vector<MenuItem> items;
+    for (size_t to = 0; to < queue_.size(); ++to) {
+        MenuItem place = action(std::to_string(to + 1), [this, from, to] { queueMove(from, to); });
+        place.value = [this, to] { return trackTitle(to); };
+        items.push_back(std::move(place));
+    }
+    return items;
+}
+
+// An action on an entry finished its task: the `screensAbove` screens over the Queue list go away, the
+// list is built again for the new queue and stands on `index`, and the device says what happened.
+void App::finishQueueEdit(size_t screensAbove, size_t index, const std::string& said) {
+    closeScreens(screens_.size() - (screensAbove - 1));
+    popScreen(); // rebuilds the Queue list
+    Screen& list = screens_.back();
+    list.index = std::min(index, list.items.empty() ? 0 : list.items.size() - 1);
+    earcons_.play(Earcon::Close);
+    say(said);
+}
+
+// A track the user chose (a menu, Next / Previous) is still opening. If it fails, the track it replaced is made
+// current again by its old place in the queue, so the order must not change under it: wait.
+bool App::queueLocked() {
+    if (!pendingOpen_ || (pendingOpen_->origin != Origin::Menu && pendingOpen_->origin != Origin::Key)) return false;
+    earcons_.play(Earcon::Error);
+    say("Loading. Try again when it has started.");
+    return true;
+}
+
+void App::queuePlayNext(size_t position) {
+    if (queueLocked()) return;
+    const std::string title = trackTitle(position);
+    const size_t current = queue_.position();
+    if (position == current) { // nothing to do, so the Options stay
+        earcons_.play(Earcon::Error);
+        say(title + " is the current entry.");
+        return;
+    }
+    // Right after the current entry, which has moved one place left when the entry came from before it.
+    const size_t to = position < current ? current : current + 1;
+    if (position != to) {
+        queue_.move(position, to);
+        followQueue();
+    }
+    finishQueueEdit(1, to, title + " will play next.");
+}
+
+void App::queueMove(size_t from, size_t to) {
+    if (queueLocked()) return;
+    if (from != to) {
+        queue_.move(from, to);
+        followQueue();
+    }
+    const std::string said = from == to ? "Not moved." : "Moved to " + std::to_string(to + 1) + " of " + std::to_string(queue_.size()) + ".";
+    finishQueueEdit(2, to, said);
+}
+
+void App::queueRemove(size_t position) {
+    if (queueLocked()) return;
+    const std::string title = trackTitle(position);
+    if (queue_.size() == 1) { // the last one: like Clear queue
+        clearQueue("Removed " + title + ". The queue is empty.");
+        return;
+    }
+    bool removedCurrent = false;
+    queue_.remove(position, &removedCurrent);
+    if (removedCurrent) { // stopped; the next entry is current and waits, closed, for Play
+        stopPlayer();
+        sleepAtChapterEnd_ = -1; // the end of the track it was set for
+        reopenAt_ = 0.0;
+    }
+    followQueue();
+    std::string said = "Removed " + title + ". ";
+    said += removedCurrent ? trackTitle(queue_.position()) + " is current, paused." : std::to_string(queue_.size()) + " in queue.";
+    finishQueueEdit(1, removedCurrent ? queue_.position() : position, said);
+}
+
+// The queue is kept as Previous queue when it was edited: it is the way back.
+void App::clearQueue(const std::string& said) {
+    if (queue_.edited()) previous_ = PreviousQueue{*book_, queue_, place()};
+    unloadQueue(said);
+}
+
+// What playing the current entry leaves behind goes: its open (and the open's undo), its preload, its scrobble.
+void App::stopPlayer() {
+    pendingOpen_.reset();
+    cancelMarkPing();
+    player_.pause();
+    player_.close();
+    if (readAhead_) {
+        player_.cancelPreload();
+        readAhead_.reset();
+    }
+    scrobble_.reset();
+    dry_.reset();
+}
+
+// Nothing is loaded in the music player any more: it stops, and Home no longer offers it (what a restart
+// would resume is forgotten too). The other player is not touched. Said on Home, where the user lands.
+void App::unloadQueue(const std::string& said) {
+    stopPlayer(); // without the undo of an open, which would bring the queue back
+    reopenAt_.reset();
+    sleepAtChapterEnd_ = -1;
+    queue_ = Queue{};
+    book_.reset();
+    music_ = false;
+    fileIndex_ = 0;
+    state_.clearPrefix(kLastStreamPrefix);
+    if (screens_.size() > 1) {
+        closeScreens(2);
+        popScreen(); // Home is built again
+    }
+    earcons_.play(Earcon::Close);
+    say(said + " " + itemSpeech(screens_.back()));
 }
 
 // ---------------------------------------------------------------- playback

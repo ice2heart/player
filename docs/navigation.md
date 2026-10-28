@@ -292,7 +292,9 @@ Player menu (music player)
   replacement kept, and OK on it brings it back), and Clear queue, which is behind a list
   that opens on Cancel (a dangerous action is never first). Move is a list of positions that
   opens on the entry's own, like a setting. Remove of the current entry stops it and
-  makes the next entry current, paused.
+  makes the next entry current, paused. Clear queue leaves nothing loaded in the music player:
+  the device goes to Home, which no longer offers it ("Queue cleared."); an edited queue is
+  kept as Previous queue, which shows in the Queue list of the next music queue.
 - **Save as playlist** saves the remote tracks of the server set up now as a server
   playlist, named from the wall time ("Queue, 27 October 14:05"), and says how many tracks
   were left out. With none to save it says "Only tracks from the server can be saved."
@@ -300,10 +302,10 @@ Player menu (music player)
   the user chooses it.
 
 **As built (phase 1):** the music player holds one list (an album, a playlist, or Play
-all), its Player menu is Tracks · Shuffle · Repeat · Sleep timer · Go to first track (step 2.6; Queue replaces Tracks in 2.7), Options
-in the music player is Go to album · Album info (step 2.5; Star comes with streaming.md 2a.1), and the rules above for OK on a track replacing a queue,
-Options actions and the Queue list do not apply yet. OK on a track plays
-from there to the end of its list, as before.
+all), its Player menu is Queue · Shuffle · Repeat · Go to first track · Sleep timer (steps 2.6 and 2.7), Options
+in the music player is Go to album · Album info (step 2.5; Star comes with streaming.md 2a.1), and the Queue list works as above
+(step 2.7) except Save as playlist, which says "Not available yet." until step 2.9, and the queue is not kept
+between restarts yet (step 2.8). OK on a track plays from there to the end of its list.
 
 ## Lists
 
@@ -491,8 +493,8 @@ Music
   screen stays. A loose track has none. Nothing else speaks where an album plays from. The
   music player's Options has its own Album info (title, tracks, status), and **Go to album**,
   which opens the album of the playing track on that track (a loose track says "No album for this track.").
-- **Previous queue:** when a queue edited by hand is replaced, it is kept, and it ends the "Tracks" list of
-  the music Player menu (the Queue list, step 2.7, takes it over). OK restores it (entries, order, current
+- **Previous queue:** when a queue edited by hand is replaced, it is kept, and it comes
+  after Save as playlist in the Queue list of the music Player menu. OK restores it (entries, order, current
   entry with its position, shuffle and repeat) and plays; the queue it replaces is kept in turn if it was edited.
 - **Refresh library** is an action that reports and stays. It says "Updating the
   library." at once, then the result ("Library updated, 12 albums.") or the error

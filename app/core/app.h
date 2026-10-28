@@ -205,7 +205,8 @@ private:
     std::vector<MenuItem> powerMenu();
     std::vector<MenuItem> helpMenu();
     std::vector<MenuItem> playerMenu();
-    std::vector<MenuItem> playerMenuBase(const std::string& parts, const std::string& info, const std::string& start); // no `info`: none
+    MenuItem sleepTimerItem();                          // in both Player menus
+    MenuItem goToStartItem(const std::string& label);   // the first file of the loaded list
     std::vector<MenuItem> musicPlayerMenu();
     std::vector<MenuItem> bookPlayerMenu();
     std::vector<MenuItem> chaptersMenu();
@@ -214,6 +215,20 @@ private:
     MenuItem shuffleItem();
     MenuItem repeatItem();
     void setShuffle(QueueShuffle mode);
+    void followQueue();
+
+    // The Queue list (docs/queue.md, "The Queue list"); entries are named by their play order position.
+    std::vector<MenuItem> queueMenu();
+    std::vector<MenuItem> queueEntryOptions(size_t position);
+    std::vector<MenuItem> queueMovePositions(size_t from);
+    void queuePlayNext(size_t position);
+    void queueMove(size_t from, size_t to);
+    void queueRemove(size_t position);
+    void finishQueueEdit(size_t screensAbove, size_t index, const std::string& said);
+    bool queueLocked();
+    void clearQueue(const std::string& said);
+    void stopPlayer();
+    void unloadQueue(const std::string& said);
     MenuItem choice(const std::string& label, const std::string& key,
                     std::vector<std::pair<int, std::string>> options, int fallback,
                     std::function<void(int)> onChange = {});

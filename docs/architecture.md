@@ -359,7 +359,7 @@ does and does nothing else. Holding Home leaves the mode. The same texts
   starting a player of the other kind parks the loaded one in `switchTo()` (undone, with the old
   `parked_`, if the open fails or is dropped). `continueParked()` (Home "Continue", or Play with
   nothing loaded) opens the parked book again at its place and plays it. Each player has its own
-  Player menu (`musicPlayerMenu()` keeps "Tracks" until queue.md step 2.7 and adds Shuffle and Repeat; `bookPlayerMenu()` has
+  Player menu (`musicPlayerMenu()` has Queue, Shuffle, Repeat, Go to first track and Sleep timer; `bookPlayerMenu()` has
   Chapters, Speed and Add bookmark, and neither). Home (`homeMenu()`) lists the player used last as "Now
   playing" and the other as "Continue", each when it has something: `playerTitle()` gives the
   title of the loaded book, the parked one, or what is saved for a restart (the stream, or
@@ -536,18 +536,31 @@ Player menu of the book player (OK on its screen; `bookPlayerMenu()`)
 ├── Speed                          (placeholder)
 └── Add bookmark                   (placeholder)
 
-Player menu of the music player (`musicPlayerMenu()`; "Tracks" until the queue, queue.md step 2.7)
-├── Tracks → <tracks>              (opens on the current track)
+Player menu of the music player (`musicPlayerMenu()`)
+├── Queue → <entries>              (`queueMenu()`; opens on the current entry, "Storm, current, 5 of 30")
+│     ├── <entry>                  OK plays it (`gotoChapter`); Options: Play next · Move · Remove
+│     │     ├── Play next          (`queuePlayNext()`: after the current entry)
+│     │     ├── Move → <places>    (`queueMovePositions()`, opens on the entry's own place; "Moved to 3 of 30")
+│     │     └── Remove             (`queueRemove()`; the current entry: stopped, closed, the next one current)
+│     ├── Save as playlist         ("Not available yet." until queue.md step 2.9)
+│     ├── Previous queue           (only when `previous_` holds an edited queue)
+│     └── Clear queue → Cancel · Clear queue   (`clearQueue()` / `unloadQueue()`: nothing loaded, Home)
 ├── Shuffle, off                   list: off · tracks · albums (backed by the queue, not config.yaml)
 ├── Repeat, off                    list: off · all · track     (the same)
-├── Sleep timer → …
-└── Go to first track
+├── Go to first track
+└── Sleep timer → …
 
 Options in the music player (`playerOptionsMenu()`, "Options, <track>")
 ├── Go to album            (local: the index item of the file; remote: the album id of the entry; opens on the playing track)
 └── Album info             (title, number of tracks, status)
 
-Tracks also ends with "Previous queue" when `previous_` holds an edited queue (until the Queue list, step 2.7)
+A change to the order of the queue (Shuffle, Move, Remove, Play next in the Queue list) calls `followQueue()`: `fileIndex_`
+is the play order position of the current entry, so it, the end-of-track sleep timer and `pendingOpen_->file` follow it.
+Removing the current entry (`stopPlayer()`) drops its open without the open's undo and leaves the next entry closed
+(`reopenAt_ = 0`), as a queue that ended waits; it also cancels an end-of-track sleep timer set for it. Clear queue and
+removing the last entry call `clearQueue()`: an edited queue goes to `previous_`, then `unloadQueue()` stops, resets `book_`
+and `queue_`, forgets `last_stream.*` and goes back to Home. While a track chosen by the user (Origin::Menu or Key) is
+opening, Play next / Move / Remove say "Loading." and wait (`queueLocked()`): the open's undo holds an old queue position.
 
 Power menu (hold Power): Sleep · Power off · Restart · Cancel
 ```

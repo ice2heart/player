@@ -136,6 +136,18 @@ protected:
         return out;
     }
 
+    bool hasLabel(const std::string& label) const {
+        const auto all = labels();
+        return std::find(all.begin(), all.end(), label) != all.end();
+    }
+
+    // The labels of a Queue list without what follows its entries (Save as playlist, Previous queue, Clear queue).
+    std::vector<std::string> queueEntries() const {
+        std::vector<std::string> out = labels();
+        out.resize(size_t(std::find(out.begin(), out.end(), "Save as playlist") - out.begin()));
+        return out;
+    }
+
     const Screen& level() const { return app->screens().back(); }
 
     // The requests the App made for what the user did: the catalogue check at start-up is not one.
@@ -1415,7 +1427,7 @@ TEST_F(AppTest, MusicTalksAboutTracksNotChapters) {
     hold(Button::Forward);
     EXPECT_EQ(speech.last(), "Last track.");
     press(Button::Ok);
-    EXPECT_EQ(labels()[0], "Tracks");
+    EXPECT_EQ(labels()[0], "Queue");
 }
 
 TEST_F(AppTest, SleepTimerAtEndOfTrack) {
@@ -1554,8 +1566,8 @@ TEST_F(AppTest, EachPlayerHasItsOwnMenu) {
     open("Music");
     open("Play all");
     press(Button::Ok);
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Tracks", "Shuffle", "Repeat", "Sleep timer",
-                                                  "Go to first track"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Queue", "Shuffle", "Repeat", "Go to first track",
+                                                  "Sleep timer"}));
 }
 
 TEST_F(AppTest, ContinueThatCannotOpenKeepsThePlayerThatWasLoaded) {
@@ -2210,8 +2222,8 @@ TEST_F(AppTest, NextAndPreviousRemoteTrackAndWhereAmIUseServerTitles) {
     EXPECT_EQ(speech.last(), "Storm Front");
     EXPECT_EQ(player.file, "fake://stream/t1");
     press(Button::Ok); // Player menu
-    open("Tracks");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Storm Front", "Rain", "Sunshine"}));
+    open("Queue");
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"Storm Front", "Rain", "Sunshine"}));
     expectNoUrlSpoken(speech);
 }
 
@@ -2306,22 +2318,22 @@ TEST_F(AppTest, ChoosingTheCurrentRemoteTrackAfterAFailureOpensIt) {
     player.unopenable = {"fake://stream/t2"};
     hold(Button::Forward); // fails: Storm Front stays the current track, closed
     press(Button::Ok);     // Player menu
-    open("Tracks");
+    open("Queue");
     open("Storm Front");
     EXPECT_EQ(player.file, "fake://stream/t1");
     EXPECT_TRUE(player.isOpen());
     EXPECT_EQ(app->mode(), App::Mode::Player);
 }
 
-TEST_F(AppTest, ChoosingAnUnreachableTrackFromTheTracksListStaysInTheList) {
+TEST_F(AppTest, ChoosingAnUnreachableTrackFromTheQueueListStaysInTheList) {
     start();
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
     player.unopenable = {"fake://stream/t3"};
     press(Button::Ok); // Player menu
-    open("Tracks");
+    open("Queue");
     open("Sunshine");
     EXPECT_EQ(speech.last(), "Cannot play Sunshine. Server not reachable.");
-    EXPECT_EQ(level().title, "Tracks");
+    EXPECT_EQ(level().title, "Queue");
     EXPECT_EQ(app->nowPlaying().chapter, "Storm Front");
     expectNoUrlSpoken(speech);
 }
@@ -8966,11 +8978,11 @@ TEST_F(MusicQueueTest, PlayAllReplacesTheQueueToo) {
     EXPECT_EQ(app->nowPlaying().chapterCount, 3);
 }
 
-TEST_F(MusicQueueTest, ThePlayerMenuListsTheEntriesOfTheQueue) {
+TEST_F(MusicQueueTest, TheQueueListHasTheEntriesOfTheQueue) {
     playMixed();
     press(Button::Ok);
-    open("Tracks");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Storm", "Rain", "Calm"}));
+    open("Queue");
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"Storm", "Rain", "Calm"}));
     EXPECT_EQ(level().index, 0u);
     press(Button::Down);
     press(Button::Ok); // Rain
@@ -9743,13 +9755,15 @@ protected:
         open("Weather");
         answer(weather());
     }
-    // The titles of the queue, from the Tracks list of the Player menu; ends at Home.
+    // The titles of the queue, from the Queue list of the Player menu, and "Previous queue" when it has one;
+    // ends at Home.
     std::vector<std::string> tracksList() {
         hold(Button::Home);
         open("Now playing");
         press(Button::Ok);
-        open("Tracks");
-        std::vector<std::string> out = labels();
+        open("Queue");
+        std::vector<std::string> out = queueEntries();
+        if (labels().size() > out.size() + 2) out.push_back("Previous queue"); // after Save as playlist, before Clear queue
         hold(Button::Home);
         return out;
     }
@@ -10236,12 +10250,12 @@ protected:
         inAlbums(label);
         options("Add to queue");
     }
-    // Now playing > Player menu > Tracks > `label`.
+    // Now playing > Player menu > Queue > `label`.
     void fromTracks(const std::string& label) {
         hold(Button::Home);
         open("Now playing");
         press(Button::Ok);
-        open("Tracks");
+        open("Queue");
         open(label);
     }
 };
@@ -10442,15 +10456,13 @@ TEST_F(PlayerOptionsTest, RestoringThePreviousQueueBringsBackItsShuffleAndRepeat
     press(Button::Ok);
     ASSERT_EQ(settingValue("Shuffle"), "off");
     ASSERT_EQ(settingValue("Repeat"), "off");
-    open("Tracks");
+    open("Queue");
     open("Previous queue");
     press(Button::Ok);
     EXPECT_EQ(settingValue("Shuffle"), "tracks");
     EXPECT_EQ(settingValue("Repeat"), "all");
-    open("Tracks");
-    auto tracks = labels();
-    tracks.resize(3); // then Previous queue
-    EXPECT_EQ(tracks, (std::vector<std::string>{"Sunrise", "Lullaby", "Highway"})) << "the shuffled order is back too";
+    open("Queue");
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"Sunrise", "Lullaby", "Highway"})) << "the shuffled order is back too";
 }
 
 // ---------------------------------------------------------------- Shuffle and Repeat in the music Player menu
@@ -10494,8 +10506,8 @@ protected:
     std::vector<std::string> trackList() {
         toPlayer();
         press(Button::Ok);
-        open("Tracks");
-        auto out = labels();
+        open("Queue");
+        auto out = queueEntries();
         toPlayer();
         return out;
     }
@@ -10526,8 +10538,8 @@ TEST_F(ShuffleRepeatTest, ShuffleOffGivesBackTheOriginalOrderWithTheSameCurrentE
     EXPECT_EQ(player.file, sunrise());
     toPlayer();
     press(Button::Ok);
-    open("Tracks");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Storm", "Calm", "Lullaby", "Sunrise"}));
+    open("Queue");
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"Storm", "Calm", "Lullaby", "Sunrise"}));
     EXPECT_EQ(level().index, 3u) << "the list opens on the playing track, which is the last one again";
 }
 
@@ -10684,7 +10696,7 @@ TEST_F(ShuffleRepeatTest, RepeatAllDoesNotWrapForATrackChosenInTheList) {
     fs::remove(sunrise());
     toPlayer();
     press(Button::Ok);
-    open("Tracks");
+    open("Queue");
     open("Sunrise"); // the last one, which is gone
     EXPECT_EQ(player.file, alphaFile(2)) << "it does not go on from the first entry";
     EXPECT_EQ(app->nowPlaying().chapter, "Calm");
@@ -10745,4 +10757,472 @@ TEST_F(ShuffleRepeatTest, PingsGoOnForAServerTrackBehindTheCurrentOneWithRepeatA
     ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
     idle(10min);
     EXPECT_EQ(pings(), 1) << "Rain comes up again after Calm";
+}
+
+// ---------------------------------------------------------------- the Queue list (queue.md, step 2.7)
+
+class QueueListTest : public UnavailableTest {
+protected:
+    // T1 ... Tn, all of the server (they open at once: holdStreams is off unless a test sets it).
+    std::vector<QueueEntry> tracks(size_t n) const {
+        std::vector<QueueEntry> out;
+        for (size_t i = 1; i <= n; ++i) out.push_back(remoteEntry("t" + std::to_string(i), "T" + std::to_string(i)));
+        return out;
+    }
+    std::string sunrise() const { return (roadTrip() / "01 - Sunrise.mp3").string(); }
+    void play(std::vector<QueueEntry> entries, size_t at = 0) {
+        start();
+        app->setRandom([](size_t) { return size_t(0); });
+        ASSERT_TRUE(app->playQueue("Mixed", std::move(entries), at));
+    }
+    void toPlayer() {
+        for (int i = 0; i < 8 && !level().isPlayer(); ++i) press(Button::Home);
+        ASSERT_TRUE(level().isPlayer());
+    }
+    // The Queue list, from the player.
+    void openQueue() {
+        ASSERT_NO_FATAL_FAILURE(toPlayer());
+        press(Button::Ok);
+        open("Queue");
+    }
+    void select(const std::string& label) {
+        for (size_t i = 0; i < level().items.size() && level().items[level().index].label != label; ++i) press(Button::Down);
+        ASSERT_EQ(level().items[level().index].label, label);
+    }
+    // In the Queue list: Options on the entry `label`, then `item`.
+    void optionsOn(const std::string& label, const std::string& item) {
+        ASSERT_NO_FATAL_FAILURE(openQueue());
+        select(label);
+        press(Button::Options);
+        ASSERT_EQ(level().title, "Options, " + label);
+        open(item);
+    }
+    // Player menu > Shuffle > tracks.
+    void shuffleTracks() {
+        ASSERT_NO_FATAL_FAILURE(toPlayer());
+        press(Button::Ok);
+        open("Shuffle");
+        open("tracks");
+    }
+    // After the queue was edited, a new queue replaces it: the edited one is kept as Previous queue.
+    void expectEditedFlag() {
+        ASSERT_TRUE(app->playQueue("Other", {remoteEntry("x1", "X1")}));
+        ASSERT_NO_FATAL_FAILURE(openQueue());
+        EXPECT_TRUE(hasLabel("Previous queue"));
+    }
+    void expectNoPrevious() {
+        ASSERT_TRUE(app->playQueue("Other", {remoteEntry("x1", "X1")}));
+        ASSERT_NO_FATAL_FAILURE(openQueue());
+        EXPECT_FALSE(hasLabel("Previous queue"));
+    }
+};
+
+TEST_F(QueueListTest, TheMusicPlayerMenuHasQueueInPlaceOfTracks) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(toPlayer());
+    press(Button::Ok);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Queue", "Shuffle", "Repeat", "Go to first track", "Sleep timer"}));
+}
+
+TEST_F(QueueListTest, OpensOnTheCurrentEntryAndSaysCurrent) {
+    play(tracks(30), 4);
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    EXPECT_EQ(speech.last(), "Queue. T5, current, 5 of 32") << "30 entries, Save as playlist and Clear queue";
+    EXPECT_EQ(level().index, 4u);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "T6, 6 of 32") << "only the current entry says current";
+}
+
+TEST_F(QueueListTest, OkOnAnEntryPlaysIt) {
+    play(tracks(5));
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    select("T4");
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "fake://stream/t4");
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "T4");
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+}
+
+TEST_F(QueueListTest, TheListEndsWithSaveAsPlaylistAndClearQueueAndPreviousQueueOnlyWhenThereIsOne) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    EXPECT_EQ(labels(), (std::vector<std::string>{"T1", "T2", "T3", "Save as playlist", "Clear queue"}));
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T3", "Remove"));
+    ASSERT_TRUE(app->playQueue("Other", {remoteEntry("x1", "X1")}));
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    EXPECT_EQ(labels(), (std::vector<std::string>{"X1", "Save as playlist", "Previous queue", "Clear queue"}));
+    EXPECT_EQ(valueOf(level().items[2]), "2 tracks");
+    open("Previous queue");
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T2"}));
+}
+
+TEST_F(QueueListTest, SaveAsPlaylistSaysItIsNotAvailableYet) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    open("Save as playlist");
+    EXPECT_EQ(speech.last(), "Not available yet.");
+    EXPECT_EQ(level().title, "Queue");
+    EXPECT_EQ(listRequests(), 0u) << "nothing is sent yet";
+}
+
+TEST_F(QueueListTest, PlayNextPutsAnEntryRightAfterTheCurrentOne) {
+    play(tracks(5), 1);
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T5", "Play next"));
+    EXPECT_EQ(speech.last(), "T5 will play next.");
+    EXPECT_EQ(sounds.last(), Earcon::Close);
+    EXPECT_EQ(level().title, "Queue") << "an action that finishes a task goes back by itself";
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T2", "T5", "T3", "T4"}));
+    EXPECT_EQ(level().index, 2u);
+    trackEnds();
+    EXPECT_EQ(player.file, "fake://stream/t5");
+}
+
+TEST_F(QueueListTest, PlayNextOfAnEntryBeforeTheCurrentOneKeepsTheCurrentOnePlaying) {
+    play(tracks(5), 2);
+    const size_t opens = player.opened.size();
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T1", "Play next"));
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T2", "T3", "T1", "T4", "T5"}));
+    EXPECT_EQ(level().index, 2u);
+    EXPECT_EQ(app->nowPlaying().chapter, "T3");
+    EXPECT_EQ(player.opened.size(), opens);
+    EXPECT_TRUE(player.playing());
+    trackEnds();
+    EXPECT_EQ(player.file, "fake://stream/t1");
+}
+
+TEST_F(QueueListTest, PlayNextOnTheCurrentEntryOnlyReportsAndStaysInTheOptions) {
+    play(tracks(3), 1);
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T2", "Play next"));
+    EXPECT_EQ(speech.last(), "T2 is the current entry.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(level().title, "Options, T2");
+}
+
+TEST_F(QueueListTest, MoveOpensOnTheEntrysOwnPlaceAndMovingToThreeSaysSoAndChangesTheOrder) {
+    play(tracks(30));
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    select("T30");
+    press(Button::Options);
+    open("Move");
+    EXPECT_EQ(speech.last(), "Move. 30, T30, 30 of 30");
+    EXPECT_EQ(level().index, 29u);
+    open("3");
+    EXPECT_EQ(speech.last(), "Moved to 3 of 30.");
+    EXPECT_EQ(level().title, "Queue") << "back in the list by itself";
+    EXPECT_EQ(level().index, 2u);
+    auto entries = queueEntries();
+    ASSERT_EQ(entries.size(), 30u);
+    EXPECT_EQ((std::vector<std::string>(entries.begin(), entries.begin() + 4)), (std::vector<std::string>{"T1", "T2", "T30", "T3"}));
+    EXPECT_EQ(entries.back(), "T29");
+    trackEnds();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    trackEnds();
+    EXPECT_EQ(player.file, "fake://stream/t30") << "the order is what plays";
+}
+
+TEST_F(QueueListTest, MovingTheCurrentEntryKeepsItCurrentAndPlaying) {
+    play(tracks(5), 1);
+    const size_t opens = player.opened.size();
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T2", "Move"));
+    open("4");
+    EXPECT_EQ(speech.last(), "Moved to 4 of 5.");
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T3", "T4", "T2", "T5"}));
+    EXPECT_EQ(valueOf(level().items[3]), "current");
+    EXPECT_EQ(app->nowPlaying().chapter, "T2");
+    EXPECT_EQ(player.opened.size(), opens);
+    EXPECT_TRUE(player.playing());
+    trackEnds();
+    EXPECT_EQ(player.file, "fake://stream/t5") << "what follows T2 in the new order";
+}
+
+TEST_F(QueueListTest, MovingToItsOwnPlaceMovesNothingAndIsNoEdit) {
+    play(tracks(5), 1);
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T3", "Move"));
+    open("3");
+    EXPECT_EQ(speech.last(), "Not moved.");
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T2", "T3", "T4", "T5"}));
+    expectNoPrevious();
+}
+
+TEST_F(QueueListTest, RemoveTakesAnEntryOutAndTheOthersKeepPlaying) {
+    play(tracks(5));
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T4", "Remove"));
+    EXPECT_EQ(speech.last(), "Removed T4. 4 in queue.");
+    EXPECT_EQ(level().title, "Queue");
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T2", "T3", "T5"}));
+    EXPECT_EQ(level().index, 3u) << "on the entry that took its place";
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "T1");
+}
+
+TEST_F(QueueListTest, RemovingTheCurrentEntryStopsItAndMakesTheNextOneCurrentPaused) {
+    play(tracks(5), 1);
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T2", "Remove"));
+    EXPECT_EQ(speech.last(), "Removed T2. T3 is current, paused.");
+    EXPECT_FALSE(player.playing());
+    EXPECT_FALSE(player.isOpen());
+    EXPECT_EQ(app->nowPlaying().chapter, "T3");
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T3", "T4", "T5"}));
+    EXPECT_EQ(level().index, 1u);
+    EXPECT_EQ(valueOf(level().items[1]), "current");
+    press(Button::PlayPause);
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(QueueListTest, RemovingTheCurrentLastEntryMakesTheFirstOneCurrent) {
+    play(tracks(3), 2);
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T3", "Remove"));
+    EXPECT_EQ(speech.last(), "Removed T3. T1 is current, paused.");
+    EXPECT_EQ(level().index, 0u);
+    EXPECT_EQ(app->nowPlaying().chapter, "T1");
+    EXPECT_FALSE(player.playing());
+}
+
+TEST_F(QueueListTest, RemovingTheOnlyEntryLeavesNothingLoadedAndGoesHome) {
+    play(tracks(1));
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T1", "Remove"));
+    EXPECT_EQ(speech.last().rfind("Removed T1. The queue is empty. Library", 0), 0u) << speech.last();
+    EXPECT_EQ(app->screens().size(), 1u);
+    EXPECT_FALSE(player.playing());
+    EXPECT_FALSE(app->nowPlaying().loaded);
+    EXPECT_FALSE(hasLabel("Now playing"));
+}
+
+TEST_F(QueueListTest, RemoveSetsTheEditedFlag) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T3", "Remove"));
+    expectEditedFlag();
+}
+
+TEST_F(QueueListTest, MoveSetsTheEditedFlag) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T3", "Move"));
+    open("1");
+    expectEditedFlag();
+}
+
+TEST_F(QueueListTest, PlayNextFromTheListSetsTheEditedFlag) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T3", "Play next"));
+    expectEditedFlag();
+}
+
+TEST_F(QueueListTest, ClearQueueOpensOnCancelAndCancelChangesNothing) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    select("Clear queue");
+    press(Button::Ok);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Cancel", "Clear queue"}));
+    EXPECT_EQ(level().index, 0u);
+    EXPECT_EQ(speech.last(), "Clear queue. Cancel, 1 of 2");
+    press(Button::Ok);
+    EXPECT_EQ(level().title, "Queue");
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T2", "T3"}));
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(QueueListTest, ClearQueueStopsTheMusicAndLeavesNothingLoaded) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    select("Clear queue");
+    press(Button::Ok);
+    open("Clear queue");
+    EXPECT_EQ(speech.last().rfind("Queue cleared. Library", 0), 0u) << speech.last();
+    EXPECT_EQ(app->screens().size(), 1u);
+    EXPECT_FALSE(player.playing());
+    EXPECT_FALSE(player.isOpen());
+    EXPECT_FALSE(app->nowPlaying().loaded);
+    EXPECT_FALSE(hasLabel("Now playing")) << "Home no longer offers it";
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Nothing to play. Choose a book in the library.");
+}
+
+TEST_F(QueueListTest, ClearingAnEditedQueueKeepsItAsPreviousQueue) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T3", "Remove"));
+    select("Clear queue");
+    press(Button::Ok);
+    open("Clear queue");
+    ASSERT_TRUE(app->playQueue("Other", {remoteEntry("x1", "X1")}));
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    open("Previous queue");
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T2"})) << "the undo";
+}
+
+TEST_F(QueueListTest, ClearingAQueueThatWasNotEditedKeepsNothing) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    select("Clear queue");
+    press(Button::Ok);
+    open("Clear queue");
+    expectNoPrevious();
+}
+
+TEST_F(QueueListTest, MovingUnderShuffleKeepsTheCurrentTrackPlayingAndTheOrderIsWhatPlays) {
+    play({localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm"), localEntry(lullaby(), "Lullaby"),
+          localEntry(sunrise(), "Sunrise")}, 1);
+    ASSERT_NO_FATAL_FAILURE(shuffleTracks()); // Storm, Calm, Sunrise, Lullaby
+    const size_t opens = player.opened.size();
+    ASSERT_NO_FATAL_FAILURE(optionsOn("Storm", "Move"));
+    open("4");
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"Calm", "Sunrise", "Lullaby", "Storm"}));
+    EXPECT_EQ(app->nowPlaying().chapter, "Calm");
+    EXPECT_EQ(player.opened.size(), opens);
+    EXPECT_TRUE(player.playing());
+    trackEnds();
+    EXPECT_EQ(player.file, sunrise());
+    EXPECT_EQ(app->nowPlaying().chapter, "Sunrise");
+}
+
+TEST_F(QueueListTest, RemovingUnderShuffleKeepsTheOriginalOrderForShuffleOff) {
+    play({localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm"), localEntry(lullaby(), "Lullaby"),
+          localEntry(sunrise(), "Sunrise")}, 1);
+    ASSERT_NO_FATAL_FAILURE(shuffleTracks()); // Storm, Calm, Sunrise, Lullaby
+    ASSERT_NO_FATAL_FAILURE(optionsOn("Storm", "Remove"));
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"Calm", "Sunrise", "Lullaby"}));
+    EXPECT_EQ(app->nowPlaying().chapter, "Calm");
+    ASSERT_NO_FATAL_FAILURE(toPlayer());
+    press(Button::Ok);
+    open("Shuffle");
+    open("off");
+    EXPECT_EQ(app->nowPlaying().chapter, "Calm");
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"Calm", "Lullaby", "Sunrise"}));
+}
+
+TEST_F(QueueListTest, RemovingTheCurrentEntryUnderShuffleMakesTheNextInTheShuffledOrderCurrent) {
+    play({localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm"), localEntry(lullaby(), "Lullaby"),
+          localEntry(sunrise(), "Sunrise")}, 1);
+    ASSERT_NO_FATAL_FAILURE(shuffleTracks()); // Storm, Calm, Sunrise, Lullaby
+    ASSERT_NO_FATAL_FAILURE(optionsOn("Calm", "Remove"));
+    EXPECT_EQ(speech.last(), "Removed Calm. Sunrise is current, paused.");
+    press(Button::PlayPause);
+    EXPECT_EQ(player.file, sunrise());
+}
+
+TEST_F(QueueListTest, MovingWhileAServerTrackOpensKeepsTrackOfWhichTrackIsOpening) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), localEntry(lullaby(), "Lullaby"),
+                                         localEntry(sunrise(), "Sunrise"), remoteEntry("t4", "Rain")}, 2));
+    trackEnds();
+    ASSERT_TRUE(player.opening()) << "Rain is opening";
+    ASSERT_NO_FATAL_FAILURE(optionsOn("Storm", "Move"));
+    open("4"); // Lullaby, Sunrise, Rain, Storm
+    player.unopenable = {"fake://stream/t4"};
+    finishOpen();
+    EXPECT_EQ(player.file, alphaFile(1)) << "Rain failed; the entry after it in the new order plays";
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm");
+}
+
+TEST_F(QueueListTest, RemovingWhileAServerTrackOpensKeepsTrackOfWhichTrackIsOpening) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), localEntry(lullaby(), "Lullaby"),
+                                         remoteEntry("t3", "Rain"), localEntry(sunrise(), "Sunrise")}, 1));
+    trackEnds();
+    ASSERT_TRUE(player.opening()) << "Rain is opening";
+    ASSERT_NO_FATAL_FAILURE(optionsOn("Storm", "Remove")); // Rain moves one place up
+    player.unopenable = {"fake://stream/t3"};
+    finishOpen();
+    EXPECT_EQ(player.file, sunrise()) << "Rain failed; Sunrise follows it";
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(QueueListTest, RemovingTheEntryThatIsOpeningDropsTheOpen) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(lullaby(), "Lullaby"), remoteEntry("t2", "Rain"),
+                                         localEntry(sunrise(), "Sunrise")}));
+    trackEnds();
+    ASSERT_TRUE(player.opening()) << "Rain is opening";
+    ASSERT_NO_FATAL_FAILURE(optionsOn("Rain", "Remove"));
+    EXPECT_EQ(speech.last(), "Removed Rain. Sunrise is current, paused.");
+    EXPECT_FALSE(player.opening());
+    app->tick();
+    EXPECT_EQ(speech.last(), "Removed Rain. Sunrise is current, paused.") << "the dropped open says nothing, and fails nothing";
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Sunrise");
+    press(Button::PlayPause);
+    EXPECT_EQ(player.file, sunrise());
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(QueueListTest, RemovingTheLastEntryOfAnEditedQueueKeepsItAsPreviousQueue) {
+    play(tracks(2));
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T2", "Remove"));
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T1", "Remove")); // the last one
+    ASSERT_TRUE(app->playQueue("Other", {remoteEntry("x1", "X1")}));
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    EXPECT_EQ(valueOf(level().items[2]), "1 track") << labels()[2];
+    open("Previous queue");
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1"}));
+}
+
+TEST_F(QueueListTest, TheOrderCannotChangeWhileATrackChosenInTheListIsOpening) {
+    start_();
+    app->setRandom([](size_t) { return size_t(0); });
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(lullaby(), "Lullaby"), remoteEntry("t2", "Rain"), localEntry(sunrise(), "Sunrise")}));
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    select("Rain");
+    press(Button::Ok);
+    ASSERT_TRUE(player.opening());
+    press(Button::Options);
+    open("Remove");
+    EXPECT_EQ(speech.last(), "Loading. Try again when it has started.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(level().title, "Options, Rain");
+    press(Button::Home);
+    ASSERT_EQ(level().title, "Queue");
+    ASSERT_NO_FATAL_FAILURE(finishOpen());
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"Lullaby", "Rain", "Sunrise"}));
+}
+
+TEST_F(QueueListTest, MovingAnEntryKeepsTheEndOfTrackTimerOnTheTrackItWasSetFor) {
+    play(tracks(5), 1);
+    press(Button::Ok); // Player menu
+    open("Sleep timer");
+    open("End of track");
+    ASSERT_TRUE(speech.heard("Sleep timer set to end of track."));
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T5", "Move"));
+    open("1"); // T2 is now the third entry
+    idle(1s);
+    EXPECT_NE(app->mode(), App::Mode::Sleeping) << "T2 has only just begun";
+    trackEnds();
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+}
+
+TEST_F(QueueListTest, RemovingTheCurrentEntryCancelsTheEndOfTrackTimerSetForIt) {
+    play(tracks(5), 1);
+    press(Button::Ok); // Player menu
+    open("Sleep timer");
+    open("End of track");
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T2", "Remove"));
+    ASSERT_NO_FATAL_FAILURE(toPlayer());
+    press(Button::Ok);
+    open("Sleep timer");
+    EXPECT_EQ(valueOf(level().items[level().index]), "current");
+    EXPECT_EQ(level().items[level().index].label, "Off") << "the timer was for a track that is gone";
+}
+
+TEST_F(ResumeStreamTest, ClearingTheQueueForgetsTheStreamSoHomeDoesNotOfferItAfterARestart) {
+    playFromAlbum("Rain");
+    reboot(); // the place is saved
+    press(Button::Ok); // Now playing
+    answer(weather());
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    press(Button::Ok); // Player menu
+    open("Queue");
+    open("Clear queue");
+    open("Clear queue");
+    EXPECT_FALSE(hasLabel("Now playing"));
+    reboot();
+    EXPECT_EQ(labels().front(), "Library");
+    EXPECT_FALSE(hasLabel("Now playing"));
 }

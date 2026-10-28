@@ -202,9 +202,8 @@ Player menu (music player)
 └── Sleep timer → …
 ```
 
-Queue takes the place of today's "Tracks" item, which lists the album: step 1.5 keeps
-"Tracks" in the music Player menu, and step 2.7 replaces it with Queue. Album info is
-in Options (step 2.5).
+Queue took the place of the old "Tracks" item, which listed the album (step 2.7); the book
+player keeps its Chapters list. Album info is in Options (step 2.5).
 
 Shuffle and Repeat are "Setting with list" items backed by the queue instead of
 `config.yaml`. A change works at once: shuffle keeps the current entry current and
@@ -224,7 +223,17 @@ Queue
 - **Move** opens a list of positions on the entry's own, like a setting: OK on another
   position moves it there and says "Moved to 3 of 30".
 - **Remove** of the current entry stops it and makes the next entry current, paused.
-- **Clear queue** sits behind a list that opens on Cancel (navigation rule).
+- **Clear queue** sits behind a list that opens on Cancel (navigation rule). It leaves an
+  empty queue and **nothing loaded** in the music player: it stops, Home no longer offers
+  "Now playing" for music (what a restart would resume is forgotten too), and the device goes
+  to Home and says "Queue cleared." A parked book stays. An edited queue is kept as Previous
+  queue, which is the undo; it shows in the Queue list of the next music queue. Removing the
+  last entry does the same ("Removed Storm. The queue is empty.").
+- **Play next** on an entry puts it after the current entry ("Storm will play next.");
+  on the current entry it only says so. The list counts its own items: Save as playlist and
+  Clear queue (and Previous queue) are items too, so a queue of 30 is "5 of 32".
+- Move, Remove and Play next come back to the Queue list by themselves, rebuilt, on the entry
+  they acted on ("Removed Storm. 29 in queue.").
 
 ### Save as playlist
 
@@ -297,7 +306,7 @@ answers; the queue survives a restart and can be saved as a server playlist.
 | ✅ 2.4 | **Options on items: Play now, Play next, Add to queue** on local tracks, albums and Play all, and on remote tracks, albums, playlists and artists (loaded first: "Loading.", then the counts). `MenuItem` gets its `options` builder; the Beginner hint names Options. | Each action on a local and a remote item puts the right entries in the right place and says the counts. Home while a remote album loads: nothing is added and nothing is said. Play next with nothing loaded: paused, "Press play". An action goes back by itself. |
 | ✅ 2.5 | **Options in the music player and Previous queue.** Options for the playing track: Go to album, Album info (moved there from the Player menu, and from the end of an album's list into that album's Options, as navigation.md and streaming.md say), and Star / Unstar if streaming.md 2a.1 is ticked (else 2a.1 builds it there). Previous queue: when an edited queue is replaced it is kept, and OK on it restores it. | Options in the player lists the actions and Go to album opens the album on the playing track. Album info is in the player's Options and an album's Options, and no longer in the Player menu or at the end of an album's list. Replacing an edited queue keeps "Previous queue", and OK on it restores it; replacing an unedited queue keeps nothing. |
 | ✅ 2.6 | **Shuffle and Repeat in the music Player menu**, "Setting with list" items backed by the queue. | Choosing Shuffle tracks works at once and keeps the current entry. Repeat track replays the track when it ends. A new queue starts with both off. The book Player menu has neither. |
-| 2.7 | **The Queue list**, in place of "Tracks" in the music Player menu: opens on the current entry ("current"); OK plays an entry; Options on an entry: Play next, Move, Remove; Save as playlist (says "Not available yet." until 2.9); Previous queue; Clear queue behind Cancel. | Opens on the current entry and says "current". Move to 3 says "Moved to 3 of 30" and the order changes. Remove of the current entry makes the next one current, paused. Clear queue opens on Cancel. Move and Remove set the edited flag. |
+| ✅ 2.7 | **The Queue list**, in place of "Tracks" in the music Player menu: opens on the current entry ("current"); OK plays an entry; Options on an entry: Play next, Move, Remove; Save as playlist (says "Not available yet." until 2.9); Previous queue; Clear queue behind Cancel. | Opens on the current entry and says "current". Move to 3 says "Moved to 3 of 30" and the order changes. Remove of the current entry makes the next one current, paused. Clear queue opens on Cancel. Move and Remove set the edited flag. |
 | 2.8 | **Keep the queue**: `queue.tsv` written on sleep and exit, when changed; read on start; `last_stream.*` read once, turned into a queue and removed; cut to 5000 entries around the current one. | Sleep, then restart: the same mixed, shuffled queue, current entry, position and repeat. Exit writes it; a second exit with no change writes nothing. Old `last_stream.*` keys become a queue and are removed. Nothing in `queue.tsv` contains a stream URL, a token (`t=`, `s=`) or the password. |
 | 2.9 | **Save as playlist**: `MusicServer::createPlaylist(name, trackIds, done)`, `Subsonic` `createPlaylist`, `FakeMusicServer`. Remote entries of the server set up now only, cached copies count as remote; name from the wall time. | Net tests: the URL has `name` and one `songId` per track, and no `p`. A mixed queue saves only the ids of the server set up now and says how many tracks were left out (local, and from another server). No remote entries: says why and sends nothing. An error is spoken and the queue is unchanged. |
 | 2.10 | **Docs for phase 2 as built:** architecture.md (queue, `queue.tsv`, server checks, Options), navigation.md where the build differs from 1.1, streaming.md (`last_stream` replaced), SPEC. | – |
