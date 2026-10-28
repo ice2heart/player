@@ -7,6 +7,11 @@
 > Unstar in the player's Options is **not built** ([streaming.md](streaming.md) 2a.1). Where the
 > build differs from the text, a note says so; [architecture.md](architecture.md) describes the
 > code. Last updated: 2026-10-28.
+>
+> **Agreed, not built yet** ([fixes.md](fixes.md) phase 2): Repeat album, Add to queue mixed into a
+> shuffled queue, the player's name and the current track's album and artist in "where am I?" in a
+> player, Music → Playlists (and Streaming without Playlists), and Download in Options. Each is
+> marked "not built" where it appears below; the text still describes the build until step 2.8.
 
 Users can't see the menu, so they learn it from what each key does. A key that
 does one thing in one menu and something else in the next menu breaks that.
@@ -55,7 +60,9 @@ Sleep in it closes the menu first, so the device wakes where you were.
    them deeper moves to the previous or next chapter or track.
 8. **Play/Pause, Volume up / down, Power and Talk work the same on every
    screen.** Holding Play/Pause ("where am I?") speaks the screen path and the
-   selected item, and the progress of a download that runs ("Downloading, 3 of 9
+   selected item in a menu, and the player's name, the album and artist of the current
+   track and the status in a player (see [Where am I in a player](#where-am-i-in-a-player)),
+   and the progress of a download that runs ("Downloading, 3 of 9
    tracks."). The volume keys change the content volume in menus and players
    alike (see [Volume](#volume)).
 9. **Every press of a key is heard.** The press interrupts speech and plays an
@@ -221,6 +228,16 @@ instead (and while a book plays they leave it playing and keep the queue for Con
   album in a list has it in its Options). Star / Unstar is not built yet: streaming.md
   [phase 2a](streaming.md#phase-2a-stars) builds it in the player's Options, so it has one key
   and never sits in the Player menu. Go to artist comes later.
+- **Download album / Download playlist** (**not built**, fixes.md 2.6) is in the Options of an
+  album or playlist of the server, in Music and in Streaming, after Add to queue. It is
+  offered only where it can work (a cache folder, a server and a downloader that are set
+  up, as for the list item below), and not for an album or playlist that is whole on the
+  device. OK loads the tracks first, as Play now and Add to queue do ("Loading."; leaving
+  cancels it; an error is spoken with the error sound and the Options stay), then starts the
+  download, says "Downloading, 0 of 9 tracks." and goes back by itself. While a download
+  runs, OK on the same album or playlist says the progress without loading, and on another
+  says "Another download is running." without loading. Everything else is as for the list
+  item ([Download album](#lists-from-the-server)).
 - An item with no actions plays the edge sound and says "No options" (rule 9: every
   press of a key is heard). So does Options in a player with nothing loaded.
 - **Play now** is an action that finishes a task: it starts playback, goes back by
@@ -252,6 +269,26 @@ instead (and while a book plays they leave it playing and keep the queue for Con
 - The book player has no queue, shuffle or repeat. Its step units are Skip · Chapter ·
   10 minutes, the music player's are Skip · Track · Album.
 
+### Where am I in a player
+
+**Not built** (fixes.md 2.3): today a player speaks only the status, with the title of the
+queue.
+
+- Holding Play/Pause in a player speaks the player first, then the album and artist of the
+  current track, then what it says now: "Music player. Dune, by Weather. Track 5 of 30,
+  Storm. 3 minutes left in track. Playing." The book player says "Book player. <title>, by
+  <author>. Chapter ..."
+- In the music player the album and artist come from the current entry of the queue, not
+  from the queue's title: in a queue of several albums the title names only the first. The
+  queue's title is not spoken.
+- The artist is left out when it is empty ("Dune. Track 5 ..."); a track with no album gives
+  its artist alone ("By Weather."), and neither gives nothing. The progress of a download
+  follows as now.
+- In a menu it stays as it is: the path, the selected item, and what plays.
+- The player's name comes first because in a menu the answer starts with the path, and the
+  player is the end of a path: the same start in both places tells at once whether the
+  answer is about a menu or a player. To be confirmed on a device (fixes.md open question 1).
+
 ## The queue
 
 Only the music player has a queue ([queue.md](queue.md) has the full design). The rules
@@ -265,11 +302,31 @@ that touch navigation:
   queue."). Home while it loads drops the late answer. With nothing loaded, Play next and
   Add to queue make a queue that is paused at its first entry: "Added Weather, 12 tracks.
   Press play."
-- **Shuffle** (off · tracks · albums) and **Repeat** (off · all · track) belong to the
+- **Shuffle** (off · tracks · albums) and **Repeat** (off · all · album · track) belong to the
   queue and start off with each new queue. They are "Setting with list" items in the
   music Player menu, not settings in `config.yaml`. Repeat track repeats the current
   track when it ends; Left / Right and a deep press still move to other tracks. With Repeat
   all, Next on the last track goes to the first and Previous on the first to the last.
+- **Repeat album** (**not built**, fixes.md 2.2) repeats the album of the current track. The
+  album of an entry is the entries of the queue with the same `albumId`, when both have
+  one, else the same album name; an entry with no album name and no `albumId` is an album
+  of its own, so Repeat album repeats it like Repeat track. When an entry of the album
+  ends, the next entry of the same album in play order plays, skipping the entries of other
+  albums; after the album's last entry, its first. With Shuffle off or Shuffle albums the
+  album is one run and nothing is skipped; with Shuffle tracks its entries are apart in the
+  play order and play in that shuffled order, the others skipped. Left / Right, a deep press
+  and Next / Previous still move through the play order, other albums included, and the album
+  of the track moved to is then the one that repeats. The spoken value is "album"; the saved
+  queue keeps it, and an older build reads it as off.
+- **Add to queue follows Shuffle; Play next does not** (**not built**, fixes.md 2.7). With
+  Shuffle tracks the entries added with Add to queue go to random places among the entries
+  that have not played yet, after the current one. With Shuffle albums they are cut into
+  runs of one album, and each run goes, whole and in its order, to a random place between
+  two runs of what has not played yet. Play next puts its entries right after the current
+  entry, in their own order, with any Shuffle. Turning Shuffle off gives the original order,
+  with Add to queue's entries at the end and Play next's after the current entry. With
+  Shuffle off nothing changes. What is spoken does not change ("Added Weather, 12 tracks. 30
+  in queue.").
 - At the end of the queue: "End of queue", paused at the first entry, unless Repeat is on.
 - **An entry that cannot play is skipped**: "Storm, source unavailable." (a run: "3
   tracks, source unavailable."). A server that fails is marked down and checked in the
@@ -281,7 +338,7 @@ that touch navigation:
 Player menu (music player)
 ├── Queue → <entries>      opens on the current entry, spoken "current"
 ├── Shuffle, off           list: off · tracks · albums
-├── Repeat, off            list: off · all · track
+├── Repeat, off            list: off · all · album · track   (album: not built, fixes.md 2.2)
 ├── Go to first track      the first entry in the play order
 └── Sleep timer → …
 ```
@@ -383,6 +440,8 @@ these rules too ([streaming.md](streaming.md) has the plan).
   Home and playing something do not stop it. When it ends the device says
   "Download finished, Weather." unless something is playing, which gets only an
   earcon (and a sleeping device says nothing).
+- **Download from Options** (**not built**, fixes.md 2.6) starts the same download from
+  the Options of an album or playlist ([Options](#options)).
 - **Downloaded** (in the Streaming menu after Random albums, only where a cache
   folder is set up) lists the albums and playlists that you downloaded (at least
   one track kept by Download album / playlist, not just cached by playing), by name
@@ -408,7 +467,8 @@ these rules too ([streaming.md](streaming.md) has the plan).
 - **Offline.** When a list from the server fails with an error ("Server not
   reachable", "Server error" and so on), the list is "the error", "Try again" and, if
   anything is downloaded (not just cached by playing), "Downloaded" (the same list as in the Streaming menu, which
-  needs no server). Without downloads there is no such item. Try again replaces the
+  needs no server). Music → Playlists is not a list from the server (see below), but a
+  playlist in it that is not whole on the disk loads its tracks and follows these rules. Without downloads there is no such item. Try again replaces the
   error list with "Loading" as before. A cached album played offline never says
   "Loading." and does not wait on the server.
 - **The last album or playlist resumes after a restart.** When a stream played
@@ -459,6 +519,7 @@ Music
 ├── Play all
 ├── Artists → <artist> → <albums>
 ├── Albums A to Z → <albums>
+├── Playlists → <playlist>        (not built, fixes.md 2.5)
 ├── Genres → <genre> → <albums>
 ├── Recently added → <albums>
 ├── Recently played → <albums>
@@ -485,6 +546,23 @@ Music
   scripts come after the Latin ones, and albums with no artist are under "Unknown artist", last.
   An artist's list holds the albums of both sources. **Albums A to Z** lists every album,
   server-only ones too.
+- **Playlists** (**not built**, fixes.md 2.4 and 2.5), after Albums A to Z, lists the
+  server's playlists by name, with the track count as the value ("Road Trip, 12 tracks"),
+  sorted by name (Left / Right jump by letter). It is a local menu: it is read from the
+  index, so it opens at once and works offline. The sync stores the playlists in the index
+  (id, name, song count and the server's `changed` time, from `getPlaylists`) at each sync and
+  Refresh library, and a playlist made with Save as playlist is added at once. A playlist
+  deleted on the server leaves the index at the next sync that gets `getPlaylists` (a sync
+  that fails keeps the old list). **Downloaded playlists** are listed too, from the cache
+  manifests, so one is there when the index has never synced, and it stays in the list after
+  it is deleted on the server until its download is deleted; a playlist in both is one entry.
+  **Opening a playlist** that is whole on the disk plays from the files with no "Loading.";
+  otherwise its tracks load under the rules of "Lists from the server" ("Loading", the error,
+  "Try again", "Downloaded" when offline). It opens with "Play playlist", then "Download
+  playlist" where it can work, then the tracks. With no playlists the list has one item, "No
+  playlists"; OK says "Make a playlist on the server, or save the queue as a playlist."
+  **Streaming no longer has Playlists**; Streaming → Downloaded still lists downloaded
+  playlists.
 - **Play all** plays what is on the device (local and downloaded), never the
   whole server. With nothing on the device it says "No music".
 - **Genres** lists each genre once, local tags and the server's album genre together; names
@@ -524,7 +602,9 @@ Music
   While their tracks load, the "Loading" rules apply. After a restart "Now playing" on Home resumes the
   book when the book player was used last (otherwise it is "Continue"); a downloaded book plays from
   its files at once, otherwise with the server down "Server not reachable." is said and Home stays.
-- **Streaming stays a separate Home entry.** It keeps its own lists as above.
+- **Streaming stays a separate Home entry.** It keeps its own lists as above, except
+  Playlists, which moves to Music (**not built**: until step 2.5 Streaming still has
+  Playlists).
 
 ## Checklist for a new menu, item or program
 

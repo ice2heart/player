@@ -487,6 +487,7 @@ Home
 │   ├── Albums A to Z → <albums>   (every merged entry, server-only ones too)
 │   │   <album on the device> → <tracks>   (OK plays; Album info is in its Options) from that track to the end; a loose track plays at once)
 │   │   <server-only album> → Loading, then Play album · Download album · <tracks>   (as in Streaming)
+│   ├── Playlists → <playlist> → Play playlist · Download playlist · <tracks>   (planned, fixes.md 2.4-2.5: from the index and the cache manifests, "12 tracks"; works offline; "No playlists")
 │   ├── Genres → <genre> → <albums>   (tags and server genre, names merged without case; albums with no genre are left out)
 │   ├── Recently added → <albums>      (newest first, at most 50; "No new albums")
 │   ├── Recently played → <albums>     (last played first, at most 50; "Nothing played yet")
@@ -495,7 +496,7 @@ Home
 │   ├── Recently added → <albums>  (one page of 500)
 │   ├── Albums A to Z → <albums>   (pages of 500, the next one fetched while the server has more)
 │   ├── Artists → <artist> → <albums>
-│   ├── Playlists → <playlist> → Play playlist · Download playlist · <tracks>
+│   ├── Playlists → <playlist> → Play playlist · Download playlist · <tracks>   (built; planned to move to Music, fixes.md 2.5)
 │   ├── Random albums → <albums>   (one page of 50)
 │   ├── Downloaded                 (only with a cache folder; built from the manifests, not the server: <name> → Play album|Play playlist · Delete download → [Cancel, Yes, delete] · <tracks>)
 │   └── Server status              ("Checking the server.", then "Connected to Navidrome 0.64.2." or the error; the item says "not reachable" while the server is marked down)
@@ -548,13 +549,18 @@ Player menu of the music player (`musicPlayerMenu()`)
 │     ├── Previous queue           (only when `previous_` holds an edited queue)
 │     └── Clear queue → Cancel · Clear queue   (`clearQueue()` / `unloadQueue()`: nothing loaded, Home)
 ├── Shuffle, off                   list: off · tracks · albums (backed by the queue, not config.yaml)
-├── Repeat, off                    list: off · all · track     (the same)
+├── Repeat, off                    list: off · all · track     (the same; planned: off · all · album · track, fixes.md 2.2)
 ├── Go to first track
 └── Sleep timer → …
 
 Options in the music player (`playerOptionsMenu()`, "Options, <track>")
 ├── Go to album            (local: the index item of the file; remote: the album id of the entry; opens on the playing track)
 └── Album info             (title, number of tracks, status)
+
+Planned (fixes.md 2.6): the Options of a server album or playlist (Music and Streaming) get Download album /
+Download playlist after Add to queue, where `canDownload()`; it loads through `choose()`, then `startDownload()`.
+Planned (fixes.md 2.3): "where am I?" in a player starts with the player's name and the album and artist of the
+current queue entry (navigation.md, "Where am I in a player").
 
 A change to the order of the queue (Shuffle, Move, Remove, Play next in the Queue list) calls `followQueue()`: `fileIndex_`
 is the play order position of the current entry, so it, the end-of-track sleep timer and `pendingOpen_->file` follow it.
