@@ -1,6 +1,6 @@
 # Fixes from NOTES.md: plan
 
-> Status: **a plan; steps marked ✅ in the phase tables are built** (phase 2 is, with its docs; the "Today" column below says what the device did when the notes were checked). It turns the notes in [NOTES.md](../NOTES.md) into work groups:
+> Status: **a plan; steps marked ✅ in the phase tables are built** (phases 2 and 3 are, with their docs; the "Today" column below says what the device did when the notes were checked). It turns the notes in [NOTES.md](../NOTES.md) into work groups:
 > discovery first where the cause or the design is not known, fixes where it is. The rules are in
 > [navigation.md](navigation.md), the code is described in [architecture.md](architecture.md),
 > streaming in [streaming.md](streaming.md), the queue in [queue.md](queue.md).
@@ -314,7 +314,7 @@ cut, or the server could not be reached at the time.
 |---|------|------|
 | ✅ 3.1 | **Finish requests before exit.** `HttpClient::finish(deadline)`: no new requests, waits for the queued and running ones until the deadline, then aborts the rest; the destructor stays as it is. `Subsonic::finish(deadline)`. The sim and headless front ends call it with 3 s after `app.shutdown()`. | `test_http_client.cpp` with its local server: a request queued just before `finish()` reaches the server; a server that never answers makes `finish()` return after the deadline (a short one in the test); a request after `finish()` is not sent. |
 | ✅ 3.2 | **Scrobble outbox** ([rules](#scrobbles)). `MusicServer::scrobble(trackId, submission, timeMs, done)` reports the error (`done` may be empty); `Subsonic` sends `time=` when `timeMs` is set; `FakeMusicServer` records it. `App` puts each submission into the outbox and writes `scrobbles.tsv` before sending, removes it on the answer, sends the outbox when the server answers, reads it at start. | Net test: the URL has `time=` and `submission=true`. `test_app.cpp`: a submission is in `scrobbles.tsv` before the server answers it, and a new `App` on those files sends it at start (a cut power); an answered one leaves the file; one that fails as unreachable is sent again, with its time, after a ping clears the mark; one refused by the server is not sent again; with the server marked down a submission goes to the outbox without a request; "now playing" is never kept; 1001 entries keep the newest 1000; entries of another server stay and are not sent. |
-| 3.3 | **Docs for phase 3 as built:** architecture.md (threads, persistence: `scrobbles.tsv`), streaming.md phase 5 (the scrobble part of the outbox is built). | – |
+| ✅ 3.3 | **Docs for phase 3 as built:** architecture.md (threads, persistence: `scrobbles.tsv`), streaming.md phase 5 (the scrobble part of the outbox is built). | – |
 
 **Device check (manual):** listen to half a track and turn the device off at once: the play
 is on the server. Listen to half a track and pull the power: the play reaches the server
