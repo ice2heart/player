@@ -218,3 +218,203 @@ TEST(ScriptRuns, ABrokenByteDoesNotCrashAndStaysInItsRun) {
     EXPECT_EQ(runsOf("Кино\xF4\x90\x80\x80Кино"), (Runs{{Script::Cyrillic, "Кино\xF4\x90\x80\x80Кино"}}));
     EXPECT_EQ(runsOf("Кино\xD0"), (Runs{{Script::Cyrillic, "Кино"}, {Script::Latin, "\xD0"}}));
 }
+
+using oap::ScriptRun;
+using oap::transliterate;
+
+namespace {
+std::string tr(Script script, const std::string& text) { return transliterate(ScriptRun{script, text}); }
+std::string cyr(const std::string& t) { return tr(Script::Cyrillic, t); }
+std::string kana(const std::string& t) { return tr(Script::Japanese, t); }
+} // namespace
+
+TEST(Transliterate, Cyrillic) {
+    EXPECT_EQ(cyr("Агата Кристи"), "Agata Kristi");
+    EXPECT_EQ(cyr("Жуков"), "Zhukov");
+    EXPECT_EQ(cyr("Щербаков"), "Shcherbakov");
+    EXPECT_EQ(cyr("Ёлка"), "Yolka");
+    EXPECT_EQ(cyr("Їжак"), "Yizhak");
+}
+
+TEST(Transliterate, CyrillicEveryLetter) {
+    EXPECT_EQ(cyr("абвгдежзийклмнопрстуфхцчшщыэюя"), "abvgdezhziyklmnoprstufkhtschshshchyeyuya");
+    EXPECT_EQ(cyr("ёіїєґў"), "yoiyiyegu");
+}
+
+TEST(Transliterate, CyrillicSignsGiveNothing) {
+    EXPECT_EQ(cyr("объект"), "obekt");
+    EXPECT_EQ(cyr("Ильич"), "Ilich");
+    EXPECT_EQ(cyr("ОБЪЕКТ ЬЪ"), "OBEKT ");
+}
+
+TEST(Transliterate, SerbianAndMacedonianLetters) {
+    EXPECT_EQ(cyr("ђјљњћџ"), "djjljnjchdzh");
+    EXPECT_EQ(cyr("Љубиша"), "Ljubisha");
+}
+
+TEST(Transliterate, ACapitalKeepsItsCaseAndAWordInCapitalsStaysCapitals) {
+    EXPECT_EQ(cyr("Шостакович"), "Shostakovich");
+    EXPECT_EQ(cyr("ЖУКОВ"), "ZHUKOV");
+    EXPECT_EQ(cyr("ЩУКА"), "SHCHUKA");
+    EXPECT_EQ(cyr("Ъ"), "");
+    EXPECT_EQ(cyr("жУков"), "zhUkov");
+    EXPECT_EQ(cyr("Я и Ё"), "Ya i Yo");
+    EXPECT_EQ(cyr("УЖ"), "UZH");
+}
+
+TEST(Transliterate, SpacesDigitsAndPunctuationPassThrough) {
+    EXPECT_EQ(cyr("Кино - 1989, \"Группа\" крови!"), "Kino - 1989, \"Gruppa\" krovi!");
+    EXPECT_EQ(cyr("Кино — Кино"), "Kino — Kino");
+}
+
+TEST(Transliterate, AMarkIsDroppedAndABrokenByteIsKept) {
+    EXPECT_EQ(cyr("Кино\xCC\x81"), "Kino");
+    EXPECT_EQ(cyr("Ки\xFFно"), "Ki\xFFno");
+}
+
+TEST(Transliterate, Greek) {
+    EXPECT_EQ(tr(Script::Greek, "Ωμέγα"), "Omega");
+    EXPECT_EQ(tr(Script::Greek, "Ελλάδα"), "Ellada");
+    EXPECT_EQ(tr(Script::Greek, "Αθήνα"), "Athina");
+}
+
+TEST(Transliterate, GreekFinalSigmaAndAccents) {
+    EXPECT_EQ(tr(Script::Greek, "Οδυσσέας"), "Odysseas");
+    EXPECT_EQ(tr(Script::Greek, "ΟΔΥΣΣΈΑΣ"), "ODYSSEAS");
+    EXPECT_EQ(tr(Script::Greek, "ά έ ή ί ό ύ ώ ϊ ϋ ΐ ΰ ΪΫ"), "a e i i o y o i y i y IY");
+}
+
+TEST(Transliterate, GreekDigraphs) {
+    EXPECT_EQ(tr(Script::Greek, "Ουρανός"), "Ouranos");
+    EXPECT_EQ(tr(Script::Greek, "ΟΥΡΑΝΟΣ"), "OURANOS");
+    EXPECT_EQ(tr(Script::Greek, "αυλή"), "avli");
+    EXPECT_EQ(tr(Script::Greek, "αύριο"), "avrio");
+    EXPECT_EQ(tr(Script::Greek, "Ευτυχία"), "Eftychia");
+    EXPECT_EQ(tr(Script::Greek, "ευ"), "ef");
+    EXPECT_EQ(tr(Script::Greek, "άγγελος"), "angelos");
+    EXPECT_EQ(tr(Script::Greek, "Γκρέκο"), "Greko");
+    EXPECT_EQ(tr(Script::Greek, "άγκυρα"), "angyra");
+    EXPECT_EQ(tr(Script::Greek, "Μπάμπης"), "Bampis");
+    EXPECT_EQ(tr(Script::Greek, "Ντίνος"), "Dinos");
+    EXPECT_EQ(tr(Script::Greek, "πέντε"), "pente");
+    EXPECT_EQ(tr(Script::Greek, "και Μπάμπης Ντίνος"), "kai Bampis Dinos");
+    EXPECT_EQ(tr(Script::Greek, "σφίγξη"), "sfinxi");
+    EXPECT_EQ(tr(Script::Greek, "ξέγχω"), "xencho");
+}
+
+TEST(Transliterate, AGreekDiaeresisKeepsTheVowelsApart) {
+    EXPECT_EQ(tr(Script::Greek, "Μαϊμού"), "Maimou");
+    EXPECT_EQ(tr(Script::Greek, "αϋπνία"), "aypnia");
+    EXPECT_EQ(tr(Script::Greek, "προϋπόθεση"), "proypothesi");
+    EXPECT_EQ(tr(Script::Greek, "ΑΫ"), "AY");
+    EXPECT_EQ(tr(Script::Greek, "αΰ"), "ay");
+}
+
+TEST(Transliterate, GreekLetters) {
+    EXPECT_EQ(tr(Script::Greek, "αβγδεζηθικλμνξοπρστυφχψω"), "avgdezithiklmnxoprstyfchpso");
+}
+
+TEST(Transliterate, Kana) {
+    EXPECT_EQ(kana("ひらがな"), "hiragana");
+    EXPECT_EQ(kana("カタカナ"), "katakana");
+    EXPECT_EQ(kana("しんぶん"), "shinbun");
+    EXPECT_EQ(kana("きょうと"), "kyouto");
+}
+
+TEST(Transliterate, KanaYouon) {
+    EXPECT_EQ(kana("きゃきゅきょ"), "kyakyukyo");
+    EXPECT_EQ(kana("しゃしゅしょ ちゃちゅちょ じゃじゅじょ"), "shashusho chachucho jajujo");
+    EXPECT_EQ(kana("ひゃみゅりょ"), "hyamyuryo");
+    EXPECT_EQ(kana("シェ チェ ジェ"), "she che je");
+    EXPECT_EQ(kana("ファ フィ ウィ ヴァ"), "fa fi wi va");
+}
+
+TEST(Transliterate, KanaSokuonDoublesTheNextConsonant) {
+    EXPECT_EQ(kana("ラッキー"), "rakkii");
+    EXPECT_EQ(kana("きって"), "kitte");
+    EXPECT_EQ(kana("ざっし"), "zasshi");
+    EXPECT_EQ(kana("まっちゃ"), "matcha");
+    EXPECT_EQ(kana("あっ"), "a");
+}
+
+TEST(Transliterate, ATrailingSokuonDoublesNothing) {
+    EXPECT_EQ(kana("あっ カラオケ"), "a karaoke");
+    EXPECT_EQ(kana("やっ! カラオケ"), "ya! karaoke");
+    EXPECT_EQ(kana("きっ ッ"), "ki ");
+}
+
+TEST(Transliterate, KatakanaLoanwordSounds) {
+    EXPECT_EQ(kana("ティファニー"), "tifanii");
+    EXPECT_EQ(kana("ディズニー"), "dizunii");
+    EXPECT_EQ(kana("トゥ ドゥ"), "tu du");
+    EXPECT_EQ(kana("デュエット"), "dyuetto");
+    EXPECT_EQ(kana("テュ ツァ ツィ ツェ ツォ"), "tyu tsa tsi tse tso");
+}
+
+TEST(Transliterate, KanaProlongedSoundMarkDoublesTheVowel) {
+    EXPECT_EQ(kana("ラーメン"), "raamen");
+    EXPECT_EQ(kana("コーヒー"), "koohii");
+    EXPECT_EQ(kana("ー"), "");
+    EXPECT_EQ(kana("ン ー"), "n ");
+}
+
+TEST(Transliterate, KanaOddities) {
+    EXPECT_EQ(kana("おんがく"), "ongaku");
+    EXPECT_EQ(kana("をゐゑ"), "oie");
+    EXPECT_EQ(kana("ヴ"), "vu");
+    EXPECT_EQ(kana("つづ"), "tsuzu");
+    EXPECT_EQ(kana("ぢ"), "ji");
+    EXPECT_EQ(kana("ゃ"), "ya");
+    EXPECT_EQ(kana("ﾋｶﾙ"), "");
+    EXPECT_EQ(kana("ヒカル・ウタダ 2001"), "hikaru・utada 2001");
+}
+
+TEST(Transliterate, KanaEveryRow) {
+    EXPECT_EQ(kana("あいうえお かきくけこ がぎぐげご さしすせそ ざじずぜぞ"),
+              "aiueo kakikukeko gagigugego sashisuseso zajizuzezo");
+    EXPECT_EQ(kana("たちつてと だぢづでど なにぬねの はひふへほ ばびぶべぼ ぱぴぷぺぽ"),
+              "tachitsuteto dajizudedo naninuneno hahifuheho babibubebo papipupepo");
+    EXPECT_EQ(kana("まみむめも やゆよ らりるれろ わ"), "mamimumemo yayuyo rarirurero wa");
+}
+
+TEST(Transliterate, Hangul) {
+    EXPECT_EQ(tr(Script::Hangul, "아이유"), "aiyu");
+    EXPECT_EQ(tr(Script::Hangul, "한국"), "hanguk");
+}
+
+TEST(Transliterate, HangulFinalsAndInitials) {
+    EXPECT_EQ(tr(Script::Hangul, "강남"), "gangnam");
+    EXPECT_EQ(tr(Script::Hangul, "김치 밥"), "gimchi bap");
+    EXPECT_EQ(tr(Script::Hangul, "값 닭 읽"), "gap dak ik");
+    EXPECT_EQ(tr(Script::Hangul, "까따빠싸짜 카타파차하"), "kkattappassajja katapachaha");
+    EXPECT_EQ(tr(Script::Hangul, "와 왜 외 워 웨 위 의 으 예"), "wa wae oe wo we wi ui eu ye");
+    EXPECT_EQ(tr(Script::Hangul, "BTS 방탄소년단 2013"), "BTS bangtansonyeondan 2013");
+}
+
+TEST(Transliterate, TheFirstAndLastSyllableBlockLetters) {
+    EXPECT_EQ(tr(Script::Hangul, "가"), "ga");
+    EXPECT_EQ(tr(Script::Hangul, "힣"), "hit");
+}
+
+TEST(Transliterate, HangulJamoAloneGiveNothing) { EXPECT_EQ(tr(Script::Hangul, "ㄱ"), ""); }
+
+TEST(Transliterate, OtherScriptsGiveNothing) {
+    EXPECT_EQ(tr(Script::Han, "周杰伦"), "");
+    EXPECT_EQ(tr(Script::Hebrew, "שלום"), "");
+    EXPECT_EQ(tr(Script::Arabic, "سلام"), "");
+    EXPECT_EQ(tr(Script::Other, "ไทย"), "");
+}
+
+TEST(Transliterate, AJapaneseRunWithKanjiGivesNothing) {
+    EXPECT_EQ(kana("宇多田ヒカル"), "");
+    EXPECT_EQ(kana("ひらがな漢字"), "");
+}
+
+TEST(Transliterate, ALatinRunIsReturnedAsItIs) { EXPECT_EQ(tr(Script::Latin, "Café 1989!"), "Café 1989!"); }
+
+TEST(Transliterate, EmptyAndRunsFromScriptRuns) {
+    EXPECT_EQ(tr(Script::Cyrillic, ""), "");
+    std::string out;
+    for (const auto& run : scriptRuns("Artist Агата Кристи, 3 of 10")) out += transliterate(run);
+    EXPECT_EQ(out, "Artist Agata Kristi, 3 of 10");
+}

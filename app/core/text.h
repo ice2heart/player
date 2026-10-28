@@ -42,4 +42,17 @@ struct ScriptRun {
 // stays with the letter before it. A malformed UTF-8 byte counts as punctuation. Letters of any script not listed are Other.
 std::vector<ScriptRun> scriptRuns(std::string_view text);
 
+// Plan B: the run in Latin letters, for the English voice to read. Cyrillic is a practical
+// romanisation (BGN/PCGN without diacritics: "Жуков" is "Zhukov"), Greek ELOT 743 without
+// accents, kana Hepburn without macrons (a long vowel is written as the kana write it; っ doubles
+// the next consonant, "ch" becoming "tch"; ー doubles the vowel before it), Hangul Revised
+// Romanization of each syllable on its own (no sound changes between syllables). A letter that
+// has a capital keeps it: the first letter of a word, "Zh" for Ж, "ZH" in an all-capitals word.
+// Spaces, digits and punctuation pass through unchanged; combining marks and letters of the script
+// that have no entry (half-width kana, lone jamo, ъ and ь) give nothing. A Latin run is returned
+// as it is. Han, Hebrew, Arabic and Other give an empty string: the caller names the script. So
+// does a Japanese run with any kanji in it (there is no reading table): the caller speaks that run
+// as "Japanese text" rather than a half-spoken name.
+std::string transliterate(const ScriptRun& run);
+
 } // namespace oap
