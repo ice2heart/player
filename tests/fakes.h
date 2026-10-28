@@ -350,7 +350,7 @@ inline std::vector<ServerLink> linkTo(const Settings& settings, MusicServer& ser
 // A fake that is not configured does not record a scrobble (like Subsonic).
 class FakeMusicServer : public MusicServer {
 public:
-    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Playlists, PlaylistTracks, CreatePlaylist };
+    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Book, Playlists, PlaylistTracks, CreatePlaylist };
     struct Request {
         RequestId id = 0;
         Kind kind = Kind::Ping;
@@ -378,6 +378,11 @@ public:
     RequestId albumTracks(std::string albumId, Done<RemoteTrack> done) override {
         return add(std::move(done), Kind::AlbumTracks, std::move(albumId));
     }
+    // Answered only by replyBook() (or fail()): the fake knows no book by itself.
+    RequestId book(std::string albumId, std::function<void(Error, RemoteBook)> done) override {
+        return add(BookDone{std::move(done)}, Kind::Book, std::move(albumId));
+    }
+    Catalogue catalogue() const override { return catalogueKind; }
     RequestId playlists(Done<RemotePlaylist> done) override { return add(std::move(done), Kind::Playlists); }
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override {
         return add(std::move(done), Kind::PlaylistTracks, std::move(playlistId));
@@ -466,6 +471,15 @@ public:
         pending_.erase(it);
         return true;
     }
+    bool replyBook(RequestId id, RemoteBook book) {
+        auto it = pending_.find(id);
+        if (it == pending_.end()) return false;
+        auto* done = std::get_if<BookDone>(&it->second);
+        if (!done) throw std::logic_error("FakeMusicServer::replyBook: not a book request");
+        ready_.emplace_back(id, [cb = std::move(done->call), book = std::move(book)]() mutable { cb(Error::None, std::move(book)); });
+        pending_.erase(it);
+        return true;
+    }
     bool replyVersion(RequestId id, std::string version) {
         auto it = pending_.find(id);
         if (it == pending_.end()) return false;
@@ -506,6 +520,7 @@ public:
     };
     std::vector<Scrobble> scrobbles; // every scrobble() call, in order
     bool isConfigured = true;
+    Catalogue catalogueKind = Catalogue::Music; // what catalogue() says
     std::string streamHost = "stream"; // "fake://<streamHost>/<id>": what tells two fakes' streams apart
     bool saltUrls = false;
     Error scrobbleError = Error::None; // what the answer to a scrobble() says
@@ -519,8 +534,11 @@ private:
     struct CreateDone { // a type of its own: VersionDone has the same signature
         std::function<void(Error, std::string)> call;
     };
+    struct BookDone { // a type of its own, like CreateDone
+        std::function<void(Error, RemoteBook)> call;
+    };
     using Callback =
-        std::variant<PingDone, VersionDone, CreateDone, Done<RemoteAlbum>, Done<RemoteFolder>, Done<RemoteArtist>, Done<RemoteTrack>,
+        std::variant<PingDone, VersionDone, CreateDone, BookDone, Done<RemoteAlbum>, Done<RemoteFolder>, Done<RemoteArtist>, Done<RemoteTrack>,
                  Done<RemotePlaylist>>;
 
     template <class F> RequestId add(F done, Kind kind, std::string arg = {}, int offset = 0, int size = 0, std::string folder = {}) {
@@ -550,6 +568,9 @@ private:
         return [cb = std::move(cb), error] { cb(error, {}); };
     }
     static std::function<void()> failure(CreateDone cb, Error error) {
+        return [cb = std::move(cb.call), error] { cb(error, {}); };
+    }
+    static std::function<void()> failure(BookDone cb, Error error) {
         return [cb = std::move(cb.call), error] { cb(error, {}); };
     }
     template <class T> static std::function<void()> failure(Done<T> cb, Error error) {

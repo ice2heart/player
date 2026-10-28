@@ -566,3 +566,20 @@ TEST_F(TrackCacheTest, TrimRewritesNoManifestWhenNothingChanged) {
     EXPECT_EQ(c.trim(1000, {{"x", kNow + 100}, {"unknown", kNow}}, {}), 0u); // the same time again
     EXPECT_EQ(fs::last_write_time(c.manifestFile(album("a"))), longAgo) << "flash is spared";
 }
+
+// Audiobookshelf names a file `<item uuid>/<ino>` (see docs/audiobookshelf.md).
+TEST_F(TrackCacheTest, AnAudiobookshelfFileIdMakesOneFlatFileNameAndRoundTripsInTheManifest) {
+    const std::string id = "6f1c2d3e-8a4b-4c5d-9e0f-1a2b3c4d5e6f/12345";
+    const std::string name = TrackCache::safeName(id);
+    EXPECT_EQ(name, "6f1c2d3e-8a4b-4c5d-9e0f-1a2b3c4d5e6f%2F12345");
+    EXPECT_EQ(name.find('/'), std::string::npos);
+    EXPECT_NE(name, TrackCache::safeName("6f1c2d3e-8a4b-4c5d-9e0f-1a2b3c4d5e6f%2F12345")) << "a '%' in an id differs";
+
+    TrackCache c = cache();
+    CachedTrack t = track(id, name + ".m4b");
+    ASSERT_TRUE(c.save(listOf(album("6f1c2d3e-8a4b-4c5d-9e0f-1a2b3c4d5e6f"), {t})));
+    auto loaded = c.load(album("6f1c2d3e-8a4b-4c5d-9e0f-1a2b3c4d5e6f")).tracks;
+    ASSERT_EQ(loaded.size(), 1u);
+    EXPECT_EQ(loaded[0].id, id);
+    EXPECT_EQ(loaded[0].file, name + ".m4b");
+}

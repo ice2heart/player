@@ -86,3 +86,23 @@ TEST(NoMusicServer, ARequestMadeFromACallbackIsAnsweredOnTheNextPoll) {
     server.poll();
     EXPECT_EQ(calls, 1);
 }
+
+TEST(NoMusicServer, BookFinishesWithNotConfiguredAndAnEmptyBookOnTheNextPoll) {
+    NoMusicServer server;
+    int calls = 0;
+    auto id = server.book("al1", [&](Error e, RemoteBook book) {
+        ++calls;
+        EXPECT_EQ(e, Error::NotConfigured);
+        EXPECT_TRUE(book.tracks.empty());
+        EXPECT_TRUE(book.chapters.empty());
+    });
+    EXPECT_NE(id, 0u);
+    EXPECT_EQ(calls, 0);
+    server.poll();
+    EXPECT_EQ(calls, 1);
+    int cancelledCalls = 0;
+    server.cancel(server.book("al1", [&](Error, RemoteBook) { ++cancelledCalls; }));
+    server.poll();
+    EXPECT_EQ(cancelledCalls, 0);
+    EXPECT_EQ(server.catalogue(), MusicServer::Catalogue::Music);
+}

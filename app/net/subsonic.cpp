@@ -216,6 +216,13 @@ MusicServer::RequestId Subsonic::albumTracks(std::string albumId, Done<RemoteTra
     return list<RemoteTrack>("getAlbum", {{"id", std::move(albumId)}}, subsonic::parseAlbum, std::move(done));
 }
 
+// getAlbum is not paged, so albumTracks()'s `more` is always false and is dropped here.
+MusicServer::RequestId Subsonic::book(std::string albumId, std::function<void(Error, RemoteBook)> done) {
+    return albumTracks(std::move(albumId), [done = std::move(done)](Error error, std::vector<RemoteTrack> tracks, bool) {
+        done(error, RemoteBook{std::move(tracks), {}});
+    });
+}
+
 MusicServer::RequestId Subsonic::playlists(Done<RemotePlaylist> done) {
     return list<RemotePlaylist>("getPlaylists", {}, subsonic::parsePlaylists, std::move(done));
 }

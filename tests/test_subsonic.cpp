@@ -700,3 +700,64 @@ TEST(Subsonic, AFailedScrobbleIsLoggedWithoutTheUrl) {
     for (const char* secret : {"music.example", "ice", "26719a1196d2a940705a59634eb18eab", "c19b2d", "s1"})
         EXPECT_EQ(err.find(secret), std::string::npos) << secret;
 }
+
+struct BookResult {
+    int calls = 0;
+    Error error = Error::Server;
+    oap::RemoteBook book;
+    std::function<void(Error, oap::RemoteBook)> callback() {
+        return [this](Error e, oap::RemoteBook b) { ++calls, error = e, book = std::move(b); };
+    }
+};
+
+TEST(Subsonic, BookIsGetAlbumWithTheTracksAndNoChapters) {
+    Server server;
+    BookResult result;
+    server.subsonic->book("al1", result.callback());
+    EXPECT_EQ(server.http->url(0), kBase + "getAlbum" + kAuth + "&id=al1");
+    server.http->answer(0, kOk, subsonicFixture("album.json"));
+    EXPECT_EQ(result.calls, 0) << "callbacks run only from poll()";
+    server.subsonic->poll();
+    ASSERT_EQ(result.calls, 1);
+    EXPECT_EQ(result.error, Error::None);
+    ASSERT_EQ(result.book.tracks.size(), 2u);
+    EXPECT_EQ(result.book.tracks[0].id, "s1");
+    EXPECT_EQ(result.book.tracks[1].id, "s2");
+    EXPECT_TRUE(result.book.chapters.empty());
+}
+
+TEST(Subsonic, BookErrorsGiveAnEmptyBook) {
+    Server server;
+    BookResult unreachable, bad;
+    server.subsonic->book("al1", unreachable.callback());
+    server.subsonic->book("al1", bad.callback());
+    server.http->unreachable(0);
+    server.http->answer(1, kOk, subsonicFixture("error_40_wrong_login.json"));
+    server.subsonic->poll();
+    EXPECT_EQ(unreachable.error, Error::Unreachable);
+    EXPECT_TRUE(unreachable.book.tracks.empty());
+    EXPECT_EQ(bad.error, Error::BadLogin);
+    EXPECT_TRUE(bad.book.tracks.empty());
+}
+
+TEST(Subsonic, BookIsNotConfiguredWithoutAServerAndCancelDropsIt) {
+    Server none(config(""));
+    BookResult result;
+    none.subsonic->book("al1", result.callback());
+    EXPECT_TRUE(none.http->calls.empty());
+    none.subsonic->poll();
+    EXPECT_EQ(result.error, Error::NotConfigured);
+
+    Server server;
+    BookResult cancelled;
+    auto id = server.subsonic->book("al1", cancelled.callback());
+    server.http->answer(0, kOk, subsonicFixture("album.json"));
+    server.subsonic->cancel(id);
+    server.subsonic->poll();
+    EXPECT_EQ(cancelled.calls, 0);
+}
+
+TEST(Subsonic, ItsCatalogueIsMusic) {
+    Server server;
+    EXPECT_EQ(server.subsonic->catalogue(), oap::MusicServer::Catalogue::Music);
+}

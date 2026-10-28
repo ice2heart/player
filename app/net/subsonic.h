@@ -54,6 +54,9 @@ public:
     RequestId artists(Done<RemoteArtist> done) override;
     RequestId artistAlbums(std::string artistId, Done<RemoteAlbum> done) override;
     RequestId albumTracks(std::string albumId, Done<RemoteTrack> done) override;
+    // getAlbum; a Subsonic album has no chapters (its tracks are the parts).
+    RequestId book(std::string albumId, std::function<void(Error, RemoteBook)> done) override;
+    Catalogue catalogue() const override { return Catalogue::Music; }
     RequestId playlists(Done<RemotePlaylist> done) override;
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override;
     // `createPlaylist` with `name` and one `songId` per track, a GET like every call (HttpClient has no POST).

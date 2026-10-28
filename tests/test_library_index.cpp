@@ -604,3 +604,28 @@ TEST(LibraryIndexPlaylists, AFailedItemSaveDoesNotLoseThePlaylistsAndTheOtherWay
     EXPECT_EQ(store.items.count("a"), 1u);
     EXPECT_EQ(store.playlists.size(), 1u);
 }
+
+TEST(LibraryIndex, AnAudiobookshelfFileIdSurvivesAsATrackReferenceAndAReload) {
+    const std::string itemId = "6f1c2d3e-8a4b-4c5d-9e0f-1a2b3c4d5e6f";
+    const std::string fileId = itemId + "/12345";
+    FakeLibraryStore store;
+    LibraryIndex index(store);
+    index.upsert(album("a", "Alpha"), kNow);
+    std::string albumRef = LibraryIndex::seenRef(kKeyA, SeenKind::Album, itemId);
+    std::string trackRef = LibraryIndex::seenRef(kKeyA, SeenKind::Track, fileId);
+    EXPECT_EQ(trackRef, kKeyA + ":track:" + fileId);
+    ASSERT_TRUE(index.addSeenOn("a", albumRef));
+    IndexItem withRef = *index.find("a");
+    withRef.tracks[0].seenOn.push_back(trackRef);
+    index.upsert(withRef, kNow);
+    ASSERT_TRUE(index.save());
+
+    LibraryIndex reloaded(store);
+    ASSERT_NE(reloaded.findBySeen(albumRef), nullptr);
+    EXPECT_EQ(reloaded.findBySeen(albumRef)->id, "a");
+    auto hit = reloaded.trackBySeen(trackRef);
+    ASSERT_NE(hit.track, nullptr);
+    EXPECT_EQ(hit.track->location, "/music/a/1.mp3");
+    EXPECT_EQ(LibraryIndex::refOnServer(reloaded.find("a")->tracks[0].seenOn, kKeyA), trackRef);
+    EXPECT_EQ(LibraryIndex::refOnServer(reloaded.find("a")->tracks[0].seenOn, kKeyB), std::nullopt);
+}

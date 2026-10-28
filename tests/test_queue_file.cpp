@@ -208,3 +208,15 @@ TEST(QueueFile, ANegativeOrNonNumericDurationOrPlaceIsZero) {
     EXPECT_EQ(back->position, 0.0);
     EXPECT_EQ(back->queue.at(0).duration, 0.0);
 }
+
+TEST(QueueFile, AnAudiobookshelfFileIdRoundTripsAsATrackId) {
+    QueueEntry e = remote("6f1c2d3e-8a4b-4c5d-9e0f-1a2b3c4d5e6f/12345", "Part 1");
+    e.albumId = "6f1c2d3e-8a4b-4c5d-9e0f-1a2b3c4d5e6f";
+    Queue q;
+    q.replace({e}, 0);
+    auto back = parseQueue(formatQueue({"Book", q, 3}));
+    ASSERT_TRUE(back);
+    ASSERT_EQ(back->queue.size(), 1u);
+    EXPECT_EQ(back->queue.at(0).trackId, "6f1c2d3e-8a4b-4c5d-9e0f-1a2b3c4d5e6f/12345");
+    EXPECT_EQ(back->queue.at(0).albumId, "6f1c2d3e-8a4b-4c5d-9e0f-1a2b3c4d5e6f");
+}

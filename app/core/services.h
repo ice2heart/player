@@ -307,6 +307,17 @@ struct RemoteArtist {
 struct RemoteFolder {
     std::string id, name;
 };
+// A chapter the server knows of, on the book's timeline (all its files in a row).
+struct RemoteChapter {
+    std::string title;
+    double start = 0; // seconds from the start of the book
+};
+// A book as one request gives it: its audio files in order, and the chapters the server lists
+// (empty when it lists none: Subsonic has no chapters, the tracks are the parts).
+struct RemoteBook {
+    std::vector<RemoteTrack> tracks;
+    std::vector<RemoteChapter> chapters;
+};
 struct RemotePlaylist {
     std::string id, name;
     int songCount = 0;
@@ -349,6 +360,11 @@ public:
     virtual RequestId artists(Done<RemoteArtist> done) = 0;
     virtual RequestId artistAlbums(std::string artistId, Done<RemoteAlbum> done) = 0;
     virtual RequestId albumTracks(std::string albumId, Done<RemoteTrack> done) = 0;
+    // A book's files and chapters in one request (Subsonic: getAlbum, no chapters). On an error the book is empty.
+    virtual RequestId book(std::string albumId, std::function<void(Error, RemoteBook)> done) = 0;
+    // What the server's lists are made of: music (Subsonic) or books (Audiobookshelf).
+    enum class Catalogue { Music, Books };
+    virtual Catalogue catalogue() const = 0;
     virtual RequestId playlists(Done<RemotePlaylist> done) = 0;
     virtual RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) = 0;
     // A request carries every track id in its URL, so a server or proxy may refuse a very long one:

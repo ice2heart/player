@@ -533,3 +533,21 @@ TEST_F(SqliteLibraryStoreTest, LibraryIndexRoundTripsOnTheRealStore) {
     ASSERT_NE(index.find("b"), nullptr);
     EXPECT_EQ(index.find("b")->title, "Beta, second edition");
 }
+
+// Audiobookshelf names a file `<item uuid>/<ino>`: a '/' in a stored reference must come back as it went in.
+TEST_F(SqliteLibraryStoreTest, ReferencesWithASlashInTheIdRoundTrip) {
+    const std::string itemRef = kServerA + ":album:6f1c2d3e-8a4b-4c5d-9e0f-1a2b3c4d5e6f";
+    const std::string fileRef = kServerA + ":track:6f1c2d3e-8a4b-4c5d-9e0f-1a2b3c4d5e6f/12345";
+    IndexItem a = album("srv:book", "Book");
+    a.seenOn = {itemRef};
+    a.tracks[0].seenOn = {fileRef};
+    {
+        SqliteLibraryStore store(file);
+        ASSERT_TRUE(store.save({a}, {}));
+    }
+    SqliteLibraryStore reopened(file);
+    auto loaded = byId(reopened.load());
+    ASSERT_EQ(loaded.count(a.id), 1u);
+    EXPECT_EQ(loaded[a.id].seenOn, (std::vector<std::string>{itemRef}));
+    EXPECT_EQ(loaded[a.id].tracks[0].seenOn, (std::vector<std::string>{fileRef}));
+}

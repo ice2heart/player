@@ -302,3 +302,61 @@ TEST(FakeMusicServer, CatalogueVersionIsAnsweredFailedAndCancelledLikeAnyRequest
     server.poll();
     EXPECT_EQ(got.size(), 2u);
 }
+
+TEST(FakeMusicServer, BookIsAnsweredOnlyWhenTheTestSaysSoAndKeepsItsChapters) {
+    FakeMusicServer server;
+    std::vector<std::pair<Server::Error, oap::RemoteBook>> got;
+    auto done = [&](Server::Error e, oap::RemoteBook b) { got.emplace_back(e, std::move(b)); };
+    auto id = server.book("item-1", done);
+    EXPECT_EQ(server.lastRequest().kind, Kind::Book);
+    EXPECT_EQ(server.lastRequest().arg, "item-1");
+    server.poll();
+    EXPECT_TRUE(got.empty()) << "the fake answers a book only when told to";
+
+    oap::RemoteBook book;
+    book.tracks.push_back(RemoteTrack{.id = "item-1/7"});
+    book.chapters.push_back({"One", 0});
+    book.chapters.push_back({"Two", 61.5});
+    ASSERT_TRUE(server.replyBook(id, book));
+    EXPECT_FALSE(server.replyBook(id, book)) << "answered once";
+    server.poll();
+    ASSERT_EQ(got.size(), 1u);
+    EXPECT_EQ(got[0].first, Server::Error::None);
+    ASSERT_EQ(got[0].second.tracks.size(), 1u);
+    EXPECT_EQ(got[0].second.tracks[0].id, "item-1/7");
+    ASSERT_EQ(got[0].second.chapters.size(), 2u);
+    EXPECT_EQ(got[0].second.chapters[1].title, "Two");
+    EXPECT_DOUBLE_EQ(got[0].second.chapters[1].start, 61.5);
+
+    auto failing = server.book("item-2", done);
+    ASSERT_TRUE(server.fail(failing, Server::Error::Server));
+    server.poll();
+    ASSERT_EQ(got.size(), 2u);
+    EXPECT_EQ(got[1].first, Server::Error::Server);
+    EXPECT_TRUE(got[1].second.tracks.empty());
+
+    auto cancelled = server.book("item-3", done);
+    server.cancel(cancelled);
+    EXPECT_FALSE(server.replyBook(cancelled, book));
+    server.poll();
+    EXPECT_EQ(got.size(), 2u);
+
+    auto wrong = server.albumTracks("al", [](Server::Error, std::vector<RemoteTrack>, bool) {});
+    EXPECT_THROW(server.replyBook(wrong, book), std::logic_error);
+}
+
+TEST(FakeMusicServer, BookOfAServerThatIsNotConfiguredFailsOnPoll) {
+    FakeMusicServer server;
+    server.isConfigured = false;
+    Server::Error error = Server::Error::None;
+    server.book("x", [&](Server::Error e, oap::RemoteBook) { error = e; });
+    server.poll();
+    EXPECT_EQ(error, Server::Error::NotConfigured);
+}
+
+TEST(FakeMusicServer, CatalogueIsMusicUnlessTheTestSaysBooks) {
+    FakeMusicServer server;
+    EXPECT_EQ(server.catalogue(), Server::Catalogue::Music);
+    server.catalogueKind = Server::Catalogue::Books;
+    EXPECT_EQ(server.catalogue(), Server::Catalogue::Books);
+}
