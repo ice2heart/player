@@ -1,4 +1,5 @@
 #include "core/app.h"
+#include "core/queue_file.h"
 #include "core/track_cache.h"
 #include "fakes.h"
 #include "frontend/threaded_scanner.h"
@@ -41,6 +42,7 @@ protected:
     void SetUp() override {
         base = testTempDir();
         fs::remove_all(base);
+        queueFile = files.queueFile = base / "config" / "queue.tsv";
         root = base / "books";
         music = base / "music";
         touch(alpha() / "01 - Storm.mp3");
@@ -59,10 +61,51 @@ protected:
         return (alpha() / (n == 1 ? "01 - Storm.mp3" : "02 - Calm.mp3")).string();
     }
 
-    TextFiles* textFiles = &diskFiles(); // what start() gives the App
+    // The files the App is given: the real ones, which count what is written to queue.tsv.
+    class QueueWatchingFiles : public TextFiles {
+    public:
+        std::optional<std::string> read(const fs::path& file) override {
+            if (file == queueFile) ++queueReads;
+            return diskFiles().read(file);
+        }
+        bool writeAtomically(const fs::path& file, const std::string& contents) override {
+            if (file == queueFile) {
+                if (failQueueWrites) return false;
+                ++queueWrites;
+            }
+            return diskFiles().writeAtomically(file, contents);
+        }
+        fs::path queueFile;
+        int queueWrites = 0;
+        int queueReads = 0;
+        bool failQueueWrites = false; // e.g. the card is read-only for a moment
+    };
+    QueueWatchingFiles files;
+    fs::path queueFile; // queue.tsv, next to state.tsv
+    TextFiles* textFiles = &files; // what start() gives the App
+    // What the previous version left in place of queue.tsv: the place of the list that was playing in
+    // state.tsv (`last_stream.*`; `kind` and `id` say which album or playlist it was).
+    void olderState(const std::string& kind = "album", const std::string& id = "al1") {
+        auto text = diskFiles().read(queueFile);
+        auto saved = text ? parseQueue(*text) : std::nullopt;
+        ASSERT_TRUE(saved) << "something was playing";
+        const QueueEntry& e = *saved->queue.current();
+        char at[32];
+        std::snprintf(at, sizeof at, "%.1f", saved->position);
+        stateFile.file["last_stream.server"] = e.serverUrl;
+        stateFile.file["last_stream.user"] = e.user;
+        stateFile.file["last_stream.kind"] = kind;
+        stateFile.file["last_stream.id"] = id;
+        stateFile.file["last_stream.title"] = saved->title;
+        stateFile.file["last_stream.track"] = std::to_string(saved->queue.playOrder()[saved->queue.position()]);
+        stateFile.file["last_stream.track_id"] = e.trackId;
+        stateFile.file["last_stream.pos"] = at;
+        fs::remove(queueFile);
+    }
+
     // Starts the App and, unless `scan` is false, lets its background scan finish.
     void start(bool scan = true) {
-        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache, textFiles);
+        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache, textFiles, queueFile);
         app->start();
         if (scan) ASSERT_NO_FATAL_FAILURE(deliverScan());
     }
@@ -1485,7 +1528,7 @@ TEST_F(AppTest, MusicDoesNotTakeOverTheBookToResume) {
     EXPECT_EQ(state.getString("last_book"), alpha().string());
 }
 
-TEST_F(AppTest, RestartAfterMusicResumesTheBook) {
+TEST_F(AppTest, RestartAfterLocalMusicResumesTheMusicQueueAndKeepsTheBook) {
     playAlpha();
     player.pos = 20;
     hold(Button::Home);
@@ -1495,11 +1538,16 @@ TEST_F(AppTest, RestartAfterMusicResumesTheBook) {
     open("Sunrise");
     hold(Button::Power);
     open("Restart");
-    EXPECT_EQ(app->mode(), App::Mode::Player);
+    ASSERT_EQ(app->mode(), App::Mode::Menu) << "nothing plays until it is chosen";
+    ASSERT_GE(level().items.size(), 2u);
+    EXPECT_EQ(labels()[0], "Now playing");
+    EXPECT_EQ(valueOf(level().items[0]), "Road Trip");
+    EXPECT_EQ(labels()[1], "Continue");
+    EXPECT_EQ(valueOf(level().items[1]), "Alpha");
+    press(Button::Down);
+    press(Button::Ok);
     EXPECT_EQ(player.file, alphaFile(1));
-    EXPECT_DOUBLE_EQ(player.pos, 20);
-    EXPECT_FALSE(player.playing());
-    EXPECT_EQ(speech.last(), "Alpha, paused. Press play to continue.");
+    EXPECT_DOUBLE_EQ(player.pos, 20) << "the book kept its place";
 }
 
 // ---------------------------------------------------------------- two players
@@ -1589,7 +1637,7 @@ TEST_F(AppTest, ContinueThatCannotOpenKeepsThePlayerThatWasLoaded) {
     EXPECT_EQ(valueOf(level().items[1]), "Alpha") << "and the book still parked";
 }
 
-TEST_F(AppTest, RestartForgetsThePlayerThatWasParked) {
+TEST_F(AppTest, RestartKeepsThePlayerThatWasParked) {
     start();
     open("Music");
     open("Play all");
@@ -1603,18 +1651,20 @@ TEST_F(AppTest, RestartForgetsThePlayerThatWasParked) {
     open("Restart");
     ASSERT_EQ(app->mode(), App::Mode::Player);
     hold(Button::Home);
+    ASSERT_GE(level().items.size(), 2u);
     EXPECT_EQ(labels()[0], "Now playing");
     EXPECT_EQ(valueOf(level().items[0]), "Alpha");
-    EXPECT_EQ(labels()[1], "Library") << "local music is not kept across a restart";
+    EXPECT_EQ(labels()[1], "Continue") << "the music queue is still parked";
+    EXPECT_EQ(valueOf(level().items[1]), "All music");
 }
 
-TEST_F(AppTest, LocalMusicPlayedLastDoesNotTakeTheRestartFromTheBook) {
+TEST_F(AppTest, LocalMusicPlayedLastIsThePlayerOfTheRestart) {
     playAlpha();
     hold(Button::Home);
     open("Music");
     open("Play all");
     press(Button::Power);
-    EXPECT_EQ(stateFile.onDisk("last_player"), "book");
+    EXPECT_EQ(stateFile.onDisk("last_player"), "music");
 }
 
 // ---------------------------------------------------------------- library index
@@ -1957,14 +2007,16 @@ TEST_F(AppTest, RemoteTracksSaveNoPositionAndKeepTheBookToResume) {
     EXPECT_EQ(stateFile.onDisk("pos:" + alpha().string()), "0:20.0") << "the book's place is kept";
 }
 
-TEST_F(AppTest, RemoteTracksAloneWriteNoStateOnExit) {
+TEST_F(AppTest, RemoteTracksAloneWriteTheQueueOnExitAndNothingElseNew) {
     start();
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
     player.pos = 50;
     hold(Button::Power);
     open("Power off");
     app->shutdown();
-    EXPECT_EQ(stateFile.saves, 0) << "nothing to remember";
+    EXPECT_EQ(stateFile.saves, 1) << "the player used last";
+    EXPECT_EQ(files.queueWrites, 1);
+    for (const auto& [key, value] : stateFile.file) EXPECT_EQ(key.find("pos:"), std::string::npos) << key;
 }
 
 TEST_F(AppTest, ARemoteTrackThatFailsToOpenTriesNoOtherAndKeepsWhatWasLoaded) {
@@ -3673,9 +3725,13 @@ protected:
     }
     // Exit, and a new App on what was written to state.tsv, as after a reboot.
     // `offline` runs between the two, e.g. to edit config.yaml.
-    void reboot(const std::function<void()>& offline = {}) {
+    // `older`: the state is what the previous version left, the place of the list in state.tsv
+    // (`last_stream.*`, of the playlist `id` when `kind` is "playlist") and no queue.tsv.
+    void reboot(const std::function<void()>& offline = {}, bool older = false, const std::string& kind = "album",
+                const std::string& id = "al1") {
         app->shutdown();
         app.reset();
+        if (older) olderState(kind, id);
         if (offline) offline();
         state = Settings(&stateFile);
         state.load();
@@ -3689,6 +3745,15 @@ protected:
             EXPECT_EQ(value.find("fake://"), std::string::npos) << key;
             EXPECT_EQ(value.find("secret"), std::string::npos) << key;
         }
+        const std::string queue = diskFiles().read(queueFile).value_or("");
+        EXPECT_EQ(queue.find("fake://"), std::string::npos);
+        EXPECT_EQ(queue.find("secret"), std::string::npos);
+    }
+    // What queue.tsv holds.
+    SavedQueue savedQueue() const {
+        auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+        EXPECT_TRUE(saved) << "queue.tsv holds a queue";
+        return saved.value_or(SavedQueue{});
     }
 };
 
@@ -3696,17 +3761,10 @@ TEST_F(ResumeStreamTest, ExitAndRestartResumeTheSameAlbumTrackAndPosition) {
     playFromAlbum("Rain");
     player.pos = 42;
     reboot();
-    EXPECT_EQ(stateFile.onDisk("last_stream.server"), "https://music.example");
-    EXPECT_EQ(stateFile.onDisk("last_stream.user"), "ice");
-    EXPECT_EQ(stateFile.onDisk("last_stream.kind"), "album");
-    EXPECT_EQ(stateFile.onDisk("last_stream.id"), "al1");
-    EXPECT_EQ(stateFile.onDisk("last_stream.title"), "Weather");
-    EXPECT_EQ(stateFile.onDisk("last_stream.track"), "1");
-    EXPECT_EQ(stateFile.onDisk("last_stream.track_id"), "t2");
-    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "42.0");
     expectNoSecretOnDisk();
+    EXPECT_FALSE(stateFile.file.count("last_stream.id")) << "the queue keeps the place now";
 
-    // Like a local book, nothing plays at boot; nothing is asked of the server yet.
+    // Like a local book, nothing plays at boot; nothing is asked of the server, not even the list.
     std::size_t requests = server.requests.size();
     EXPECT_EQ(app->mode(), App::Mode::Menu);
     EXPECT_EQ(speech.last(), "Home. Now playing, Weather, 1 of 8");
@@ -3714,11 +3772,8 @@ TEST_F(ResumeStreamTest, ExitAndRestartResumeTheSameAlbumTrackAndPosition) {
     EXPECT_TRUE(player.opened.empty());
 
     press(Button::Ok); // Now playing
-    EXPECT_EQ(speech.last(), "Loading.");
-    EXPECT_EQ(server.lastRequest().kind, Kind::AlbumTracks);
-    EXPECT_EQ(server.lastRequest().arg, "al1");
-    answer(weather());
-    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t2"}));
+    EXPECT_EQ(server.requests.size(), requests) << "the queue is here already: no list to load";
+    EXPECT_EQ(player.file, "fake://stream/t2");
     EXPECT_DOUBLE_EQ(player.pos, 42);
     EXPECT_TRUE(player.playing());
     EXPECT_EQ(app->mode(), App::Mode::Player);
@@ -3735,7 +3790,7 @@ TEST_F(ResumeStreamTest, ExitAndRestartResumeTheSameAlbumTrackAndPosition) {
 TEST_F(ResumeStreamTest, AResumeThatOpensInTheBackgroundEntersThePlayerOnceOpen) {
     playFromAlbum("Rain");
     player.pos = 42;
-    reboot();
+    reboot({}, true);
     player.holdStreams = true;
     press(Button::Ok);
     answer(weather());
@@ -3750,7 +3805,7 @@ TEST_F(ResumeStreamTest, AResumeThatOpensInTheBackgroundEntersThePlayerOnceOpen)
 TEST_F(ResumeStreamTest, PlayAfterARestartResumesTheStreamToo) {
     playFromAlbum("Rain");
     player.pos = 42;
-    reboot();
+    reboot({}, true);
     press(Button::PlayPause);
     EXPECT_EQ(speech.last(), "Loading.");
     answer(weather());
@@ -3775,7 +3830,7 @@ TEST_F(ResumeStreamTest, ASlashAtTheEndOfTheServerUrlIsTheSameServer) {
 
 TEST_F(ResumeStreamTest, AnUnreadablePlaceStartsTheTrackFromItsStart) {
     playFromAlbum("Rain");
-    reboot();
+    reboot({}, true);
     app.reset();
     state.setString("last_stream.pos", "inf");
     start();
@@ -3792,9 +3847,7 @@ TEST_F(ResumeStreamTest, APlaylistIsLoadedAgainToo) {
     answer(weather());
     open("Sunshine");
     player.pos = 10;
-    reboot();
-    EXPECT_EQ(stateFile.onDisk("last_stream.kind"), "playlist");
-    EXPECT_EQ(stateFile.onDisk("last_stream.id"), "p1");
+    reboot({}, true, "playlist", "p1");
     press(Button::Ok);
     EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
     EXPECT_EQ(server.lastRequest().arg, "p1");
@@ -3806,7 +3859,7 @@ TEST_F(ResumeStreamTest, APlaylistIsLoadedAgainToo) {
 
 TEST_F(ResumeStreamTest, WithTheServerDownResumeSaysServerNotReachableAndStaysResponsive) {
     playFromAlbum("Rain");
-    reboot();
+    reboot({}, true);
     press(Button::Ok);
     ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
     app->tick();
@@ -3824,7 +3877,7 @@ TEST_F(ResumeStreamTest, WithTheServerDownResumeSaysServerNotReachableAndStaysRe
 
 TEST_F(ResumeStreamTest, ATrackThatCannotBeOpenedSaysSoAndLeavesNothingLoaded) {
     playFromAlbum("Rain");
-    reboot();
+    reboot({}, true);
     player.unopenable = {"fake://stream/t2"};
     press(Button::Ok);
     answer(weather());
@@ -3837,7 +3890,7 @@ TEST_F(ResumeStreamTest, ATrackThatCannotBeOpenedSaysSoAndLeavesNothingLoaded) {
 TEST_F(ResumeStreamTest, ATrackThatMovedInTheListIsFoundByItsId) {
     playFromAlbum("Rain");
     player.pos = 42;
-    reboot();
+    reboot({}, true);
     press(Button::Ok);
     auto tracks = weather();
     std::swap(tracks[0], tracks[1]); // Rain is first now
@@ -3850,7 +3903,7 @@ TEST_F(ResumeStreamTest, ATrackThatMovedInTheListIsFoundByItsId) {
 TEST_F(ResumeStreamTest, ATrackGoneFromTheListPlaysTheOneNowInItsPlaceFromItsStart) {
     playFromAlbum("Rain");
     player.pos = 42;
-    reboot();
+    reboot({}, true);
     press(Button::Ok);
     auto tracks = weather();
     tracks.erase(tracks.begin() + 1); // Rain is gone
@@ -3862,7 +3915,7 @@ TEST_F(ResumeStreamTest, ATrackGoneFromTheListPlaysTheOneNowInItsPlaceFromItsSta
 TEST_F(ResumeStreamTest, AListThatGotShorterPlaysItsFirstTrackFromItsStart) {
     playFromAlbum("Sunshine");
     player.pos = 42;
-    reboot();
+    reboot({}, true);
     press(Button::Ok);
     answer(std::vector<RemoteTrack>{weather()[0]});
     EXPECT_EQ(player.file, "fake://stream/t1");
@@ -3879,7 +3932,7 @@ TEST_F(ResumeStreamTest, TheSameTrackTwiceInAPlaylistResumesTheOneThatPlayed) {
     press(Button::Up); // the second Rain, the last item
     press(Button::Ok);
     ASSERT_EQ(app->nowPlaying().chapterIndex, 3);
-    reboot();
+    reboot({}, true, "playlist", "p1");
     press(Button::Ok);
     answer(tracks);
     EXPECT_EQ(app->nowPlaying().chapterIndex, 3);
@@ -3887,7 +3940,7 @@ TEST_F(ResumeStreamTest, TheSameTrackTwiceInAPlaylistResumesTheOneThatPlayed) {
 
 TEST_F(ResumeStreamTest, LeavingHomeWhileTheListLoadsDropsIt) {
     playFromAlbum("Rain");
-    reboot();
+    reboot({}, true);
     press(Button::Ok);
     auto id = server.lastRequest().id;
     open("Library");
@@ -3899,7 +3952,7 @@ TEST_F(ResumeStreamTest, LeavingHomeWhileTheListLoadsDropsIt) {
 
 TEST_F(ResumeStreamTest, SleepWhileTheListLoadsDropsIt) {
     playFromAlbum("Rain");
-    reboot();
+    reboot({}, true);
     press(Button::Ok);
     auto id = server.lastRequest().id;
     press(Button::Power);
@@ -3913,7 +3966,7 @@ TEST_F(ResumeStreamTest, SleepWhileTheListLoadsDropsIt) {
 // front end goes on ticking while "Goodbye" is spoken.
 TEST_F(ResumeStreamTest, PowerOffWhileTheListLoadsDropsIt) {
     playFromAlbum("Rain");
-    reboot();
+    reboot({}, true);
     hold(Button::Power);
     press(Button::PlayPause);
     ASSERT_EQ(speech.last(), "Loading.");
@@ -3931,7 +3984,7 @@ TEST_F(ResumeStreamTest, PowerOffWhileTheListLoadsDropsIt) {
 TEST_F(ResumeStreamTest, OkOnNowPlayingWhileTheTrackOpensEntersThePlayer) {
     playFromAlbum("Rain");
     player.pos = 42;
-    reboot();
+    reboot({}, true);
     player.holdStreams = true;
     press(Button::Ok);
     answer(weather());
@@ -3952,7 +4005,7 @@ TEST_F(ResumeStreamTest, OkOnNowPlayingWhileTheTrackOpensEntersThePlayer) {
 // not a track of what was loaded before it (here: nothing).
 TEST_F(ResumeStreamTest, NextTrackWhileTheResumedTrackOpensPlaysTheNextOne) {
     playFromAlbum("Rain");
-    reboot();
+    reboot({}, true);
     player.holdStreams = true;
     press(Button::Ok);
     answer(weather());
@@ -3971,7 +4024,7 @@ TEST_F(ResumeStreamTest, NextTrackWhileTheResumedTrackOpensPlaysTheNextOne) {
 // nothing loaded: the player is left, back on Home, as when it fails from Home.
 TEST_F(ResumeStreamTest, AResumeThatFailsInThePlayerGoesBackToHome) {
     playFromAlbum("Rain");
-    reboot();
+    reboot({}, true);
     player.holdStreams = true;
     press(Button::Ok);
     answer(weather());
@@ -3993,7 +4046,7 @@ TEST_F(ResumeStreamTest, AResumeThatFailsInThePlayerGoesBackToHome) {
 // device wakes on Home, not in a player with nothing in it.
 TEST_F(ResumeStreamTest, SleepWhileTheResumedTrackOpensInThePlayerWakesOnHome) {
     playFromAlbum("Rain");
-    reboot();
+    reboot({}, true);
     player.holdStreams = true;
     press(Button::Ok);
     answer(weather());
@@ -4009,7 +4062,7 @@ TEST_F(ResumeStreamTest, SleepWhileTheResumedTrackOpensInThePlayerWakesOnHome) {
 
 TEST_F(ResumeStreamTest, ShutdownWhileTheListLoadsDropsIt) {
     playFromAlbum("Rain");
-    reboot();
+    reboot({}, true);
     press(Button::Ok);
     auto id = server.lastRequest().id;
     app->shutdown();
@@ -4027,9 +4080,8 @@ TEST_F(ResumeStreamTest, ALocalBookPlayedAfterTheStreamIsResumedInstead) {
     EXPECT_EQ(player.file, alphaFile(1));
     EXPECT_DOUBLE_EQ(player.pos, 20);
     EXPECT_EQ(speech.last(), "Alpha, paused. Press play to continue.");
-    EXPECT_EQ(stateFile.onDisk("last_stream.id"), "al1") << "the stream keeps its place";
     press(Button::Home);
-    EXPECT_EQ(labels()[1], "Continue") << "the stream is the other player";
+    EXPECT_EQ(labels()[1], "Continue") << "the stream is the other player, with its queue";
     EXPECT_EQ(speech.last(), "Now playing, Alpha, 1 of 9");
 }
 
@@ -4082,16 +4134,16 @@ TEST_F(ResumeStreamTest, TheStreamKeepsItsPlaceWhileABookPlaysAndAfterARestart) 
     open("Alpha");
     reboot();
     EXPECT_EQ(stateFile.onDisk("last_player"), "book");
-    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "42.0");
     ASSERT_EQ(app->mode(), App::Mode::Player) << "the book played last";
     hold(Button::Home);
     EXPECT_EQ(valueOf(level().items[1]), "Weather");
+    std::size_t requests = server.requests.size();
     press(Button::Down);
     press(Button::Ok);
-    EXPECT_EQ(speech.last(), "Loading.");
-    answer(weather());
+    EXPECT_EQ(server.requests.size(), requests) << "the parked queue is here: no list to load";
     EXPECT_EQ(player.file, "fake://stream/t2");
     EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
 }
 
 TEST_F(ResumeStreamTest, ContinueWhileTheSavedStreamLoadsDropsItsLateAnswer) {
@@ -4106,7 +4158,7 @@ TEST_F(ResumeStreamTest, ContinueWhileTheSavedStreamLoadsDropsItsLateAnswer) {
     open("Weather");
     answer(weather());
     open("Rain");
-    reboot();
+    reboot({}, true);
     ASSERT_EQ(labels()[1], "Continue");
     press(Button::Ok); // Now playing: loads the stream
     auto id = server.lastRequest().id;
@@ -4156,11 +4208,13 @@ TEST_F(ResumeStreamTest, PlayWithNothingLoadedResumesThePlayerUsedLast) {
     open("Weather");
     answer(weather());
     open("Rain");
+    player.pos = 42;
     reboot();
     ASSERT_EQ(app->mode(), App::Mode::Menu);
     press(Button::PlayPause);
-    EXPECT_EQ(speech.last(), "Loading.");
-    EXPECT_EQ(server.lastRequest().kind, Kind::AlbumTracks) << "the stream, not the book";
+    EXPECT_EQ(player.file, "fake://stream/t2") << "the stream, not the book";
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
 }
 
 TEST_F(ResumeStreamTest, PlayFallsBackToTheOtherPlayerWhenTheLastOneCannotOpen) {
@@ -4178,45 +4232,60 @@ TEST_F(ResumeStreamTest, PlayFallsBackToTheOtherPlayerWhenTheLastOneCannotOpen) 
     start();
     ASSERT_EQ(app->mode(), App::Mode::Menu) << "the book did not open";
     press(Button::PlayPause);
-    EXPECT_EQ(server.lastRequest().kind, Kind::AlbumTracks) << "the stream is tried after the book";
+    EXPECT_EQ(player.file, "fake://stream/t2") << "the queue is tried after the book";
+    EXPECT_TRUE(player.playing());
 }
 
-TEST_F(ResumeStreamTest, AStreamFromAnotherServerIsNotResumed) {
+TEST_F(ResumeStreamTest, AQueueOfAnotherServerIsKeptButItsTracksAreUnavailable) {
     playFromAlbum("Rain");
-    state.setString("last_book", alpha().string()); // as if Alpha had played before
     reboot([this] { settings.setString("server.url", "https://other.example"); });
-    EXPECT_EQ(app->mode(), App::Mode::Player) << "the book resumes instead";
-    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_EQ(labels().front(), "Now playing") << "the queue is the user's, whatever server it came from";
+    press(Button::Ok);
+    EXPECT_TRUE(speech.heard("2 tracks, source unavailable.")) << "skipped, as in any queue";
+    EXPECT_TRUE(player.opened.empty());
 }
 
-TEST_F(ResumeStreamTest, AStreamOfAnotherUserIsNotResumed) {
+TEST_F(ResumeStreamTest, AQueueOfAnotherUserIsKeptButItsTracksAreUnavailable) {
     playFromAlbum("Rain");
     reboot([this] { settings.setString("server.user", "guest"); });
-    EXPECT_EQ(labels().front(), "Library");
+    EXPECT_EQ(labels().front(), "Now playing");
+    press(Button::Ok);
+    EXPECT_TRUE(speech.heard("2 tracks, source unavailable."));
+    EXPECT_TRUE(player.opened.empty());
 }
 
-TEST_F(ResumeStreamTest, WithoutAServerTheStreamIsNotResumed) {
+TEST_F(ResumeStreamTest, WithoutAServerTheQueueIsKeptButItsTracksAreUnavailable) {
     playFromAlbum("Rain");
     reboot([this] { server.isConfigured = false; });
-    EXPECT_EQ(labels().front(), "Library");
+    EXPECT_EQ(labels().front(), "Now playing");
+    press(Button::Ok);
+    EXPECT_TRUE(speech.heard("2 tracks, source unavailable."));
+    EXPECT_TRUE(player.opened.empty());
 }
 
-TEST_F(ResumeStreamTest, AListNotFromTheServerMenusIsNotKept) {
+TEST_F(ResumeStreamTest, AListNotFromTheServerMenusIsKeptToo) {
     start();
     ASSERT_TRUE(app->playRemote("Weather", weather(), 1));
     reboot();
-    for (const auto& [key, value] : stateFile.file) EXPECT_NE(key.rfind("last_stream.", 0), 0u) << key;
-    EXPECT_EQ(labels().front(), "Library");
+    EXPECT_EQ(labels().front(), "Now playing");
+    EXPECT_EQ(valueOf(level().items[0]), "Weather");
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "fake://stream/t2");
 }
 
-TEST_F(ResumeStreamTest, ATitleWithALineBreakIsKeptOnOneLine) {
+TEST_F(ResumeStreamTest, ATitleWithATabAndALineBreakComesBackAsItWas) {
     openList("Recently added");
     answer(std::vector<RemoteAlbum>{{"al1", "Wind\tand\nRain", "Band", 3}});
     open("Wind\tand\nRain");
     answer(weather());
     open("Rain");
     reboot();
-    EXPECT_EQ(stateFile.onDisk("last_stream.title"), "Wind\tand Rain") << "a tab is fine in a TSV value";
+    EXPECT_EQ(valueOf(level().items[0]), "Wind\tand\nRain");
+    std::ifstream in(queueFile);
+    std::string line;
+    int lines = 0;
+    while (std::getline(in, line)) ++lines;
+    EXPECT_EQ(lines, 11) << "the line break did not split a line";
 }
 
 TEST_F(ResumeStreamTest, AStreamThatEndedResumesAtTheStartOfTheList) {
@@ -4224,8 +4293,9 @@ TEST_F(ResumeStreamTest, AStreamThatEndedResumesAtTheStartOfTheList) {
     player.atEnd = true;
     app->tick(); // End of queue
     reboot();
-    EXPECT_EQ(stateFile.onDisk("last_stream.track"), "0");
-    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "0.0");
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
 }
 
 TEST_F(ResumeStreamTest, AFailedStreamIsKeptAtThePlaceItGotTo) {
@@ -4234,8 +4304,9 @@ TEST_F(ResumeStreamTest, AFailedStreamIsKeptAtThePlaceItGotTo) {
     player.broken = true;
     app->tick(); // Server not reachable: closed, opened again at 77 on Play
     reboot();
-    EXPECT_EQ(stateFile.onDisk("last_stream.track_id"), "t2");
-    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "77.0");
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 77);
 }
 
 TEST_F(ResumeStreamTest, AnExitWhileTheResumedTrackOpensKeepsItsPlace) {
@@ -4243,11 +4314,12 @@ TEST_F(ResumeStreamTest, AnExitWhileTheResumedTrackOpensKeepsItsPlace) {
     player.pos = 42;
     reboot();
     player.holdStreams = true;
-    press(Button::Ok);
-    answer(weather()); // Rain is opening
+    press(Button::Ok); // Rain is opening
+    ASSERT_TRUE(player.opening());
     reboot();
-    EXPECT_EQ(stateFile.onDisk("last_stream.track_id"), "t2");
-    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "42.0");
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
 }
 
 // The SD card is written only when the device sleeps or exits cleanly.
@@ -4266,6 +4338,7 @@ TEST_F(ResumeStreamTest, StreamingWritesNothingToDiskUntilExit) {
     hold(Button::Forward);    // a track change
     ASSERT_EQ(player.file, "fake://stream/t3");
     EXPECT_EQ(stateFile.saves, 0);
+    EXPECT_EQ(files.queueWrites, 0);
     EXPECT_EQ(configFile.saves, 0);
 }
 
@@ -4273,8 +4346,8 @@ TEST_F(ResumeStreamTest, AResumedStreamWritesNothingToDiskUntilExit) {
     playFromAlbum("Rain");
     reboot();
     int saves = stateFile.saves;
+    int queueWrites = files.queueWrites;
     press(Button::Ok);
-    answer(weather());
     ASSERT_TRUE(player.playing());
     for (int i = 0; i < 10; ++i) {
         player.pos += 30;
@@ -4284,35 +4357,40 @@ TEST_F(ResumeStreamTest, AResumedStreamWritesNothingToDiskUntilExit) {
     press(Button::PlayPause);
     hold(Button::Forward);
     EXPECT_EQ(stateFile.saves, saves);
+    EXPECT_EQ(files.queueWrites, queueWrites);
     EXPECT_EQ(configFile.saves, 0);
 }
 
-TEST_F(ResumeStreamTest, SleepWritesTheStreamPlaceOnce) {
+TEST_F(ResumeStreamTest, SleepWritesTheQueueOnce) {
     playFromAlbum("Rain");
     player.pos = 33;
     press(Button::Power);
     EXPECT_EQ(stateFile.saves, 1);
-    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "33.0");
+    EXPECT_EQ(files.queueWrites, 1);
+    EXPECT_DOUBLE_EQ(savedQueue().position, 33);
     EXPECT_EQ(configFile.saves, 0);
 }
 
-TEST_F(ResumeStreamTest, PowerOffWritesTheStreamPlaceOnce) {
+TEST_F(ResumeStreamTest, PowerOffWritesTheQueueOnce) {
     playFromAlbum("Rain");
     player.pos = 34;
     hold(Button::Power);
     open("Power off");
     EXPECT_EQ(stateFile.saves, 1);
-    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "34.0");
+    EXPECT_EQ(files.queueWrites, 1);
+    EXPECT_DOUBLE_EQ(savedQueue().position, 34);
     app->shutdown();
     EXPECT_EQ(stateFile.saves, 1) << "nothing changed since";
+    EXPECT_EQ(files.queueWrites, 1) << "nothing changed since";
 }
 
-TEST_F(ResumeStreamTest, ShutdownWritesTheStreamPlaceOnce) {
+TEST_F(ResumeStreamTest, ShutdownWritesTheQueueOnce) {
     playFromAlbum("Rain");
     player.pos = 35;
     app->shutdown();
     EXPECT_EQ(stateFile.saves, 1);
-    EXPECT_EQ(stateFile.onDisk("last_stream.pos"), "35.0");
+    EXPECT_EQ(files.queueWrites, 1);
+    EXPECT_DOUBLE_EQ(savedQueue().position, 35);
     EXPECT_EQ(configFile.saves, 0);
 }
 
@@ -5531,28 +5609,6 @@ TEST_F(DownloadedTest, ATrackPlaysFromThereAndKeepsItsNameFromTheManifest) {
     EXPECT_EQ(level().title, "Weather") << "back in the list it was chosen from";
 }
 
-TEST_F(DownloadedTest, ADownloadedPlaylistResumesAfterARestart) {
-    seed(playlistSource("pl1"), "Road songs", "", {{"r1", "Highway"}, {"r2", "Sunrise"}});
-    openDownload("Road songs");
-    open("Sunrise");
-    app->shutdown();
-    EXPECT_EQ(state.getString("last_stream.kind"), "playlist");
-    EXPECT_EQ(state.getString("last_stream.id"), "pl1");
-    EXPECT_EQ(state.getString("last_stream.title"), "Road songs");
-    EXPECT_EQ(state.getString("last_stream.track"), "1");
-    EXPECT_EQ(state.getString("last_stream.track_id"), "r2");
-    EXPECT_EQ(state.getString("last_stream.user"), "bob");
-}
-
-TEST_F(DownloadedTest, ADownloadedAlbumResumesAsAnAlbum) {
-    seedWeather();
-    openDownload("Weather");
-    press(Button::Ok);
-    app->shutdown();
-    EXPECT_EQ(state.getString("last_stream.kind"), "album");
-    EXPECT_EQ(state.getString("last_stream.id"), "al1");
-}
-
 TEST_F(DownloadedTest, DeleteDownloadOpensOnCancel) {
     RemoteSource al = seedWeather();
     openDownload("Weather");
@@ -5730,6 +5786,7 @@ protected:
     void reboot() {
         app->shutdown();
         app.reset();
+        olderState(); // the stream resumes from the place the previous version kept
         state = Settings(&stateFile);
         state.load();
         player = FakePlayer{};
@@ -10048,19 +10105,6 @@ TEST_F(OptionsTest, TracksAddedWhileABookPlaysJoinTheQueueThatWaits) {
     EXPECT_EQ(app->nowPlaying().chapterCount, 4);
 }
 
-TEST_F(OptionsTest, APlaylistPlayedNowIsResumedAsAPlaylistAfterARestart) {
-    start();
-    open("Server");
-    open("Playlists");
-    answer(std::vector<RemotePlaylist>{{"p1", "Road songs", 3}});
-    options("Play now");
-    answer(weather());
-    finishOpen();
-    app->shutdown();
-    EXPECT_EQ(stateFile.onDisk("last_stream.kind"), "playlist");
-    EXPECT_EQ(stateFile.onDisk("last_stream.id"), "p1");
-}
-
 TEST_F(OptionsTest, AScreenOpenedOverTheOptionsWhileAnAlbumLoadsDropsTheAnswer) {
     state.setString("last_stream.server", "https://music.example");
     state.setString("last_stream.user", "ice");
@@ -11213,9 +11257,8 @@ TEST_F(QueueListTest, RemovingTheCurrentEntryCancelsTheEndOfTrackTimerSetForIt) 
 
 TEST_F(ResumeStreamTest, ClearingTheQueueForgetsTheStreamSoHomeDoesNotOfferItAfterARestart) {
     playFromAlbum("Rain");
-    reboot(); // the place is saved
+    reboot(); // the queue is saved
     press(Button::Ok); // Now playing
-    answer(weather());
     ASSERT_EQ(app->mode(), App::Mode::Player);
     press(Button::Ok); // Player menu
     open("Queue");
@@ -11225,4 +11268,422 @@ TEST_F(ResumeStreamTest, ClearingTheQueueForgetsTheStreamSoHomeDoesNotOfferItAft
     reboot();
     EXPECT_EQ(labels().front(), "Library");
     EXPECT_FALSE(hasLabel("Now playing"));
+}
+
+// ---------------------------------------------------------------- keeping the queue (queue.md, step 2.8)
+
+class KeepQueueTest : public QueueListTest {
+protected:
+    void SetUp() override {
+        QueueListTest::SetUp();
+        settings.setString("server.password", "hunter2");
+    }
+    // Exit, and a new App on what was written, as after a reboot. `offline` runs between the two.
+    void restart(const std::function<void()>& offline = {}) {
+        app->shutdown();
+        app.reset();
+        if (offline) offline();
+        state = Settings(&stateFile);
+        state.load();
+        player = FakePlayer{};
+        speech.said.clear();
+        sounds.played.clear();
+        start();
+    }
+    // The queue.tsv on disk, empty if there is none.
+    std::string queueText() const { return diskFiles().read(queueFile).value_or(""); }
+    std::optional<SavedQueue> savedQueue() const { return parseQueue(queueText()); }
+    // The entries of the Queue list, from the player.
+    std::vector<std::string> listedQueue() {
+        if (!openQueue_()) return {};
+        std::vector<std::string> out = queueEntries();
+        press(Button::Home);
+        press(Button::Home);
+        return out;
+    }
+    bool openQueue_() {
+        openQueue();
+        return level().title == "Queue";
+    }
+    // Player menu > `setting` > `value`.
+    void choose(const std::string& setting, const std::string& value) {
+        ASSERT_NO_FATAL_FAILURE(toPlayer());
+        press(Button::Ok);
+        open(setting);
+        open(value);
+    }
+    std::string setting(const std::string& name) {
+        toPlayer();
+        press(Button::Ok);
+        for (const MenuItem& item : level().items)
+            if (item.label == name) {
+                std::string v = valueOf(item);
+                press(Button::Home);
+                return v;
+            }
+        return "?";
+    }
+    std::vector<QueueEntry> mix() {
+        QueueEntry storm = localEntry(alphaFile(1), "Storm");
+        QueueEntry calm = localEntry(alphaFile(2), "Calm");
+        storm.artist = "Local Band";
+        return {storm, remoteEntry("t2", "Rain"), calm, remoteEntry("t4", "Fog"), remoteEntry("t5", "Dusk")};
+    }
+};
+
+TEST_F(KeepQueueTest, SleepThenRestartKeepsTheMixedShuffledQueueItsPlaceAndRepeat) {
+    play(mix(), 1);
+    ASSERT_NO_FATAL_FAILURE(choose("Shuffle", "tracks"));
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
+    // Move on in the shuffled order: the current entry is whatever comes next.
+    ASSERT_NO_FATAL_FAILURE(toPlayer());
+    hold(Button::Forward);
+    player.pos = 77;
+    const std::vector<std::string> before = listedQueue();
+    const std::string playing = app->nowPlaying().chapter;
+    ASSERT_EQ(before.size(), 5u);
+    ASSERT_NO_FATAL_FAILURE(toPlayer());
+    press(Button::Power); // sleep writes the queue
+    ASSERT_EQ(files.queueWrites, 1);
+
+    restart();
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(labels().front(), "Now playing");
+    EXPECT_EQ(valueOf(level().items[0]), "Mixed");
+    EXPECT_TRUE(player.opened.empty()) << "nothing plays until it is chosen";
+    press(Button::Ok);
+    EXPECT_TRUE(player.playing());
+    EXPECT_DOUBLE_EQ(player.pos, 77);
+    EXPECT_EQ(app->nowPlaying().chapter, playing);
+    EXPECT_EQ(listedQueue(), before) << "the same entries in the same play order";
+    EXPECT_EQ(setting("Shuffle"), "tracks");
+    EXPECT_EQ(setting("Repeat"), "all");
+}
+
+TEST_F(KeepQueueTest, ARestoredQueueIsTheOneTheUserEditedAndKeepsItsPreviousQueueRule) {
+    play(tracks(4), 0);
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T3", "Remove")); // an edit
+    restart();
+    press(Button::Ok);
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    ASSERT_TRUE(app->playQueue("Other", {remoteEntry("x1", "X1")}));
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    EXPECT_TRUE(hasLabel("Previous queue")) << "the edited flag was kept";
+}
+
+TEST_F(KeepQueueTest, ExitWritesTheQueueAndASecondExitWithNoChangeWritesNothing) {
+    play(mix(), 1);
+    player.pos = 20;
+    hold(Button::Power);
+    open("Power off");
+    ASSERT_TRUE(app->quitRequested());
+    EXPECT_EQ(files.queueWrites, 1);
+    ASSERT_TRUE(savedQueue());
+    EXPECT_EQ(savedQueue()->queue.size(), 5u);
+    app->shutdown(); // the front end calls it too
+    EXPECT_EQ(files.queueWrites, 1) << "nothing changed since";
+    app->shutdown();
+    EXPECT_EQ(files.queueWrites, 1);
+}
+
+TEST_F(KeepQueueTest, AnExitAfterASleepWithNoChangeWritesNothing) {
+    play(mix(), 1);
+    player.pos = 20;
+    press(Button::Power);
+    ASSERT_EQ(files.queueWrites, 1);
+    press(Button::Ok); // wake
+    hold(Button::Power);
+    open("Power off");
+    app->shutdown();
+    EXPECT_EQ(files.queueWrites, 1);
+    ASSERT_TRUE(savedQueue());
+    EXPECT_DOUBLE_EQ(savedQueue()->position, 20);
+}
+
+TEST_F(KeepQueueTest, AnotherShutdownAfterShutdownDoesNotWriteThePlaceAsZero) {
+    play(mix(), 1);
+    player.pos = 20;
+    app->shutdown();
+    app->shutdown(); // the front end's SIGTERM handler and the window closing
+    EXPECT_EQ(files.queueWrites, 1);
+    ASSERT_TRUE(savedQueue());
+    EXPECT_DOUBLE_EQ(savedQueue()->position, 20);
+}
+
+TEST_F(KeepQueueTest, AChangeAfterTheLastWriteIsWrittenAtTheNextExit) {
+    play(mix(), 1);
+    player.pos = 20;
+    press(Button::Power);
+    ASSERT_EQ(files.queueWrites, 1);
+    press(Button::Ok); // wake
+    hold(Button::Forward); // another track
+    hold(Button::Power);
+    open("Power off");
+    EXPECT_EQ(files.queueWrites, 2);
+    EXPECT_EQ(savedQueue()->queue.position(), 2u);
+}
+
+TEST_F(KeepQueueTest, ALostWriteIsTriedAgainAtTheNextExit) {
+    play(mix(), 1);
+    files.failQueueWrites = true;
+    press(Button::Power);
+    EXPECT_EQ(files.queueWrites, 0);
+    EXPECT_FALSE(savedQueue());
+    files.failQueueWrites = false;
+    press(Button::Ok); // wake
+    app->shutdown();
+    EXPECT_EQ(files.queueWrites, 1);
+    EXPECT_TRUE(savedQueue());
+}
+
+TEST_F(KeepQueueTest, NothingInQueueTsvIsAStreamUrlATokenOrThePassword) {
+    play(mix(), 1);
+    app->shutdown();
+    const std::string text = queueText();
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("t2"), std::string::npos) << "the track id is kept";
+    for (const char* secret : {"fake://", "stream", "hunter2", "t=", "s=", "u=", "p=", "password", "token"})
+        EXPECT_EQ(text.find(secret), std::string::npos) << secret;
+    for (const auto& [key, value] : stateFile.file) EXPECT_EQ(value.find("hunter2"), std::string::npos) << key;
+}
+
+TEST_F(KeepQueueTest, AQueueOfMoreThan5000EntriesIsCutAroundTheCurrentOne) {
+    std::vector<QueueEntry> many;
+    for (size_t i = 0; i < kMaxSavedEntries + 700; ++i) many.push_back(remoteEntry("t" + std::to_string(i), "T" + std::to_string(i)));
+    play(many, 3000);
+    app->shutdown();
+    ASSERT_TRUE(savedQueue());
+    const Queue q = savedQueue()->queue;
+    ASSERT_EQ(q.size(), kMaxSavedEntries);
+    EXPECT_EQ(q.current()->trackId, "t3000");
+    EXPECT_EQ(q.at(0).trackId, "t" + std::to_string(3000 - kMaxSavedEntries / 2));
+
+    restart();
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "fake://stream/t3000");
+}
+
+TEST_F(KeepQueueTest, ACorruptQueueFileStartsWithoutAQueueAndIsReplaced) {
+    const std::string good = [&] {
+        play(mix(), 1);
+        app->shutdown();
+        return queueText();
+    }();
+    ASSERT_FALSE(good.empty());
+    const std::vector<std::string> bad = {"garbage", std::string("\0\xff\xfe\t\t\n\n", 8), good.substr(0, good.size() / 2) + "\tR\tx",
+                                          "oap-queue\t1\nL\t/a\n", "oap-queue\t9\n" + good.substr(good.find('\n') + 1)};
+    for (const std::string& text : bad) {
+        app.reset();
+        ASSERT_TRUE(diskFiles().writeAtomically(queueFile, text));
+        files.queueWrites = 0;
+        player = FakePlayer{};
+        state = Settings(&stateFile);
+        state.load();
+        start();
+        EXPECT_FALSE(hasLabel("Now playing")) << text;
+        EXPECT_EQ(labels().front(), "Library");
+        press(Button::Ok); // the app answers its keys
+        app->shutdown();
+        EXPECT_EQ(files.queueWrites, 1) << "the damaged file is replaced";
+        EXPECT_FALSE(savedQueue());
+    }
+}
+
+TEST_F(KeepQueueTest, ABrokenOrderAndPositionStillGiveAQueue) {
+    const std::string text = "oap-queue\t1\ntitle\tHand made\nshuffle\ttracks\nposition\t9\norder\t0\t0\t7\n"
+                             "R\thttps://music.example\tann\tt1\t\tOne\tAlbum\tBand\t10\n"
+                             "R\thttps://music.example\tann\tt2\t\tTwo\tAlbum\tBand\t10\n";
+    ASSERT_TRUE(diskFiles().writeAtomically(queueFile, text));
+    start();
+    ASSERT_EQ(labels().front(), "Now playing");
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "fake://stream/t1") << "the first entry";
+    EXPECT_EQ(listedQueue(), (std::vector<std::string>{"One", "Two"}));
+    EXPECT_EQ(setting("Shuffle"), "off");
+}
+
+TEST_F(KeepQueueTest, AFileTooLongToReadIsNotReadAndIsReplaced) {
+    fs::create_directories(queueFile.parent_path());
+    {
+        std::ofstream(queueFile) << "x";
+    }
+    fs::resize_file(queueFile, kMaxQueueFileBytes + 1); // sparse: nothing is written
+    start();
+    EXPECT_EQ(files.queueReads, 0) << "a file that long is not read";
+    EXPECT_EQ(labels().front(), "Library");
+    app->shutdown();
+    EXPECT_LT(fs::file_size(queueFile), 10u) << "replaced by an empty file";
+}
+
+TEST_F(KeepQueueTest, TitlesWithTabsAndLineBreaksComeBack) {
+    std::vector<QueueEntry> entries = {remoteEntry("t1", "Wind\tand\nRain"), remoteEntry("t2", "Back\\slash \r end")};
+    entries[0].album = "Al\tbum";
+    play(entries, 0);
+    restart();
+    press(Button::Ok);
+    EXPECT_EQ(listedQueue(), (std::vector<std::string>{"Wind\tand\nRain", "Back\\slash \r end"}));
+}
+
+TEST_F(KeepQueueTest, ClearQueueThenExitLeavesNoQueueAfterARestart) {
+    play(mix(), 1);
+    press(Button::Power);
+    press(Button::Ok); // wake
+    ASSERT_TRUE(savedQueue());
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    open("Clear queue");
+    open("Clear queue");
+    app->shutdown();
+    EXPECT_FALSE(savedQueue());
+    restart();
+    EXPECT_FALSE(hasLabel("Now playing"));
+    EXPECT_EQ(labels().front(), "Library");
+}
+
+TEST_F(KeepQueueTest, ARemovedLastEntryLeavesNoQueueAfterARestart) {
+    play(tracks(1), 0);
+    press(Button::Power);
+    press(Button::Ok);
+    ASSERT_TRUE(savedQueue());
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T1", "Remove"));
+    restart();
+    EXPECT_FALSE(hasLabel("Now playing"));
+}
+
+TEST_F(KeepQueueTest, AParkedMusicQueueSurvivesARestartWhileABookPlays) {
+    play(mix(), 1);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "track"));
+    player.pos = 33;
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    player.pos = 12;
+    const std::string alpha1 = alphaFile(1);
+    restart();
+    ASSERT_EQ(app->mode(), App::Mode::Player) << "the book played last";
+    EXPECT_EQ(player.file, alpha1);
+    EXPECT_DOUBLE_EQ(player.pos, 12);
+    hold(Button::Home);
+    EXPECT_EQ(labels()[0], "Now playing");
+    EXPECT_EQ(valueOf(level().items[0]), "Alpha");
+    ASSERT_EQ(labels()[1], "Continue");
+    EXPECT_EQ(valueOf(level().items[1]), "Mixed");
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 33);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(setting("Repeat"), "track");
+    EXPECT_EQ(listedQueue().size(), 5u);
+}
+
+TEST_F(KeepQueueTest, TheQueueOfTheBookThatIsNotLoadedYetIsNotLost) {
+    play(mix(), 1);
+    app->shutdown();
+    // A restart where nothing is played, twice: the second one still has the queue.
+    for (int i = 0; i < 2; ++i) {
+        files.queueWrites = 0;
+        restart();
+        ASSERT_TRUE(hasLabel("Now playing")) << i;
+        app->shutdown();
+        EXPECT_EQ(files.queueWrites, 0) << "nothing changed: the file is as it was";
+    }
+}
+
+TEST_F(KeepQueueTest, OkOnNowPlayingThatCannotOpenSaysSoAndKeepsTheQueue) {
+    play(tracks(3), 1);
+    player.pos = 40;
+    restart();
+    player.unopenable = {"fake://stream/t2"};
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Cannot play T2. Server not reachable.");
+    EXPECT_EQ(labels().front(), "Now playing") << "it can be tried again";
+    player.unopenable.clear();
+    press(Button::Ok); // Now playing again: it plays from where it was
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 40);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+}
+
+TEST_F(KeepQueueTest, FactoryResetForgetsTheQueue) {
+    play(mix(), 1);
+    press(Button::Power);
+    press(Button::Ok);
+    ASSERT_TRUE(savedQueue());
+    hold(Button::Home);
+    open("System");
+    open("Factory reset");
+    open("Erase all settings");
+    EXPECT_FALSE(savedQueue());
+    EXPECT_FALSE(hasLabel("Now playing"));
+}
+
+TEST_F(KeepQueueTest, OldLastStreamKeysBecomeAQueueAndAreRemoved) {
+    settings.setString("server.user", "ann");
+    state.setString("last_stream.server", "https://music.example");
+    state.setString("last_stream.user", "ann");
+    state.setString("last_stream.kind", "album");
+    state.setString("last_stream.id", "al1");
+    state.setString("last_stream.title", "Weather");
+    state.setString("last_stream.track", "1");
+    state.setString("last_stream.track_id", "t2");
+    state.setString("last_stream.pos", "42.0");
+    start();
+    EXPECT_EQ(speech.last(), "Home. Now playing, Weather, 1 of 8");
+    press(Button::Ok); // the list is loaded once, as before
+    EXPECT_EQ(speech.last(), "Loading.");
+    ASSERT_EQ(server.lastRequest().kind, Kind::AlbumTracks);
+    ASSERT_TRUE(server.reply(server.lastRequest().id, weather()));
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
+
+    app->shutdown();
+    for (const auto& [key, value] : stateFile.file) EXPECT_NE(key.rfind("last_stream.", 0), 0u) << key << ": removed";
+    ASSERT_TRUE(savedQueue());
+    EXPECT_EQ(savedQueue()->title, "Weather");
+    EXPECT_EQ(savedQueue()->queue.size(), 3u);
+    EXPECT_EQ(savedQueue()->queue.current()->trackId, "t2");
+    EXPECT_DOUBLE_EQ(savedQueue()->position, 42);
+
+    restart(); // from the queue now: nothing is loaded
+    const size_t requests = server.requests.size();
+    press(Button::Ok);
+    EXPECT_EQ(server.requests.size(), requests);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+}
+
+TEST_F(KeepQueueTest, OldLastStreamKeysAreRemovedWhenAnotherQueuePlaysInstead) {
+    state.setString("last_stream.server", "https://music.example");
+    state.setString("last_stream.user", "ann");
+    state.setString("last_stream.kind", "album");
+    state.setString("last_stream.id", "al1");
+    state.setString("last_stream.title", "Weather");
+    state.setString("last_stream.track_id", "t1");
+    start();
+    ASSERT_TRUE(app->playQueue("Mixed", tracks(2)));
+    app->shutdown();
+    for (const auto& [key, value] : stateFile.file) EXPECT_NE(key.rfind("last_stream.", 0), 0u) << key;
+    restart();
+    EXPECT_EQ(valueOf(level().items[0]), "Mixed");
+}
+
+TEST_F(KeepQueueTest, TheQueueWinsOverOldLastStreamKeys) {
+    play(tracks(3), 2);
+    app->shutdown();
+    app.reset();
+    stateFile.file["last_stream.server"] = "https://music.example";
+    stateFile.file["last_stream.user"] = "ann";
+    stateFile.file["last_stream.kind"] = "album";
+    stateFile.file["last_stream.id"] = "al1";
+    stateFile.file["last_stream.title"] = "Weather";
+    stateFile.file["last_stream.track_id"] = "t1";
+    state = Settings(&stateFile);
+    state.load();
+    start();
+    EXPECT_EQ(valueOf(level().items[0]), "Mixed");
+    app->shutdown();
+    for (const auto& [key, value] : stateFile.file) EXPECT_NE(key.rfind("last_stream.", 0), 0u) << key;
 }

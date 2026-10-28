@@ -2,6 +2,7 @@
 
 #include "album_merge.h"
 
+#include "queue_file.h"
 #include "text.h"
 #include "track_cache.h"
 
@@ -292,10 +293,10 @@ MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn, L
 App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
          Downloader& downloader, LibraryStore& libraryStore, LibraryScanner& scanner, Settings& config, Settings& state,
          Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot, std::filesystem::path cacheRoot,
-         TextFiles* files)
+         TextFiles* files, std::filesystem::path queueFile)
     : tts_(speech), player_(player), earcons_(sounds), volume_(volume), server_(server), downloader_(downloader),
       index_(libraryStore), scanner_(scanner), config_(config), state_(state),
-      savedState_(state.values()), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)),
+      savedState_(state.values()), queueFile_(std::move(queueFile)), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)),
       freeSpace_(spaceOnDisk), random_(systemRandom), lastActivity_(clock.now()) {
     textFiles_ = files;
 }
@@ -313,13 +314,18 @@ void App::start() {
     startScan(); // the menus use the saved index until it is done
     startSync(); // silent: the saved server items stay if it fails
 
-    // A stream played last (the music player): "Now playing" on Home resumes it. Nothing is asked
-    // of the server now, and nothing plays until the user chooses it.
+    // The music queue of queue.tsv is in the music player now, closed. Whichever player was used last has
+    // "Now playing" on Home; a book that was last is opened below, which parks the music queue.
+    restoreQueue();
+
+    // The music player used last: "Now playing" on Home plays its queue (or, from an older version, loads
+    // the stream saved as `last_stream`). Nothing is asked of the server now, and nothing plays until the
+    // user chooses it.
     // A server book played last (`last_book` is its item id, `<server key>:album:<id>`, which no local
     // book is, as a local path is absolute) is resumed from Home the same way, and is not looked for on disk.
     // Whichever player was used first is the one listed as "Now playing"; the other is "Continue".
     std::string last = state_.getString(kLastBook);
-    if ((lastPlayerIsMusic() && savedStream()) || isServerBookId(last)) {
+    if ((lastPlayerIsMusic() && ((book_ && music_) || savedStream())) || isServerBookId(last)) {
         goHome();
         return;
     }
@@ -599,6 +605,8 @@ void App::finishRefresh() {
 }
 
 void App::shutdown() {
+    if (shutDown_) return; // the player is closed now: a second save would write its place as 0
+    shutDown_ = true;
     saveOnExit();
     cancelResume();
     if (download_) downloader_.cancel(download_->request); // the .part stays: OK on Download goes on from it
@@ -1103,8 +1111,50 @@ void App::saveOnExit() {
     rememberPosition();
     if (volumeChanged_) saveConfig();
     saveState();
+    saveQueue();
     index_.savePlayTimes(); // the only time play times are written; false: the next exit tries again
     trimCache(true); // the manifests are written on exit too, not at every play (a second call at power off usually finds nothing to do)
+}
+
+// The music queue, loaded or parked, in queue.tsv: the file is replaced only when its text changes (a queue
+// that is paused where it was writes nothing). The stream URLs of its tracks are made when they play and are
+// never in it.
+void App::saveQueue() {
+    if (queueFile_.empty() || !textFiles_) return;
+    std::string text;
+    if (book_ && music_) text = formatQueue(SavedQueue{book_->title, queue_, place()});
+    else if (parked_ && parked_->music) text = formatQueue(SavedQueue{parked_->book.title, parked_->queue, parked_->position});
+    if (text == queueText_) return;
+    if (textFiles_->writeAtomically(queueFile_, text)) queueText_ = text; // else the next exit tries again
+}
+
+// A file that is not there, is damaged, is not ours or is too long to read gives no queue. It is replaced by
+// the next queue, or by an empty file if there is none, so it does not stay for ever.
+void App::restoreQueue() {
+    restoredQueue_ = false;
+    queueText_.clear();
+    if (queueFile_.empty() || !textFiles_) return;
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(queueFile_, ec);
+    if (ec) return;
+    if (size > kMaxQueueFileBytes) {
+        queueText_ = "unreadable\n"; // differs from any queue or from none: it is replaced at the next exit
+        return;
+    }
+    const std::optional<std::string> text = textFiles_->read(queueFile_);
+    if (!text) return;
+    queueText_ = *text;
+    std::optional<SavedQueue> saved = parseQueue(*text);
+    if (!saved) return;
+    state_.clearPrefix(kLastStreamPrefix); // the older way of keeping a stream; the queue says more
+    Book list;
+    list.title = saved->title;
+    book_ = std::move(list);
+    music_ = true;
+    queue_ = std::move(saved->queue);
+    fileIndex_ = queue_.position();
+    reopenAt_ = saved->position; // closed: Play, or Now playing on Home, opens it there
+    restoredQueue_ = true;
 }
 
 // Power off writes, and then the front end's shutdown() would write the same again.
@@ -2648,6 +2698,7 @@ void App::stopPlayer() {
 void App::unloadQueue(const std::string& said) {
     stopPlayer(); // without the undo of an open, which would bring the queue back
     reopenAt_.reset();
+    restoredQueue_ = false;
     sleepAtChapterEnd_ = -1;
     queue_ = Queue{};
     book_.reset();
@@ -3010,11 +3061,13 @@ App::OpenResult App::switchTo(const Book& book, bool music, size_t file, double 
             book_.reset(), music_ = false, queue_ = Queue{};
         }
     };
-    // The player used last: a music list that cannot be resumed later (local files) does not count.
-    bool resumable = !music || (book.remote && book.source);
-    auto playing = [this, music, resumable, kept = std::move(kept), path = book.path.string(), opened = std::move(opened)] {
+    auto playing = [this, music, kept = std::move(kept), path = book.path.string(), opened = std::move(opened)] {
         if (kept) previous_ = kept;
-        if (resumable) state_.setString(kLastPlayer, music ? kPlayerMusic : kPlayerBook);
+        if (music) { // the queue is kept in queue.tsv now: a stream saved by an older version is out of date
+            state_.clearPrefix(kLastStreamPrefix);
+            restoredQueue_ = false;
+        }
+        state_.setString(kLastPlayer, music ? kPlayerMusic : kPlayerBook);
         if (!music) state_.setString(kLastBook, path); // start() and "Now playing" resume it
         if (opened) opened();
     };
@@ -3190,6 +3243,7 @@ void App::continueAfterFailure(size_t file, const std::string& title) {
 
 void App::onOpened(bool autoplay, Origin origin, const Then& opened) {
     reopenAt_.reset();
+    restoredQueue_ = false;
     // The current track opened again (Play after it broke off, or it is back
     // behind a choice that failed) goes on with its play.
     bool goesOn = scrobble_ && (origin == Origin::Resume || origin == Origin::Restore);
@@ -3374,10 +3428,10 @@ void App::nothingToPlay() {
 }
 
 // The player used last, from state.tsv. Without a record (an older state.tsv) it is the music
-// player when a stream is saved, as that was the one that played last then.
+// player when a music queue or a stream is saved, as that was the one that played last then.
 bool App::lastPlayerIsMusic() const {
     std::string last = state_.getString(kLastPlayer);
-    return last == kPlayerMusic || (last.empty() && savedStream());
+    return last == kPlayerMusic || (last.empty() && ((book_ && music_) || (parked_ && parked_->music) || savedStream()));
 }
 
 // What the player of that kind has for Home: its loaded or parked book, else the one saved for
@@ -3399,7 +3453,12 @@ std::optional<std::string> App::playerTitle(bool music) const {
 
 // Home: the loaded player is entered, a parked one brought back, a saved one resumed.
 void App::openPlayer(bool music) {
-    if (book_ && music_ == music) enterPlayer();
+    if (book_ && music_ == music && music && restoredQueue_ && !player_.isOpen() && !pendingOpen_ && reopenAt_) {
+        // The queue of a restart: choosing it plays it from its place, as a saved stream did. Until a
+        // track has opened (onOpened()) it stays so, and choosing it again tries again.
+        const std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
+        openFile(fileIndex_, *reopenAt_, true, Origin::Menu, [this, screen] { enterPlayerFrom(screen); }, {});
+    } else if (book_ && music_ == music) enterPlayer();
     else if (parked_ && parked_->music == music) continueParked();
     else resumePlayer(music);
 }
@@ -4178,22 +4237,6 @@ void App::rememberPosition() {
         state_.setString("pos:" + book_->path.string(), std::to_string(fileIndex_) + ":" + tenths(place()));
         return;
     }
-    if (book_ && book_->remote) { // a stream list: resumed after a restart, if it can be loaded again
-        if (!book_->source || !trackRemote(fileIndex_)) return;
-        const std::optional<size_t> inList = listIndexOf(trackKey(fileIndex_), fileIndex_);
-        if (!inList) return; // not a track of that list (the queue was built from other tracks)
-        state_.setString(kLastStreamServer, serverIdentity(config_.getString(kServerUrl)));
-        state_.setString(kLastStreamUser, config_.getString(kServerUser));
-        state_.setString(kLastStreamKind, book_->source->kind == RemoteSource::Kind::Album ? "album" : "playlist");
-        state_.setString(kLastStreamId, book_->source->id);
-        std::string title = book_->title; // one TSV line: a line break would split it
-        std::replace_if(title.begin(), title.end(), [](char c) { return c == '\n' || c == '\r'; }, ' ');
-        state_.setString(kLastStreamTitle, title);
-        state_.setString(kLastStreamTrack, std::to_string(*inList));
-        state_.setString(kLastStreamTrackId, trackKey(fileIndex_));
-        state_.setString(kLastStreamPos, tenths(place()));
-        return;
-    }
     if (!book_ || music_ || !player_.isOpen()) return;
     state_.setString("pos:" + book_->path.string(), std::to_string(fileIndex_) + ":" + tenths(player_.position()));
 }
@@ -4301,6 +4344,7 @@ void App::powerOff() {
 
 void App::restart(bool saveFirst) {
     if (saveFirst) saveOnExit();
+    shutDown_ = false;
     pendingOpen_.reset();
     player_.close();
     book_.reset();
@@ -4323,6 +4367,11 @@ void App::factoryReset() {
     state_.clear();
     saveConfig();
     saveState();
+    book_.reset(); // the queue is state too
+    queue_ = Queue{};
+    parked_.reset();
+    music_ = false;
+    saveQueue();
     say("Settings erased.");
     restart(false); // saving first would put the position straight back
 }

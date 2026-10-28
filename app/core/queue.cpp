@@ -26,6 +26,50 @@ void Queue::replace(std::vector<QueueEntry> entries, std::size_t start) {
     edited_ = false;
 }
 
+void Queue::restore(std::vector<QueueEntry> entries, std::vector<std::size_t> order, std::size_t position,
+                    QueueShuffle shuffle, QueueRepeat repeat, bool edited) {
+    std::vector<bool> seen(entries.size(), false);
+    bool valid = order.size() == entries.size();
+    for (std::size_t i = 0; valid && i < order.size(); ++i) {
+        valid = order[i] < entries.size() && !seen[order[i]];
+        if (valid) seen[order[i]] = true;
+    }
+    entries_ = std::move(entries);
+    if (valid) {
+        order_ = std::move(order);
+        shuffle_ = shuffle;
+    } else {
+        order_.resize(entries_.size());
+        std::iota(order_.begin(), order_.end(), std::size_t{0});
+        shuffle_ = QueueShuffle::Off;
+    }
+    if (entries_.empty()) shuffle_ = QueueShuffle::Off;
+    // `position` is in the play order: without that order it does not say which entry was current.
+    pos_ = valid && position < entries_.size() ? position : 0;
+    repeat_ = repeat;
+    edited_ = edited;
+}
+
+Queue Queue::around(std::size_t limit) const {
+    if (entries_.size() <= limit) return *this;
+    // The window [first, first + limit) of the play order: the current entry in the middle, unless an end is near.
+    const std::size_t first = std::min(pos_ > limit / 2 ? pos_ - limit / 2 : 0, entries_.size() - limit);
+    std::vector<bool> kept(entries_.size(), false);
+    for (std::size_t p = first; p < first + limit; ++p) kept[order_[p]] = true;
+    std::vector<std::size_t> newIndex(entries_.size(), 0); // original index -> index among the kept
+    std::vector<QueueEntry> entries;
+    for (std::size_t i = 0; i < entries_.size(); ++i)
+        if (kept[i]) {
+            newIndex[i] = entries.size();
+            entries.push_back(entries_[i]);
+        }
+    std::vector<std::size_t> order;
+    for (std::size_t p = first; p < first + limit; ++p) order.push_back(newIndex[order_[p]]);
+    Queue cut;
+    cut.restore(std::move(entries), std::move(order), pos_ - first, shuffle_, repeat_, edited_);
+    return cut;
+}
+
 void Queue::insertAt(std::size_t originalIndex, std::size_t orderPos, const std::vector<QueueEntry>& entries) {
     if (entries.empty()) return;
     const std::size_t n = entries.size();

@@ -522,3 +522,95 @@ TEST(Queue, ShuffleSurvivesAGeneratorThatReturnsTooMuch) {
     EXPECT_EQ(sorted, "abcde");
     EXPECT_EQ(currentTitle(q), "a");
 }
+
+// ---------------------------------------------------------------- restore and around (queue.tsv)
+
+TEST(QueueRestore, RebuildsAShuffledQueue) {
+    Queue q;
+    q.restore(tracks({"a", "b", "c", "d"}), {2, 0, 3, 1}, 2, QueueShuffle::Tracks, QueueRepeat::All, true);
+    EXPECT_EQ(order(q), "cadb");
+    EXPECT_EQ(currentTitle(q), "d");
+    EXPECT_EQ(q.position(), 2u);
+    EXPECT_EQ(q.shuffle(), QueueShuffle::Tracks);
+    EXPECT_EQ(q.repeat(), QueueRepeat::All);
+    EXPECT_TRUE(q.edited());
+    // It behaves like any queue: turning shuffle off gives back the original order, same current entry.
+    q.setShuffle(QueueShuffle::Off, kZero);
+    EXPECT_EQ(order(q), "abcd");
+    EXPECT_EQ(currentTitle(q), "d");
+}
+
+TEST(QueueRestore, ADuplicateMissingOrOutOfRangeOrderFallsBackToTheOriginalOrder) {
+    const std::vector<std::vector<std::size_t>> bad = {{0, 0, 1}, {0, 1}, {0, 1, 2, 3}, {0, 1, 7}, {2, 1, static_cast<std::size_t>(-1)}, {}};
+    for (const auto& o : bad) {
+        Queue q;
+        q.restore(tracks({"a", "b", "c"}), o, 1, QueueShuffle::Albums, QueueRepeat::Off, false);
+        EXPECT_EQ(order(q), "abc");
+        EXPECT_EQ(q.shuffle(), QueueShuffle::Off);
+        EXPECT_EQ(currentTitle(q), "a") << "the position was in an order that is lost";
+    }
+}
+
+TEST(QueueRestore, APositionPastTheEndIsTheFirstEntryAndNothingIsNothing) {
+    Queue q;
+    q.restore(tracks({"a", "b"}), {1, 0}, 5, QueueShuffle::Tracks, QueueRepeat::Off, false);
+    EXPECT_EQ(q.position(), 0u);
+    EXPECT_EQ(currentTitle(q), "b");
+    q.restore({}, {}, 3, QueueShuffle::Tracks, QueueRepeat::All, true);
+    EXPECT_TRUE(q.empty());
+    EXPECT_EQ(q.shuffle(), QueueShuffle::Off);
+    EXPECT_EQ(q.current(), nullptr);
+}
+
+namespace {
+Queue numbered(std::size_t n, std::size_t start) {
+    std::vector<QueueEntry> v;
+    for (std::size_t i = 0; i < n; ++i) v.push_back(local(std::to_string(i)));
+    Queue q;
+    q.replace(std::move(v), start);
+    return q;
+}
+}
+
+TEST(QueueAround, ASmallQueueIsUnchanged) {
+    Queue q = numbered(10, 4);
+    Queue cut = q.around(20);
+    EXPECT_EQ(cut.originalEntries(), q.originalEntries());
+    EXPECT_EQ(cut.position(), 4u);
+}
+
+TEST(QueueAround, TheWindowIsCentredOnTheCurrentEntry) {
+    Queue cut = numbered(100, 50).around(20);
+    ASSERT_EQ(cut.size(), 20u);
+    EXPECT_EQ(cut.at(0).title, "40");
+    EXPECT_EQ(cut.at(19).title, "59");
+    EXPECT_EQ(currentTitle(cut), "50");
+}
+
+TEST(QueueAround, TheWindowStopsAtTheEnds) {
+    Queue start = numbered(100, 3).around(20);
+    EXPECT_EQ(start.at(0).title, "0");
+    EXPECT_EQ(currentTitle(start), "3");
+    Queue end = numbered(100, 98).around(20);
+    EXPECT_EQ(end.at(0).title, "80");
+    EXPECT_EQ(end.at(19).title, "99");
+    EXPECT_EQ(currentTitle(end), "98");
+}
+
+TEST(QueueAround, AShuffledQueueKeepsItsPlayOrderAndOriginalOrderInTheWindow) {
+    Queue q = numbered(10, 5);
+    q.setShuffle(QueueShuffle::Tracks, seeded(3));
+    const std::string playOrder = order(q);
+    Queue cut = q.around(4);
+    ASSERT_EQ(cut.size(), 4u);
+    // The window is four consecutive entries of the play order, the current one among them.
+    EXPECT_NE(playOrder.find(order(cut)), std::string::npos);
+    EXPECT_EQ(currentTitle(cut), "5");
+    EXPECT_EQ(cut.shuffle(), QueueShuffle::Tracks);
+    // The original order is the kept entries in their old relative order.
+    std::string previous;
+    for (const QueueEntry& e : cut.originalEntries()) {
+        EXPECT_LT(std::stoi(previous.empty() ? "-1" : previous), std::stoi(e.title));
+        previous = e.title;
+    }
+}

@@ -29,4 +29,9 @@ inline std::filesystem::path defaultStateFile(const std::filesystem::path& confi
     return configFile.parent_path() / "state.tsv";
 }
 
+// The default queue.tsv: next to state.tsv.
+inline std::filesystem::path defaultQueueFile(const std::filesystem::path& stateFile) {
+    return stateFile.parent_path() / "queue.tsv";
+}
+
 } // namespace oap

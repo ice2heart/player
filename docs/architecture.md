@@ -3,7 +3,7 @@
 > Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end,
 > streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)),
 > plus phase 1 of [queue.md](queue.md): volume and Options buttons, the step unit, menus that jump, and separate music and book players.
-> Phase 2 of queue.md is being built: the music player plays a `Queue` (step 2.2) and skips what cannot play and checks a server that failed (step 2.3); Shuffle and Repeat are in the music Player menu (step 2.6); the Queue list and `queue.tsv` are not built yet. Last updated: 2026-10-27.
+> Phase 2 of queue.md is being built: the music player plays a `Queue` (step 2.2) and skips what cannot play and checks a server that failed (step 2.3); Shuffle and Repeat are in the music Player menu (step 2.6); the Queue list (step 2.7) and the queue kept between restarts in `queue.tsv` (step 2.8) are built. Last updated: 2026-10-28.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -363,13 +363,12 @@ does and does nothing else. Holding Home leaves the mode. The same texts
   Chapters, Speed and Add bookmark, and neither). Home (`homeMenu()`) lists the player used last as "Now
   playing" and the other as "Continue", each when it has something: `playerTitle()` gives the
   title of the loaded book, the parked one, or what is saved for a restart (the stream, or
-  `last_book`); `openPlayer()` enters, continues or resumes it. A parked place is not kept across a restart except what
-  state.tsv holds: the book (`pos:` + `last_book`) and a remote music list (`last_stream.*`); local
-  music is not resumed.
+  `last_book`); `openPlayer()` enters, continues or resumes it. A parked place is kept across a restart in
+  state.tsv (the book: `pos:` + `last_book`) and queue.tsv (the music queue, loaded or parked).
 - **The music queue.** The music player's tracks are `queue_` (`app/core/queue.h`), local and remote
   entries mixed; `fileIndex_` is the current position in its play order (`setFile()` keeps the two
   together). For the music player `book_` is only the list the queue came from: its title, its
-  server `source` (for `last_stream.*`) and the track details the automatic cache needs
+  server `source` and the track details the automatic cache needs
   (`listIndexOf()` finds a queue entry in it). Playback goes through `trackCount()`,
   `trackRemote()`, `trackKey()` (the file, or the server's track id), `trackTitle()`,
   `trackDuration()` and `upcomingTrack()`, which read the queue for music and `book_->files` for a
@@ -476,7 +475,7 @@ is added only at Beginner.
 
 ```
 Home
-├── Now playing: <book or album>   (the player used last: loaded, parked, or saved for a restart: a stream `last_stream.*`, a book `last_book`)
+├── Now playing: <book or album>   (the player used last: loaded, parked, or saved for a restart: the music queue of `queue.tsv`, a book `last_book`)
 ├── Continue: <book or album>      (the other player, when it has something)
 ├── Library → <books>              (OK plays/resumes; then the books of the server's audiobook folder, value "on the server": "Loading.", then they play; "Scanning" while the first scan runs)
 ├── Music
@@ -559,7 +558,7 @@ is the play order position of the current entry, so it, the end-of-track sleep t
 Removing the current entry (`stopPlayer()`) drops its open without the open's undo and leaves the next entry closed
 (`reopenAt_ = 0`), as a queue that ended waits; it also cancels an end-of-track sleep timer set for it. Clear queue and
 removing the last entry call `clearQueue()`: an edited queue goes to `previous_`, then `unloadQueue()` stops, resets `book_`
-and `queue_`, forgets `last_stream.*` and goes back to Home. While a track chosen by the user (Origin::Menu or Key) is
+and `queue_`, forgets `last_stream.*` (and queue.tsv is emptied at the next exit) and goes back to Home. While a track chosen by the user (Origin::Menu or Key) is
 opening, Play next / Move / Remove say "Loading." and wait (`queueLocked()`): the open's undo holds an old queue position.
 
 Power menu (hold Power): Sleep · Power off · Restart · Cancel
@@ -820,7 +819,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   album/playlist" first, "Delete download", then the complete tracks (the items of
   `trackItems()`, with Delete in place of Download); they play with
   `playRemote()` and the list's `RemoteSource`, so a cached file opens (section
-  "Play from the cache") and `last_stream` is saved like for a server list. Delete
+  "Play from the cache") and the queue is kept like for a server list. Delete
   download opens a list of "Cancel" (selected) and "Yes, delete". `deleteDownload()`
   refuses with a spoken reason when the list is the book loaded in the player; it
   cancels the download when that list is downloading; then `TrackCache::remove()`,
@@ -931,7 +930,8 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 | File | Store | Keys |
 |------|-------|------|
 | `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` (kbps, 0 = the original file), `cache.limit_gb` (0, 1, 4 or 16; default 1), and `server.*` (see [streaming.md](streaming.md)) |
-| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_player`: `music` or `book`, the player used last; `unit.music` / `unit.book`: the step unit of each player (0 Skip, 1 Track / Chapter, 2 Album / 10 minutes); `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.server` / `catalogue.version`: the server key and catalogue version of the last server sync; `catalogue.folder`: `server.audiobook_folder` at the last server sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); `last_stream.server` / `.user` (the `server.url` without a trailing slash and `server.user`, never the password or a stream URL), `.kind` (`album` / `playlist`), `.id`, `.title`, `.track` (index), `.track_id`, `.pos` (seconds): the remote list that played last |
+| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_player`: `music` or `book`, the player used last; `unit.music` / `unit.book`: the step unit of each player (0 Skip, 1 Track / Chapter, 2 Album / 10 minutes); `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.server` / `catalogue.version`: the server key and catalogue version of the last server sync; `catalogue.folder`: `server.audiobook_folder` at the last server sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); `last_stream.*` (`.server`, `.user`, `.kind`, `.id`, `.title`, `.track`, `.track_id`, `.pos`): only read, from a state.tsv of an older version (below); it is removed once a music queue plays |
+| `queue.tsv` (next to `state.tsv`; `defaultQueueFile()`) | `App` through `TextFiles` (`writeAtomically()`) | the music queue (`app/core/queue_file.{h,cpp}`), see below |
 
 - `config.yaml` is nested YAML (`speech: {rate: 220}` is `speech.rate`). It is
   written only when a setting is chosen in its list (at once), on exit and sleep if the
@@ -948,12 +948,37 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   only when the map differs from what was last loaded or written (a write that
   failed counts as not written, so the next exit tries again). A crash or
   power loss loses the place since the last exit.
-- **Which place start() resumes:** the one that played last. `rememberPosition()`
-  keeps the place of a remote list from the Streaming menus (`Book::source`, the
-  album or playlist id) in `last_stream.*`, and the books keep theirs in `pos:` + `last_book`;
-  neither removes the other. `last_player` (`music` or `book`, set when a player starts, not
-  for local music) says which was used last; without it (an older state.tsv) the music player
-  counts as last when a stream is saved. If `savedStream()` finds a place for the server set up
+- **queue.tsv (queue.md step 2.8).** The music queue, written by `saveQueue()` in `saveOnExit()` (sleep, Power off,
+  Restart, `shutdown()`) as text (`formatQueue()` in `app/core/queue_file.cpp`): a header `oap-queue<TAB>1`, then
+  `title` (the list it came from), `shuffle`, `repeat`, `edited`, `position` (in the play order), `seconds` (in the
+  current entry), `order` (the play order, indexes into the entries) and one line per entry in the original order:
+  `L<TAB>path<TAB>title<TAB>album<TAB>artist` or `R<TAB>server url<TAB>user<TAB>track id<TAB>album id<TAB>title<TAB>album<TAB>artist<TAB>seconds`.
+  Tab, line break and backslash in a text are written `\t`, `\n`, `\r`, `\\`. A remote entry holds the server key
+  and the track id only, never the password, a token or a stream URL (a stream is made when the track plays), and
+  the titles are there, so a restart lists the queue with no network. The queue that is saved is the loaded one, else
+  the parked one (`Parked::queue`), else (nothing has played since the restart) none, because the restored queue is
+  loaded. More than `kMaxSavedEntries` (5000) entries are cut to a window of the play order around the current
+  entry (`Queue::around()`). The file is replaced (atomically) only when its text differs from what was read or
+  last written (`queueText_`), so a queue paused where it was writes nothing; an empty file is written once when
+  the queue is gone (Clear queue, Factory reset), and a failed write is tried again at the next exit. The previous
+  queue (`previous_`) is not kept.
+  `start()` calls `restoreQueue()`: a file that is missing, longer than `kMaxQueueFileBytes`, not ours or damaged
+  (`parseQueue()` gives none) means no queue and is replaced later; a play order that is not each index once, or a
+  position past the end, is repaired (`Queue::restore()`: original order, shuffle off, first entry, 0 seconds).
+  The queue becomes the music queue in `book_` (only its title) with `music_` set, closed like a queue that ended
+  (`reopenAt_` is its place, `restoredQueue_` is set); nothing plays. If a book is opened next (it played last) the
+  music queue is parked as always. "Now playing" on Home, when the restored queue is chosen, opens its current entry
+  at that place and enters the player (`openPlayer()`), and Play does the same without entering it; an entry
+  that cannot play is skipped like in any queue. The `Book` of a restored queue has no `remote` or `source`, so the
+  automatic cache does not run for it until another list is played.
+- **last_stream.* from an older version.** `rememberPosition()` no longer writes them. When a state.tsv has them and
+  queue.tsv has no queue, `savedStream()` still makes "Now playing" on Home, and OK or Play runs `resumeStream()`
+  (below) as before; the queue it plays is saved in queue.tsv from then on, and any music queue that plays removes the
+  keys (`switchTo()`), as does reading a queue.tsv.
+- **Which place start() resumes:** the one that played last. The books keep their place in `pos:` + `last_book`
+  and the music queue in queue.tsv; neither removes the other. `last_player` (`music` or `book`, set when a player starts)
+  says which was used last; without it (an older state.tsv) the music player
+  counts as last when a music queue or a stream is saved. If `savedStream()` finds a place for the server set up
   now (same url and user, and `MusicServer::configured()`) and the music player was last, `start()`
   opens Home with "Now playing" first and loads nothing; otherwise `last_book` resumes as before,
   and the stream is "Continue" on Home. OK on it, or Play with
@@ -1009,7 +1034,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 
 - **Arguments:** `oap-headless [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--library-db FILE] [--audio NAME] [--input LIST]
   [--evdev-device PATH] [--script STEPS] [LIBRARY_DIR]`. The config defaults to
-  `~/.config/oap/config.yaml`, the state to `state.tsv` next to it (section 9), the cache of downloaded tracks to `cache/` next to the state, the library index to `library.db` next to the state.
+  `~/.config/oap/config.yaml`, the state to `state.tsv` next to it (section 9), the cache of downloaded tracks to `cache/` next to the state, the library index to `library.db` and the music queue to `queue.tsv` next to the state.
 - **Inputs** (`--input evdev,terminal,none`; default `evdev` without a tty; on a tty the CMake
   setting `OAP_HEADLESS_TTY_INPUT`: `terminal`, or `evdev,terminal` in the Pi toolchains, since
   a desktop would see each key twice):

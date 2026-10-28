@@ -345,7 +345,8 @@ a stream after a restart.
 | ✅ 2.6 | **Remember the place.** `last_stream` (server + album/playlist id + track + position) in `state.tsv`, so the device resumes after a restart. "Now playing" on Home works for streams too. | Exit and restart resume the same album, track and position. With the server down, resume says "Server not reachable". A local `last_book` still works. |
 | ✅ 2.7 | Docs: architecture.md (open thread, buffering earcon, read-ahead, quality, scrobble, `last_stream`), navigation.md, SPEC where needed. | – |
 
-Step 2.6 as built: the place is the `last_stream.*` keys of `state.tsv` (server url and
+Step 2.6 as built (replaced by the queue in `queue.tsv`, [queue.md](queue.md) step 2.8: `last_stream.*` is only read from a
+state.tsv of an older version, turned into a queue when it plays, and removed): the place is the `last_stream.*` keys of `state.tsv` (server url and
 user, `album` or `playlist` and its id, title, track index and id, seconds), kept in
 memory on pause and list change and written only on exit and sleep, like `last_book`.
 Whichever player played last resumes (queue.md step 1.5 changed this: opening a book no

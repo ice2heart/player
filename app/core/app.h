@@ -64,7 +64,8 @@ public:
     // when it lies inside them.
     App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
         Downloader& downloader, LibraryStore& libraryStore, LibraryScanner& scanner, Settings& config, Settings& state,
-        Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot, std::filesystem::path cacheRoot = {}, TextFiles* files = nullptr);
+        Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot, std::filesystem::path cacheRoot = {}, TextFiles* files = nullptr,
+        std::filesystem::path queueFile = {});
 
     // How much room is left on the disk of a folder, in bytes; none if that cannot
     // be told. Downloads check it before they start. The default asks
@@ -93,15 +94,13 @@ public:
     // be opened it says "Server not reachable", tries no other track and keeps
     // what was loaded before (paused). Returns false if that happened at once.
     // With a `source` (the album or playlist on the server) the place is kept
-    // as `last_stream` in the state, and "Now playing" resumes it after a
-    // restart; `position` is where the track starts.
+    // the queue is kept for a restart like any other (queue.tsv); `position` is where the track starts.
     bool playRemote(const std::string& title, const std::vector<RemoteTrack>& tracks, size_t index,
                     std::optional<RemoteSource> source = std::nullopt, double position = 0,
                     const std::string& artist = {});
 
     // Plays `entries` (local files and server tracks mixed) as the music queue, from `start`, like
-    // playRemote(): `title` is what the queue is called. Replaces the queue; nothing is saved for a
-    // restart (no `last_stream`). False if it failed at once or `entries` is empty.
+    // playRemote(): `title` is what the queue is called. Replaces the queue. False if it failed at once or `entries` is empty.
     bool playQueue(const std::string& title, std::vector<QueueEntry> entries, size_t start = 0);
 
     // Read-only state for the simulator's visualisation.
@@ -157,6 +156,12 @@ private:
     void saveConfig();
     void saveOnExit(); // exit and sleep: the only times state.tsv is written
     void saveState();  // only if it changed since it was loaded or last written
+    // queue.tsv: the music queue, loaded or parked, as text, written only if it differs from what the file
+    // holds (the queue.tsv of a restart that nothing has played from yet is kept as it is). Nothing to keep
+    // writes an empty file once, if there was one.
+    void saveQueue();
+    // start(): the music queue of queue.tsv waits in the music player, closed, at its place; nothing plays.
+    void restoreQueue();
     void markPlayed(const std::string& itemId); // the album plays from Music: in memory until exit or sleep
     std::vector<MenuItem> homeMenu();
     std::vector<MenuItem> libraryMenu();
@@ -361,8 +366,8 @@ private:
     void deleteDownload(const RemoteSource& source, const std::string& title);
     void checkServer(); // Server status
 
-    // The remote list that played last (state.tsv `last_stream.*`), to resume
-    // after a restart. Only for the server set up now (its url and user); none
+    // The remote list that an older version kept in state.tsv `last_stream.*` (queue.tsv replaces it), to
+    // resume after a restart. Only for the server set up now (its url and user); none
     // once a local book has been opened since, or when it is not readable.
     struct StreamPlace {
         RemoteSource source;
@@ -563,6 +568,11 @@ private:
     Settings& config_;
     Settings& state_;
     SettingsMap savedState_; // what state.tsv holds
+    std::filesystem::path queueFile_; // queue.tsv; empty: the queue is not kept
+    std::string queueText_;           // what queue.tsv holds (read, or last written)
+    // The music queue was read from queue.tsv and nothing has played from it yet: "Now playing" on Home
+    // plays it, as a stream did before (it is not just entered).
+    bool restoredQueue_ = false;
     Clock& clock_;
     std::filesystem::path libraryRoot_;
     std::filesystem::path musicRoot_;
@@ -596,6 +606,7 @@ private:
     mutable std::optional<TrackCache> trackCache_;
     TextFiles* textFiles_ = nullptr;
     bool sleeping_ = false;
+    bool shutDown_ = false; // shutdown() has run: the state is written and the player closed
     bool volumeChanged_ = false;   // changed with the volume keys, written on exit
     bool volumeEdgeHeard_ = false; // a held volume key already played the edge sound at its limit
     // The loaded player: its book (or the album / playlist when music_), the player it is, and

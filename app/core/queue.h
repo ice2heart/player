@@ -45,6 +45,17 @@ public:
     // Replaces everything with `entries`, current at `start` (clamped), shuffle and repeat off, not edited.
     void replace(std::vector<QueueEntry> entries, std::size_t start = 0);
 
+    // Rebuilds a queue that was saved: `order` is the play order (indexes into `entries`), `position` the
+    // current entry in it. Nothing read from a file is trusted: an `order` that is not each index exactly once
+    // gives the original order with shuffle off and the first entry current (the position was in the lost order), and a `position`
+    // past the end gives the first entry.
+    void restore(std::vector<QueueEntry> entries, std::vector<std::size_t> order, std::size_t position,
+                 QueueShuffle shuffle, QueueRepeat repeat, bool edited);
+
+    // A copy cut to at most `limit` entries: a window of the play order around the current entry (as centred
+    // as the ends allow), kept in the original order too. Shuffle, repeat and edited are kept.
+    Queue around(std::size_t limit) const;
+
     // Puts `entries` after the current entry (play order and original order) / at the end. Both count as
     // edits. On an empty queue the first one becomes current.
     void playNext(const std::vector<QueueEntry>& entries);

@@ -47,6 +47,7 @@ add_library(oapcore STATIC
     app/core/library_index.cpp
     app/core/mixer.cpp
     app/core/queue.cpp
+    app/core/queue_file.cpp
     app/core/settings.cpp
     app/core/text.cpp
     app/core/track_cache.cpp
@@ -274,6 +275,7 @@ if(OAP_BUILD_TESTS)
         tests/test_make_music_server.cpp
         tests/test_mixer.cpp
         tests/test_queue.cpp
+        tests/test_queue_file.cpp
         tests/test_fake_downloader.cpp
         tests/test_no_downloader.cpp
         tests/test_no_music_server.cpp
