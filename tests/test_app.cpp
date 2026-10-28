@@ -1554,7 +1554,8 @@ TEST_F(AppTest, EachPlayerHasItsOwnMenu) {
     open("Music");
     open("Play all");
     press(Button::Ok);
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Tracks", "Sleep timer", "Go to first track"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Tracks", "Shuffle", "Repeat", "Sleep timer",
+                                                  "Go to first track"}));
 }
 
 TEST_F(AppTest, ContinueThatCannotOpenKeepsThePlayerThatWasLoaded) {
@@ -10415,4 +10416,333 @@ TEST_F(PlayerOptionsTest, RestoringAQueueThatWasParkedBehindABookBringsBackItsPo
     fromTracks("Previous queue");
     EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
     EXPECT_EQ(player.pos, 33);
+}
+
+TEST_F(PlayerOptionsTest, RestoringThePreviousQueueBringsBackItsShuffleAndRepeat) {
+    playRoadTrip();
+    app->setRandom([](size_t) { return size_t(0); });
+    addToQueueOn("Lullaby"); // an edit: Sunrise, Highway, Lullaby
+    auto choose = [this](const std::string& item, const std::string& value) {
+        hold(Button::Home);
+        open("Now playing");
+        press(Button::Ok);
+        open(item);
+        open(value);
+    };
+    auto settingValue = [this](const std::string& item) {
+        for (const MenuItem& m : level().items)
+            if (m.label == item) return valueOf(m);
+        return std::string("none");
+    };
+    choose("Shuffle", "tracks");
+    choose("Repeat", "all");
+    playNowOn("Lullaby"); // a new queue: both off
+    hold(Button::Home);
+    open("Now playing");
+    press(Button::Ok);
+    ASSERT_EQ(settingValue("Shuffle"), "off");
+    ASSERT_EQ(settingValue("Repeat"), "off");
+    open("Tracks");
+    open("Previous queue");
+    press(Button::Ok);
+    EXPECT_EQ(settingValue("Shuffle"), "tracks");
+    EXPECT_EQ(settingValue("Repeat"), "all");
+    open("Tracks");
+    auto tracks = labels();
+    tracks.resize(3); // then Previous queue
+    EXPECT_EQ(tracks, (std::vector<std::string>{"Sunrise", "Lullaby", "Highway"})) << "the shuffled order is back too";
+}
+
+// ---------------------------------------------------------------- Shuffle and Repeat in the music Player menu
+
+class ShuffleRepeatTest : public UnavailableTest {
+protected:
+    std::string sunrise() const { return (roadTrip() / "01 - Sunrise.mp3").string(); }
+    std::string highway() const { return (roadTrip() / "02 - Highway.mp3").string(); }
+    // Storm, Calm, Lullaby, Sunrise: four local tracks. The random numbers are all 0, which moves the first
+    // entry of what is shuffled to its end: the entries after the current one turn left by one place.
+    std::vector<QueueEntry> four() const {
+        return {localEntry(alphaFile(1), "Storm", "One"), localEntry(alphaFile(2), "Calm", "One"),
+                localEntry(lullaby(), "Lullaby", "Two"), localEntry(sunrise(), "Sunrise", "Three")};
+    }
+    void play(std::vector<QueueEntry> entries, size_t start = 0) {
+        start_();
+        app->setRandom([](size_t) { return size_t(0); });
+        ASSERT_TRUE(app->playQueue("Mixed", std::move(entries), start));
+    }
+    void toPlayer() {
+        for (int i = 0; i < 6 && !level().isPlayer(); ++i) press(Button::Home);
+        ASSERT_TRUE(level().isPlayer());
+    }
+    // From the player: Player menu > `item` > `value`, and back to the player.
+    void choose(const std::string& item, const std::string& value) {
+        ASSERT_NO_FATAL_FAILURE(toPlayer());
+        press(Button::Ok);
+        open(item);
+        open(value);
+        ASSERT_EQ(level().title, "Player menu") << "choosing goes back";
+        ASSERT_NO_FATAL_FAILURE(toPlayer());
+    }
+    // The value spoken after `item` in the Player menu.
+    std::string settingValue(const std::string& item) {
+        toPlayer();
+        press(Button::Ok);
+        for (const MenuItem& m : level().items)
+            if (m.label == item) return valueOf(m);
+        return "none";
+    }
+    std::vector<std::string> trackList() {
+        toPlayer();
+        press(Button::Ok);
+        open("Tracks");
+        auto out = labels();
+        toPlayer();
+        return out;
+    }
+};
+
+TEST_F(ShuffleRepeatTest, ChoosingShuffleTracksWorksAtOnceAndKeepsTheCurrentEntry) {
+    play(four(), 1);
+    ASSERT_EQ(app->nowPlaying().chapter, "Calm");
+    const size_t opens = player.opened.size();
+    ASSERT_NO_FATAL_FAILURE(choose("Shuffle", "tracks"));
+    EXPECT_EQ(settingValue("Shuffle"), "tracks");
+    EXPECT_EQ(app->nowPlaying().chapter, "Calm") << "the current entry stays current";
+    EXPECT_EQ(player.opened.size(), opens) << "and plays on, nothing is opened again";
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(trackList(), (std::vector<std::string>{"Storm", "Calm", "Sunrise", "Lullaby"})) << "what follows is shuffled";
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(player.file, sunrise()) << "the next track is the shuffled one";
+}
+
+TEST_F(ShuffleRepeatTest, ShuffleOffGivesBackTheOriginalOrderWithTheSameCurrentEntry) {
+    play(four(), 1);
+    ASSERT_NO_FATAL_FAILURE(choose("Shuffle", "tracks"));
+    hold(Button::Forward); // Sunrise, the third in the shuffled order
+    ASSERT_EQ(player.file, sunrise());
+    ASSERT_NO_FATAL_FAILURE(choose("Shuffle", "off"));
+    EXPECT_EQ(app->nowPlaying().chapter, "Sunrise");
+    EXPECT_EQ(player.file, sunrise());
+    toPlayer();
+    press(Button::Ok);
+    open("Tracks");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Storm", "Calm", "Lullaby", "Sunrise"}));
+    EXPECT_EQ(level().index, 3u) << "the list opens on the playing track, which is the last one again";
+}
+
+TEST_F(ShuffleRepeatTest, TheShuffleListOpensOnTheCurrentValue) {
+    play(four());
+    ASSERT_NO_FATAL_FAILURE(choose("Shuffle", "albums"));
+    press(Button::Ok);
+    open("Shuffle");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"off", "tracks", "albums"}));
+    EXPECT_EQ(level().index, 2u);
+    EXPECT_EQ(valueOf(level().items[2]), "current");
+    EXPECT_EQ(valueOf(level().items[0]), "");
+}
+
+TEST_F(ShuffleRepeatTest, TheRepeatListOpensOnTheCurrentValue) {
+    play(four());
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "track"));
+    press(Button::Ok);
+    open("Repeat");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"off", "all", "track"}));
+    EXPECT_EQ(level().index, 2u);
+    EXPECT_EQ(valueOf(level().items[2]), "current");
+    EXPECT_EQ(valueOf(level().items[0]), "");
+}
+
+TEST_F(ShuffleRepeatTest, ShuffleAlbumsKeepsEachAlbumsOrderAndTheRestOfTheCurrentAlbumFirst) {
+    play({localEntry(alphaFile(1), "Storm", "One"), localEntry(alphaFile(2), "Calm", "One"),
+          localEntry(sunrise(), "Sunrise", "Three"), localEntry(highway(), "Highway", "Three"),
+          localEntry(lullaby(), "Lullaby", "Two")});
+    ASSERT_NO_FATAL_FAILURE(choose("Shuffle", "albums"));
+    EXPECT_EQ(trackList(), (std::vector<std::string>{"Storm", "Calm", "Lullaby", "Sunrise", "Highway"}));
+}
+
+TEST_F(ShuffleRepeatTest, ANewQueueStartsWithShuffleAndRepeatOff) {
+    play(four());
+    EXPECT_EQ(settingValue("Shuffle"), "off");
+    EXPECT_EQ(settingValue("Repeat"), "off");
+    ASSERT_NO_FATAL_FAILURE(choose("Shuffle", "tracks"));
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
+    ASSERT_EQ(settingValue("Repeat"), "all");
+    ASSERT_TRUE(app->playQueue("Again", four()));
+    EXPECT_EQ(settingValue("Shuffle"), "off");
+    EXPECT_EQ(settingValue("Repeat"), "off");
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "track"));
+    hold(Button::Home);
+    open("Music");
+    open("Play all"); // a list from the menus is a new queue too
+    EXPECT_EQ(settingValue("Shuffle"), "off");
+    EXPECT_EQ(settingValue("Repeat"), "off");
+}
+
+TEST_F(ShuffleRepeatTest, TheBookPlayerMenuHasNeitherShuffleNorRepeat) {
+    playAlpha();
+    press(Button::Ok);
+    for (const std::string& label : labels()) {
+        EXPECT_NE(label, "Shuffle");
+        EXPECT_NE(label, "Repeat");
+    }
+}
+
+TEST_F(ShuffleRepeatTest, RepeatTrackPlaysTheTrackAgainWhenItEnds) {
+    play(four(), 1);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "track"));
+    for (int i = 0; i < 2; ++i) {
+        const size_t opens = player.opened.size();
+        trackEnds();
+        EXPECT_EQ(player.file, alphaFile(2));
+        EXPECT_EQ(player.opened.size(), opens + 1) << "opened again";
+        EXPECT_TRUE(player.playing());
+        EXPECT_EQ(app->nowPlaying().chapter, "Calm");
+    }
+    EXPECT_FALSE(speech.heard("End of queue. Press play to start again."));
+}
+
+TEST_F(ShuffleRepeatTest, RepeatTrackStillMovesWithLeftAndRightAndTheTrackMovedToRepeats) {
+    play(four(), 1);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "track"));
+    hold(Button::Forward);
+    ASSERT_EQ(player.file, lullaby());
+    trackEnds();
+    EXPECT_EQ(player.file, lullaby()) << "the track moved to repeats";
+    hold(Button::Back);
+    EXPECT_EQ(player.file, alphaFile(2)) << "and Previous still moves";
+}
+
+TEST_F(ShuffleRepeatTest, RepeatTrackPreOpensTheCurrentServerTrackAgain) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", mixed(), 1));
+    finishOpen();
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "track"));
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_EQ(player.preloads, (std::vector<std::string>{"fake://stream/t2"}));
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAllGoesOnFromTheFirstEntryAtTheEnd) {
+    play(four(), 3);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
+    trackEnds();
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(app->nowPlaying().chapter, "Storm");
+    EXPECT_FALSE(speech.heard("End of queue. Press play to start again."));
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAllSkipsUnavailableEntriesAcrossTheWrap) {
+    play(four(), 1);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
+    fs::remove(lullaby());
+    fs::remove(sunrise());
+    trackEnds();
+    EXPECT_EQ(speech.said[speech.said.size() - 1], "2 tracks, source unavailable.");
+    EXPECT_EQ(player.file, alphaFile(1)) << "the first entry plays after the two that cannot";
+    EXPECT_TRUE(player.playing());
+    EXPECT_FALSE(speech.heard("End of queue. Press play to start again."));
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAllNextOnTheLastTrackGoesToTheFirstOverMissingOnes) {
+    play(four(), 1);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
+    fs::remove(lullaby());
+    fs::remove(sunrise());
+    hold(Button::Forward);
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_TRUE(speech.heard("2 tracks, source unavailable."));
+    EXPECT_EQ(speech.last(), "Storm");
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAllPreviousOnTheFirstTrackGoesToTheLastOverMissingOnes) {
+    play(four(), 0);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
+    fs::remove(lullaby());
+    fs::remove(sunrise());
+    hold(Button::Back);
+    EXPECT_TRUE(speech.heard("2 tracks, source unavailable."));
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_EQ(speech.last(), "Calm");
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAllPreviousGoesBackOverMissingOnesPastTheFirstToTheLast) {
+    play(four(), 2);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
+    fs::remove(alphaFile(1));
+    fs::remove(alphaFile(2));
+    hold(Button::Back);
+    EXPECT_TRUE(speech.heard("2 tracks, source unavailable."));
+    EXPECT_EQ(player.file, sunrise());
+    EXPECT_EQ(speech.last(), "Sunrise");
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAllDoesNotWrapForATrackChosenInTheList) {
+    play(four(), 1);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
+    fs::remove(sunrise());
+    toPlayer();
+    press(Button::Ok);
+    open("Tracks");
+    open("Sunrise"); // the last one, which is gone
+    EXPECT_EQ(player.file, alphaFile(2)) << "it does not go on from the first entry";
+    EXPECT_EQ(app->nowPlaying().chapter, "Calm");
+    EXPECT_TRUE(speech.heard("Sunrise, source unavailable."));
+}
+
+TEST_F(ShuffleRepeatTest, ShufflingWhileAServerTrackOpensKeepsTrackOfWhichTrackIsOpening) {
+    start_();
+    app->setRandom([](size_t) { return size_t(0); });
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), localEntry(lullaby(), "Lullaby"),
+                                         localEntry(sunrise(), "Sunrise"), remoteEntry("t4", "Rain")}));
+    ASSERT_NO_FATAL_FAILURE(choose("Shuffle", "tracks")); // Storm, Sunrise, Rain, Lullaby
+    trackEnds();
+    ASSERT_EQ(player.file, sunrise());
+    trackEnds();
+    ASSERT_EQ(player.file, "fake://stream/t4") << "Rain is opening";
+    player.unopenable = {"fake://stream/t4"};
+    ASSERT_NO_FATAL_FAILURE(choose("Shuffle", "off")); // Rain is the last entry again
+    finishOpen();
+    EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.") << "nothing after Rain plays";
+    EXPECT_EQ(countOf(speech.said, "Rain, source unavailable."), 0);
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain");
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAllWithNothingThatPlaysEndsTheQueueInsteadOfGoingRoundForEver) {
+    play(four(), 1);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
+    for (const QueueEntry& e : four()) fs::remove(e.path);
+    trackEnds();
+    EXPECT_TRUE(speech.heard("4 tracks, source unavailable."));
+    EXPECT_EQ(speech.last(), "End of queue. Press play to start again.");
+    EXPECT_FALSE(player.playing());
+    press(Button::PlayPause); // still answers
+    EXPECT_FALSE(player.playing());
+}
+
+TEST_F(ShuffleRepeatTest, RepeatTrackOnATrackThatIsGoneDoesNotHangAndTheQueueGoesOn) {
+    play({localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm"), localEntry(lullaby(), "Lullaby")}, 1);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "track"));
+    fs::remove(alphaFile(2));
+    trackEnds();
+    EXPECT_EQ(speech.last(), "Calm, source unavailable.") << "said, then the next one plays and repeats";
+    EXPECT_EQ(player.file, lullaby());
+    EXPECT_TRUE(player.playing());
+    fs::remove(lullaby());
+    trackEnds(); // the last track is gone too: nothing is left to repeat
+    EXPECT_EQ(speech.last(), "End of queue. Press play to start again.");
+    EXPECT_FALSE(player.playing());
+}
+
+TEST_F(ShuffleRepeatTest, PingsGoOnForAServerTrackBehindTheCurrentOneWithRepeatAll) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", mixed()));
+    player.unopenable = {"fake://stream/t2"};
+    trackEnds();
+    finishOpen();
+    ASSERT_EQ(player.file, alphaFile(2)) << "Calm plays; the server is marked down and Rain is behind it";
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
+    idle(10min);
+    EXPECT_EQ(pings(), 1) << "Rain comes up again after Calm";
 }

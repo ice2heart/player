@@ -267,7 +267,8 @@ that touch navigation:
 - **Shuffle** (off · tracks · albums) and **Repeat** (off · all · track) belong to the
   queue and start off with each new queue. They are "Setting with list" items in the
   music Player menu, not settings in `config.yaml`. Repeat track repeats the current
-  track when it ends; Left / Right and a deep press still move to other tracks.
+  track when it ends; Left / Right and a deep press still move to other tracks. With Repeat
+  all, Next on the last track goes to the first and Previous on the first to the last.
 - At the end of the queue: "End of queue", paused at the first entry, unless Repeat is on.
 - **An entry that cannot play is skipped**: "Storm, source unavailable." (a run: "3
   tracks, source unavailable."). A server that fails is marked down and checked in the
@@ -299,9 +300,9 @@ Player menu (music player)
   the user chooses it.
 
 **As built (phase 1):** the music player holds one list (an album, a playlist, or Play
-all), its Player menu is Tracks · Sleep timer · Go to first track, Options
+all), its Player menu is Tracks · Shuffle · Repeat · Sleep timer · Go to first track (step 2.6; Queue replaces Tracks in 2.7), Options
 in the music player is Go to album · Album info (step 2.5; Star comes with streaming.md 2a.1), and the rules above for OK on a track replacing a queue,
-Options actions, Shuffle, Repeat and the Queue list do not apply yet. OK on a track plays
+Options actions and the Queue list do not apply yet. OK on a track plays
 from there to the end of its list, as before.
 
 ## Lists

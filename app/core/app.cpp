@@ -14,6 +14,7 @@
 #include <set>
 #include <limits>
 #include <memory>
+#include <random>
 #include <system_error>
 #include <utility>
 
@@ -223,6 +224,12 @@ Screen playerScreen(bool music) {
     return {music ? Screen::Kind::MusicPlayer : Screen::Kind::BookPlayer, "Now playing", {}, {}};
 }
 
+// The default random numbers of Shuffle: one generator for the run, seeded once.
+std::size_t systemRandom(std::size_t bound) {
+    static std::mt19937_64 generator{std::random_device{}()};
+    return std::uniform_int_distribution<std::size_t>(0, bound - 1)(generator);
+}
+
 // Room left on the disk of `folder`, which must exist.
 std::optional<std::uintmax_t> spaceOnDisk(const std::filesystem::path& folder) {
     std::error_code ec;
@@ -288,7 +295,7 @@ App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeContro
     : tts_(speech), player_(player), earcons_(sounds), volume_(volume), server_(server), downloader_(downloader),
       index_(libraryStore), scanner_(scanner), config_(config), state_(state),
       savedState_(state.values()), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)),
-      freeSpace_(spaceOnDisk), lastActivity_(clock.now()) {
+      freeSpace_(spaceOnDisk), random_(systemRandom), lastActivity_(clock.now()) {
     textFiles_ = files;
 }
 
@@ -2418,8 +2425,58 @@ void App::sayPlayerInfo() {
     say(book_->title + ". " + std::to_string(ch.size()) + " " + unit() + "s. " + playerStatus());
 }
 
-// The music player: "Tracks" lists the album until the queue (queue.md, step 2.7) takes its place.
-std::vector<MenuItem> App::musicPlayerMenu() { return playerMenuBase("Tracks", "", "Go to first track"); }
+// The music player: "Tracks" lists the album until the queue (queue.md, step 2.7) takes its place. Shuffle and
+// Repeat come after it, before the sleep timer, as in the plan.
+std::vector<MenuItem> App::musicPlayerMenu() {
+    std::vector<MenuItem> items = playerMenuBase("Tracks", "", "Go to first track");
+    items.insert(items.begin() + 1, repeatItem());
+    items.insert(items.begin() + 1, shuffleItem());
+    return items;
+}
+
+// A "Setting with list" item that the queue backs instead of config.yaml: OK opens the list on the current
+// value, choosing one applies it at once and goes back.
+MenuItem App::queueSetting(const std::string& label, std::vector<std::string> names, std::function<size_t()> current,
+                           std::function<void(size_t)> apply) {
+    MenuItem item;
+    item.label = label;
+    item.value = [names, current] { return names[current()]; };
+    item.selected = current;
+    item.submenu = [this, names, current, apply] {
+        std::vector<MenuItem> items;
+        const size_t now = current();
+        for (size_t i = 0; i < names.size(); ++i) {
+            MenuItem option = action(names[i], [this, apply, i] {
+                apply(i);
+                back();
+            });
+            if (i == now) option.value = [] { return std::string("current"); };
+            items.push_back(std::move(option));
+        }
+        return items;
+    };
+    return item;
+}
+
+// The lists are in the order of the enums.
+MenuItem App::shuffleItem() {
+    return queueSetting("Shuffle", {"off", "tracks", "albums"}, [this] { return size_t(queue_.shuffle()); },
+                        [this](size_t i) { setShuffle(QueueShuffle(i)); });
+}
+
+MenuItem App::repeatItem() {
+    // Read when a track ends, so there is nothing to apply now.
+    return queueSetting("Repeat", {"off", "all", "track"}, [this] { return size_t(queue_.repeat()); },
+                        [this](size_t i) { queue_.setRepeat(QueueRepeat(i)); });
+}
+
+// The current entry stays current and keeps playing; what follows is shuffled (or put back in order).
+void App::setShuffle(QueueShuffle mode) {
+    queue_.setShuffle(mode, random_);
+    fileIndex_ = queue_.position(); // Off puts the original order back: the current entry may have moved
+    if (sleepAtChapterEnd_ >= 0 && trackCount() > 1) sleepAtChapterEnd_ = int(fileIndex_);
+    if (pendingOpen_) pendingOpen_->file = fileIndex_; // the track that is opening is the current one
+}
 
 std::vector<MenuItem> App::bookPlayerMenu() {
     std::vector<MenuItem> items = playerMenuBase("Chapters", "Book info", "Go to start of book");
@@ -2843,9 +2900,17 @@ App::OpenResult App::loadFile(size_t file, double position, bool autoplay, Origi
 App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origin origin, Then opened, Then undo,
                               SkippedRun skipped) {
     if (!book_) return OpenResult::Failed;
+    // With Repeat all the entries after the last are the first ones again (not for a track chosen in a list,
+    // which must not end up at the start): the scan wraps, and tries each entry once, so a queue with
+    // nothing that plays ends instead of going round for ever.
+    const bool wraps = music_ && origin != Origin::Menu && queue_.repeat() == QueueRepeat::All && trackCount() > 0;
+    if (wraps) file %= trackCount();
     const size_t startFile = file;
     const double startPosition = position;
-    for (; file < trackCount(); ++file, position = 0) {
+    // (`skipped` may hold entries already tried by the call that went on after a failure.)
+    const size_t end = wraps ? startFile + trackCount() - std::min(skipped.count, trackCount()) : trackCount();
+    for (size_t step = startFile; step < end; ++step, position = 0) {
+        file = wraps ? step % trackCount() : step;
         // A music queue skips what cannot play; the run is said once, when one plays.
         if (music_)
             if (Availability why = availability(file, origin); why != Availability::Yes) {
@@ -3087,11 +3152,13 @@ void App::markServerDown() {
 
 void App::clearServerDown() { serverDown_ = false; }
 
-// Entries from the current one on that belong to the server set up now.
+// Entries that can come up that belong to the server set up now.
 bool App::remoteAhead() const {
     if (!book_ || !music_ || !server_.configured()) return false;
     const std::string url = serverIdentity(config_.getString(kServerUrl)), user = config_.getString(kServerUser);
-    for (size_t i = fileIndex_; i < queue_.size(); ++i)
+    // With Repeat all the entries before the current one come up again after the last.
+    const size_t from = queue_.repeat() == QueueRepeat::All ? 0 : fileIndex_;
+    for (size_t i = from; i < queue_.size(); ++i)
         if (const QueueEntry& e = queue_.at(i); e.kind == QueueEntry::Kind::Remote && e.serverUrl == url && e.user == user)
             return true;
     return false;
@@ -3375,11 +3442,23 @@ void App::stepChapter(int direction) {
         double intoChapter = player_.position() - list[size_t(cur)].start;
         if (intoChapter > 3) target = cur;
     }
+    // With Repeat all Previous on the first track goes to the last, and Next on the last to the first.
+    const int count = int(list.size());
+    const bool wraps = music_ && count > 1 && queue_.repeat() == QueueRepeat::All;
+    const bool goingBack = music_ && count > 1 && target < cur;
+    if (wraps) target = (target + count) % count;
     // Previous goes back over the entries of the queue that cannot play (Next skips them when it opens one).
     SkippedRun skipped;
-    if (music_ && trackCount() > 1 && target < cur)
-        for (; target >= 0 && availability(size_t(target), Origin::Key) != Availability::Yes; --target)
+    if (goingBack) {
+        for (int tried = 0; target >= 0 && availability(size_t(target), Origin::Key) != Availability::Yes; ++tried) {
+            if (tried == count) { // none plays: said once, here
+                sayUnavailable(skipped);
+                return;
+            }
             addSkipped(skipped, size_t(target), availability(size_t(target), Origin::Key));
+            target = wraps ? (target + count - 1) % count : target - 1;
+        }
+    }
     if (target < 0 || target >= int(list.size())) {
         earcons_.play(Earcon::Edge);
         say(target < 0 ? "First " + unit() + "." : "Last " + unit() + ".");

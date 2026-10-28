@@ -71,6 +71,9 @@ public:
     // std::filesystem::space(); a test sets its own.
     using FreeSpace = std::function<std::optional<std::uintmax_t>(const std::filesystem::path&)>;
     void setFreeSpace(FreeSpace freeSpace) { freeSpace_ = std::move(freeSpace); }
+    // Where Shuffle gets its numbers: a random number in [0, bound). The default is a generator seeded from
+    // std::random_device; a test sets one that makes the shuffle known.
+    void setRandom(QueueRandom random) { random_ = std::move(random); }
     // How many bytes the Cache size setting counts a gigabyte as (a test sets a small one).
     void setCacheGigabyte(std::uintmax_t bytes) { cacheGigabyte_ = bytes; }
 
@@ -206,6 +209,11 @@ private:
     std::vector<MenuItem> musicPlayerMenu();
     std::vector<MenuItem> bookPlayerMenu();
     std::vector<MenuItem> chaptersMenu();
+    MenuItem queueSetting(const std::string& label, std::vector<std::string> names, std::function<size_t()> current,
+                          std::function<void(size_t)> apply);
+    MenuItem shuffleItem();
+    MenuItem repeatItem();
+    void setShuffle(QueueShuffle mode);
     MenuItem choice(const std::string& label, const std::string& key,
                     std::vector<std::pair<int, std::string>> options, int fallback,
                     std::function<void(int)> onChange = {});
@@ -420,7 +428,7 @@ private:
     void continueAfterFailure(size_t file, const std::string& title); // a track of the queue did not open at the end of the one before
     void markServerDown();
     void clearServerDown();
-    bool remoteAhead() const; // some entry from the current one on is of the server set up now
+    bool remoteAhead() const; // some entry that can come up (from the current one on, or any with Repeat all) is of the server set up now
     void checkServerMark(Clock::TimePoint now); // tick(): the background pings
     void startMarkPing(bool forPlay);
     void cancelMarkPing();
@@ -545,6 +553,7 @@ private:
     std::filesystem::path musicRoot_;
     std::filesystem::path cacheRoot_; // downloaded tracks; never scanned as library or music
     FreeSpace freeSpace_;
+    QueueRandom random_;
     GestureDetector gestures_;
 
     std::vector<Screen> screens_;

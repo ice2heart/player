@@ -3,7 +3,7 @@
 > Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end,
 > streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)),
 > plus phase 1 of [queue.md](queue.md): volume and Options buttons, the step unit, menus that jump, and separate music and book players.
-> Phase 2 of queue.md is being built: the music player plays a `Queue` (step 2.2) and skips what cannot play and checks a server that failed (step 2.3); shuffle, repeat, Options, the Queue list and `queue.tsv` are not built yet. Last updated: 2026-10-27.
+> Phase 2 of queue.md is being built: the music player plays a `Queue` (step 2.2) and skips what cannot play and checks a server that failed (step 2.3); Shuffle and Repeat are in the music Player menu (step 2.6); the Queue list and `queue.tsv` are not built yet. Last updated: 2026-10-27.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -101,7 +101,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/config/atomic_file.{h,cpp}` | `writeFileAtomically()`: temp file with mode 0600, `fsync`, `rename`. |
 | `app/config/disk_text_files.h` | `DiskTextFiles`: the `TextFiles` of the real file system, for the cache manifests (`App` takes it with the cache root; without one the cache is off). |
 | `app/config/settings_files.{h,cpp}` | `SettingsFiles`: what a front end hands to `App` (both files, loaded). |
-| `app/core/queue.{h,cpp}` | `Queue`, the music queue (docs/queue.md), a plain class with no `App` and no I/O; `App` does not use it yet (step 2.2). `QueueEntry` is a local track (path) or a remote one (server url + user, track id, length; never a password or stream URL), with title, album and artist. It keeps the entries in the original order and a play order (`playOrder()`, indexes into `originalEntries()`), the current position, `QueueShuffle` (off / tracks / albums), `QueueRepeat` (off / all / track) and `edited()` (set by `playNext`, `append`, `remove`, `move`; cleared by `replace`, which also resets shuffle and repeat). `advance()` is a track that ended (repeat track: `Repeated`), `next()` / `previous()` are the user moving (`Moved`, or `End`: past the last entry with repeat off, which makes the first entry current). `setShuffle(mode, random)` keeps what was played and the current entry and shuffles what follows (albums: runs of the same album name stay together); the `QueueRandom` is passed in. |
+| `app/core/queue.{h,cpp}` | `Queue`, the music queue (docs/queue.md), a plain class with no `App` and no I/O; `App` plays it (step 2.2). `QueueEntry` is a local track (path) or a remote one (server url + user, track id, length; never a password or stream URL), with title, album and artist. It keeps the entries in the original order and a play order (`playOrder()`, indexes into `originalEntries()`), the current position, `QueueShuffle` (off / tracks / albums), `QueueRepeat` (off / all / track) and `edited()` (set by `playNext`, `append`, `remove`, `move`; cleared by `replace`, which also resets shuffle and repeat). `advance()` is a track that ended (repeat track: `Repeated`), `next()` / `previous()` are the user moving (`Moved`, or `End`: past the last entry with repeat off, which makes the first entry current). `setShuffle(mode, random)` keeps what was played and the current entry and shuffles what follows (albums: runs of the same album name stay together); the `QueueRandom` is passed in. |
 | `app/core/text.{h,cpp}` | Text for speech, such as `spokenDuration()`, and `parseIsoTime()` (an ISO 8601 time as seconds since 1970, 0 if it is not one; pure arithmetic, used for a server album's `created`). |
 | `app/core/album_merge.{h,cpp}` | Duplicates (4.8), plain functions on the index. `mergeAlbums(items)` groups the `Music` items that share a `seenOn` reference into `MergedAlbum`s (`primary`: local, else cached, else server; `items`; `onServer`): the merged view, computed when a menu is built, never stored. `sameAlbumByName(a, b)` is the name rule (same MusicBrainz album id, else artist + album + track count with case and spaces ignored, ASCII, Latin-1 and Cyrillic folded; unknown count or empty name never match); `linkByName(key, items)` gives the `AlbumLink`s (local or cached item, server reference) for items with no reference to that server, matched against server albums that no local item holds; `albumInfoText(merged)` is what Album info says. `trackCountOf()` is a server item's `trackCount`, else its tracks. |
 | `app/platform/audio_output.{h,cpp}` | `AudioOutput` interface and `open(name)`, which picks a built-in backend at run time (`--audio`). |
@@ -359,8 +359,8 @@ does and does nothing else. Holding Home leaves the mode. The same texts
   starting a player of the other kind parks the loaded one in `switchTo()` (undone, with the old
   `parked_`, if the open fails or is dropped). `continueParked()` (Home "Continue", or Play with
   nothing loaded) opens the parked book again at its place and plays it. Each player has its own
-  Player menu (`musicPlayerMenu()` keeps "Tracks" until queue.md step 2.7; `bookPlayerMenu()` has
-  Chapters, Speed and Add bookmark). Home (`homeMenu()`) lists the player used last as "Now
+  Player menu (`musicPlayerMenu()` keeps "Tracks" until queue.md step 2.7 and adds Shuffle and Repeat; `bookPlayerMenu()` has
+  Chapters, Speed and Add bookmark, and neither). Home (`homeMenu()`) lists the player used last as "Now
   playing" and the other as "Continue", each when it has something: `playerTitle()` gives the
   title of the loaded book, the parked one, or what is saved for a restart (the stream, or
   `last_book`); `openPlayer()` enters, continues or resumes it. A parked place is not kept across a restart except what
@@ -403,9 +403,25 @@ does and does nothing else. Holding Home leaves the mode. The same texts
   and then skips what is still down. `cancelMarkPing()` (new queue in `switchTo()`, `sleep()`,
   `powerOff()`) cancels it, so a late answer never runs. The book player is not touched: a book
   stops at the chapter that failed and Play tries it again. Server status shows "not reachable"
-  as the item's value while `serverDown_`, and a ping from there that answers clears it. Not
-  done yet: with Repeat all the skip loop and `remoteAhead()` do not wrap (no way to set repeat
-  before step 2.6).
+  as the item's value while `serverDown_`, and a ping from there that answers clears it. **Repeat all (step 2.6):** `openFile()` scans from
+  the target and wraps past the last entry, trying each entry once (`skipped.count` from a failed
+  open counts as tried), so a queue with nothing that plays ends with "End of queue" instead of going
+  round; `remoteAhead()` looks at the whole queue; `stepChapter()` wraps Left / Right on the
+  first / last track and Previous goes back over unavailable entries past the first. With Repeat
+  track a track that is gone is skipped like any other: the entries after it are tried, and the
+  last one ends the queue.
+- **Shuffle and Repeat (step 2.6).** `shuffleItem()` and `repeatItem()` are "Setting with list" items
+  of `musicPlayerMenu()` whose value and list come from `queue_.shuffle()` / `queue_.repeat()`
+  (OK opens the list on the current value; choosing works at once and goes back). `setShuffle()`
+  calls `Queue::setShuffle()` and sets `fileIndex_ = queue_.position()` (Shuffle off moves the
+  current entry back to its original place; the end-of-track sleep timer follows it). Repeat is read
+  when a track ends (`upcomingTrack()` = `Queue::upcoming()`: repeat track gives the same entry, so
+  `onFileFinished()` opens it again and `checkReadAhead()` pre-opens it). **Randomness:** `App` has
+  no source of its own that tests cannot reach: `App::setRandom(QueueRandom)` replaces the default,
+  a `std::mt19937_64` seeded once from `std::random_device`; tests set one that makes the shuffle
+  known (all 0 turns what follows the current entry left by one place). A new queue (`playEntries()` builds a fresh
+  `Queue`) starts with both off; "Previous queue" keeps
+  the shuffle and repeat of the queue it brings back.
 - `mode()` is derived from the stack: `Player` when the top screen is a
   player, `Menu` otherwise, and `Sleeping` while asleep. Playback continues
   in the background on any screen.
@@ -522,6 +538,8 @@ Player menu of the book player (OK on its screen; `bookPlayerMenu()`)
 
 Player menu of the music player (`musicPlayerMenu()`; "Tracks" until the queue, queue.md step 2.7)
 ├── Tracks → <tracks>              (opens on the current track)
+├── Shuffle, off                   list: off · tracks · albums (backed by the queue, not config.yaml)
+├── Repeat, off                    list: off · all · track     (the same)
 ├── Sleep timer → …
 └── Go to first track
 
