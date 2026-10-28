@@ -4,7 +4,7 @@
 > streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)),
 > plus phases 1 and 2 of [queue.md](queue.md): volume and Options buttons, the step unit, menus that jump, separate music and book players,
 > and the music queue (local and server tracks mixed, skipped when unavailable, a server that fails checked until it answers), Options (Play now, Play next, Add to queue, Go to album, Album info),
-> Shuffle and Repeat, the Queue list, the queue kept in `queue.tsv` and Save as playlist. Star is not built (streaming.md 2a.1). Last updated: 2026-10-28.
+> Shuffle and Repeat (off, all, album, track; Add to queue mixed into a shuffled queue), the Queue list, the queue kept in `queue.tsv` and Save as playlist, and, from [fixes.md](fixes.md) phase 2, playlists in `library.db` and in Music, Download in Options and the player's name in "where am I?". Star is not built (streaming.md 2a.1). Last updated: 2026-10-28.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -95,7 +95,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/library.{h,cpp}` | `Book` (also a remote list or, with `serverBook`, an audiobook of the server: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set; `albums` marks where each album of Play all starts, which the Album step unit uses), `scanLibrary(root, skip)`, which leaves out the cache folder `skip`, `naturalLess()` and `nameGroup()` (the letter group of a name, for the menu jump). |
 | `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<kind>%3A<list id>/`, where a list is an album or a playlist (the kind in the folder name keeps an album and a playlist with one id apart). Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 2`, then a line `list<TAB>album|playlist<TAB>id<TAB>name<TAB>artist`, then per track tab-separated: id, file, title, duration, a reserved `changed` column (always empty: a download is never compared with the server), pinned `0`/`1`, last-played wall time; `\\`, `\t`, `\n`, `\r` escaped), read and written through the `TextFiles` interface of `services.h` (core does no file I/O of its own; `DiskTextFiles` in `app/config/` writes with `writeFileAtomically()`: temp file, `fsync`, rename, mode 0600; tests use the same on a temp folder). If `save()` finds a manifest that is there but not valid, it deletes the files in the folder that the new manifest does not name (never a `.part`, never another folder), so a damaged manifest leaves no orphans; a manifest that cannot be read at all (an I/O error) is not replaced (`save()` fails). A missing or corrupt manifest reads as empty, and so does a manifest of format 1 (it had no list line; no device ever held one) or one whose list line does not match its folder (a copied folder). `lists()` gives the lists with at least one complete track, sorted by name (`lists(true)`: only those with a complete pinned track, for Streaming > Downloaded); `trim(limit, played, keep, info)` writes play times into `lastPlayed` (the latest play replaces the old time; a time before `kEarliestPlayTime`, 2020-01-01, is a clock that was never set and is ignored) and evicts unpinned tracks and `.part` files (a `.part` first, then least recently played first), above the limit; `info` gives the evicted ids and the bytes left (section 5, "Automatic cache"); `remove()` deletes one list folder, only ever a direct child of the server's folder. `find(trackId)` returns the complete file of a track from any list (`index()` does it for every track in one pass, `completeFile()` for one manifest entry), never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
 | `app/frontend/threaded_scanner.{h,cpp}` | `ThreadedScanner : LibraryScanner` (both front ends construct it with an `FfmpegTagReader` and pass it to `App`): one worker thread runs `scan(ScanRequest, Done)` jobs in order. A `ScanRequest` holds the library root, the music root, the cache folder to skip and the `previous` local items. The worker lists the roots with `scanLibrary()` (the same files the menus show, cache folder skipped), keeps the track of a file whose path, size and file time (`stat`, whole seconds) equal an entry in `previous` (same kind), and reads tags through `TagReader` only for the others; a file that is not a regular file is never opened (a FIFO would block). Output, all `Source::Local`, `firstSeen` and `lastPlayed` 0: a `Book` item per folder or loose file under the library root, id `local:book:<path>`, titled by the folder, a track per file (title from the tags, else the file name); `Music` items grouped by tags: id `local:album:<album artist or artist>\x1f<album>` (an album in several folders is one item), and files without an album tag by the folder under the music root, id `local:folder:<path>`, titled by the folder name. A file whose tags cannot be read is listed with its file name as title. A book's tracks are in file order (`pathLess`); an album's are ordered by folder, then track number (none: last), then file name (the disc number is not stored). A scan that throws (the reader or an allocation) delivers nothing and the worker goes on. A file with a tag edit that keeps both size and whole-second time is not noticed; the books' files are probed too, once. Results are delivered from `poll()`; `cancel(id)` never waits (a queued scan is dropped, a running one stops after the file it reads) and the callback never runs; the destructor does the same and joins, so a read stuck on a hung mount can delay it. `FakeLibraryScanner` (tests/fakes.h) records requests and delivers only on `finish()` + `poll()`. |
-| `app/core/library_index.{h,cpp}` | `LibraryIndex` (owned by `App`, built on the `LibraryStore` it is given; see section 8): the library in memory, `IndexItem` (id, source local/server/cached, kind book/music/podcast, title, artist, album, genre, year, MusicBrainz id, first-seen and last-played wall times, tracks, `seenOn`) with `IndexTrack` (location, title, artist, number, duration, size, file time, `seenOn`). `seenOn` holds server references `<server key>:<album\|playlist\|track>:<id>` (`seenRef()`; `refOnServer()` finds the one for a server key), each at most once. Lookups by id, by track location, and by reference. `upsert()` merges (keeps first-seen, later last-played, and the references already there), `replaceSource()` is a scan, `replaceServer()` a sync of one server key. It loads and saves through `LibraryStore` in `services.h` (`load()`; `save(changed, removed)`), and `save()` hands over only the items that changed and the ones removed, nothing when none did. The SQLite store is `SqliteLibraryStore` in `app/library/`. |
+| `app/core/library_index.{h,cpp}` | `LibraryIndex` (owned by `App`, built on the `LibraryStore` it is given; see section 8): the library in memory, `IndexItem` (id, source local/server/cached, kind book/music/podcast, title, artist, album, genre, year, MusicBrainz id, first-seen and last-played wall times, tracks, `seenOn`) with `IndexTrack` (location, title, artist, number, duration, size, file time, `seenOn`). `playlists()` holds the server's playlists (`IndexPlaylist`: server key, id, name, song count, `changed`), kept apart from the items: `replacePlaylists(key, list)` replaces one server's, `addPlaylist()` adds one (Save as playlist), `playlistServers()` names the servers that have some, and `saveItems()` / `savePlaylists()` write the two parts (`save()` tries both). `seenOn` holds server references `<server key>:<album\|playlist\|track>:<id>` (`seenRef()`; `refOnServer()` finds the one for a server key), each at most once. Lookups by id, by track location, and by reference. `upsert()` merges (keeps first-seen, later last-played, and the references already there), `replaceSource()` is a scan, `replaceServer()` a sync of one server key. It loads and saves through `LibraryStore` in `services.h` (`load()`; `save(changed, removed)`), and `save()` hands over only the items that changed and the ones removed, nothing when none did. The SQLite store is `SqliteLibraryStore` in `app/library/`. |
 | `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `serverConfigured()`. |
 | `app/library/sqlite_library_store.{h,cpp}` | `SqliteLibraryStore : LibraryStore` (both front ends construct it on `--library-db` and pass it to `App`): `library.db` with tables `schema_version` (3: 2.4 added the `playlists` table, which a version 2 file gains when it is opened; 2: 4.8 added `items.track_count` and `items.created`; a version 1 file is moved aside and rebuilt by scan and sync), `items`, `tracks` (by item and position), `refs` (the `seenOn` of an item, or of its track by position) and `playlists` (server key, id, name, song count, `changed`; `savePlaylists()` replaces them as a whole in one transaction). `save()` is one `BEGIN IMMEDIATE` transaction that deletes and rewrites each changed item and deletes the removed ones, and rolls back on any error. Rollback journal (no WAL), `synchronous=FULL`, file mode 0600 (also set on an existing file). A file that is damaged (`quick_check`), not a database, or of another schema version is renamed to `library.db.bad` (replacing an earlier one) and the store starts empty; a file with no tables is new. Front ends take `--library-db FILE` (default `library.db` next to `state.tsv`, so `/data/config/library.db` on the device). |
 | `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys) and `TsvStore` (`state.tsv`). |
@@ -315,7 +315,7 @@ The rules behind this table, and the checklist for new menus, are in
 | Button | Anywhere | Menu | Player screen |
 |--------|----------|------|---------------|
 | Play/Pause short | play / pause | | |
-| Play/Pause long | "Where am I?" | menu path + item | book or album, chapter or track, time left |
+| Play/Pause long | "Where am I?" | menu path + item | the player ("Music player." / "Book player."), the album and artist, chapter or track, time left (`playerIdentity()` + `playerStatusBody()`) |
 | Up / Down short | | previous / next item (wraps) | previous / next step unit (edge sound at the ends) |
 | Up / Down long | | first / last item | the same, once (no repeat) |
 | Left / Right short | | jump: previous / next letter in a list sorted by name, else 10 items | move back / forward by the step unit (skip, track or chapter, album or 10 minutes) |
@@ -418,7 +418,14 @@ does and does nothing else. Holding Home leaves the mode. The same texts
   calls `Queue::setShuffle()` and sets `fileIndex_ = queue_.position()` (Shuffle off moves the
   current entry back to its original place; the end-of-track sleep timer follows it). Repeat is read
   when a track ends (`upcomingTrack()` = `Queue::upcoming()`: repeat track gives the same entry, so
-  `onFileFinished()` opens it again and `checkReadAhead()` pre-opens it). **Randomness:** `App` has
+  `onFileFinished()` opens it again and `checkReadAhead()` pre-opens it; repeat album gives the next
+  entry of the same album in the play order, the album's first after its last, and the same entry
+  for an album of one; an album is the entries with the same `albumId`, else the same album name;
+  the list is off, all, album, track, and `queue.tsv` writes `album`, which an older build reads as off).
+  **Added entries:** `addToQueue()` passes the same `random_` to `Queue::append()`, so with Shuffle on
+  Add to queue mixes the new entries into what has not played yet; Play next keeps its entries in
+  order right after the current one. An Add to queue entry may land before entries put there by
+  Play next, because those count as not played yet. **Randomness:** `App` has
   no source of its own that tests cannot reach: `App::setRandom(QueueRandom)` replaces the default,
   a `std::mt19937_64` seeded once from the `Clock` (core reads no other source of chance); tests set one that makes the shuffle
   known (all 0 turns what follows the current entry left by one place). A new queue (`playEntries()` builds a fresh
@@ -487,7 +494,7 @@ Home
 │   ├── Albums A to Z → <albums>   (every merged entry, server-only ones too)
 │   │   <album on the device> → <tracks>   (OK plays; Album info is in its Options) from that track to the end; a loose track plays at once)
 │   │   <server-only album> → Loading, then Play album · Download album · <tracks>   (as in Streaming)
-│   ├── Playlists → <playlist> → Play playlist · Download playlist · <tracks>   (planned, fixes.md 2.4-2.5: from the index and the cache manifests, "12 tracks"; works offline; "No playlists")
+│   ├── Playlists → <playlist> → Play playlist · Download playlist · <tracks>   (`playlistsMenu()`: the index's playlists and the downloaded ones from the cache manifests, one entry for a playlist in both, sorted by name, "12 tracks"; a local menu, works offline; "No playlists". A playlist whole on the disk opens from its files, else its tracks load from the server; with no music yet the item is there only when a playlist is)
 │   ├── Genres → <genre> → <albums>   (tags and server genre, names merged without case; albums with no genre are left out)
 │   ├── Recently added → <albums>      (newest first, at most 50; "No new albums")
 │   ├── Recently played → <albums>     (last played first, at most 50; "Nothing played yet")
@@ -544,11 +551,11 @@ Player menu of the music player (`musicPlayerMenu()`)
 │     │     ├── Play next          (`queuePlayNext()`: after the current entry)
 │     │     ├── Move → <places>    (`queueMovePositions()`, opens on the entry's own place; "Moved to 3 of 30")
 │     │     └── Remove             (`queueRemove()`; the current entry: stopped, closed, the next one current)
-│     ├── Save as playlist         (`saveAsPlaylist()`: "Saving.", then `createPlaylist` with the ids of the server set up now, in play order)
+│     ├── Save as playlist         (`saveAsPlaylist()`: "Saving.", then `createPlaylist` with the ids of the server set up now, in play order; the server's answer carries the new playlist's id, which goes into the index at once and shows in Music → Playlists)
 │     ├── Previous queue           (only when `previous_` holds an edited queue)
 │     └── Clear queue → Cancel · Clear queue   (`clearQueue()` / `unloadQueue()`: nothing loaded, Home)
 ├── Shuffle, off                   list: off · tracks · albums (backed by the queue, not config.yaml)
-├── Repeat, off                    list: off · all · track     (the same; planned: off · all · album · track, fixes.md 2.2)
+├── Repeat, off                    list: off · all · album · track     (the same)
 ├── Go to first track
 └── Sleep timer → …
 
@@ -556,10 +563,19 @@ Options in the music player (`playerOptionsMenu()`, "Options, <track>")
 ├── Go to album            (local: the index item of the file; remote: the album id of the entry; opens on the playing track)
 └── Album info             (title, number of tracks, status)
 
-Planned (fixes.md 2.6): the Options of a server album or playlist (Music and Streaming) get Download album /
-Download playlist after Add to queue, where `canDownload()`; it loads through `choose()`, then `startDownload()`.
-Planned (fixes.md 2.3): "where am I?" in a player starts with the player's name and the album and artist of the
-current queue entry (navigation.md, "Where am I in a player").
+The Options of a server album or playlist (Music and Streaming) have Download album / Download playlist after
+Add to queue (`optionsMenu()`), where `offersDownload()`: `canDownload()` and the list is not already whole on the
+device (every manifest track pinned and complete, `isWholeDownload()`). `choose()` with `QueueAction::Download`
+loads the tracks ("Loading."), then `onPickLoaded()` calls `startDownload()` with a `started` callback that pops the
+Options screen and plays the close sound only once the download has started; a refusal is spoken on the Options.
+While a download runs `choose()` does not load: `sayDownloadBusy()` gives the progress for the same list, else
+"Another download is running." The Options of a playlist that is whole on the disk still load from the server
+(`remotePick`), so with the server down they say "Server not reachable."
+
+"Where am I?" in a player (`whereAmI()`) speaks `playerIdentity()` then `playerStatusBody()`: "Music player." or
+"Book player.", then the album and artist of the current queue entry (not the queue's title) or, for a book, its
+title and author ("Dune, by Weather."; the artist alone as "By Weather."; nothing when both are empty), then the track,
+the time left and the state. A server book carries its author in `Book::artist` (`serverBookOf()`); a local book has none.
 
 A change to the order of the queue (Shuffle, Move, Remove, Play next in the Queue list) calls `followQueue()`: `fileIndex_`
 is the play order position of the current entry, so it, the end-of-track sleep timer and `pendingOpen_->file` follow it.
@@ -613,7 +629,14 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   writes only what changed; the version is stored only after a save that worked. Each
   server item is `Source::Server`, `Kind::Music`, id and `seenOn` `<server key>:album:<id>`, with
   title, artist, genre, year and MusicBrainz id; its tracks are not stored. An error at any
-  step keeps the saved items and the old version and is silent at start-up. A server item
+  step keeps the saved items and the old version and is silent at start-up. **Playlists (2.4):** the
+  last step of the sync is `fetchPlaylists()` (`getPlaylists`, after the catalogue pages; it also runs when the
+  catalogue version is unchanged, so the playlists are fresh without a new catalogue). The answer replaces the
+  server's stored playlists (`replacePlaylists()`, `savePlaylists()`); a playlist saved with Save as playlist while
+  the request is out is kept (`catalogue_.savedPlaylists`). A failing `getPlaylists` ends the sync with the error:
+  the albums are already replaced and the old playlists stay. The version in `state.tsv` is stored after the
+  items are saved (`saveItems()`), whatever happens to the playlists table. `dropOtherServers()` also clears the
+  playlists of other servers. A server item
   also has `trackCount` (`songCount`) and `created` (`parseIsoTime()` of the server's text, 0 if
   unknown; used by Recently added). **Music -> Refresh
   library** (last item of Music, also under "Scanning" / "No music") says "Updating the
@@ -1012,7 +1035,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 - Every write is atomic (`writeFileAtomically`): `FILE.tmp` created with mode 0600,
   `fsync`, `rename`, then `fsync` of the folder. A power cut leaves the old file.
 - The old single `settings.tsv` is not read any more; settings start from the defaults.
-- **`library.db`** (`--library-db`, default next to `state.tsv`) is the library index, written by `SqliteLibraryStore` (section 8 and the source table): only what changed, in one transaction, and the play times (`lastPlayed`) only on exit and sleep. It is a cache of what the disk and the server hold, so a lost or damaged file (moved to `library.db.bad`) is rebuilt by the next scan and sync; Factory reset leaves it alone.
+- **`library.db`** (`--library-db`, default next to `state.tsv`) is the library index, written by `SqliteLibraryStore` (section 8 and the source table): only what changed, in one transaction, and the play times (`lastPlayed`) only on exit and sleep. It is a cache of what the disk and the server hold (items and playlists), so a lost or damaged file (moved to `library.db.bad`) is rebuilt by the next scan and sync; Factory reset leaves it alone.
 
 ## 10. Simulator (`app/sim/main.cpp`)
 

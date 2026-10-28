@@ -135,7 +135,7 @@ menus then **jump in long lists**:
 - **The current entry** and its position.
 - **Shuffle**: off · tracks · albums. "Albums" keeps each album in order and shuffles
   which album comes next.
-- **Repeat**: off · all · track. Repeat track plays the current track again each
+- **Repeat**: off · all · album · track (Repeat album was added in fixes.md phase 2). Repeat track plays the current track again each
   time it ends; Left / Right and a deep press still move to other tracks, and the track
   moved to is then the one that repeats.
 - **Shuffle and repeat belong to the queue.** A new queue starts with both off. They
@@ -199,7 +199,7 @@ random generator is passed in, so tests choose the shuffle.
 Player menu (music player)
 ├── Queue → <entries>      opens on the current entry, spoken "current"
 ├── Shuffle, off           list: off · tracks · albums
-├── Repeat, off            list: off · all · track
+├── Repeat, off            list: off · all · album · track
 ├── Go to first track      the first entry in the play order
 └── Sleep timer → …
 ```
@@ -342,6 +342,18 @@ Phase 2 is built as planned, with these differences. The code is described in
 - **A track chosen from a list is tried while its server is marked down** (`Origin::Menu`): the user chose
   it from what the server just listed. An open that works clears the mark. Entries reached by Next, a
   track ending or Previous are skipped.
+- **Repeat album (fixes.md 2.2).** The list is off · all · album · track. Repeat album repeats the album of the
+  current track: the entries with the same `albumId`, else the same album name (an entry with neither is an
+  album of its own and repeats like Repeat track). When an entry of it ends, the next entry of the same album in
+  the play order plays, others skipped; after the last, the first. `queue.tsv` writes `repeat\talbum`, which an
+  older build reads as off.
+- **Add to queue follows Shuffle (fixes.md 2.7).** With Shuffle on, `Queue::append(entries, random)` mixes the
+  new entries into what has not played yet (tracks one by one; albums run by run, cut as `setShuffle()` cuts
+  them), and the original order gets them at the end. Play next keeps its entries in order right after the
+  current one. Entries put there by Play next count as not played yet, so Add to queue can place new entries
+  before them. What is spoken is unchanged.
+- **Save as playlist adds the playlist to the index (fixes.md 2.4)** at once, so it shows in Music → Playlists
+  without a sync.
 - **Edges of the Album unit** play the edge sound and say "First album." or "Last album.".
 - **Spoken texts the plan did not give:** "End of queue. Press play to start again.", "Playing Weather."
   for Play now, "Moved to 3 of 30." and "Not moved.", "Removed Storm. 29 in queue.", "Storm will play

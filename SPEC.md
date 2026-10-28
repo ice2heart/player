@@ -346,6 +346,7 @@ Home
 │   ├── Play all               (what is on the device, never the whole server)
 │   ├── Artists
 │   ├── Albums A to Z
+│   ├── Playlists              (the server's, from the index; downloaded ones too; works offline)
 │   ├── Genres
 │   ├── Recently added
 │   ├── Recently played
@@ -377,9 +378,9 @@ Home
 | Back / Forward long or deep | previous / next chapter or track; announces chapter name |
 | Up / Down             | choose the step unit for Back / Forward; speaks it ("Track") |
 | Volume up / down      | content volume, held repeats; earcon pitch indicates level, edge sound at the limits |
-| Options               | actions for the playing track (Go to album, Album info; Star later); the book player says "No options". On a list item: Play now, Play next, Add to queue |
-| Play long             | "Chapter 7 of 22, 'The Storm'. 14 minutes left in chapter, 6 hours 3 minutes left in book." |
-| OK                    | player menu. Music: queue (list, move, remove, save as server playlist, clear), shuffle, repeat, go to first track, sleep timer. Book: chapters, sleep timer, info, speed, bookmark add |
+| Options               | actions for the playing track (Go to album, Album info; Star later); the book player says "No options". On a list item: Play now, Play next, Add to queue, and for a server album or playlist Download |
+| Play long             | "Book player. Dune, by Frank Herbert. Chapter 7 of 22, 'The Storm'. 14 minutes left in chapter, 6 hours 3 minutes left in book." |
+| OK                    | player menu. Music: queue (list, move, remove, save as server playlist, clear), shuffle, repeat (off, all, album, track), go to first track, sleep timer. Book: chapters, sleep timer, info, speed, bookmark add |
 | Talk                  | voice command |
 
 ### 5.5 Onboarding (first boot)
