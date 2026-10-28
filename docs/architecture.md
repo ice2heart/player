@@ -531,7 +531,7 @@ Home
 │   ├── Recently added → <albums>      (newest first, at most 50; "No new albums")
 │   ├── Recently played → <albums>     (last played first, at most 50; "Nothing played yet")
 │   └── Refresh library            (rescans the files and syncs the server catalogue, see section 8)
-├── <server.name, default Server>  (Streaming: lists from the server, see below)
+├── <server name>, one per server in config order (Streaming: lists from the server, see below; Home builds the entries from `servers_`, `streamingMenu(link)` takes the link, default name Server / Server N)
 │   ├── Recently added → <albums>  (one page of 500)
 │   ├── Albums A to Z → <albums>   (pages of 500, the next one fetched while the server has more)
 │   ├── Artists → <artist> → <albums>
@@ -621,6 +621,12 @@ opening, Play next / Move / Remove say "Loading." and wait (`queueLocked()`): th
 
 Power menu (hold Power): Sleep · Power off · Restart · Cancel
 ```
+
+**Several servers (step 1.4):** the browsing menus of each server's Streaming menu carry the index of
+their link (`streamingMenu(link)`, `openRemoteList(link, ...)`, `Pick::link`, `RemoteList::link`,
+`pingLink_`) and ask `serverAt(link)`; a request is cancelled on the link it was made on. `tick()` polls
+every link. Playing, downloads, Downloaded, the catalogue and the "marked down" state still use the first link
+(`server_`) until steps 1.5 to 1.7; a second server's menu has no Downloaded entry and never answers an album from the first server's downloads.
 
 **Lists from the server** (`App::openRemoteList`) open at once with one item,
 "Loading", and the request goes out. Each screen has an `id`; the request's

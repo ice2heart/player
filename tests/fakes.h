@@ -331,7 +331,7 @@ inline std::vector<ServerLink> linkTo(const Settings& settings, MusicServer& ser
     std::vector<ServerConfig> configs = serverConfigs(settings);
     ServerConfig config = configs.empty() ? ServerConfig{} : configs.front();
     std::string key = TrackCache::serverKey(config.url, config.user);
-    return {ServerLink{config, key, "Server", server, downloader}};
+    return {ServerLink{config, key, config.name.empty() ? "Server" : config.name, server, downloader}};
 }
 
 // A music server that answers only when the test says so. Every request is

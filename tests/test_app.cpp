@@ -3634,6 +3634,223 @@ TEST_F(StreamingTest, OnlyTheFirstServerOfTheListIsUsed) {
     EXPECT_TRUE(second.requests.empty());
 }
 
+// Two servers: the first is the fixture's `server` ("Music"), the second a fake of its own ("Audiobooks").
+class TwoServersTest : public StreamingTest {
+protected:
+    FakeMusicServer second;
+    FakeDownloader secondDownloader;
+    void SetUp() override {
+        StreamingTest::SetUp();
+        settings.setString("servers.0.name", "Navidrome");
+        settings.setString("servers.0.url", "https://music.example");
+        ServerConfig config;
+        config.name = "Audiobooks";
+        config.url = "https://books.example";
+        moreLinks.push_back(ServerLink{config, "books-1", "Audiobooks", second, secondDownloader});
+    }
+    // Home > `name`
+    void openLink(const std::string& name) {
+        start();
+        open(name);
+    }
+};
+
+TEST_F(TwoServersTest, HomeHasAnEntryForEachServerBetweenMusicAndPodcasts) {
+    settings.setString("servers.0.name", "Music");
+    start();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Library", "Music", "Music", "Audiobooks", "Podcasts", "Settings",
+                                                  "System", "Help"}));
+}
+
+TEST_F(TwoServersTest, HomeSpeaksTheNameOfEachLink) {
+    moreLinks.clear();
+    moreLinks.push_back(ServerLink{ServerConfig{}, "other-1", "Server 2", second, secondDownloader});
+    settings.setString("servers.0.name", "");
+    start();
+    EXPECT_EQ(labels().at(2), "Server") << "one server, no name";
+    app.reset();
+    // makeServers names a link of several "Server N" by its place, and App speaks what it is given.
+    auto links = serverLinks();
+    links[0].name = "Server 1";
+    app = std::make_unique<App>(speech, player, sounds, volume, std::move(links), indexStore, scanner, settings, state, clock,
+                                root, music, cache, textFiles, queueFile, scrobbleFile);
+    app->start();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    EXPECT_EQ(labels().at(2), "Server 1");
+    EXPECT_EQ(labels().at(3), "Server 2");
+}
+
+TEST_F(TwoServersTest, EachEntryOpensTheStreamingMenuOfItsServer) {
+    openLink("Audiobooks");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Random albums",
+                                                  "Server status"}));
+    EXPECT_EQ(level().title, "Audiobooks");
+}
+
+TEST_F(TwoServersTest, RecentlyAddedOnTheSecondServerAsksOnlyTheSecond) {
+    start();
+    const size_t asked = server.requests.size(); // the catalogue sync of the first
+    open("Audiobooks");
+    open("Recently added");
+    EXPECT_EQ(server.requests.size(), asked);
+    ASSERT_EQ(second.requests.size(), 1u);
+    EXPECT_EQ(second.lastRequest().kind, Kind::Albums);
+    EXPECT_EQ(second.lastRequest().arg, "newest");
+    EXPECT_EQ(speech.last(), "Recently added. Loading, 1 of 1");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 3}}, false));
+    app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Dune"}));
+    open("Dune"); // the album's tracks come from the same server
+    EXPECT_EQ(second.lastRequest().kind, Kind::AlbumTracks);
+    EXPECT_EQ(second.lastRequest().arg, "b1");
+    EXPECT_EQ(server.requests.size(), asked);
+}
+
+TEST_F(TwoServersTest, TheFirstServersListsStillAskTheFirst) {
+    start();
+    open("Navidrome");
+    open("Random albums");
+    EXPECT_EQ(server.lastRequest().kind, Kind::Albums);
+    EXPECT_EQ(server.lastRequest().arg, "random");
+    EXPECT_TRUE(second.requests.empty());
+}
+
+TEST_F(TwoServersTest, ArtistsOfTheSecondServerOpenTheirAlbumsFromTheSecond) {
+    openLink("Audiobooks");
+    open("Artists");
+    ASSERT_EQ(second.lastRequest().kind, Kind::Artists);
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteArtist>{{"ar1", "Herbert", 2}}, false));
+    app->tick();
+    open("Herbert");
+    EXPECT_EQ(second.lastRequest().kind, Kind::ArtistAlbums);
+    EXPECT_EQ(second.lastRequest().arg, "ar1");
+}
+
+TEST_F(TwoServersTest, OptionsOfAnAlbumOnTheSecondServerLoadItFromTheSecond) {
+    openLink("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 3}}, false));
+    app->tick();
+    press(Button::Options);
+    open("Play now");
+    EXPECT_EQ(speech.last(), "Loading.");
+    EXPECT_EQ(second.lastRequest().kind, Kind::AlbumTracks);
+    EXPECT_EQ(second.lastRequest().arg, "b1");
+    for (const auto& r : server.requests) EXPECT_NE(r.arg, "b1");
+}
+
+TEST_F(TwoServersTest, OptionsOfAnArtistOnTheSecondServerLoadTheirAlbumsAndTracksFromTheSecond) {
+    openLink("Audiobooks");
+    open("Artists");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteArtist>{{"ar1", "Herbert", 1}}, false));
+    app->tick();
+    press(Button::Options);
+    open("Play now");
+    ASSERT_EQ(second.lastRequest().kind, Kind::ArtistAlbums);
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 3}}, false));
+    app->tick();
+    EXPECT_EQ(second.lastRequest().kind, Kind::AlbumTracks);
+    EXPECT_EQ(second.lastRequest().arg, "b1");
+    for (const auto& r : server.requests) EXPECT_NE(r.arg, "b1");
+}
+
+TEST_F(TwoServersTest, ServerStatusNamesTheTypeAndVersionOfThatServer) {
+    openLink("Audiobooks");
+    open("Server status");
+    EXPECT_EQ(speech.last(), "Checking the server.");
+    EXPECT_EQ(second.lastRequest().kind, Kind::Ping);
+    for (const auto& r : server.requests) EXPECT_NE(r.kind, Kind::Ping) << "the first server is not asked";
+    ASSERT_TRUE(second.replyPing(second.lastRequest().id, {"audiobookshelf", "2.37.2"}));
+    app->tick();
+    EXPECT_EQ(speech.last(), "Connected to Audiobookshelf 2.37.2.");
+}
+
+// The "marked down" state belongs to the server that plays (the first, until step 1.5).
+TEST_F(TwoServersTest, TheSecondServersStatusIsNotMarkedDownWithTheFirstAndItsAnswerDoesNotClearTheFirst) {
+    start();
+    player.unopenable = {"fake://stream/t1"};
+    EXPECT_FALSE(app->playRemote("Weather", weather(), 0));
+    ASSERT_TRUE(speech.heard("Cannot play Storm Front. Server not reachable."));
+    press(Button::Home);
+    open("Audiobooks");
+    for (int i = 0; i < 4; ++i) press(Button::Down);
+    EXPECT_EQ(speech.last(), "Server status, 5 of 5");
+    press(Button::Ok);
+    ASSERT_TRUE(second.replyPing(second.lastRequest().id, {"audiobookshelf", "2.37.2"}));
+    app->tick();
+    press(Button::Home);
+    hold(Button::Home);
+    open("Navidrome");
+    for (int i = 0; i < 4; ++i) press(Button::Down);
+    EXPECT_EQ(speech.last(), "Server status, not reachable, 5 of 5");
+}
+
+TEST_F(TwoServersTest, LeavingAListOfTheSecondServerCancelsOnlyItsRequest) {
+    openLink("Audiobooks");
+    open("Recently added");
+    const auto id = second.lastRequest().id;
+    const size_t firstCancelled = server.cancelled.size();
+    press(Button::Home);
+    EXPECT_EQ(second.cancelled, (std::vector<MusicServer::RequestId>{id}));
+    EXPECT_EQ(server.cancelled.size(), firstCancelled);
+}
+
+TEST_F(TwoServersTest, LeavingServerStatusOfTheSecondServerCancelsOnlyItsPing) {
+    openLink("Audiobooks");
+    open("Server status");
+    const auto id = second.lastRequest().id;
+    const size_t firstCancelled = server.cancelled.size();
+    press(Button::Home);
+    EXPECT_EQ(second.cancelled, (std::vector<MusicServer::RequestId>{id}));
+    EXPECT_EQ(server.cancelled.size(), firstCancelled);
+}
+
+TEST_F(TwoServersTest, PlayingWhileTheSecondServersStatusWaitsCancelsOnlyThatPing) {
+    openLink("Audiobooks");
+    open("Server status");
+    const auto id = second.lastRequest().id;
+    const size_t firstCancelled = server.cancelled.size();
+    EXPECT_TRUE(app->playRemote("Weather", weather(), 0)); // the player opens over Server status: the user has moved on
+    EXPECT_EQ(second.cancelled, (std::vector<MusicServer::RequestId>{id}));
+    EXPECT_EQ(server.cancelled.size(), firstCancelled);
+}
+
+TEST_F(TwoServersTest, LeavingAnAlbumOptionsThatLoadsFromTheSecondServerCancelsOnlyThatRequest) {
+    openLink("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 3}}, false));
+    app->tick();
+    press(Button::Options);
+    open("Play now");
+    const auto id = second.lastRequest().id;
+    ASSERT_EQ(second.lastRequest().kind, Kind::AlbumTracks);
+    const size_t firstCancelled = server.cancelled.size();
+    press(Button::Home);
+    EXPECT_EQ(second.cancelled, (std::vector<MusicServer::RequestId>{id}));
+    EXPECT_EQ(server.cancelled.size(), firstCancelled);
+}
+
+TEST_F(TwoServersTest, AListOfTheFirstServerLeftForTheSecondIsDropped) {
+    start();
+    open("Navidrome");
+    open("Random albums");
+    const auto firstId = server.lastRequest().id;
+    hold(Button::Home);
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 3}}, false));
+    app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Dune"}));
+    EXPECT_FALSE(server.reply(firstId, std::vector<RemoteAlbum>{{"a1", "Late", "X", 1}}, false)) << "its screen is gone";
+}
+
+TEST_F(TwoServersTest, AnUnusableSecondServerIsNotAskedAndSaysItIsNotSupported) {
+    second.isConfigured = false;
+    openLink("Audiobooks");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server not supported"}));
+    EXPECT_TRUE(second.requests.empty());
+}
+
 TEST_F(StreamingTest, AServerThisPlayerCannotUseSaysSo) {
     server.isConfigured = false; // the front end could not make a server from it
     settings.setString("server.type", "audiobookshelf");
@@ -6215,6 +6432,43 @@ protected:
         return false;
     }
 };
+
+// The cache is the first server's until step 1.6: a second server shows none of it and does not play from it.
+TEST_F(DownloadedTest, ASecondServerHasNoDownloadedAndAsksItsServerForAnAlbumTheFirstHasDownloaded) {
+    FakeMusicServer second;
+    FakeDownloader secondDownloader;
+    ServerConfig config;
+    config.name = "Audiobooks";
+    config.url = "https://books.example";
+    moreLinks.push_back(ServerLink{config, "books-1", "Audiobooks", second, secondDownloader});
+    seedWeather(); // album "al1" is whole on the disk
+    start();
+    open("Audiobooks");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Random albums",
+                                                  "Server status"}));
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"al1", "Weather", "Other", 3}}, false));
+    app->tick();
+    press(Button::Options);
+    open("Play now");
+    ASSERT_EQ(second.lastRequest().kind, Kind::AlbumTracks) << "not answered from the first server's files";
+    EXPECT_EQ(second.lastRequest().arg, "al1");
+}
+
+TEST_F(DownloadedTest, AListThatFailedOnASecondServerOffersNoDownloaded) {
+    FakeMusicServer second;
+    FakeDownloader secondDownloader;
+    ServerConfig config;
+    config.url = "https://books.example";
+    moreLinks.push_back(ServerLink{config, "books-1", "Audiobooks", second, secondDownloader});
+    seedWeather();
+    start();
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.fail(second.lastRequest().id, MusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again"}));
+}
 
 TEST_F(DownloadedTest, TheServerMenuOffersDownloadedOnlyWithACacheFolder) {
     openServer();

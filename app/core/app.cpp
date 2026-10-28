@@ -706,8 +706,14 @@ App::Mode App::mode() const {
 void App::tick() {
     auto now = clock_.now();
     for (const ButtonEvent& ev : gestures_.poll(now)) onGesture(ev);
-    server_.poll(); // answers from the server fill their lists
-    downloader_.poll(); // a finished track starts the next one
+    if (servers_.empty()) { // the stand-ins answer through poll() too
+        server_.poll();
+        downloader_.poll();
+    }
+    for (ServerLink& link : servers_) {
+        link.server.poll(); // answers from the server fill their lists
+        link.downloader.poll(); // a finished track starts the next one
+    }
     scanner_.poll();    // a finished scan updates the index
     if (pendingOpen_ && !player_.opening()) finishPendingOpen();
     else if (pendingOpen_ && now - pendingOpen_->since > kStreamOpenGiveUp) giveUpPendingOpen();
@@ -944,7 +950,7 @@ void App::openMenu(const std::string& title, std::function<std::vector<MenuItem>
 }
 
 void App::pushScreen(Screen screen) {
-    if (ping_) server_.cancel(std::exchange(ping_, 0)); // the user moved on from Server status
+    if (ping_) serverAt(pingLink_).cancel(std::exchange(ping_, 0)); // the user moved on from Server status
     cancelResume(); // likewise from a stream resume (resumeStream()) still loading
     cancelLoading(); // and from an album Options is loading for: a screen over the Options screen leaves it
     screen.id = ++lastScreenId_;
@@ -956,10 +962,10 @@ void App::closeScreens(size_t keep) {
     while (screens_.size() > keep) {
         std::uint64_t id = screens_.back().id;
         if (auto list = remoteLists_.find(id); list != remoteLists_.end()) {
-            if (list->second.request) server_.cancel(list->second.request);
+            if (list->second.request) serverAt(list->second.link).cancel(list->second.request);
             remoteLists_.erase(list);
         }
-        if (ping_ && pingScreen_ == id) server_.cancel(std::exchange(ping_, 0));
+        if (ping_ && pingScreen_ == id) serverAt(pingLink_).cancel(std::exchange(ping_, 0));
         if (resume_ && resumeScreen_ == id) cancelResume(); // a server book still loading for this screen
         if (loading_.screen == id) cancelLoading();         // an album Options is loading for
         if (saving_.screen == id) cancelSaving();           // Save as playlist is waiting for the server
@@ -1281,8 +1287,9 @@ std::vector<MenuItem> App::homeMenu() {
     }
     items.push_back(submenu("Library", [this] { return libraryMenu(); }, ListOrder::ByName));
     items.push_back(submenu("Music", [this] { return musicMenu(); }));
-    const std::string& server = serverConfig_.name; // the Streaming entry on Home
-    items.push_back(submenu(server.empty() ? "Server" : server, [this] { return streamingMenu(); }));
+    // One entry per server, in config order; with none set up, one that says so.
+    for (size_t link = 0; link < std::max<size_t>(servers_.size(), 1); ++link)
+        items.push_back(submenu(linkName(link), [this, link] { return streamingMenu(link); }));
     items.push_back(submenu("Podcasts", [this] {
         return std::vector<MenuItem>{action("No podcasts yet", [this] { say("Podcast support is coming later."); })};
     }));
@@ -1625,51 +1632,62 @@ void App::openLocalAlbum(const Book& album, const std::string& playedId, size_t 
 
 // ---------------------------------------------------------------- streaming
 
-std::vector<MenuItem> App::streamingMenu() {
-    if (!server_.configured()) {
+MusicServer& App::serverAt(size_t link) {
+    return link < servers_.size() ? servers_[link].server : static_cast<MusicServer&>(noServer_);
+}
+
+const std::string& App::linkName(size_t link) const {
+    static const std::string none = "Server"; // no server set up
+    return link < servers_.size() ? servers_[link].name : none;
+}
+
+std::vector<MenuItem> App::streamingMenu(size_t link) {
+    if (!serverAt(link).configured()) {
         if (serverConfigured(config_)) // set up, but not as a server this player can use
             return {action("Server not supported", [this] { say(kUnsupportedServerHelp); })};
         return {action("No server set up", [this] { say(kNoServerHelp); })};
     }
     std::vector<MenuItem> items;
-    items.push_back(action("Recently added", [this] {
-        openAlbumList("Recently added", "newest", kAlbumPageSize, false);
+    items.push_back(action("Recently added", [this, link] {
+        openAlbumList(link, "Recently added", "newest", kAlbumPageSize, false);
     }));
-    items.push_back(action("Albums A to Z", [this] {
-        openAlbumList("Albums A to Z", "alphabeticalByName", kAlbumPageSize, true, true);
+    items.push_back(action("Albums A to Z", [this, link] {
+        openAlbumList(link, "Albums A to Z", "alphabeticalByName", kAlbumPageSize, true, true);
     }));
-    items.push_back(action("Artists", [this] {
-        auto toItems = [this](const std::vector<RemoteArtist>& artists) {
+    items.push_back(action("Artists", [this, link] {
+        auto toItems = [this, link](const std::vector<RemoteArtist>& artists) {
             std::vector<MenuItem> out;
             for (const RemoteArtist& a : artists) {
-                MenuItem item = action(a.name, [this, a] {
-                    openRemoteList(a.name,
+                MenuItem item = action(a.name, [this, a, link] {
+                    openRemoteList(link, a.name,
                                    fetchPages<RemoteAlbum>(
-                                       [this, id = a.id](int, MusicServer::Done<RemoteAlbum> done) {
-                                           return server_.artistAlbums(id, std::move(done));
+                                       [this, link, id = a.id](int, MusicServer::Done<RemoteAlbum> done) {
+                                           return serverAt(link).artistAlbums(id, std::move(done));
                                        },
-                                       [this](const std::vector<RemoteAlbum>& albums) { return albumItems(albums, false); }),
+                                       [this, link](const std::vector<RemoteAlbum>& albums) { return albumItems(albums, false, link); }),
                                    0, "No albums", "The server has no albums by " + a.name + ".");
                 });
                 item.okHint = "open";
                 if (a.albumCount > 0) item.value = [n = size_t(a.albumCount)] { return countValue(n, "album"); };
-                out.push_back(withOptions(std::move(item), remotePick(Pick::Kind::Artist, a.id, a.name, "")));
+                out.push_back(withOptions(std::move(item), remotePick(Pick::Kind::Artist, a.id, a.name, "", {}, link)));
             }
             return out;
         };
-        openRemoteList("Artists",
+        openRemoteList(link, "Artists",
                        fetchPages<RemoteArtist>(
-                           [this](int, MusicServer::Done<RemoteArtist> done) { return server_.artists(std::move(done)); },
+                           [this, link](int, MusicServer::Done<RemoteArtist> done) { return serverAt(link).artists(std::move(done)); },
                            toItems),
                        0, "No artists", "The server has no music yet. Add music to the server, then come back.",
                        ListOrder::ByArtist);
     }));
-    items.push_back(action("Random albums", [this] {
-        openAlbumList("Random albums", "random", kRandomAlbums, false);
+    items.push_back(action("Random albums", [this, link] {
+        openAlbumList(link, "Random albums", "random", kRandomAlbums, false);
     }));
-    if (trackCache().enabled()) items.push_back(submenu("Downloaded", [this] { return downloadedMenu(); }));
-    MenuItem status = action("Server status", [this] { checkServer(); });
-    status.value = [this] { return serverDown_ ? std::string("not reachable") : std::string(); };
+    // The cache is the first server's until step 1.6 makes it per server: a second server has no Downloaded yet.
+    if (link == 0 && trackCache().enabled()) items.push_back(submenu("Downloaded", [this] { return downloadedMenu(); }));
+    MenuItem status = action("Server status", [this, link] { checkServer(link); });
+    // serverDown_ is about the first server, the one that plays (steps 1.5 and later make it per server).
+    status.value = [this, link] { return link == 0 && serverDown_ ? std::string("not reachable") : std::string(); };
     items.push_back(std::move(status));
     return items;
 }
@@ -1686,13 +1704,14 @@ App::FetchPage App::fetchPages(std::function<MusicServer::RequestId(int offset, 
 
 // Opens at once with "Loading"; onPage() fills it in. With a page size, the
 // following pages are fetched in the background while the server has more.
-void App::openRemoteList(const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
+void App::openRemoteList(size_t link, const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
                          std::string emptyHelp, ListOrder order, std::string focusKey) {
     pushScreen({Screen::Kind::Menu, title, {}, {}}); // no build: popScreen() keeps what has loaded
     screens_.back().order = order;
     std::uint64_t id = screens_.back().id;
     RemoteList& list = remoteLists_[id];
     list.fetch = std::move(fetch);
+    list.link = link;
     list.pageSize = pageSize;
     list.emptyLabel = std::move(emptyLabel);
     list.emptyHelp = std::move(emptyHelp);
@@ -1775,7 +1794,7 @@ void App::showStatus(std::uint64_t screenId) {
             say(itemSpeech(*screen));
         }));
         // Downloads need no server: offered when there are some (the same rule as Streaming).
-        if (hasDownloads()) items.push_back(submenu("Downloaded", [this] { return downloadedMenu(); }));
+        if (list.link == 0 && hasDownloads()) items.push_back(submenu("Downloaded", [this] { return downloadedMenu(); }));
     } else if (list.waiting) {
         items.push_back(action("Loading", [this] { say("Still loading."); }));
     } else if (list.loaded == 0) {
@@ -1784,22 +1803,24 @@ void App::showStatus(std::uint64_t screenId) {
     screen->index = std::min(screen->index, items.size() - 1);
 }
 
-void App::openAlbumList(const std::string& title, const std::string& listType, int pageSize, bool paged, bool byName) {
-    openRemoteList(title,
+void App::openAlbumList(size_t link, const std::string& title, const std::string& listType, int pageSize, bool paged,
+                        bool byName) {
+    openRemoteList(link, title,
                    fetchPages<RemoteAlbum>(
-                       [this, listType, pageSize](int offset, MusicServer::Done<RemoteAlbum> done) {
-                           return server_.albums(listType, offset, pageSize, std::move(done));
+                       [this, link, listType, pageSize](int offset, MusicServer::Done<RemoteAlbum> done) {
+                           return serverAt(link).albums(listType, offset, pageSize, std::move(done));
                        },
-                       [this](const std::vector<RemoteAlbum>& albums) { return albumItems(albums, true); }),
+                       [this, link](const std::vector<RemoteAlbum>& albums) { return albumItems(albums, true, link); }),
                    paged ? pageSize : 0, "No albums", "The server has no music yet. Add music to the server, then come back.",
                    byName ? ListOrder::ByName : ListOrder::None);
 }
 
-void App::openRemoteAlbum(const RemoteAlbum& album, const std::string& playedId, const std::string& focusTrack) {
-    openRemoteList(album.name,
+void App::openRemoteAlbum(const RemoteAlbum& album, const std::string& playedId, const std::string& focusTrack,
+                          size_t link) {
+    openRemoteList(link, album.name,
                    fetchPages<RemoteTrack>(
-                       [this, id = album.id](int, MusicServer::Done<RemoteTrack> done) {
-                           return server_.albumTracks(id, std::move(done));
+                       [this, link, id = album.id](int, MusicServer::Done<RemoteTrack> done) {
+                           return serverAt(link).albumTracks(id, std::move(done));
                        },
                        [this, name = album.name, artist = album.artist, id = album.id, playedId](const std::vector<RemoteTrack>& tracks) {
                            return trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id}, artist, std::nullopt, playedId);
@@ -1808,14 +1829,14 @@ void App::openRemoteAlbum(const RemoteAlbum& album, const std::string& playedId,
 }
 
 // `withArtist`: lists of many artists say whose album it is; one artist's list says how long.
-std::vector<MenuItem> App::albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist) {
+std::vector<MenuItem> App::albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist, size_t link) {
     std::vector<MenuItem> items;
     for (const RemoteAlbum& a : albums) {
-        MenuItem item = action(a.name, [this, a] { openRemoteAlbum(a); });
+        MenuItem item = action(a.name, [this, a, link] { openRemoteAlbum(a, {}, {}, link); });
         item.okHint = "open";
         if (withArtist && !a.artist.empty()) item.value = [artist = a.artist] { return artist; };
         else if (!withArtist && a.songCount > 0) item.value = [n = size_t(a.songCount)] { return countValue(n, "track"); };
-        items.push_back(withOptions(std::move(item), remotePick(Pick::Kind::Album, a.id, a.name, a.artist)));
+        items.push_back(withOptions(std::move(item), remotePick(Pick::Kind::Album, a.id, a.name, a.artist, {}, link)));
     }
     return items;
 }
@@ -2008,8 +2029,9 @@ App::Pick App::localAlbumPick(const Book& album, const std::string& playedId) {
 }
 
 App::Pick App::remotePick(Pick::Kind kind, const std::string& id, const std::string& title, const std::string& artist,
-                          const std::string& playedId) {
+                          const std::string& playedId, size_t link) {
     Pick pick;
+    pick.link = link;
     pick.kind = kind;
     pick.id = id;
     pick.title = title;
@@ -2043,7 +2065,9 @@ void App::choose(const Pick& pick, QueueAction action) {
     const std::uint64_t screen = screens_.back().id;
     loading_ = Loading{screen, 0, pick, action, {}, 0, {}};
     // A list that is whole on the disk needs no question to the server (it may be down, or the list gone from it).
-    if (action != QueueAction::Download && (pick.kind == Pick::Kind::Album || pick.kind == Pick::Kind::Playlist)) {
+    // (The cache is the first server's until step 1.6: another server's ids could match its downloads.)
+    if (pick.link == 0 && action != QueueAction::Download &&
+        (pick.kind == Pick::Kind::Album || pick.kind == Pick::Kind::Playlist)) {
         const TrackCache& store = trackCache();
         const RemoteSource source = sourceOf(pick);
         const CachedList cached = store.enabled() ? store.load(source) : CachedList{};
@@ -2056,17 +2080,17 @@ void App::choose(const Pick& pick, QueueAction action) {
     say("Loading.");
     switch (pick.kind) {
     case Pick::Kind::Album:
-        loading_.request = server_.albumTracks(pick.id, [this, screen](MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
+        loading_.request = serverAt(pick.link).albumTracks(pick.id, [this, screen](MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
             onPickLoaded(screen, error, std::move(tracks));
         });
         break;
     case Pick::Kind::Playlist:
-        loading_.request = server_.playlistTracks(pick.id, [this, screen](MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
+        loading_.request = serverAt(pick.link).playlistTracks(pick.id, [this, screen](MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
             onPickLoaded(screen, error, std::move(tracks));
         });
         break;
     case Pick::Kind::Artist:
-        loading_.request = server_.artistAlbums(pick.id, [this, screen](MusicServer::Error error, std::vector<RemoteAlbum> albums, bool) {
+        loading_.request = serverAt(pick.link).artistAlbums(pick.id, [this, screen](MusicServer::Error error, std::vector<RemoteAlbum> albums, bool) {
             onArtistAlbums(screen, error, std::move(albums));
         });
         break;
@@ -2086,7 +2110,7 @@ void App::onArtistAlbums(std::uint64_t screen, MusicServer::Error error, std::ve
 void App::requestNextAlbum() {
     const std::uint64_t screen = loading_.screen;
     if (loading_.next < loading_.albums.size()) {
-        loading_.request = server_.albumTracks(loading_.albums[loading_.next].id,
+        loading_.request = serverAt(loading_.pick.link).albumTracks(loading_.albums[loading_.next].id,
                                                [this, screen](MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
                                                    if (loading_.screen != screen) return;
                                                    if (error == MusicServer::Error::None) {
@@ -2152,7 +2176,7 @@ void App::failLoading(MusicServer::Error error) {
 }
 
 void App::cancelLoading() {
-    if (loading_.request) server_.cancel(loading_.request);
+    if (loading_.request) serverAt(loading_.pick.link).cancel(loading_.request);
     loading_ = Loading{};
 }
 
@@ -2351,7 +2375,7 @@ void App::openPlaylist(const std::string& id, const std::string& name) {
             return;
         }
     }
-    openRemoteList(name,
+    openRemoteList(0, name,
                    fetchPages<RemoteTrack>(
                        [this, id](int, MusicServer::Done<RemoteTrack> done) { return server_.playlistTracks(id, std::move(done)); },
                        [this, name, id](const std::vector<RemoteTrack>& tracks) {
@@ -2387,12 +2411,13 @@ void App::deleteDownload(const RemoteSource& source, const std::string& title) {
 
 // Says "Checking" now and the answer when it comes, if the user is still on
 // this screen. Leaving the screen cancels it.
-void App::checkServer() {
-    if (ping_) server_.cancel(std::exchange(ping_, 0));
+void App::checkServer(size_t link) {
+    if (ping_) serverAt(pingLink_).cancel(std::exchange(ping_, 0));
     std::uint64_t screenId = screens_.back().id;
     pingScreen_ = screenId;
+    pingLink_ = link;
     say("Checking the server.");
-    ping_ = server_.ping([this, screenId](MusicServer::Error error, MusicServer::ServerInfo info) {
+    ping_ = serverAt(link).ping([this, screenId, link](MusicServer::Error error, MusicServer::ServerInfo info) {
         ping_ = 0;
         if (sleeping_ || screens_.empty() || screens_.back().id != screenId) return; // the user has moved on
         tts_.stop();
@@ -2401,7 +2426,7 @@ void App::checkServer() {
             say(errorText(error) + ".");
             return;
         }
-        clearServerDown(); // it answers
+        if (link == 0) clearServerDown(); // it answers (serverDown_ is about the first server)
         say(connectedText(info));
     });
 }

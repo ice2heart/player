@@ -211,7 +211,9 @@ private:
     void refreshLibrary();
     void finishRefresh();
     std::optional<Book> resumableBook(const std::string& path) const;
-    std::vector<MenuItem> streamingMenu();
+    MusicServer& serverAt(size_t link); // servers_[link]; the stand-in when there is no list
+    const std::string& linkName(size_t link) const; // what Home calls it
+    std::vector<MenuItem> streamingMenu(size_t link); // the browsing menu of servers_[link]
     std::vector<MenuItem> sleepTimerMenu();
     size_t sleepTimerIndex() const;
     std::vector<MenuItem> settingsMenu();
@@ -262,6 +264,7 @@ private:
         enum class Kind { Ready, Album, Playlist, Artist };
         Kind kind = Kind::Ready;
         std::string title, artist, id, playedId; // remote: what to load
+        size_t link = 0;                        // remote: the server it is on (servers_)
         std::string info;                       // an album: what Album info says, empty: no such action
         std::function<Selection()> make;        // Ready
     };
@@ -285,7 +288,7 @@ private:
     static Pick localTrackPick(const Book& album, size_t track, const std::string& playedId);
     static Pick localAlbumPick(const Book& album, const std::string& playedId);
     Pick remotePick(Pick::Kind kind, const std::string& id, const std::string& title, const std::string& artist,
-                    const std::string& playedId = {});
+                    const std::string& playedId = {}, size_t link = 0);
     Selection remoteSelection(const std::string& title, const std::vector<RemoteTrack>& tracks,
                               std::optional<RemoteSource> source, const std::string& artist, bool ofAlbum,
                               const std::string& albumId = {}) const;
@@ -327,6 +330,7 @@ private:
     using FetchPage = std::function<MusicServer::RequestId(int offset, PageDone done)>;
     struct RemoteList {
         FetchPage fetch;
+        size_t link = 0;                   // the server its requests go to (servers_), to cancel them there
         int pageSize = 0;                  // > 0: fetch the next page while the server says there is more
         std::string emptyLabel, emptyHelp; // what an empty list says, and what to do
         size_t loaded = 0;                 // the first items of the screen; a status item may follow
@@ -339,16 +343,17 @@ private:
     template <class T>
     static FetchPage fetchPages(std::function<MusicServer::RequestId(int offset, MusicServer::Done<T>)> request,
                                 std::function<std::vector<MenuItem>(const std::vector<T>&)> toItems);
-    void openRemoteList(const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
+    void openRemoteList(size_t link, const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
                         std::string emptyHelp, ListOrder order = ListOrder::None, std::string focusKey = {});
     void requestPage(std::uint64_t screenId, int offset, bool waiting);
     void onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<MenuItem> items, bool more);
     void showStatus(std::uint64_t screenId); // Loading, the error, or why it is empty, after the loaded items
-    void openAlbumList(const std::string& title, const std::string& listType, int pageSize, bool paged, bool byName = false);
+    void openAlbumList(size_t link, const std::string& title, const std::string& listType, int pageSize, bool paged, bool byName = false);
     // `playedId`: the index item to mark as played when it plays (Music).
     // `focusTrack`: the id of the track to open on, once the list has loaded.
-    void openRemoteAlbum(const RemoteAlbum& album, const std::string& playedId = {}, const std::string& focusTrack = {});
-    std::vector<MenuItem> albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist);
+    void openRemoteAlbum(const RemoteAlbum& album, const std::string& playedId = {}, const std::string& focusTrack = {},
+                         size_t link = 0);
+    std::vector<MenuItem> albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist, size_t link);
     std::vector<MenuItem> trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
                                      const std::string& playAll, const RemoteSource& source,
                                      const std::string& artist, std::optional<MenuItem> second = std::nullopt,
@@ -388,7 +393,7 @@ private:
     static std::vector<RemoteTrack> completeTracks(const TrackCache& store, const RemoteSource& source, const CachedList& list);
     bool hasDownloads() const; // some list has a complete pinned track (a download of the user's): the error lists offer Downloaded
     void deleteDownload(const RemoteSource& source, const std::string& title);
-    void checkServer(); // Server status
+    void checkServer(size_t link); // Server status of servers_[link]
 
     // The remote list that an older version kept in state.tsv `last_stream.*` (queue.tsv replaces it), to
     // resume after a restart. Only for the server set up now (its url and user); none
@@ -579,7 +584,7 @@ private:
     std::vector<ServerLink> servers_;
     ServerConfig serverConfig_; // of the first server: what it is called in saved state; empty with none
     std::string serverKey_;     // its key; empty with none
-    MusicServer& server_;       // the first server's, only it is used for now
+    MusicServer& server_;       // the first server's: playing, downloads and the catalogue use only it for now
     Downloader& downloader_;
     LibraryIndex index_;
     LibraryScanner& scanner_;
@@ -621,6 +626,7 @@ private:
     std::map<std::uint64_t, RemoteList> remoteLists_; // by Screen::id, while the screen is on the stack
     MusicServer::RequestId ping_ = 0;                 // Server status, while it waits; cancelled when the user moves on
     std::uint64_t pingScreen_ = 0;                    // the screen it was asked from
+    size_t pingLink_ = 0;                             // the server it was asked of (servers_)
     std::uint64_t resumeScreen_ = 0;    // the Library screen a server book loads for (resume_), 0: none or not tied to a screen
     MusicServer::RequestId resume_ = 0; // resumeStream(): the list being loaded, 0 when none; a new screen cancels it
     Loading loading_;
