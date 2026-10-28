@@ -492,7 +492,7 @@ Music
   which opens the album of the playing track on that track (a loose track says "No album for this track.").
 - **Previous queue:** when a queue edited by hand is replaced, it is kept, and it ends the "Tracks" list of
   the music Player menu (the Queue list, step 2.7, takes it over). OK restores it (entries, order, current
-  entry, shuffle and repeat) and plays; the queue it replaces is kept in turn if it was edited.
+  entry with its position, shuffle and repeat) and plays; the queue it replaces is kept in turn if it was edited.
 - **Refresh library** is an action that reports and stays. It says "Updating the
   library." at once, then the result ("Library updated, 12 albums.") or the error
   ("Server not reachable.", "Wrong user name or password.", "Server error."). Keys

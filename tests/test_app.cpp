@@ -10358,3 +10358,61 @@ TEST_F(PlayerOptionsTest, ReplacingAnUneditedQueueKeepsNothing) {
     playNowOn("Lullaby");
     EXPECT_EQ(tracksList(), (std::vector<std::string>{"Lullaby"}));
 }
+
+TEST_F(PlayerOptionsTest, RestoringThePreviousQueueBringsBackThePositionInTheCurrentEntry) {
+    playRoadTrip();
+    addToQueueOn("Lullaby");
+    fromTracks("Highway");
+    player.pos = 42;
+    playNowOn("Lullaby");
+    ASSERT_EQ(player.pos, 0);
+    fromTracks("Previous queue");
+    EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
+    EXPECT_EQ(player.pos, 42);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(PlayerOptionsTest, RestoringWithAnotherCurrentEntryBringsBackThatEntrysPositionAndThePositionOfWhatItReplaced) {
+    playRoadTrip();           // Sunrise is current
+    addToQueueOn("Lullaby");
+    player.pos = 17;
+    playNowOn("Lullaby");
+    addToQueueOn("Road Trip"); // Lullaby, Sunrise, Highway: edited, current Lullaby
+    player.pos = 9;
+    fromTracks("Previous queue");
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    EXPECT_EQ(player.pos, 17);
+    fromTracks("Previous queue"); // the queue it replaced, at its own position
+    EXPECT_EQ(player.file, (music / "Lullaby.mp3").string());
+    EXPECT_EQ(player.pos, 9);
+}
+
+TEST_F(PlayerOptionsTest, RestoringAQueueWhoseCurrentEntryIsRemoteOpensItAtThePosition) {
+    start();
+    openWeather();
+    open("Rain");
+    finishOpen();
+    addToQueueOn("Lullaby");
+    player.pos = 55;
+    playNowOn("Lullaby");
+    fromTracks("Previous queue");
+    ASSERT_TRUE(player.opening()) << "a stream takes a moment";
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_EQ(player.pos, 55);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(PlayerOptionsTest, RestoringAQueueThatWasParkedBehindABookBringsBackItsPosition) {
+    playRoadTrip();
+    addToQueueOn("Lullaby");
+    player.pos = 33;
+    hold(Button::Home);
+    open("Library");
+    open("Alpha"); // the book plays; the edited music queue waits
+    ASSERT_EQ(player.file, (alpha() / "01 - Storm.mp3").string());
+    playNowOn("Lullaby"); // replaces the parked queue
+    fromTracks("Previous queue");
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    EXPECT_EQ(player.pos, 33);
+}

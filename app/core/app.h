@@ -597,6 +597,7 @@ private:
     struct PreviousQueue {
         Book list;
         Queue queue;
+        double position = 0; // in the current entry, seconds
     };
     std::optional<PreviousQueue> previous_;
     std::optional<PreviousQueue> editedQueue() const; // the music queue a new one would replace, if edited by hand

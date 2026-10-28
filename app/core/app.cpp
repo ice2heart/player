@@ -2738,13 +2738,13 @@ bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& t
 }
 
 std::optional<App::PreviousQueue> App::editedQueue() const {
-    if (book_ && music_ && queue_.edited()) return PreviousQueue{*book_, queue_};
-    if (parked_ && parked_->music && parked_->queue.edited()) return PreviousQueue{parked_->book, parked_->queue};
+    if (book_ && music_ && queue_.edited()) return PreviousQueue{*book_, queue_, place()};
+    if (parked_ && parked_->music && parked_->queue.edited()) return PreviousQueue{parked_->book, parked_->queue, parked_->position};
     return std::nullopt;
 }
 
 // OK on "Previous queue": it replaces the queue (which is kept in turn if it was edited) and plays its
-// current entry. Nothing is left to restore when the queue it replaced was not edited.
+// current entry from where it stopped. Nothing is left to restore when the queue it replaced was not edited.
 void App::restorePrevious() {
     if (!previous_) return;
     PreviousQueue back = *previous_;
@@ -2753,7 +2753,7 @@ void App::restorePrevious() {
     playKept(back.list, std::move(back.queue), [this, keepsReplaced, screen] {
         if (!keepsReplaced) previous_.reset();
         enterPlayerFrom(screen);
-    });
+    }, back.position);
 }
 
 // Loads `book` into the music player (`music`) or the book player from `file`. If none of its
