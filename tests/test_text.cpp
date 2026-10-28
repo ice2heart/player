@@ -54,3 +54,44 @@ TEST(ParseIsoTime, SomethingElseIsZero) {
     EXPECT_EQ(oap::parseIsoTime("2026-00-20T18:01:44Z"), 0);
     EXPECT_EQ(oap::parseIsoTime("2026-10-20T18:01:44Zjunk"), 0);
 }
+
+TEST(FoldCase, LowersAsciiLatin1ExtendedAGreekAndCyrillicButKeepsAccents) {
+    EXPECT_EQ(oap::foldCase('A'), U'a');
+    EXPECT_EQ(oap::foldCase(U'É'), U'é') << "the accent stays";
+    EXPECT_NE(oap::foldCase(U'É'), U'e');
+    EXPECT_EQ(oap::foldCase(U'×'), U'×');
+    EXPECT_EQ(oap::foldCase(U'Ł'), U'ł');
+    EXPECT_EQ(oap::foldCase(U'Ź'), U'ź');
+    EXPECT_EQ(oap::foldCase(U'Σ'), U'σ');
+    EXPECT_EQ(oap::foldCase(U'Ά'), U'ά');
+    EXPECT_EQ(oap::foldCase(U'Я'), U'я');
+    EXPECT_EQ(oap::foldCase(U'Ѐ'), U'ѐ');
+    EXPECT_EQ(oap::foldCase(U'漢'), U'漢') << "other scripts are left alone";
+}
+
+TEST(FoldCase, YoIsYeTonosCapitalsFoldAndFinalSigmaIsSigma) {
+    EXPECT_EQ(oap::foldCase(U'Ё'), U'е');
+    EXPECT_EQ(oap::foldCase(U'ё'), U'е');
+    EXPECT_EQ(oap::foldCase(U'Ό'), U'ό');
+    EXPECT_EQ(oap::foldCase(U'Ύ'), U'ύ');
+    EXPECT_EQ(oap::foldCase(U'Ώ'), U'ώ');
+    EXPECT_EQ(oap::foldCase(U'ς'), U'σ');
+}
+
+TEST(Utf8, CodePointsRoundTripAndMalformedBytesStandForThemselves) {
+    for (char32_t c : {U'a', U'é', U'Ж', U'漢', char32_t(0x1F600)}) {
+        std::string s;
+        oap::appendUtf8(s, c);
+        size_t i = 0;
+        EXPECT_EQ(oap::nextCodePoint(s, i), c);
+        EXPECT_EQ(i, s.size());
+    }
+    std::string bad = "\xC3";
+    size_t i = 0;
+    EXPECT_EQ(oap::nextCodePoint(bad, i), char32_t(0xC3)) << "truncated sequence";
+    EXPECT_EQ(i, 1u);
+    std::string bad2 = "\xC3(";
+    i = 0;
+    EXPECT_EQ(oap::nextCodePoint(bad2, i), char32_t(0xC3)) << "bad continuation byte";
+    EXPECT_EQ(i, 1u);
+}

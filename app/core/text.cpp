@@ -6,6 +6,60 @@
 
 namespace oap {
 
+char32_t nextCodePoint(std::string_view s, size_t& i) {
+    unsigned char c = s[i];
+    int len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
+    if (len <= 1 || i + len > s.size()) {
+        ++i;
+        return c;
+    }
+    char32_t cp = c & (0x7F >> len);
+    for (int k = 1; k < len; ++k) {
+        unsigned char cc = s[i + k];
+        if ((cc & 0xC0) != 0x80) {
+            ++i;
+            return c;
+        }
+        cp = (cp << 6) | (cc & 0x3F);
+    }
+    i += len;
+    return cp;
+}
+
+void appendUtf8(std::string& out, char32_t c) {
+    if (c < 0x80) out += char(c);
+    else if (c < 0x800) {
+        out += char(0xC0 | (c >> 6));
+        out += char(0x80 | (c & 0x3F));
+    } else if (c < 0x10000) {
+        out += char(0xE0 | (c >> 12));
+        out += char(0x80 | ((c >> 6) & 0x3F));
+        out += char(0x80 | (c & 0x3F));
+    } else {
+        out += char(0xF0 | (c >> 18));
+        out += char(0x80 | ((c >> 12) & 0x3F));
+        out += char(0x80 | ((c >> 6) & 0x3F));
+        out += char(0x80 | (c & 0x3F));
+    }
+}
+
+char32_t foldCase(char32_t c) {
+    if (c >= 'A' && c <= 'Z') return c + 0x20;
+    if (c >= 0xC0 && c <= 0xDE && c != 0xD7) return c + 0x20; // À..Þ
+    if ((c >= 0x100 && c <= 0x137 && c != 0x130 && c != 0x131) || (c >= 0x14A && c <= 0x177)) return c % 2 == 0 ? c + 1 : c; // Latin Extended-A
+    if ((c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E)) return c % 2 == 1 ? c + 1 : c;
+    if (c >= 0x391 && c <= 0x3A9 && c != 0x3A2) return c + 0x20; // Greek
+    if (c == 0x386) return 0x3AC;
+    if (c >= 0x388 && c <= 0x38A) return c + 37;
+    if (c == 0x38C) return 0x3CC; // Ό
+    if (c == 0x38E || c == 0x38F) return c + 63; // Ύ Ώ
+    if (c == 0x3C2) return 0x3C3; // final ς
+    if (c == 0x401 || c == 0x451) return 0x435; // Ё ё are е
+    if (c >= 0x410 && c <= 0x42F) return c + 0x20; // А..Я
+    if (c >= 0x400 && c <= 0x40F) return c + 0x50; // Ѐ..Џ
+    return c;
+}
+
 std::string spokenDuration(double seconds) {
     long total = std::lround(std::max(0.0, seconds));
     long h = total / 3600, m = (total % 3600) / 60, s = total % 60;

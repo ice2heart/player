@@ -1,4 +1,5 @@
 #include "library.h"
+#include "text.h"
 
 #include <algorithm>
 #include <cctype>
@@ -21,43 +22,14 @@ bool isAudio(const fs::path& p) {
 // Dot files and folders: macOS "._" resource forks, .Trashes, .Spotlight-V100 and the like.
 bool isHidden(const fs::path& p) { return p.filename().string().starts_with("."); }
 
-// Decodes the UTF-8 code point at s[i] and moves i past it. A malformed byte stands for itself.
-char32_t nextCodePoint(std::string_view s, size_t& i) {
-    unsigned char c = s[i];
-    int len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
-    if (len <= 1 || i + len > s.size()) {
-        ++i;
-        return c;
-    }
-    char32_t cp = c & (0x7F >> len);
-    for (int k = 1; k < len; ++k) {
-        unsigned char cc = s[i + k];
-        if ((cc & 0xC0) != 0x80) {
-            ++i;
-            return c;
-        }
-        cp = (cp << 6) | (cc & 0x3F);
-    }
-    i += len;
-    return cp;
-}
-
-// Folds case for ASCII, Latin-1, Latin Extended-A, Greek and Cyrillic, and drops Latin-1 accents ("Ä" sorts as "a").
+// Folds case (foldCase) and drops Latin-1 accents ("Ä" sorts as "a").
 char32_t fold(char32_t c) {
-    if (c >= 'A' && c <= 'Z') return c + 0x20;
-    if (c >= 0xC0 && c <= 0xFF && c != 0xD7 && c != 0xF7) { // À..ÿ except × and ÷
-        static constexpr char kBase[] = "aaaaaaaceeeeiiiidnooooo_ouuuuyts"
-                                        "aaaaaaaceeeeiiiidnooooo_ouuuuyty";
-        return static_cast<unsigned char>(kBase[c - 0xC0]);
+    c = foldCase(c);
+    if (c == 0xDF) return 's'; // ß
+    if (c >= 0xE0 && c <= 0xFF && c != 0xF7) { // à..ÿ except ÷
+        static constexpr char kBase[] = "aaaaaaaceeeeiiiidnooooo_ouuuuyty";
+        return static_cast<unsigned char>(kBase[c - 0xE0]);
     }
-    if ((c >= 0x100 && c <= 0x137 && c != 0x130 && c != 0x131) || (c >= 0x14A && c <= 0x177)) return c % 2 == 0 ? c + 1 : c; // Latin Extended-A
-    if ((c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E)) return c % 2 == 1 ? c + 1 : c;
-    if (c >= 0x391 && c <= 0x3A9 && c != 0x3A2) return c + 0x20; // Greek
-    if (c == 0x386) return 0x3AC;
-    if (c >= 0x388 && c <= 0x38A) return c + 37;
-    if (c >= 0x410 && c <= 0x42F) return c + 0x20; // А..Я
-    if (c >= 0x400 && c <= 0x40F) c += 0x50;        // Ѐ..Џ, including Ё
-    if (c == 0x451) return 0x435;                   // ё sorts with е
     return c;
 }
 
@@ -94,19 +66,7 @@ std::string nameGroup(std::string_view name) {
     if (c >= '0' && c <= '9') return "#";
     if (c >= 'a' && c <= 'z') return std::string(1, char(c - 'a' + 'A'));
     std::string out;
-    if (c < 0x800) {
-        out += char(0xC0 | (c >> 6));
-        out += char(0x80 | (c & 0x3F));
-    } else if (c < 0x10000) {
-        out += char(0xE0 | (c >> 12));
-        out += char(0x80 | ((c >> 6) & 0x3F));
-        out += char(0x80 | (c & 0x3F));
-    } else {
-        out += char(0xF0 | (c >> 18));
-        out += char(0x80 | ((c >> 12) & 0x3F));
-        out += char(0x80 | ((c >> 6) & 0x3F));
-        out += char(0x80 | (c & 0x3F));
-    }
+    appendUtf8(out, c);
     return out;
 }
 

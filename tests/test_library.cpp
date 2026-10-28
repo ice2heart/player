@@ -130,6 +130,15 @@ TEST_F(LibraryTest, CyrillicSortsInAlphabetOrderIgnoringCase) {
               (std::vector<std::string>{"арбуз", "Борис", "Дом", "ежик", "Ёлка", "Жук", "яблоко"}));
 }
 
+TEST(NaturalLess, YoSortsAsYeAndAcceptedLatinLettersAsTheirBase) {
+    EXPECT_TRUE(oap::naturalLess("Ёa", "Еb")) << "Ё is е in capitals too";
+    EXPECT_TRUE(oap::naturalLess("Еa", "Ёb")) << "Ё is е, so the second letter decides";
+    EXPECT_TRUE(oap::naturalLess("Éa", "Eb")) << "É is e, so the second letter decides";
+    EXPECT_TRUE(oap::naturalLess("ёa", "еb"));
+    EXPECT_TRUE(oap::naturalLess("Été", "Etf")) << "Été sorts with Ete, not after f";
+    EXPECT_TRUE(oap::naturalLess("Etd", "Été"));
+}
+
 TEST_F(LibraryTest, AccentedLatinSortsWithItsBaseLetter) {
     // "Ärmel" decomposed, as macOS may write names: A plus a combining diaeresis (U+0308).
     const std::string armel = "A\xCC\x88rmel";

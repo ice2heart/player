@@ -60,6 +60,15 @@ TEST(SameAlbumByName, EqualArtistAlbumAndTrackCountMatchIgnoringCaseAndSpaces) {
     EXPECT_TRUE(sameAlbumByName(local("a", "Ελληνικά", "Άλμπουμ", 3), served("1", "ΕΛΛΗΝΙΚΆ", "άλμπουμ", 3)));
 }
 
+TEST(SameAlbumByName, YoIsYeAndGreekCapitalsWithTonosAndFinalSigmaFold) {
+    EXPECT_TRUE(sameAlbumByName(local("a", "Ёлка", "x", 3), served("1", "Елка", "x", 3))) << "Ёлка, Елка";
+    EXPECT_TRUE(sameAlbumByName(local("a", "ёлка", "x", 3), served("1", "ЕЛКА", "x", 3)));
+    EXPECT_TRUE(sameAlbumByName(local("a", "x", "ΌΜΗΡΟΣ", 3), served("1", "x", "όμηρος", 3))) << "Ό and final ς";
+    EXPECT_TRUE(sameAlbumByName(local("a", "x", "ΎΛΗ", 3), served("1", "x", "ύλη", 3))) << "Ύ";
+    EXPECT_TRUE(sameAlbumByName(local("a", "x", "ΏΡΑ", 3), served("1", "x", "ώρα", 3))) << "Ώ";
+    EXPECT_FALSE(sameAlbumByName(local("a", "x", "Été", 3), served("1", "x", "Ete", 3))) << "accents count in keys";
+}
+
 TEST(SameAlbumByName, AnotherTrackCountArtistOrAlbumDoesNotMatch) {
     IndexItem a = local("a", "Band", "Road Trip", 2);
     EXPECT_FALSE(sameAlbumByName(a, served("1", "Band", "Road Trip", 3)));
@@ -242,6 +251,8 @@ TEST(AlbumInfoText, LeavesOutWhatIsNotKnown) {
 TEST(ArtistNames, TheSameArtistDiffersOnlyInCaseAndSpacing) {
     EXPECT_EQ(artistKey("Pink  Floyd "), artistKey("pink floyd"));
     EXPECT_EQ(artistKey("БИ-2"), artistKey("би-2"));
+    EXPECT_EQ(artistKey("Ёлка"), artistKey("Елка"));
+    EXPECT_NE(artistKey("Été"), artistKey("Ete"));
     EXPECT_NE(artistKey("Pink Floyd"), artistKey("PinkFloyd"));
     EXPECT_NE(artistKey("The Band"), artistKey("Band"));
     EXPECT_EQ(artistKey("  "), "");

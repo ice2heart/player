@@ -2,6 +2,7 @@
 
 #include "library.h"
 #include "library_index.h"
+#include "text.h"
 
 #include <algorithm>
 #include <numeric>
@@ -11,39 +12,7 @@ namespace oap {
 
 namespace {
 
-// Lower case for what albums are named in: ASCII, Latin-1 and Extended-A (Polish, Czech,
-// Turkish...), Greek and Cyrillic. Other scripts are compared as they are.
-uint32_t fold(uint32_t c) {
-    if (c >= 'A' && c <= 'Z') return c + 32;
-    if (c >= 0xC0 && c <= 0xDE && c != 0xD7) return c + 32;
-    if ((c >= 0x100 && c <= 0x137 && c != 0x130 && c != 0x131) || (c >= 0x14A && c <= 0x177)) return c % 2 == 0 ? c + 1 : c;
-    if ((c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E)) return c % 2 == 1 ? c + 1 : c;
-    if (c >= 0x391 && c <= 0x3A9 && c != 0x3A2) return c + 32;
-    if (c == 0x386) return 0x3AC;
-    if (c >= 0x388 && c <= 0x38A) return c + 37;
-    if (c >= 0x410 && c <= 0x42F) return c + 32;
-    if (c >= 0x400 && c <= 0x40F) return c + 80;
-    return c;
-}
-
 bool isSpace(uint32_t c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0xA0 || c == 0x2009 || c == 0x3000; }
-
-void append(std::string& out, uint32_t c) {
-    if (c < 0x80) out += char(c);
-    else if (c < 0x800) {
-        out += char(0xC0 | (c >> 6));
-        out += char(0x80 | (c & 0x3F));
-    } else if (c < 0x10000) {
-        out += char(0xE0 | (c >> 12));
-        out += char(0x80 | ((c >> 6) & 0x3F));
-        out += char(0x80 | (c & 0x3F));
-    } else {
-        out += char(0xF0 | (c >> 18));
-        out += char(0x80 | ((c >> 12) & 0x3F));
-        out += char(0x80 | ((c >> 6) & 0x3F));
-        out += char(0x80 | (c & 0x3F));
-    }
-}
 
 // The text in lower case: without spaces, or (keepSpaces) with runs of spaces made one and
 // none at either end.
@@ -51,29 +20,13 @@ std::string foldedText(const std::string& text, bool keepSpaces) {
     std::string out;
     bool pendingSpace = false;
     for (size_t i = 0; i < text.size();) {
-        unsigned char b = text[i];
-        size_t n = b < 0x80 ? 1 : (b >> 5) == 6 ? 2 : (b >> 4) == 14 ? 3 : (b >> 3) == 30 ? 4 : 1;
-        if (i + n > text.size()) n = 1;
-        uint32_t c = n == 1 ? b : n == 2 ? b & 0x1F : n == 3 ? b & 0x0F : b & 0x07;
-        if (n > 1) {
-            bool ok = true;
-            for (size_t k = 1; k < n; ++k) {
-                unsigned char cb = text[i + k];
-                if ((cb & 0xC0) != 0x80) ok = false;
-                c = (c << 6) | (cb & 0x3F);
-            }
-            if (!ok) {
-                c = b;
-                n = 1;
-            }
-        }
-        i += n;
+        uint32_t c = nextCodePoint(text, i);
         if (isSpace(c)) {
             pendingSpace = keepSpaces && !out.empty();
         } else {
             if (pendingSpace) out += ' ';
             pendingSpace = false;
-            append(out, fold(c));
+            appendUtf8(out, foldCase(c));
         }
     }
     return out;
