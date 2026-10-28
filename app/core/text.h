@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -54,5 +55,25 @@ std::vector<ScriptRun> scriptRuns(std::string_view text);
 // does a Japanese run with any kanji in it (there is no reading table): the caller speaks that run
 // as "Japanese text" rather than a half-spoken name.
 std::string transliterate(const ScriptRun& run);
+
+// The eSpeak voices that are installed, as language codes: "ru", "el", "cmn", "ja", "ko", "he", "ar".
+using VoiceSet = std::set<std::string>;
+
+struct SpeechMarkup {
+    std::string text;
+    bool ssml = false; // `text` has SSML elements (and is escaped); otherwise it is plain text
+};
+
+// What to hand to the speech engine for `text`. Each run in another script is spoken in its
+// own voice when that voice is in `voices` (plan A): a `<voice xml:lang="ru">` element per run,
+// Cyrillic `ru`, Greek `el`, Han `cmn`, Japanese `ja`, Hangul `ko`, Hebrew `he`, Arabic `ar`.
+// A run whose voice is missing is transliterated (plan B). A run that is neither is named once,
+// not letter by letter: "Cyrillic text", "Greek text", "Chinese text", "Japanese text",
+// "Korean text", "Hebrew text", "Arabic text", "foreign text" (any other script). The kanji of
+// a Japanese run are "Japanese text" and its kana take the `ja` voice or their transliteration.
+// Latin runs stay in the engine's own voice. With no voice element, `text` is plain, unescaped
+// and `ssml` is false (all Latin text comes back as it is). Otherwise special XML characters are
+// escaped, a malformed UTF-8 byte becomes a space, and there is no <speak> root.
+SpeechMarkup speechMarkup(std::string_view text, const VoiceSet& voices);
 
 } // namespace oap

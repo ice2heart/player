@@ -2,6 +2,7 @@
 
 #include "core/mixer.h"
 #include "core/services.h"
+#include "core/text.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -47,6 +48,7 @@ private:
     std::atomic<int> rate_{220};
     uint64_t currentEpoch_ = 0; // worker thread only
     SwrContext* swr_ = nullptr;
+    VoiceSet voices_; // set in start(), read only by the worker
     int espeakRate_ = 22050;
     std::vector<float> converted_;
 };

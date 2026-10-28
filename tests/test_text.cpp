@@ -418,3 +418,159 @@ TEST(Transliterate, EmptyAndRunsFromScriptRuns) {
     for (const auto& run : scriptRuns("Artist Агата Кристи, 3 of 10")) out += transliterate(run);
     EXPECT_EQ(out, "Artist Agata Kristi, 3 of 10");
 }
+
+using oap::speechMarkup;
+using oap::SpeechMarkup;
+using oap::VoiceSet;
+
+namespace {
+const VoiceSet kNoVoices;
+const VoiceSet kAllVoices{"ru", "el", "cmn", "ja", "ko", "he", "ar"};
+} // namespace
+
+TEST(SpeechMarkup, AllLatinTextIsUnchanged) {
+    SpeechMarkup m = speechMarkup("Artist Agatha Christie, 3 of 10", kAllVoices);
+    EXPECT_EQ(m.text, "Artist Agatha Christie, 3 of 10");
+    EXPECT_FALSE(m.ssml);
+}
+
+TEST(SpeechMarkup, LatinTextIsNotEscapedWithoutMarkup) {
+    SpeechMarkup m = speechMarkup("Tom & Jerry <1>", kAllVoices);
+    EXPECT_EQ(m.text, "Tom & Jerry <1>");
+    EXPECT_FALSE(m.ssml);
+}
+
+TEST(SpeechMarkup, EmptyTextIsPlainAndEmpty) {
+    SpeechMarkup m = speechMarkup("", kAllVoices);
+    EXPECT_EQ(m.text, "");
+    EXPECT_FALSE(m.ssml);
+}
+
+TEST(SpeechMarkup, CyrillicWithRussianVoiceIsOneVoiceElementAndTheRestOutsideIt) {
+    SpeechMarkup m = speechMarkup("Artist Агата Кристи, 3 of 10", {"ru"});
+    EXPECT_TRUE(m.ssml);
+    EXPECT_EQ(m.text, "Artist <voice xml:lang=\"ru\">Агата Кристи</voice>, 3 of 10");
+}
+
+TEST(SpeechMarkup, CyrillicWithoutRussianVoiceIsTransliteratedWithNoMarkup) {
+    SpeechMarkup m = speechMarkup("Агата Кристи", kNoVoices);
+    EXPECT_EQ(m.text, "Agata Kristi");
+    EXPECT_FALSE(m.ssml);
+    // Another voice being installed does not help Cyrillic.
+    EXPECT_EQ(speechMarkup("Агата Кристи", {"ja", "el"}).text, "Agata Kristi");
+}
+
+TEST(SpeechMarkup, EachScriptHasItsOwnVoice) {
+    EXPECT_EQ(speechMarkup("Ωμέγα", kAllVoices).text, "<voice xml:lang=\"el\">Ωμέγα</voice>");
+    EXPECT_EQ(speechMarkup("北京", kAllVoices).text, "<voice xml:lang=\"cmn\">北京</voice>");
+    EXPECT_EQ(speechMarkup("きょうと", kAllVoices).text, "<voice xml:lang=\"ja\">きょうと</voice>");
+    EXPECT_EQ(speechMarkup("한국", kAllVoices).text, "<voice xml:lang=\"ko\">한국</voice>");
+    EXPECT_EQ(speechMarkup("שלום", kAllVoices).text, "<voice xml:lang=\"he\">שלום</voice>");
+    EXPECT_EQ(speechMarkup("مرحبا", kAllVoices).text, "<voice xml:lang=\"ar\">مرحبا</voice>");
+}
+
+TEST(SpeechMarkup, TwoScriptsGetTwoVoiceElements) {
+    SpeechMarkup m = speechMarkup("Кино / Ωμέγα", kAllVoices);
+    EXPECT_EQ(m.text, "<voice xml:lang=\"ru\">Кино</voice> / <voice xml:lang=\"el\">Ωμέγα</voice>");
+}
+
+TEST(SpeechMarkup, HanWithoutChineseVoiceIsNamedOnce) {
+    SpeechMarkup m = speechMarkup("Artist 北京欢迎你, 3 of 10", kNoVoices);
+    EXPECT_EQ(m.text, "Artist Chinese text, 3 of 10");
+    EXPECT_FALSE(m.ssml);
+}
+
+TEST(SpeechMarkup, KanjiOfAJapaneseRunAreNamedAndItsKanaGetTheJapaneseVoice) {
+    SpeechMarkup m = speechMarkup("Artist 東京タワー, 3 of 10", {"ja"});
+    EXPECT_TRUE(m.ssml);
+    EXPECT_EQ(m.text, "Artist Japanese text <voice xml:lang=\"ja\">タワー</voice>, 3 of 10");
+}
+
+TEST(SpeechMarkup, KanjiBetweenKanaSplitsTheRunIntoThreeStretches) {
+    EXPECT_EQ(speechMarkup("の東京の", {"ja"}).text,
+              "<voice xml:lang=\"ja\">の</voice> Japanese text <voice xml:lang=\"ja\">の</voice>");
+}
+
+TEST(SpeechMarkup, KanjiOfAJapaneseRunAreNamedAndItsKanaTransliteratedWithoutTheJapaneseVoice) {
+    SpeechMarkup m = speechMarkup("東京タワー", kNoVoices);
+    EXPECT_EQ(m.text, "Japanese text tawaa");
+    EXPECT_FALSE(m.ssml);
+}
+
+TEST(SpeechMarkup, KanaWithoutJapaneseVoiceIsTransliterated) {
+    SpeechMarkup m = speechMarkup("きょうと", {"cmn", "ru"});
+    EXPECT_EQ(m.text, "kyouto");
+    EXPECT_FALSE(m.ssml);
+}
+
+TEST(SpeechMarkup, KanjiOnlyJapaneseRunIsNamedEvenWithTheJapaneseVoice) {
+    // Han with no kana is Han: Chinese. Kanji inside a Japanese run never reach the voice.
+    EXPECT_EQ(speechMarkup("東京の", kNoVoices).text, "Japanese text no");
+    EXPECT_EQ(speechMarkup("東京の", {"ja"}).text,
+              "Japanese text <voice xml:lang=\"ja\">の</voice>");
+}
+
+TEST(SpeechMarkup, HangulWithKoreanVoiceOrTransliterated) {
+    EXPECT_EQ(speechMarkup("아이유 3", {"ko"}).text, "<voice xml:lang=\"ko\">아이유</voice> 3");
+    EXPECT_EQ(speechMarkup("아이유", kNoVoices).text, "aiyu");
+}
+
+TEST(SpeechMarkup, ScriptsWithNeitherAVoiceNorATransliterationAreNamedOnce) {
+    EXPECT_EQ(speechMarkup("שלום עולם", kNoVoices).text, "Hebrew text");
+    EXPECT_EQ(speechMarkup("مرحبا بالعالم", kNoVoices).text, "Arabic text");
+    EXPECT_EQ(speechMarkup("한", {"ru"}).text, "han");
+    // A lone jamo has no transliteration, so it is named like the other scripts.
+    EXPECT_EQ(speechMarkup("ㄱ", kNoVoices).text, "Korean text");
+}
+
+TEST(SpeechMarkup, OtherScriptIsNamedForeignTextEvenWithAllVoices) {
+    SpeechMarkup m = speechMarkup("Artist ไทย, 3 of 10", kAllVoices);
+    EXPECT_EQ(m.text, "Artist foreign text, 3 of 10");
+    EXPECT_FALSE(m.ssml);
+}
+
+TEST(SpeechMarkup, NamedRunsOfDifferentScriptsKeepTheirOwnNames) {
+    EXPECT_EQ(speechMarkup("שלום / مرحبا", kNoVoices).text, "Hebrew text / Arabic text");
+}
+
+TEST(SpeechMarkup, AmpersandAndLessThanAreEscapedWhenThereIsMarkup) {
+    SpeechMarkup m = speechMarkup("Tom & Jerry <b> \"q\" it's Агата", {"ru"});
+    EXPECT_TRUE(m.ssml);
+    EXPECT_EQ(m.text, "Tom &amp; Jerry &lt;b&gt; &quot;q&quot; it&apos;s <voice xml:lang=\"ru\">Агата</voice>");
+}
+
+TEST(SpeechMarkup, PunctuationInsideAVoiceElementIsEscapedToo) {
+    EXPECT_EQ(speechMarkup("Кино & Ко < Ту", {"ru"}).text,
+              "<voice xml:lang=\"ru\">Кино &amp; Ко &lt; Ту</voice>");
+}
+
+TEST(SpeechMarkup, ATagInATitleCannotInjectMarkup) {
+    EXPECT_EQ(speechMarkup("<voice xml:lang=\"ru\">x</voice> Агата", {"ru"}).text,
+              "&lt;voice xml:lang=&quot;ru&quot;&gt;x&lt;/voice&gt; <voice xml:lang=\"ru\">Агата</voice>");
+}
+
+TEST(SpeechMarkup, MalformedBytesBecomeSpacesInMarkupAndStayInPlainText) {
+    EXPECT_EQ(speechMarkup("a\xFF" "b Агата", {"ru"}).text, "a b <voice xml:lang=\"ru\">Агата</voice>");
+    EXPECT_EQ(speechMarkup("a\xFF" "b", {"ru"}).text, "a\xFF" "b");
+}
+
+TEST(SpeechMarkup, ALatinWordTouchingAnotherScriptIsASeparateWord) {
+    EXPECT_EQ(speechMarkup("Beijing北京", kNoVoices).text, "Beijing Chinese text");
+    EXPECT_EQ(speechMarkup("BTS방탄소년단", kNoVoices).text, "BTS bangtansonyeondan");
+    EXPECT_EQ(speechMarkup("Hello世界", {"cmn"}).text, "Hello <voice xml:lang=\"cmn\">世界</voice>");
+    EXPECT_EQ(speechMarkup("世界Hello", kNoVoices).text, "Chinese text Hello");
+}
+
+TEST(SpeechMarkup, NoSpaceIsAddedWhereThereIsPunctuationOrASpaceAlready) {
+    EXPECT_EQ(speechMarkup("Агата, 3 of 10", kNoVoices).text, "Agata, 3 of 10");
+    EXPECT_EQ(speechMarkup("Artist Агата", kNoVoices).text, "Artist Agata");
+    EXPECT_EQ(speechMarkup("Агата/Кристи", kNoVoices).text, "Agata/Kristi");
+}
+
+TEST(SpeechMarkup, KanaWithNoReadingNextToKanjiAddsNoSecondName) {
+    // ー alone and half-width kana have no transliteration.
+    EXPECT_EQ(speechMarkup("東京ー", kNoVoices).text, "Japanese text");
+    EXPECT_EQ(speechMarkup("東ｱ京", kNoVoices).text, "Japanese text");
+    EXPECT_EQ(speechMarkup("ｱ", kNoVoices).text, "Japanese text");
+    EXPECT_EQ(speechMarkup("東の京", kNoVoices).text, "Japanese text no Japanese text");
+}

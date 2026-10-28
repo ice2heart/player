@@ -7,11 +7,31 @@ extern "C" {
 #include <libswresample/swresample.h>
 }
 
+#include "core/text.h"
+
 #include <cstdio>
 
 namespace oap {
 
 namespace {
+// The language codes of every installed voice ("ru", "cmn", "ja"...). A voice's `languages` is a
+// list of (priority byte, NUL-terminated code) pairs ended by an empty one; "en-gb" also counts as "en".
+VoiceSet installedVoices() {
+    VoiceSet found;
+    const espeak_VOICE** voices = espeak_ListVoices(nullptr);
+    for (size_t v = 0; voices && voices[v]; ++v) {
+        const char* p = voices[v]->languages;
+        while (p && *p) {
+            ++p; // the priority byte
+            std::string code = p;
+            p += code.size() + 1;
+            found.insert(code);
+            found.insert(code.substr(0, code.find('-')));
+        }
+    }
+    return found;
+}
+
 Tts* g_instance = nullptr; // eSpeak's callback has no user pointer for synchronous mode
 }
 
@@ -42,6 +62,8 @@ bool Tts::start(const std::string& voice) {
     espeak_SetSynthCallback(reinterpret_cast<t_espeak_callback*>(&Tts::synthCallback));
     if (espeak_SetVoiceByName(voice.c_str()) != EE_OK)
         std::fprintf(stderr, "tts: voice '%s' not found, using default\n", voice.c_str());
+
+    voices_ = installedVoices(); // before the worker starts: it only reads this afterwards
 
     AVChannelLayout mono{}, stereo{};
     av_channel_layout_default(&mono, 1);
@@ -94,8 +116,10 @@ void Tts::run() {
         if (u.epoch == mixer_.speech().epoch()) {
             swr_init(swr_); // forget leftovers from a cancelled utterance
             espeak_SetParameter(espeakRATE, rate_, 0);
-            espeak_Synth(u.text.c_str(), u.text.size() + 1, 0, POS_CHARACTER, 0,
-                         espeakCHARS_UTF8, nullptr, nullptr);
+            SpeechMarkup markup = speechMarkup(u.text, voices_);
+            unsigned flags = espeakCHARS_UTF8 | (markup.ssml ? espeakSSML : 0);
+            espeak_Synth(markup.text.c_str(), markup.text.size() + 1, 0, POS_CHARACTER, 0, flags,
+                         nullptr, nullptr);
             onSamples(nullptr, 0); // drain the resampler
         }
         std::lock_guard lock(mutex_);

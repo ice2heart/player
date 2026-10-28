@@ -1,7 +1,9 @@
 #include "text.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 namespace oap {
@@ -145,6 +147,11 @@ int64_t parseIsoTime(const std::string& text) {
 
 namespace {
 
+// A byte that nextCodePoint could not decode: it stands for itself, as a single byte of 0x80 or more.
+bool isMalformed(std::string_view s, size_t begin, size_t end) {
+    return static_cast<unsigned char>(s[begin]) >= 0x80 && end - begin == 1;
+}
+
 // Unicode blocks the script of a letter is read from.
 constexpr char32_t kLatin1Letters = 0xC0, kMultiply = 0xD7, kDivide = 0xF7, kLatinExtBEnd = 0x24F;
 constexpr char32_t kLatinExtAdditional = 0x1E00, kLatinExtAdditionalEnd = 0x1EFF;
@@ -245,7 +252,7 @@ std::vector<ScriptRun> scriptRuns(std::string_view text) {
     for (size_t i = 0; i < text.size();) {
         size_t begin = i;
         char32_t c = nextCodePoint(text, i);
-        bool malformed = static_cast<unsigned char>(text[begin]) >= 0x80 && i - begin == 1;
+        bool malformed = isMalformed(text, begin, i);
         pieces.push_back({begin, i, classify(c, malformed)});
     }
     for (size_t k = 0; k < pieces.size(); ++k)
@@ -574,7 +581,7 @@ std::string transliterate(const ScriptRun& run) {
     for (size_t i = 0; i < run.text.size();) {
         size_t begin = i;
         char32_t c = nextCodePoint(run.text, i);
-        bool malformed = static_cast<unsigned char>(run.text[begin]) >= 0x80 && i - begin == 1;
+        bool malformed = isMalformed(run.text, begin, i);
         Cls cls = classify(c, malformed);
         if (run.script == Script::Japanese && cls.kind == Kind::Letter && cls.script == Script::Han) return "";
         items.push_back({begin, i, c, cls});
@@ -588,6 +595,148 @@ std::string transliterate(const ScriptRun& run) {
     default: break;
     }
     return out;
+}
+
+namespace {
+
+// The eSpeak voice (language code) that reads each script. Cyrillic is `ru` also for Ukrainian
+// and the rest: the script does not say the language. Han without kana is read as Chinese.
+const char* voiceFor(Script script) {
+    switch (script) {
+    case Script::Cyrillic: return "ru";
+    case Script::Greek: return "el";
+    case Script::Han: return "cmn";
+    case Script::Japanese: return "ja";
+    case Script::Hangul: return "ko";
+    case Script::Hebrew: return "he";
+    case Script::Arabic: return "ar";
+    default: return nullptr;
+    }
+}
+
+// What a run is called when it has no voice and no transliteration.
+const char* nameFor(Script script) {
+    switch (script) {
+    case Script::Cyrillic: return "Cyrillic text";
+    case Script::Greek: return "Greek text";
+    case Script::Han: return "Chinese text";
+    case Script::Japanese: return "Japanese text";
+    case Script::Hangul: return "Korean text";
+    case Script::Hebrew: return "Hebrew text";
+    case Script::Arabic: return "Arabic text";
+    default: return "foreign text";
+    }
+}
+
+// One piece of the spoken text: `voice` is empty for text in the English voice.
+struct Piece {
+    std::string voice;
+    std::string text;
+};
+
+// True for a byte inside a word: a letter or digit, or part of a non-ASCII character.
+bool inWord(char c) {
+    return static_cast<unsigned char>(c) >= 0x80 || std::isalnum(static_cast<unsigned char>(c));
+}
+
+// Pieces from different scripts can touch ("Beijing北京"): a space keeps "Beijing" and
+// "Chinese text" two words.
+void addPiece(std::vector<Piece>& pieces, std::string voice, std::string text) {
+    if (!pieces.empty() && inWord(pieces.back().text.back()) && inWord(text.front()))
+        pieces.push_back({"", " "});
+    pieces.push_back({std::move(voice), std::move(text)});
+}
+
+// A run with no kanji, or a stretch of one: its voice, else its transliteration, else its name.
+void addScriptPiece(std::vector<Piece>& pieces, const ScriptRun& run, const VoiceSet& voices) {
+    const char* voice = voiceFor(run.script);
+    if (voice && voices.count(voice)) return addPiece(pieces, voice, run.text);
+    std::string latin = transliterate(run);
+    if (latin.empty()) latin = nameFor(run.script);
+    addPiece(pieces, "", std::move(latin));
+}
+
+// The kanji of a Japanese run have no reading, so they are named; the kana around them get
+// the `ja` voice (or their transliteration).
+void addJapanesePieces(std::vector<Piece>& pieces, const ScriptRun& run, const VoiceSet& voices) {
+    std::string stretch;
+    bool han = false, named = false;
+    auto flush = [&] {
+        if (stretch.empty()) return;
+        ScriptRun part{Script::Japanese, stretch};
+        bool readable = !han && (voices.count(voiceFor(Script::Japanese)) || !transliterate(part).empty());
+        if (readable) {
+            addScriptPiece(pieces, part, voices);
+            named = false;
+        } else if (!named) { // kanji, or kana with no reading: one name for both sides of a stretch
+            addPiece(pieces, "", nameFor(Script::Japanese));
+            named = true;
+        }
+        stretch.clear();
+    };
+    for (size_t i = 0; i < run.text.size();) {
+        size_t begin = i;
+        char32_t c = nextCodePoint(run.text, i);
+        bool malformed = isMalformed(run.text, begin, i);
+        Cls cls = classify(c, malformed);
+        if (cls.kind == Kind::Letter && (cls.script == Script::Han) != han) {
+            flush();
+            han = cls.script == Script::Han;
+        }
+        stretch.append(run.text, begin, i - begin);
+    }
+    flush();
+}
+
+// Escapes for SSML. A malformed UTF-8 byte becomes a space: eSpeak's reading of one is not
+// defined, and it must not swallow the rest of the utterance.
+void appendEscaped(std::string& out, const std::string& text) {
+    for (size_t i = 0; i < text.size();) {
+        size_t begin = i;
+        nextCodePoint(text, i);
+        if (isMalformed(text, begin, i)) {
+            out += ' ';
+            continue;
+        }
+        if (i - begin == 1) {
+            switch (text[begin]) {
+            case '&': out += "&amp;"; continue;
+            case '<': out += "&lt;"; continue;
+            case '>': out += "&gt;"; continue;
+            case '"': out += "&quot;"; continue;
+            case '\'': out += "&apos;"; continue;
+            default: break;
+            }
+        }
+        out.append(text, begin, i - begin);
+    }
+}
+
+} // namespace
+
+SpeechMarkup speechMarkup(std::string_view text, const VoiceSet& voices) {
+    std::vector<Piece> pieces;
+    for (const ScriptRun& run : scriptRuns(text)) {
+        if (run.script == Script::Latin) addPiece(pieces, "", run.text);
+        else if (run.script == Script::Japanese) addJapanesePieces(pieces, run, voices);
+        else addScriptPiece(pieces, run, voices);
+    }
+    SpeechMarkup result;
+    for (const Piece& p : pieces) result.ssml = result.ssml || !p.voice.empty();
+    if (!result.ssml) {
+        for (const Piece& p : pieces) result.text += p.text;
+        return result;
+    }
+    for (const Piece& p : pieces) {
+        if (p.voice.empty()) {
+            appendEscaped(result.text, p.text);
+        } else {
+            result.text += "<voice xml:lang=\"" + p.voice + "\">";
+            appendEscaped(result.text, p.text);
+            result.text += "</voice>";
+        }
+    }
+    return result;
 }
 
 } // namespace oap
