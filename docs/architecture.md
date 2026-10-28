@@ -120,6 +120,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/frontend/no_downloader.{h,cpp}` | `NoDownloader`: the `Downloader` for the same cases; every download finishes with `NotConfigured` on the next `poll()` and writes nothing. |
 | `app/frontend/make_music_server.{h,cpp}` | `makeDownloader()` (an `HttpDownloader` for a Subsonic server, else `NoDownloader`) and `makeMusicServer()`: the `MusicServer` both front ends give `App`: `Subsonic::fromConfig()` when built with `OAP_BUILD_NET` (`OAP_HAVE_NET`), else `NoMusicServer`, with a line on stderr when `config.yaml` sets up a server it cannot use. Its own library, `oapmusicserver`, so `oapfrontend` keeps no dependencies. |
 | `app/frontend/gamepad.{h,cpp}` | `GamepadMapper`: game controller buttons → device buttons, with the layout in `defaultGamepadLayout()`. Used by the simulator (SDL) and headless (evdev). |
+| `app/frontend/pick_font.{h,cpp}` | `pickFont(candidates, exists)`: the first font file that exists. The simulator loads it with Latin, Greek, Cyrillic, Japanese, Chinese and Korean glyph ranges (`--font PATH` first). |
 | `app/sim/main.cpp` | Simulator: window, key mapping, visualisation. |
 | `app/headless/main.cpp` | Headless front end: poll loop, terminal raw mode, signals. |
 | `app/headless/evdev_input.{h,cpp}` | `EvdevInput`: `/dev/input` devices → `keyDown`/`keyUp`/`setHold`, with hot-plug rescans. |

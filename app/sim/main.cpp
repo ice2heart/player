@@ -10,6 +10,7 @@
 #include "frontend/gamepad.h"
 #include "frontend/held_buttons.h"
 #include "frontend/make_music_server.h"
+#include "frontend/pick_font.h"
 #include "frontend/presses.h"
 #include "frontend/threaded_scanner.h"
 #include "library/sqlite_library_store.h"
@@ -23,12 +24,16 @@
 #include <imgui_impl_sdl2.h>
 #include <imgui_impl_sdlrenderer2.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <memory>
 #include <optional>
 #include <set>
+#include <string>
+#include <system_error>
+#include <vector>
 
 using namespace oap;
 
@@ -307,13 +312,49 @@ void saveSnapshot(SDL_Renderer* renderer, const char* path) {
 
 } // namespace
 
+// Names in any script must show, not "?". ImGui 1.91 bakes a static atlas, so the
+// ranges are named; the cost is a longer start (checked: well under a second).
+static void addSimFont(const std::string& requested, const ImFontConfig& config) {
+    ImGuiIO& io = ImGui::GetIO();
+    std::vector<std::string> candidates = {requested,
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"};
+    auto exists = [](const std::string& p) { std::error_code ec; return std::filesystem::is_regular_file(p, ec); };
+    if (!requested.empty() && !exists(requested)) std::fprintf(stderr, "sim: font %s not found\n", requested.c_str());
+    auto font = pickFont(candidates, exists);
+    if (font) {
+        static ImVector<ImWchar> ranges; // the atlas keeps the pointer until it is built
+        ImFontGlyphRangesBuilder builder;
+        static const ImWchar latin[] = {0x0020, 0x017F, 0}; // Latin-1 and Extended-A
+        static const ImWchar greek[] = {0x0370, 0x03FF, 0};
+        builder.AddRanges(latin);
+        builder.AddRanges(greek);
+        builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
+        builder.AddRanges(io.Fonts->GetGlyphRangesJapanese());
+        builder.AddRanges(io.Fonts->GetGlyphRangesChineseSimplifiedCommon());
+        builder.AddRanges(io.Fonts->GetGlyphRangesKorean());
+        ranges.clear();
+        builder.BuildRanges(&ranges);
+        // A file that exists may still not be a font: try the next candidate.
+        while (font) {
+            if (io.Fonts->AddFontFromFileTTF(font->c_str(), config.SizePixels, &config, ranges.Data)) return;
+            std::fprintf(stderr, "sim: cannot load font %s\n", font->c_str());
+            candidates.erase(std::find(candidates.begin(), candidates.end(), *font));
+            font = pickFont(candidates, exists);
+        }
+    }
+    std::fprintf(stderr, "sim: no font with Cyrillic and CJK found; use --font\n");
+    io.Fonts->AddFontDefault(&config);
+}
+
 int main(int argc, char** argv) {
     std::filesystem::path library = "library";
     std::filesystem::path music = "music";
     const char* home = std::getenv("HOME");
     std::filesystem::path config = std::filesystem::path(home ? home : ".") / ".config/oap-sim/config.yaml";
     std::filesystem::path state, cache, libraryDb;
-    std::string script, audio = "auto";
+    std::string script, audio = "auto", fontPath;
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--script" && i + 1 < argc) script = argv[++i];
@@ -323,15 +364,17 @@ int main(int argc, char** argv) {
         else if (arg == "--cache" && i + 1 < argc) cache = argv[++i];
         else if (arg == "--library-db" && i + 1 < argc) libraryDb = argv[++i];
         else if (arg == "--audio" && i + 1 < argc) audio = argv[++i];
+        else if (arg == "--font" && i + 1 < argc) fontPath = argv[++i];
         else if (arg == "--help" || arg == "-h") {
             std::string names;
             for (const auto& name : AudioOutput::backends()) names += (names.empty() ? "" : "|") + name;
-            std::printf("usage: oap-sim [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--library-db FILE] [--audio %s] [--script STEPS] "
+            std::printf("usage: oap-sim [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--library-db FILE] [--audio %s] [--font TTF] [--script STEPS] "
                         "[LIBRARY_DIR]\n"
                         "  --config FILE  settings and server (default ~/.config/oap-sim/config.yaml)\n"
                         "  --state FILE   positions and the book to resume (default state.tsv next to the config)\n"
                         "  --cache DIR    downloaded tracks (default cache/ next to the state file)\n"
-                        "  --library-db FILE  library index (default library.db next to the state file)\n",
+                        "  --library-db FILE  library index (default library.db next to the state file)\n"
+                        "  --font TTF     font with Cyrillic and CJK glyphs (default: a system font if found)\n",
                         names.c_str());
             return 0;
         } else library = arg;
@@ -389,7 +432,7 @@ int main(int argc, char** argv) {
     ImGui::StyleColorsDark();
     ImFontConfig fontConfig;
     fontConfig.SizePixels = 15.0f * scale;
-    ImGui::GetIO().Fonts->AddFontDefault(&fontConfig);
+    addSimFont(fontPath, fontConfig);
     ImGui::GetIO().FontGlobalScale = 1.0f / scale;
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer2_Init(renderer);

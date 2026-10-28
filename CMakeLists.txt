@@ -142,6 +142,7 @@ add_library(oapfrontend STATIC
     app/frontend/held_buttons.cpp
     app/frontend/no_downloader.cpp
     app/frontend/no_music_server.cpp
+    app/frontend/pick_font.cpp
     app/frontend/presses.cpp
     app/frontend/terminal_keys.cpp
     app/frontend/threaded_scanner.cpp
@@ -281,6 +282,7 @@ if(OAP_BUILD_TESTS)
         tests/test_fake_downloader.cpp
         tests/test_no_downloader.cpp
         tests/test_no_music_server.cpp
+        tests/test_pick_font.cpp
         tests/test_presses.cpp
         tests/test_settings.cpp
         tests/test_sqlite_library_store.cpp
