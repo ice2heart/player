@@ -33,9 +33,12 @@ public:
     struct Call {
         Id id = 0;
         std::string url;
+        Headers headers;
         Handler handler;
     };
-    void get(Id id, std::string url, Handler handler) override { calls.push_back({id, std::move(url), std::move(handler)}); }
+    void get(Id id, std::string url, Headers headers, Handler handler) override {
+        calls.push_back({id, std::move(url), std::move(headers), std::move(handler)});
+    }
     void cancel(Id id) override { cancelled.push_back(id); }
 
     void answer(std::size_t call, long status, std::string body) {
@@ -326,6 +329,14 @@ TEST(Subsonic, PingReturnsServerTypeAndVersionFromPoll) {
     EXPECT_EQ(result.info.version, "0.64.2");
     server.subsonic->poll();
     EXPECT_EQ(result.calls, 1); // only once
+}
+
+TEST(Subsonic, RequestsCarryNoExtraHeaders) {
+    Server server;
+    PingResult result;
+    server.subsonic->ping(result.callback());
+    ASSERT_EQ(server.http->calls.size(), 1u);
+    EXPECT_TRUE(server.http->calls[0].headers.empty());
 }
 
 TEST(Subsonic, CatalogueVersionAsksGetArtistsAndGivesLastModified) {

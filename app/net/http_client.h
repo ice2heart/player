@@ -25,9 +25,13 @@ public:
     };
     // Runs on the client's own thread, never on the caller's.
     using Handler = std::function<void(Response)>;
+    // Extra request headers, one "Name: value" line each. Values can be secrets
+    // (a bearer token): implementations never log or print them, and a request
+    // that has headers does not follow redirects. A line break in one fails it.
+    using Headers = std::vector<std::string>;
 
     virtual ~Http() = default;
-    virtual void get(Id id, std::string url, Handler handler) = 0;
+    virtual void get(Id id, std::string url, Headers headers, Handler handler) = 0;
     // Stop request `id` and drop its handler. Best effort: an answer that is
     // already in may still reach the handler, so callers that must not see it
     // (Subsonic) check for themselves.
@@ -57,7 +61,7 @@ public:
     HttpClient(const HttpClient&) = delete;
     HttpClient& operator=(const HttpClient&) = delete;
 
-    void get(Id id, std::string url, Handler handler) override;
+    void get(Id id, std::string url, Headers headers, Handler handler) override;
     void cancel(Id id) override;
     // Rejects new get()s (their handlers never run), waits until the queued and
     // running requests are answered (their handlers run) or `deadline` has passed,
@@ -69,6 +73,7 @@ private:
     struct Job {
         Id id = 0;
         std::string url;
+        Headers headers;
         Handler handler;
     };
     void run();

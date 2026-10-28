@@ -22,6 +22,7 @@ struct Transfer {
     CURL* easy = nullptr;
     Http::Id id = 0;
     Http::Handler handler;
+    curl_slist* headers = nullptr; // owned; freed after the handle
     std::string body;
     std::size_t maxBody = 0;
 };
@@ -61,11 +62,11 @@ HttpClient::~HttpClient() {
     curl_multi_cleanup(multiOf(multi_));
 }
 
-void HttpClient::get(Id id, std::string url, Handler handler) {
+void HttpClient::get(Id id, std::string url, Headers headers, Handler handler) {
     {
         std::lock_guard lock(mutex_);
         if (finishing_) return; // too late: nothing is sent
-        queue_.push_back({id, std::move(url), std::move(handler)});
+        queue_.push_back({id, std::move(url), std::move(headers), std::move(handler)});
     }
     curl_multi_wakeup(multiOf(multi_));
 }
@@ -104,6 +105,7 @@ void HttpClient::run() {
         if (it == active.end()) return;
         curl_multi_remove_handle(multi, it->second->easy);
         curl_easy_cleanup(it->second->easy);
+        curl_slist_free_all(it->second->headers);
         active.erase(it);
     };
     auto start = [&](Job& job) {
@@ -118,6 +120,20 @@ void HttpClient::run() {
             return;
         }
         CURL* easy = transfer->easy;
+        for (const std::string& header : job.headers) {
+            // A line break would inject more headers: fail the request instead.
+            curl_slist* appended = header.find_first_of("\r\n") == std::string::npos
+                                       ? curl_slist_append(transfer->headers, header.c_str())
+                                       : nullptr;
+            if (!appended) {
+                curl_slist_free_all(transfer->headers);
+                curl_easy_cleanup(easy);
+                transfer->handler(Response{}); // never send the request without its headers
+                return;
+            }
+            transfer->headers = appended;
+        }
+        if (transfer->headers) curl_easy_setopt(easy, CURLOPT_HTTPHEADER, transfer->headers);
         curl_easy_setopt(easy, CURLOPT_URL, job.url.c_str());
         curl_easy_setopt(easy, CURLOPT_PRIVATE, transfer.get());
         curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, onData);
@@ -127,7 +143,8 @@ void HttpClient::run() {
         curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, kLowSpeedBytesPerSecond);
         curl_easy_setopt(easy, CURLOPT_LOW_SPEED_TIME, long(options_.readTimeout.count()));
         curl_easy_setopt(easy, CURLOPT_TIMEOUT_MS, long(options_.totalTimeout.count()));
-        curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
+        // Headers may hold a secret (an API key): never hand it on to wherever a redirect points.
+        curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, transfer->headers ? 0L : 1L);
         curl_easy_setopt(easy, CURLOPT_MAXREDIRS, kMaxRedirects);
 #if LIBCURL_VERSION_NUM >= 0x075500 // 7.85.0
         curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https");
@@ -143,6 +160,7 @@ void HttpClient::run() {
 #endif
         if (curl_multi_add_handle(multi, easy) != CURLM_OK) {
             curl_easy_cleanup(easy);
+            curl_slist_free_all(transfer->headers);
             transfer->handler(Response{});
             return;
         }
@@ -189,6 +207,7 @@ void HttpClient::run() {
     for (auto& [id, transfer] : active) {
         curl_multi_remove_handle(multi, transfer->easy);
         curl_easy_cleanup(transfer->easy);
+        curl_slist_free_all(transfer->headers);
     }
     {
         std::lock_guard lock(mutex_);

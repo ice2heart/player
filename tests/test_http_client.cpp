@@ -92,6 +92,11 @@ public:
         std::lock_guard lock(mutex_);
         return requestLine_;
     }
+    // The whole request head (request line and headers), as received.
+    std::string requestHead() {
+        std::lock_guard lock(mutex_);
+        return requestHead_;
+    }
 
 private:
     bool stopping() {
@@ -117,6 +122,7 @@ private:
         {
             std::unique_lock lock(mutex_);
             requestLine_ = request.substr(0, request.find("\r\n"));
+            requestHead_ = request;
             requestSeen_ = true;
             changed_.wait(lock, [this] { return released_ || stop_; });
             if (released_ && !stop_) {
@@ -141,6 +147,7 @@ private:
     bool stop_ = false;
     std::atomic<bool> requestSeen_{false};
     std::string requestLine_;
+    std::string requestHead_;
     std::thread thread_;
 };
 
@@ -174,7 +181,7 @@ template <class F> bool waitFor(F condition, std::chrono::milliseconds patience 
 TEST(HttpClient, ARefusedConnectionIsNotReached) {
     HttpClient client;
     Outcome outcome;
-    client.get(1, "http://127.0.0.1:" + std::to_string(unusedPort()) + "/", outcome.handler());
+    client.get(1, "http://127.0.0.1:" + std::to_string(unusedPort()) + "/", {}, outcome.handler());
     ASSERT_TRUE(waitFor([&] { return outcome.done(); }));
     EXPECT_FALSE(outcome.response->reached);
 }
@@ -183,12 +190,85 @@ TEST(HttpClient, ReturnsStatusAndBody) {
     LocalServer server(httpResponse(404, "{\"x\":1}"));
     HttpClient client;
     Outcome outcome;
-    client.get(1, server.url("/rest/ping?a=1"), outcome.handler());
+    client.get(1, server.url("/rest/ping?a=1"), {}, outcome.handler());
     ASSERT_TRUE(waitFor([&] { return outcome.done(); }));
     EXPECT_TRUE(outcome.response->reached);
     EXPECT_EQ(outcome.response->status, 404);
     EXPECT_EQ(outcome.response->body, "{\"x\":1}");
     EXPECT_EQ(server.requestLine(), "GET /rest/ping?a=1 HTTP/1.1");
+}
+
+TEST(HttpClient, SendsTheGivenHeaders) {
+    LocalServer server(httpResponse(200, "{}"));
+    HttpClient client;
+    Outcome outcome;
+    client.get(1, server.url(), {"Authorization: Bearer s3cret-key", "X-Other: two"}, outcome.handler());
+    ASSERT_TRUE(waitFor([&] { return outcome.done(); }));
+    auto head = server.requestHead();
+    EXPECT_NE(head.find("\r\nAuthorization: Bearer s3cret-key\r\n"), std::string::npos) << head;
+    EXPECT_NE(head.find("\r\nX-Other: two\r\n"), std::string::npos) << head;
+}
+
+TEST(HttpClient, ARequestWithoutHeadersSendsNone) {
+    LocalServer server(httpResponse(200, "{}"));
+    HttpClient client;
+    Outcome outcome;
+    client.get(1, server.url(), {}, outcome.handler());
+    ASSERT_TRUE(waitFor([&] { return outcome.done(); }));
+    auto head = server.requestHead();
+    EXPECT_EQ(head.find("Authorization"), std::string::npos) << head;
+    EXPECT_EQ(head.find("X-Other"), std::string::npos) << head;
+}
+
+TEST(HttpClient, AFailedRequestLogsNoHeaderValue) {
+    testing::internal::CaptureStderr();
+    testing::internal::CaptureStdout();
+    {
+        HttpClient client;
+        Outcome outcome;
+        client.get(1, "http://127.0.0.1:" + std::to_string(unusedPort()) + "/", {"Authorization: Bearer s3cret-key"},
+                   outcome.handler());
+        EXPECT_TRUE(waitFor([&] { return outcome.done(); }));
+        EXPECT_FALSE(outcome.done() && outcome.response->reached);
+    }
+    std::string err = testing::internal::GetCapturedStderr();
+    std::string out = testing::internal::GetCapturedStdout();
+    EXPECT_EQ(err.find("s3cret-key"), std::string::npos) << err;
+    EXPECT_EQ(out.find("s3cret-key"), std::string::npos) << out;
+}
+
+TEST(HttpClient, ARedirectIsNotFollowedWhenTheRequestHasHeaders) {
+    LocalServer target(httpResponse(200, "{}"));
+    LocalServer redirecting("HTTP/1.1 302 Found\r\nLocation: " + target.url("/next") +
+                            "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    HttpClient client;
+    Outcome outcome;
+    client.get(1, redirecting.url(), {"Authorization: Bearer s3cret-key"}, outcome.handler());
+    ASSERT_TRUE(waitFor([&] { return outcome.done(); }));
+    EXPECT_EQ(outcome.response->status, 302);
+    EXPECT_FALSE(target.requestSeen());
+}
+
+TEST(HttpClient, ARedirectIsFollowedWithoutHeaders) {
+    LocalServer target(httpResponse(200, "{\"ok\":1}"));
+    LocalServer redirecting("HTTP/1.1 302 Found\r\nLocation: " + target.url("/next") +
+                            "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    HttpClient client;
+    Outcome outcome;
+    client.get(1, redirecting.url(), {}, outcome.handler());
+    ASSERT_TRUE(waitFor([&] { return outcome.done(); }));
+    EXPECT_EQ(outcome.response->status, 200);
+    EXPECT_EQ(outcome.response->body, "{\"ok\":1}");
+}
+
+TEST(HttpClient, AHeaderWithALineBreakFailsTheRequestAndSendsNothing) {
+    LocalServer server(httpResponse(200, "{}"));
+    HttpClient client;
+    Outcome outcome;
+    client.get(1, server.url(), {"Authorization: Bearer k\r\nX-Injected: y"}, outcome.handler());
+    ASSERT_TRUE(waitFor([&] { return outcome.done(); }));
+    EXPECT_FALSE(outcome.response->reached);
+    EXPECT_FALSE(server.requestSeen());
 }
 
 TEST(HttpClient, AServerThatStopsAnsweringTimesOut) {
@@ -198,7 +278,7 @@ TEST(HttpClient, AServerThatStopsAnsweringTimesOut) {
     HttpClient client(options);
     Outcome outcome;
     auto start = Clock::now();
-    client.get(1, server.url(), outcome.handler());
+    client.get(1, server.url(), {}, outcome.handler());
     ASSERT_TRUE(waitFor([&] { return outcome.done(); }));
     EXPECT_FALSE(outcome.response->reached);
     EXPECT_LT(Clock::now() - start, 4s);
@@ -211,7 +291,7 @@ TEST(HttpClient, AnAnswerThatTricklesInTooSlowlyTimesOut) {
     options.totalTimeout = 500ms;
     HttpClient client(options);
     Outcome outcome;
-    client.get(1, server.url(), outcome.handler());
+    client.get(1, server.url(), {}, outcome.handler());
     ASSERT_TRUE(waitFor([&] { return outcome.done(); }));
     EXPECT_FALSE(outcome.response->reached);
 }
@@ -222,7 +302,7 @@ TEST(HttpClient, ATooLargeAnswerFails) {
     options.maxBody = 50;
     HttpClient client(options);
     Outcome outcome;
-    client.get(1, server.url(), outcome.handler());
+    client.get(1, server.url(), {}, outcome.handler());
     ASSERT_TRUE(waitFor([&] { return outcome.done(); }));
     EXPECT_FALSE(outcome.response->reached);
 }
@@ -232,11 +312,11 @@ TEST(HttpClient, ACancelledRequestsHandlerDoesNotRun) {
     LocalServer quick(httpResponse(200, "quick"));
     HttpClient client;
     Outcome cancelled, other;
-    client.get(1, held.url(), cancelled.handler());
+    client.get(1, held.url(), {}, cancelled.handler());
     ASSERT_TRUE(waitFor([&] { return held.requestSeen(); }));
     client.cancel(1);
     held.release(); // the answer comes now; without the cancel the handler would get it
-    client.get(2, quick.url(), other.handler());
+    client.get(2, quick.url(), {}, other.handler());
     ASSERT_TRUE(waitFor([&] { return other.done(); }));
     std::this_thread::sleep_for(100ms); // room for a wrong late handler call
     EXPECT_FALSE(cancelled.done());
@@ -247,9 +327,9 @@ TEST(HttpClient, ANewRequestWithTheIdOfOneInFlightReplacesIt) {
     LocalServer quick(httpResponse(200, "new"));
     HttpClient client;
     Outcome first, second;
-    client.get(1, held.url(), first.handler());
+    client.get(1, held.url(), {}, first.handler());
     ASSERT_TRUE(waitFor([&] { return held.requestSeen(); }));
-    client.get(1, quick.url(), second.handler());
+    client.get(1, quick.url(), {}, second.handler());
     ASSERT_TRUE(waitFor([&] { return second.done(); }));
     EXPECT_EQ(second.response->body, "new");
     held.release(); // the old request's answer comes now and must go nowhere
@@ -261,7 +341,7 @@ TEST(HttpClient, DestructorDoesNotWaitForAStuckRequest) {
     LocalServer server("", /*hold=*/true); // takes the request, never answers
     Outcome outcome;
     auto client = std::make_unique<HttpClient>();
-    client->get(1, server.url(), outcome.handler());
+    client->get(1, server.url(), {}, outcome.handler());
     ASSERT_TRUE(waitFor([&] { return server.requestSeen(); }));
     auto start = Clock::now();
     client.reset();
@@ -273,7 +353,7 @@ TEST(HttpClient, FinishSendsARequestQueuedJustBefore) {
     LocalServer server(httpResponse(200, "ok"));
     HttpClient client;
     Outcome outcome;
-    client.get(1, server.url("/rest/scrobble"), outcome.handler());
+    client.get(1, server.url("/rest/scrobble"), {}, outcome.handler());
     auto start = Clock::now();
     client.finish(kPatience); // no waiting for the worker first
     EXPECT_TRUE(server.requestSeen());
@@ -286,7 +366,7 @@ TEST(HttpClient, FinishReturnsAtTheDeadlineWhenTheServerNeverAnswers) {
     LocalServer server("", /*hold=*/true);
     HttpClient client;
     Outcome outcome;
-    client.get(1, server.url(), outcome.handler());
+    client.get(1, server.url(), {}, outcome.handler());
     ASSERT_TRUE(waitFor([&] { return server.requestSeen(); }));
     constexpr auto kShort = 300ms;
     auto start = Clock::now();
@@ -302,7 +382,7 @@ TEST(HttpClient, ARequestAfterFinishIsNotSent) {
     HttpClient client;
     client.finish(100ms);
     Outcome outcome;
-    client.get(1, server.url(), outcome.handler());
+    client.get(1, server.url(), {}, outcome.handler());
     std::this_thread::sleep_for(200ms);
     EXPECT_FALSE(server.requestSeen());
     EXPECT_FALSE(outcome.done());
@@ -313,11 +393,11 @@ TEST(HttpClient, ARequestWhileFinishWaitsIsNotSent) {
     LocalServer late(httpResponse(200, "ok"));
     HttpClient client;
     Outcome first, second;
-    client.get(1, held.url(), first.handler());
+    client.get(1, held.url(), {}, first.handler());
     ASSERT_TRUE(waitFor([&] { return held.requestSeen(); }));
     std::thread finisher([&] { client.finish(1s); }); // waits for the held request
     std::this_thread::sleep_for(300ms); // room for finish() to start waiting
-    client.get(2, late.url(), second.handler());
+    client.get(2, late.url(), {}, second.handler());
     finisher.join();
     EXPECT_FALSE(late.requestSeen());
     EXPECT_FALSE(second.done());
@@ -360,4 +440,6 @@ TEST(SubsonicOverHttp, PingThroughALocalServer) {
     auto line = server.requestLine();
     EXPECT_EQ(line.rfind("GET /music/rest/ping?u=ice&t=", 0), 0u) << line;
     EXPECT_EQ(line.find("sesame"), std::string::npos);
+    auto head = server.requestHead();
+    EXPECT_EQ(head.find("Authorization"), std::string::npos) << head; // Subsonic sends no extra headers
 }

@@ -130,7 +130,7 @@ MusicServer::RequestId Subsonic::request(const std::string& method, const Params
         inbox_->ready.emplace_back(id, Reply{Error::NotConfigured, {}, false});
         return id;
     }
-    http_->get(id, url(method, params), [inbox = inbox_, parse = std::move(parse), id](Http::Response response) {
+    http_->get(id, url(method, params), {}, [inbox = inbox_, parse = std::move(parse), id](Http::Response response) {
         Reply reply;
         if (!response.reached) {
             reply.error = Error::Unreachable;
