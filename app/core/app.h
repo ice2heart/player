@@ -6,6 +6,7 @@
 #include "library_index.h"
 #include "menu.h"
 #include "queue.h"
+#include "scrobble_file.h"
 #include "services.h"
 #include "settings.h"
 #include "track_cache.h"
@@ -65,7 +66,7 @@ public:
     App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
         Downloader& downloader, LibraryStore& libraryStore, LibraryScanner& scanner, Settings& config, Settings& state,
         Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot, std::filesystem::path cacheRoot = {}, TextFiles* files = nullptr,
-        std::filesystem::path queueFile = {});
+        std::filesystem::path queueFile = {}, std::filesystem::path scrobbleFile = {});
 
     // How much room is left on the disk of a folder, in bytes; none if that cannot
     // be told. Downloads check it before they start. The default asks
@@ -727,6 +728,18 @@ private:
         std::optional<TimePoint> heardSince; // the last tick that heard it
     };
     std::optional<TrackPlay> scrobble_;
+    // The scrobble outbox: every submission, with the time it was heard, until its server answers it. Kept
+    // in scrobbles.tsv (empty path or no `files`: in memory only), written at once and each time it
+    // changes, oldest first, at most kMaxScrobbles. Entries of another server stay and are not sent.
+    void submitScrobble(const std::string& trackId); // into the outbox, then sent
+    void loadScrobbles();                             // start(): reads the file
+    void saveScrobbles();                             // writes the file if its text changed
+    void sendScrobbles();                             // the oldest entry of this server, if none is out and the server is not marked down
+    void onScrobbleAnswer(const ScrobbleEntry& sent, MusicServer::Error error);
+    std::filesystem::path scrobbleFile_;
+    std::string scrobbleText_; // what scrobbles.tsv holds (read, or last written)
+    std::vector<ScrobbleEntry> outbox_;
+    bool scrobbleOut_ = false; // a submission is sent and not answered
 
     bool hold_ = false;
     std::array<bool, kButtonCount> held_{};   // raw keys down now

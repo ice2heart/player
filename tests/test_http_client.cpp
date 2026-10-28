@@ -330,7 +330,7 @@ TEST(SubsonicOverHttp, FinishSendsAScrobbleQueuedJustBefore) {
     config.user = "ice";
     config.password = "sesame";
     oap::Subsonic subsonic(config);
-    subsonic.scrobble("track-7", true);
+    subsonic.scrobble("track-7", true, std::nullopt, {});
     subsonic.finish(kPatience);
     EXPECT_TRUE(server.requestSeen());
     EXPECT_NE(server.requestLine().find("/music/rest/scrobble?"), std::string::npos) << server.requestLine();

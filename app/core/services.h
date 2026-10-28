@@ -363,9 +363,12 @@ public:
     virtual Stream stream(const std::string& trackId, int maxBitRate) = 0;
     // Tells the server a track plays now (`submission` false: "now playing")
     // or has been heard (true: play count, "Recently played"). Sent in the
-    // background like any request, but nothing comes back: whether it worked
-    // is not reported, so a failed scrobble is never heard. Not configured: nothing.
-    virtual void scrobble(const std::string& trackId, bool submission) = 0;
+    // background like any request; `timeMs` (ms since 1970) is when it was heard, set for a
+    // submission that may be late (the scrobble outbox). `done` (may be empty) gets the error,
+    // from poll() like any callback. Not configured: nothing is sent and `done` is not called.
+    // A scrobble is never spoken.
+    virtual void scrobble(const std::string& trackId, bool submission, std::optional<std::int64_t> timeMs,
+                          std::function<void(Error)> done) = 0;
     virtual void poll() = 0; // UI thread: run the callbacks of finished requests
 };
 

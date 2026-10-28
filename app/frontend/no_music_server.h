@@ -28,7 +28,7 @@ public:
     RequestId createPlaylist(std::string name, std::vector<std::string> trackIds, std::function<void(Error, std::string)> done) override;
     void cancel(RequestId id) override;
     Stream stream(const std::string&, int) override { return {}; }
-    void scrobble(const std::string&, bool) override {}
+    void scrobble(const std::string&, bool, std::optional<std::int64_t>, std::function<void(Error)>) override {}
     void poll() override;
 
 private:

@@ -296,12 +296,13 @@ MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn, L
 App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
          Downloader& downloader, LibraryStore& libraryStore, LibraryScanner& scanner, Settings& config, Settings& state,
          Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot, std::filesystem::path cacheRoot,
-         TextFiles* files, std::filesystem::path queueFile)
+         TextFiles* files, std::filesystem::path queueFile, std::filesystem::path scrobbleFile)
     : tts_(speech), player_(player), earcons_(sounds), volume_(volume), server_(server), downloader_(downloader),
       index_(libraryStore), scanner_(scanner), config_(config), state_(state),
       savedState_(state.values()), queueFile_(std::move(queueFile)), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)),
       freeSpace_(spaceOnDisk), random_(clockRandom(clock)), lastActivity_(clock.now()) {
     textFiles_ = files;
+    scrobbleFile_ = std::move(scrobbleFile);
 }
 
 // ---------------------------------------------------------------- lifecycle
@@ -316,6 +317,8 @@ void App::start() {
     say("Ready.");
     startScan(); // the menus use the saved index until it is done
     startSync(); // silent: the saved server items stay if it fails
+    loadScrobbles(); // what was heard and not taken by its server (a cut power, an exit) is sent now
+    sendScrobbles();
 
     // The music queue of queue.tsv is in the music player now, closed. Whichever player was used last has
     // "Now playing" on Home; a book that was last is opened below, which parks the music queue.
@@ -607,6 +610,7 @@ void App::finishSync(MusicServer::Error error) {
     catalogue_.savedPlaylists.clear();
     refresh_.error = error;
     finishRefresh();
+    if (error == MusicServer::Error::None) sendScrobbles(); // the server answers
 }
 
 // Music -> Refresh library: rescans the files and, with a server, checks its catalogue. A scan or
@@ -1701,6 +1705,7 @@ void App::onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<M
     if (error != MusicServer::Error::None) {
         list.error = error;
     } else {
+        sendScrobbles(); // the server answers
         size_t count = items.size();
         for (size_t i = 0; i < count && !list.focusKey.empty(); ++i)
             if (items[i].key == list.focusKey) {
@@ -2079,6 +2084,7 @@ void App::requestNextAlbum() {
 void App::onPickLoaded(std::uint64_t screen, MusicServer::Error error, std::vector<RemoteTrack> tracks) {
     if (loading_.screen != screen) return;
     if (error != MusicServer::Error::None) return failLoading(error);
+    sendScrobbles(); // the server answers
     const Loading done = std::exchange(loading_, Loading{});
     const Pick& pick = done.pick;
     if (done.action == QueueAction::Download) {
@@ -3570,7 +3576,60 @@ void App::markServerDown() {
     pingDue_ = clock_.now() + kPingFirst;
 }
 
-void App::clearServerDown() { serverDown_ = false; }
+void App::clearServerDown() {
+    serverDown_ = false;
+    sendScrobbles(); // it answers
+}
+
+// ---- the scrobble outbox
+
+// A submission is kept first, then sent: it leaves the outbox only when the server answers it.
+void App::submitScrobble(const std::string& trackId) {
+    const std::string key = catalogueServerKey();
+    if (key.empty() || !server_.configured()) return;
+    outbox_.push_back({key, trackId, static_cast<std::int64_t>(clock_.wallTime()) * 1000});
+    if (outbox_.size() > kMaxScrobbles) outbox_.erase(outbox_.begin(), outbox_.end() - kMaxScrobbles);
+    saveScrobbles();
+    sendScrobbles();
+}
+
+void App::loadScrobbles() {
+    if (scrobbleFile_.empty() || !textFiles_) return;
+    const std::optional<std::string> text = textFiles_->read(scrobbleFile_);
+    if (!text) return;
+    scrobbleText_ = *text;
+    outbox_ = parseScrobbles(*text);
+}
+
+void App::saveScrobbles() {
+    if (scrobbleFile_.empty() || !textFiles_) return;
+    const std::string text = formatScrobbles(outbox_);
+    if (text == scrobbleText_) return;
+    if (textFiles_->writeAtomically(scrobbleFile_, text)) scrobbleText_ = text; // else the next change tries again
+}
+
+// One at a time, oldest first, with the time it was heard. Called whenever the server answers.
+void App::sendScrobbles() {
+    if (scrobbleOut_ || serverDown_ || !server_.configured()) return;
+    const std::string key = catalogueServerKey();
+    if (key.empty()) return;
+    const auto next = std::find_if(outbox_.begin(), outbox_.end(), [&](const ScrobbleEntry& e) { return e.server == key; });
+    if (next == outbox_.end()) return;
+    scrobbleOut_ = true;
+    server_.scrobble(next->trackId, true, next->timeMs,
+                     [this, sent = *next](MusicServer::Error error) { onScrobbleAnswer(sent, error); });
+}
+
+// The entry leaves the outbox when the server took it, or refused it (Server: not sent for ever). Not
+// reaching the server, a login that fails or no server set up keep it and stop the round: the next
+// answer from the server starts it again.
+void App::onScrobbleAnswer(const ScrobbleEntry& sent, MusicServer::Error error) {
+    scrobbleOut_ = false;
+    if (error != MusicServer::Error::None && error != MusicServer::Error::Server) return;
+    if (const auto it = std::find(outbox_.begin(), outbox_.end(), sent); it != outbox_.end()) outbox_.erase(it);
+    saveScrobbles();
+    sendScrobbles();
+}
 
 // Entries that can come up that belong to the server set up now.
 bool App::remoteAhead() const {
@@ -4026,7 +4085,7 @@ void App::checkScrobble(TimePoint now) {
     }
     if (!play.nowPlayingSent) {
         play.nowPlayingSent = true;
-        server_.scrobble(play.trackId, false);
+        server_.scrobble(play.trackId, false, std::nullopt, {}); // "now playing" is never kept
     }
     if (play.heardSince) play.heard += now - *play.heardSince;
     play.heardSince = now;
@@ -4038,7 +4097,7 @@ void App::checkScrobble(TimePoint now) {
                                       std::chrono::duration<double>(length * kScrobbleShare)));
     if (!play.submitted && play.heard >= enough) {
         play.submitted = true;
-        server_.scrobble(play.trackId, true);
+        submitScrobble(play.trackId);
     }
 }
 

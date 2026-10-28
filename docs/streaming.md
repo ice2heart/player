@@ -474,7 +474,7 @@ Known limits after phase 3: there is no Wi-Fi-only check (decided: not now, the 
 has only Wi-Fi). A server that sends no `Content-Length` and a stale listed size can
 leave a file of the wrong size. Re-downloading a list deletes the file of a dropped
 track even if the player has it open (harmless on POSIX, the open file stays readable).
-Scrobbles made offline are lost. The manifest's `changed` column holds no changed time
+Scrobbles made offline wait in the scrobble outbox (fixes.md 3.2). The manifest's `changed` column holds no changed time
 (the track data has none), so a track changed on the server is not fetched again; since
 fixes.md 2.6 it is empty or `partial`, the mark of a download that is not over.
 
@@ -639,8 +639,9 @@ still empty.
   position is further, jump there?" (SPEC §6.3).
 - **Play queue sync:** `savePlayQueue` / `getPlayQueue` (`indexBasedQueue`), so a
   queue started on a phone continues on the device.
-- **Offline outbox:** scrobbles, stars, bookmarks and playlist edits made offline go
-  into a queue file and are sent in order when the server can be reached again.
+- **Offline outbox:** stars, bookmarks and playlist edits made offline go
+  into a queue file and are sent in order when the server can be reached again. (Scrobbles
+  already have theirs: `scrobbles.tsv`, fixes.md 3.2.)
 - Local files are **not uploaded**: the Subsonic API has no upload. Sending local
   books to the server is a job for Syncthing or WebDAV, outside this plan.
 

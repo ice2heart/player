@@ -248,12 +248,35 @@ TEST(FakeMusicServer, StreamUrlNamesTheTrackAndATranscode) {
 
 TEST(FakeMusicServer, ScrobblesAreRecordedInOrderAndMakeNoRequest) {
     FakeMusicServer server;
-    server.scrobble("t1", false);
-    server.scrobble("t1", true);
+    server.scrobble("t1", false, std::nullopt, {});
+    server.scrobble("t1", true, 42, {});
     EXPECT_EQ(server.scrobbles,
               (std::vector<FakeMusicServer::Scrobble>{{"t1", false}, {"t1", true}}));
     EXPECT_TRUE(server.requests.empty());
     EXPECT_EQ(server.pendingCount(), 0u);
+    EXPECT_EQ(server.scrobbles[0].timeMs, std::nullopt);
+    EXPECT_EQ(server.scrobbles[1].timeMs, 42);
+}
+
+TEST(FakeMusicServer, ScrobblesAreAnsweredByPollOrHeldUntilTheTestAnswers) {
+    FakeMusicServer server;
+    std::vector<Server::Error> got;
+    auto done = [&](Server::Error e) { got.push_back(e); };
+    server.scrobbleError = Server::Error::Unreachable;
+    server.scrobble("t1", true, 1, done);
+    EXPECT_TRUE(got.empty()) << "only poll() calls back";
+    server.poll();
+    EXPECT_EQ(got, (std::vector<Server::Error>{Server::Error::Unreachable}));
+    got.clear();
+    server.holdScrobbles = true;
+    server.scrobble("t2", true, 2, done);
+    server.poll();
+    EXPECT_TRUE(got.empty());
+    EXPECT_EQ(server.heldScrobbleCount(), 1u);
+    EXPECT_TRUE(server.answerScrobble(Server::Error::Server));
+    EXPECT_FALSE(server.answerScrobble());
+    server.poll();
+    EXPECT_EQ(got, (std::vector<Server::Error>{Server::Error::Server}));
 }
 
 TEST(FakeMusicServer, CatalogueVersionIsAnsweredFailedAndCancelledLikeAnyRequest) {

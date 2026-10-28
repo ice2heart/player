@@ -363,7 +363,7 @@ int main(int argc, char** argv) {
     ThreadedScanner scanner(tagReader);
     DiskTextFiles manifests; // the cache's manifests, written atomically
     App app(tts, player, earcons, mixer, *server, *downloader, libraryStore, scanner, settings.config(), settings.state(), clock, library, music, cache,
-            &manifests, defaultQueueFile(state));
+            &manifests, defaultQueueFile(state), defaultScrobbleFile(state));
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());

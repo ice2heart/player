@@ -43,6 +43,7 @@ protected:
         base = testTempDir();
         fs::remove_all(base);
         queueFile = files.queueFile = base / "config" / "queue.tsv";
+        scrobbleFile = base / "config" / "scrobbles.tsv";
         root = base / "books";
         music = base / "music";
         touch(alpha() / "01 - Storm.mp3");
@@ -82,6 +83,7 @@ protected:
     };
     QueueWatchingFiles files;
     fs::path queueFile; // queue.tsv, next to state.tsv
+    fs::path scrobbleFile; // scrobbles.tsv, next to state.tsv
     TextFiles* textFiles = &files; // what start() gives the App
     // What the previous version left in place of queue.tsv: the place of the list that was playing in
     // state.tsv (`last_stream.*`; `kind` and `id` say which album or playlist it was).
@@ -105,7 +107,7 @@ protected:
 
     // Starts the App and, unless `scan` is false, lets its background scan finish.
     void start(bool scan = true) {
-        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache, textFiles, queueFile);
+        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache, textFiles, queueFile, scrobbleFile);
         app->start();
         if (scan) ASSERT_NO_FATAL_FAILURE(deliverScan());
     }
@@ -2932,6 +2934,11 @@ TEST_F(ReadAheadTest, ALocalBookIsNotPreOpened) {
 // it was played once it has been heard for half its length or 4 minutes.
 class ScrobbleTest : public AsyncOpenTest {
 protected:
+    void SetUp() override {
+        AsyncOpenTest::SetUp();
+        settings.setString("server.url", "https://music.example"); // a submission is kept for the server set up
+        settings.setString("server.user", "ice");
+    }
     using Scrobble = FakeMusicServer::Scrobble;
     static Scrobble nowPlaying(const std::string& id) { return {id, false}; }
     static Scrobble played(const std::string& id) { return {id, true}; }
@@ -4943,6 +4950,274 @@ TEST_F(CachedPlayTest, AnotherServersCacheIsNotUsed) {
     start();
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
     EXPECT_EQ(player.file, "fake://stream/t1") << "another server's cache";
+}
+
+// ------------------------------------------------------- the scrobble outbox
+
+// Every submission is kept in scrobbles.tsv, with the time it was heard, until its server answers it
+// (docs/fixes.md, "Scrobbles"). Weather's tracks are t1..t3 of https://music.example, user bob.
+class ScrobbleOutboxTest : public CachedPlayTest {
+protected:
+    using Scrobble = FakeMusicServer::Scrobble;
+    static constexpr std::int64_t kHeardAt = 1'700'000'123;
+    std::string ourKey() const { return TrackCache::serverKey("https://music.example", "bob"); }
+    std::string otherKey() const { return TrackCache::serverKey("https://other.example", "bob"); }
+    std::vector<ScrobbleEntry> outbox() const { return parseScrobbles(diskFiles().read(scrobbleFile).value_or("")); }
+    void writeOutbox(const std::vector<ScrobbleEntry>& entries) {
+        ASSERT_TRUE(diskFiles().writeAtomically(scrobbleFile, formatScrobbles(entries)));
+    }
+    std::vector<Scrobble> submissions() const {
+        std::vector<Scrobble> out;
+        for (const Scrobble& s : server.scrobbles)
+            if (s.submission) out.push_back(s);
+        return out;
+    }
+    void listen(std::chrono::milliseconds ms) {
+        for (; ms >= 1s; ms -= 1s) idle(1s);
+        if (ms > 0ms) idle(ms);
+    }
+    // Weather's first track streams and is heard for 100 s of its 200: the submission goes out at the end of this.
+    void hearFirstTrack() {
+        player.length = 200;
+        start();
+        ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+        listen(99s);
+        ASSERT_TRUE(submissions().empty());
+        clock.setWallTime(kHeardAt);
+        listen(2s); // the first tick counts nothing: 100 s are heard now
+    }
+    // The start-up sync runs to its end (the server has nothing); `beforeEnd` runs before its last answer.
+    void syncToEnd(const std::function<void()>& beforeEnd) {
+        auto lastOf = [&](FakeMusicServer::Kind kind) {
+            for (auto it = server.requests.rbegin(); it != server.requests.rend(); ++it)
+                if (it->kind == kind) return it->id;
+            return FakeMusicServer::RequestId{0};
+        };
+        ASSERT_TRUE(server.replyVersion(lastOf(FakeMusicServer::Kind::CatalogueVersion), "v1"));
+        app->tick();
+        ASSERT_TRUE(server.reply(lastOf(FakeMusicServer::Kind::Albums), std::vector<RemoteAlbum>{}));
+        app->tick();
+        if (beforeEnd) beforeEnd();
+        ASSERT_TRUE(server.reply(lastOf(FakeMusicServer::Kind::Playlists), std::vector<RemotePlaylist>{}));
+        app->tick();
+    }
+    // The stream breaks: the server is marked down, and its ping (10 s later) is answered.
+    void markDownThenPingAnswers() {
+        player.broken = true;
+        app->tick();
+        ASSERT_EQ(speech.last(), "Server not reachable. Press play to try again.");
+        idle(11s);
+        answerPing();
+    }
+};
+
+TEST_F(ScrobbleOutboxTest, ASubmissionIsInTheFileWhenItIsSentAndBeforeTheServerAnswersIt) {
+    server.holdScrobbles = true;
+    std::vector<ScrobbleEntry> onDiskWhenSent;
+    server.onScrobble = [&](const Scrobble& s) {
+        if (s.submission) onDiskWhenSent = outbox();
+    };
+    hearFirstTrack();
+    const std::vector<ScrobbleEntry> expected = {{ourKey(), "t1", kHeardAt * 1000}};
+    EXPECT_EQ(onDiskWhenSent, expected) << "written before the request";
+    EXPECT_EQ(outbox(), expected) << "and still there: the server has not answered";
+    ASSERT_EQ(submissions().size(), 1u);
+    EXPECT_EQ(submissions()[0].timeMs, kHeardAt * 1000);
+}
+
+TEST_F(ScrobbleOutboxTest, TheFileHoldsNeitherTheTokenNorAStreamUrl) {
+    server.holdScrobbles = true;
+    hearFirstTrack();
+    const std::string text = diskFiles().read(scrobbleFile).value_or("");
+    EXPECT_NE(text.find("t1"), std::string::npos);
+    for (const char* secret : {"://", "stream", "https", "bob", "music.example/"}) EXPECT_EQ(text.find(secret), std::string::npos) << secret;
+}
+
+TEST_F(ScrobbleOutboxTest, AnAnsweredSubmissionLeavesTheFile) {
+    hearFirstTrack();
+    ASSERT_EQ(outbox().size(), 1u);
+    idle(1s); // the answer arrives
+    EXPECT_TRUE(outbox().empty());
+    EXPECT_EQ(diskFiles().read(scrobbleFile), "");
+    listen(10s);
+    EXPECT_EQ(submissions().size(), 1u) << "not sent again";
+}
+
+TEST_F(ScrobbleOutboxTest, ANewAppOnTheFilesSendsASubmissionTheServerNeverAnswered) {
+    server.holdScrobbles = true;
+    hearFirstTrack();
+    ASSERT_EQ(outbox().size(), 1u);
+    app.reset(); // the power is cut: no shutdown, no answer
+    server.dropHeldScrobbles();
+    server.scrobbles.clear();
+    start();
+    ASSERT_EQ(submissions().size(), 1u) << "sent at start";
+    EXPECT_EQ(submissions()[0], Scrobble("t1", true));
+    EXPECT_EQ(submissions()[0].timeMs, kHeardAt * 1000) << "with the time it was heard";
+    ASSERT_TRUE(server.answerScrobble());
+    app->tick();
+    EXPECT_TRUE(outbox().empty());
+}
+
+TEST_F(ScrobbleOutboxTest, ASubmissionThatCouldNotReachTheServerIsSentAgainWithItsTimeAfterAPingClearsTheMark) {
+    server.scrobbleError = MusicServer::Error::Unreachable;
+    hearFirstTrack();
+    idle(1s);
+    EXPECT_EQ(outbox().size(), 1u) << "kept";
+    EXPECT_EQ(submissions().size(), 1u) << "the round stopped";
+    server.scrobbleError = MusicServer::Error::None;
+    clock.setWallTime(kHeardAt + 500);
+    const size_t said = speech.said.size();
+    markDownThenPingAnswers();
+    ASSERT_EQ(submissions().size(), 2u);
+    EXPECT_EQ(submissions()[1], Scrobble("t1", true));
+    EXPECT_EQ(submissions()[1].timeMs, kHeardAt * 1000) << "the time it was heard, not the time it is sent";
+    idle(1s);
+    EXPECT_TRUE(outbox().empty());
+    EXPECT_EQ(speech.said.size(), said + 1) << "only the stream's failure was spoken";
+}
+
+TEST_F(ScrobbleOutboxTest, ASubmissionTheServerRefusesIsNotSentAgain) {
+    server.scrobbleError = MusicServer::Error::Server;
+    hearFirstTrack();
+    idle(1s);
+    EXPECT_TRUE(outbox().empty()) << "dropped";
+    server.scrobbleError = MusicServer::Error::None;
+    markDownThenPingAnswers();
+    EXPECT_EQ(submissions().size(), 1u);
+}
+
+TEST_F(ScrobbleOutboxTest, AFailedLoginKeepsTheSubmissionForLater) {
+    server.scrobbleError = MusicServer::Error::BadLogin;
+    hearFirstTrack();
+    idle(1s);
+    EXPECT_EQ(outbox().size(), 1u);
+    EXPECT_EQ(submissions().size(), 1u);
+}
+
+TEST_F(ScrobbleOutboxTest, WithTheServerMarkedDownASubmissionGoesToTheOutboxWithoutARequest) {
+    download("t1");
+    start();
+    player.unopenable = {"fake://stream/t2"};
+    EXPECT_FALSE(app->playRemote("Weather", weather(), 1)); // marks the server down
+    ASSERT_TRUE(speech.heard("Cannot play Rain. Server not reachable."));
+    player.unopenable.clear();
+    player.length = 200;
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0)); // t1 plays from its file
+    ASSERT_EQ(player.file.find("://"), std::string::npos);
+    clock.setWallTime(kHeardAt);
+    listen(101s);
+    EXPECT_TRUE(submissions().empty()) << "no request";
+    EXPECT_EQ(outbox(), (std::vector<ScrobbleEntry>{{ourKey(), "t1", kHeardAt * 1000}}));
+    const size_t said = speech.said.size();
+    idle(11s);
+    answerPing();
+    ASSERT_EQ(submissions().size(), 1u) << "sent once the server answers";
+    EXPECT_EQ(submissions()[0].timeMs, kHeardAt * 1000);
+    EXPECT_EQ(speech.said.size(), said) << "nothing is spoken";
+    idle(1s);
+    EXPECT_TRUE(outbox().empty());
+}
+
+TEST_F(ScrobbleOutboxTest, NowPlayingIsNeverKept) {
+    server.scrobbleError = MusicServer::Error::Unreachable;
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
+    idle(1s);
+    ASSERT_EQ(server.scrobbles, (std::vector<Scrobble>{{"t1", false}}));
+    idle(1s);
+    EXPECT_TRUE(outbox().empty());
+    EXPECT_FALSE(fs::exists(scrobbleFile));
+    app.reset();
+    server.scrobbles.clear();
+    start();
+    EXPECT_TRUE(server.scrobbles.empty()) << "a new App has nothing to send";
+}
+
+TEST_F(ScrobbleOutboxTest, OnlyTheNewest1000EntriesAreKept) {
+    server.holdScrobbles = true;
+    std::vector<ScrobbleEntry> old;
+    for (std::size_t i = 0; i < kMaxScrobbles; ++i) old.push_back({otherKey(), "x" + std::to_string(i), std::int64_t(i + 1)});
+    writeOutbox(old);
+    hearFirstTrack(); // the 1001st
+    const std::string text = diskFiles().read(scrobbleFile).value_or("");
+    EXPECT_EQ(std::count(text.begin(), text.end(), '\n'), static_cast<long>(kMaxScrobbles) + 1) << "the header and 1000 lines";
+    const std::vector<ScrobbleEntry> kept = outbox();
+    ASSERT_EQ(kept.size(), kMaxScrobbles);
+    EXPECT_EQ(kept.front().trackId, "x1") << "the oldest went";
+    EXPECT_EQ(kept.back(), (ScrobbleEntry{ourKey(), "t1", kHeardAt * 1000})) << "the newest stays";
+}
+
+TEST_F(ScrobbleOutboxTest, EntriesOfAnotherServerStayAndAreNotSentUntilItIsSetUpAgain) {
+    writeOutbox({{otherKey(), "x1", 1000}, {otherKey(), "x2", 2000}});
+    hearFirstTrack();
+    idle(1s);
+    EXPECT_EQ(submissions().size(), 1u);
+    EXPECT_EQ(submissions()[0], Scrobble("t1", true)) << "ours; the other server's are not sent here";
+    EXPECT_EQ(outbox(), (std::vector<ScrobbleEntry>{{otherKey(), "x1", 1000}, {otherKey(), "x2", 2000}}));
+    app.reset();
+    server.scrobbles.clear();
+    server.holdScrobbles = true;
+    settings.setString("server.url", "https://other.example");
+    start();
+    ASSERT_EQ(submissions().size(), 1u) << "one at a time";
+    EXPECT_EQ(submissions()[0], Scrobble("x1", true)) << "oldest first";
+    EXPECT_EQ(submissions()[0].timeMs, 1000);
+    ASSERT_TRUE(server.answerScrobble());
+    app->tick();
+    ASSERT_EQ(submissions().size(), 2u);
+    EXPECT_EQ(submissions()[1], Scrobble("x2", true));
+    EXPECT_EQ(submissions()[1].timeMs, 2000);
+    ASSERT_TRUE(server.answerScrobble());
+    app->tick();
+    EXPECT_TRUE(outbox().empty());
+}
+
+TEST_F(ScrobbleOutboxTest, AnAnswerThatComesAfterTheServerWasChangedStillClearsItsEntry) {
+    writeOutbox({{otherKey(), "x1", 1000}});
+    server.holdScrobbles = true;
+    hearFirstTrack();
+    ASSERT_EQ(outbox().size(), 2u);
+    settings.setString("server.url", "https://other.example"); // set up for another server while t1 is out
+    ASSERT_TRUE(server.answerScrobble());
+    app->tick();
+    ASSERT_EQ(submissions().size(), 2u) << "the other server's entry is sent now";
+    EXPECT_EQ(submissions()[1], Scrobble("x1", true));
+    EXPECT_EQ(outbox(), (std::vector<ScrobbleEntry>{{otherKey(), "x1", 1000}})) << "t1 left, x1 waits for its answer";
+}
+
+TEST_F(ScrobbleOutboxTest, AFinishedSyncSendsWhatIsWaiting) {
+    writeOutbox({{ourKey(), "t7", 7000}});
+    server.scrobbleError = MusicServer::Error::Unreachable;
+    start();
+    idle(1s);
+    ASSERT_EQ(submissions().size(), 1u) << "tried at start";
+    server.scrobbleError = MusicServer::Error::None;
+    EXPECT_EQ(submissions().size(), 1u);
+    syncToEnd(/*before the last answer:*/ [&] { EXPECT_EQ(submissions().size(), 1u) << "the sync is not over"; });
+    ASSERT_EQ(submissions().size(), 2u);
+    EXPECT_EQ(submissions()[1].timeMs, 7000);
+}
+
+TEST_F(ScrobbleOutboxTest, WithNoServerSetUpNothingIsKept) {
+    settings.setString("server.url", "");
+    hearFirstTrack();
+    idle(1s);
+    EXPECT_FALSE(fs::exists(scrobbleFile));
+    EXPECT_TRUE(submissions().empty());
+}
+
+TEST_F(ScrobbleOutboxTest, OnlyOneSubmissionIsOutAtATimeEvenWhenTheServerAnswersMeanwhile) {
+    writeOutbox({{ourKey(), "t7", 7000}, {ourKey(), "t8", 8000}});
+    server.holdScrobbles = true;
+    start();
+    ASSERT_EQ(submissions().size(), 1u);
+    syncToEnd({}); // the server answers a request: still waiting for the first scrobble
+    EXPECT_EQ(submissions().size(), 1u);
+    ASSERT_TRUE(server.answerScrobble());
+    app->tick();
+    ASSERT_EQ(submissions().size(), 2u);
+    EXPECT_EQ(submissions()[1], Scrobble("t8", true));
 }
 
 // ------------------------------------------------------- downloading albums

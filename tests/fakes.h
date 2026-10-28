@@ -335,7 +335,9 @@ private:
 //   server.reply(id, {album1, album2}, /*more=*/false);
 //   app.tick();                                 // App calls poll(), callback runs
 //
-// scrobble() is recorded in `scrobbles`, in order (nothing comes back from it).
+// scrobble() is recorded in `scrobbles`, in order, makes no request, and is answered by the next poll()
+// with `scrobbleError` (None: it worked). With `holdScrobbles` the answers wait for answerScrobble().
+// A fake that is not configured does not record a scrobble (like Subsonic).
 class FakeMusicServer : public MusicServer {
 public:
     enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Playlists, PlaylistTracks, CreatePlaylist };
@@ -390,7 +392,24 @@ public:
         if (maxBitRate <= 0) return {url, std::nullopt};
         return {url, Transcoded{url + "&timeOffset=", 0}};
     }
-    void scrobble(const std::string& trackId, bool submission) override { scrobbles.push_back({trackId, submission}); }
+    void scrobble(const std::string& trackId, bool submission, std::optional<std::int64_t> timeMs,
+                  std::function<void(Error)> done) override {
+        if (!isConfigured) return;
+        scrobbles.push_back({trackId, submission, timeMs});
+        if (onScrobble) onScrobble(scrobbles.back()); // e.g. to look at the disk at the moment of the call
+        if (!done) return;
+        if (holdScrobbles) heldScrobbles_.push_back(std::move(done));
+        else ready_.emplace_back(0, [done = std::move(done), error = scrobbleError] { done(error); });
+    }
+    // Answers the oldest held scrobble on the next poll(); false if none waits.
+    bool answerScrobble(Error error = Error::None) {
+        if (heldScrobbles_.empty()) return false;
+        ready_.emplace_back(0, [done = std::move(heldScrobbles_.front()), error] { done(error); });
+        heldScrobbles_.erase(heldScrobbles_.begin());
+        return true;
+    }
+    void dropHeldScrobbles() { heldScrobbles_.clear(); } // the answers never come (the App that asked is gone)
+    std::size_t heldScrobbleCount() const { return heldScrobbles_.size(); }
     void poll() override {
         // Callbacks may make new requests or cancel others, so work on a copy.
         auto batch = std::move(ready_);
@@ -465,9 +484,12 @@ public:
     std::vector<Request> requests;    // every request, in order
     std::vector<RequestId> cancelled; // every cancel() call, in order
     struct Scrobble {
+        Scrobble(std::string id, bool sub, std::optional<std::int64_t> time = std::nullopt)
+            : trackId(std::move(id)), submission(sub), timeMs(time) {}
         std::string trackId;
         bool submission = false;
-        bool operator==(const Scrobble&) const = default;
+        std::optional<std::int64_t> timeMs; // when it was heard, if the call said; not part of ==, tests check it apart
+        bool operator==(const Scrobble& o) const { return trackId == o.trackId && submission == o.submission; }
         friend void PrintTo(const Scrobble& s, std::ostream* out) {
             *out << s.trackId << (s.submission ? " submission" : " now playing");
         }
@@ -475,8 +497,12 @@ public:
     std::vector<Scrobble> scrobbles; // every scrobble() call, in order
     bool isConfigured = true;
     bool saltUrls = false;
+    Error scrobbleError = Error::None; // what the answer to a scrobble() says
+    bool holdScrobbles = false;        // answers wait for answerScrobble()
+    std::function<void(const Scrobble&)> onScrobble; // called by scrobble(), after it is recorded
 
 private:
+    std::vector<std::function<void(Error)>> heldScrobbles_;
     using PingDone = std::function<void(Error, ServerInfo)>;
     using VersionDone = std::function<void(Error, std::string)>;
     struct CreateDone { // a type of its own: VersionDone has the same signature

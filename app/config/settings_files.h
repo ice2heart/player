@@ -34,4 +34,9 @@ inline std::filesystem::path defaultQueueFile(const std::filesystem::path& state
     return stateFile.parent_path() / "queue.tsv";
 }
 
+// The default scrobbles.tsv (the scrobble outbox): next to state.tsv.
+inline std::filesystem::path defaultScrobbleFile(const std::filesystem::path& stateFile) {
+    return stateFile.parent_path() / "scrobbles.tsv";
+}
+
 } // namespace oap

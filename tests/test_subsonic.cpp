@@ -513,11 +513,33 @@ TEST(Subsonic, IsMadeFromConfigOnlyForTypeSubsonicWithAUrl) {
 
 TEST(Subsonic, ScrobbleSaysNowPlayingOrPlayed) {
     Server server;
-    server.subsonic->scrobble("s1", false);
-    server.subsonic->scrobble("s1", true);
+    server.subsonic->scrobble("s1", false, std::nullopt, {});
+    server.subsonic->scrobble("s1", true, std::nullopt, {});
     ASSERT_EQ(server.http->calls.size(), 2u);
     EXPECT_EQ(server.http->url(0), kBase + "scrobble" + kAuth + "&id=s1&submission=false");
     EXPECT_EQ(server.http->url(1), kBase + "scrobble" + kAuth + "&id=s1&submission=true");
+}
+
+TEST(Subsonic, ALateSubmissionCarriesTheTimeItWasHeard) {
+    Server server;
+    server.subsonic->scrobble("s1", true, 1700000123456, {});
+    ASSERT_EQ(server.http->calls.size(), 1u);
+    EXPECT_EQ(server.http->url(0), kBase + "scrobble" + kAuth + "&id=s1&submission=true&time=1700000123456");
+}
+
+TEST(Subsonic, AScrobbleDoneGetsTheErrorOfTheAnswer) {
+    Server server;
+    std::vector<oap::MusicServer::Error> errors;
+    auto done = [&](oap::MusicServer::Error e) { errors.push_back(e); };
+    for (int i = 0; i < 3; ++i) server.subsonic->scrobble("s1", true, 5, done);
+    server.http->answer(0, kOk, subsonicFixture("ping.json"));
+    server.http->unreachable(1);
+    server.http->answer(2, kOk, subsonicFixture("error_40_wrong_login.json"));
+    testing::internal::CaptureStderr();
+    server.subsonic->poll();
+    testing::internal::GetCapturedStderr();
+    EXPECT_EQ(errors, (std::vector<oap::MusicServer::Error>{oap::MusicServer::Error::None, oap::MusicServer::Error::Unreachable,
+                                                            oap::MusicServer::Error::BadLogin}));
 }
 
 // ---- createPlaylist (queue.md, step 2.9)
@@ -639,7 +661,7 @@ TEST(Subsonic, ACancelledCreatePlaylistNeverCallsBack) {
 
 TEST(Subsonic, NoScrobbleWithoutAServer) {
     Server server(config(""));
-    server.subsonic->scrobble("s1", true);
+    server.subsonic->scrobble("s1", true, std::nullopt, {});
     testing::internal::CaptureStderr();
     server.subsonic->poll();
     EXPECT_EQ(testing::internal::GetCapturedStderr(), "") << "nothing failed: nothing was sent";
@@ -650,7 +672,7 @@ TEST(Subsonic, NoScrobbleWithoutAServer) {
 // and never with the URL, which holds the login.
 TEST(Subsonic, AFailedScrobbleIsLoggedWithoutTheUrl) {
     Server server;
-    for (int i = 0; i < 4; ++i) server.subsonic->scrobble("s1", true);
+    for (int i = 0; i < 4; ++i) server.subsonic->scrobble("s1", true, std::nullopt, {});
     server.http->unreachable(0);
     server.http->answer(1, kOk, subsonicFixture("error_40_wrong_login.json"));
     server.http->answer(2, 500, subsonicFixture("not_json.html"));

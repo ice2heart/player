@@ -267,13 +267,17 @@ MusicServer::Stream Subsonic::stream(const std::string& trackId, int maxBitRate)
     return stream;
 }
 
-void Subsonic::scrobble(const std::string& trackId, bool submission) {
+void Subsonic::scrobble(const std::string& trackId, bool submission, std::optional<std::int64_t> timeMs,
+                        std::function<void(Error)> done) {
     if (!configured()) return;
+    Params params = {{"id", trackId}, {"submission", submission ? "true" : "false"}};
+    if (timeMs) params.emplace_back("time", std::to_string(*timeMs));
     request(
-        "scrobble", {{"id", trackId}, {"submission", submission ? "true" : "false"}},
+        "scrobble", std::move(params),
         [](const std::string& body) { return Reply{subsonic::parseStatus(body), {}, false}; },
-        [](Reply reply) {
+        [done = std::move(done)](Reply reply) {
             if (reply.error != Error::None) std::fprintf(stderr, "server: scrobble failed: %s\n", errorName(reply.error));
+            if (done) done(reply.error);
         });
 }
 

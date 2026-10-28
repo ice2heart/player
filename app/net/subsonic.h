@@ -73,8 +73,9 @@ public:
     // not OpenSubsonic); until the answer is in, a transcode gets no offset URL,
     // so it seeks by opening it again from the start.
     Stream stream(const std::string& trackId, int maxBitRate) override;
-    // A failure is only logged to stderr, by its kind: never the URL.
-    void scrobble(const std::string& trackId, bool submission) override;
+    // `time` is sent when `timeMs` is set. A failure is also logged to stderr, by its kind: never the URL.
+    void scrobble(const std::string& trackId, bool submission, std::optional<std::int64_t> timeMs,
+                  std::function<void(Error)> done) override;
     void poll() override;
     // Before the program exits: HttpClient::finish(). Answers that come in meanwhile
     // are not delivered (no poll() follows). A request after it is not sent.

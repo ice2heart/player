@@ -103,6 +103,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/config/disk_text_files.h` | `DiskTextFiles`: the `TextFiles` of the real file system, for the cache manifests (`App` takes it with the cache root; without one the cache is off). |
 | `app/config/settings_files.{h,cpp}` | `SettingsFiles`: what a front end hands to `App` (both files, loaded). |
 | `app/core/queue.{h,cpp}` | `Queue`, the music queue (docs/queue.md), a plain class with no `App` and no I/O; `App` plays it (step 2.2). `QueueEntry` is a local track (path) or a remote one (server url + user, track id, length; never a password or stream URL), with title, album and artist. It keeps the entries in the original order and a play order (`playOrder()`, indexes into `originalEntries()`), the current position, `QueueShuffle` (off / tracks / albums), `QueueRepeat` (off / all / album / track) and `edited()` (set by `playNext`, `append`, `remove`, `move`; cleared by `replace`, which also resets shuffle and repeat). `advance()` is a track that ended (repeat track: `Repeated`; repeat album: the next entry of the current album in the play order, the album's first after its last, `Repeated` for an album of one entry), `next()` / `previous()` are the user moving (`Moved`, or `End`: past the last entry with repeat off, which makes the first entry current). `setShuffle(mode, random)` keeps what was played and the current entry and shuffles what follows (albums: runs of the same album name stay together); `append(entries, random)` with Shuffle on mixes the new entries into what has not played yet the same way (tracks one by one; albums run by run between two runs, cut by the same `cutRuns()`), and `playNext` keeps its entries in order right after the current one; the `QueueRandom` is passed in. `restore()` rebuilds a saved queue and says whether it kept the saved order and position (a play order other than the original one with shuffle off is refused: `move()` relies on it); `revision()` is a stamp that is new at every change and shared by copies, the key of `App::remoteAheadMemo()` (so `checkServerMark()` does not scan the queue at every tick). |
+| `app/core/scrobble_file.{h,cpp}` | `formatScrobbles()` / `parseScrobbles()`: the scrobble outbox as the text of `scrobbles.tsv` and back, with no I/O. Section 9 has the format. |
 | `app/core/queue_file.{h,cpp}` | `formatQueue()` / `parseQueue()`: the queue as the text of `queue.tsv` and back, with no I/O (`App` reads and writes the file through `TextFiles`). Section 9 has the format. |
 | `app/core/text.{h,cpp}` | Text for speech, such as `spokenDuration()`, and `parseIsoTime()` (an ISO 8601 time as seconds since 1970, 0 if it is not one; pure arithmetic, used for a server album's `created`). |
 | `app/core/album_merge.{h,cpp}` | Duplicates (4.8), plain functions on the index. `mergeAlbums(items)` groups the `Music` items that share a `seenOn` reference into `MergedAlbum`s (`primary`: local, else cached, else server; `items`; `onServer`): the merged view, computed when a menu is built, never stored. `sameAlbumByName(a, b)` is the name rule (same MusicBrainz album id, else artist + album + track count with case and spaces ignored, ASCII, Latin-1 and Cyrillic folded; unknown count or empty name never match); `linkByName(key, items)` gives the `AlbumLink`s (local or cached item, server reference) for items with no reference to that server, matched against server albums that no local item holds; `albumInfoText(merged)` is what Album info says. `trackCountOf()` is a server item's `trackCount`, else its tracks. |
@@ -147,7 +148,7 @@ Rules:
   Opening a stream is asynchronous too: `Player::open()` returns at once,
   and `App::tick()` sees the result when `opening()` turns false (section 8).
   So is the read-ahead: `preload()` returns at once. Scrobbles go out like
-  any other request, with no callback.
+  any other request; a submission's answer (`done`) is polled like the others.
 - Threads exchange data only through `AudioStream` (mutex-protected), atomics,
   and mutex-protected queues: the `Tts` text queue, the `HttpClient` job queue,
   the `Subsonic` inbox of finished requests and the `HttpDownloader` list of progress and results.
@@ -835,7 +836,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   not found, and one that fails to open falls back to the stream. Read-ahead
   pre-opens nothing for a cached next track (it is a file). A cached track is
   scrobbled like a streamed one (it is a play on the server's account; offline
-  the call is lost, as for any scrobble). The menus do not change.
+  its submission waits in the scrobble outbox). The menus do not change.
 - **Cache index:** `cachedFile()` is called once per tick near the end of a
   track, so it never reads the disk by itself. It keeps `TrackCache::index()` (track
   id to file, for the server in the config) in memory, built at the first call and
@@ -950,8 +951,22 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   or choosing it) starts a new play; Play opening the same track again after it broke
   off (`Origin::Resume`) or after a failed choice (`Restore`) goes on with the same
   play. The end of a track ends its play, and a local book ends it too: local files
-  are never scrobbled. `scrobble()` returns nothing, so a failed scrobble is never
-  heard; `Subsonic` logs it to stderr by its kind, never with the URL.
+  are never scrobbled. Nothing about a scrobble is ever spoken. "Now playing" is sent once
+  with no time and no `done`, and is never kept. A submission goes through the **scrobble
+  outbox** (`outbox_`, fixes.md "Scrobbles"): `submitScrobble()` puts it in with the time it
+  was heard (`clock_.wallTime()` in ms) and the key of the server set up
+  (`catalogueServerKey()`, never the token), writes `scrobbles.tsv` at once, and only then
+  `sendScrobbles()` sends the oldest entry of this server with `scrobble(id, true, timeMs,
+  done)`, one at a time, unless the server is marked down. The entry leaves the outbox
+  (and the file) when the server answers: `Error::None` or `Error::Server` (a refusal is not
+  sent for ever); `Unreachable`, `BadLogin` and `NotConfigured` keep it and stop the round.
+  A round starts again whenever the server answers: `start()` (after `loadScrobbles()`),
+  `clearServerDown()` (a ping, or a stream that opens), a finished sync, a loaded page or
+  pick, and a successful scrobble (the next entry). More than `kMaxScrobbles` (1000) entries
+  drop the oldest; entries of another server stay in the file and wait for it. A
+  submission whose answer was lost (exit, power cut) is sent again at the next start, so
+  the server may count it twice. `Subsonic` also logs a failure to stderr by its kind,
+  never with the URL.
 
 ## 9. Persistence
 
@@ -964,6 +979,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 |------|-------|------|
 | `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` (kbps, 0 = the original file), `cache.limit_gb` (0, 1, 4 or 16; default 1), and `server.*` (see [streaming.md](streaming.md)) |
 | `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_player`: `music` or `book`, the player used last; `unit.music` / `unit.book`: the step unit of each player (0 Skip, 1 Track / Chapter, 2 Album / 10 minutes); `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.server` / `catalogue.version`: the server key and catalogue version of the last server sync; `catalogue.folder`: `server.audiobook_folder` at the last server sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); `last_stream.*` (`.server`, `.user`, `.kind`, `.id`, `.title`, `.track`, `.track_id`, `.pos`): only read, from a state.tsv of an older version (below); it is removed once a music queue plays |
+| `scrobbles.tsv` (next to `state.tsv`; `defaultScrobbleFile()`) | `App` through `TextFiles` (`writeAtomically()`) | the scrobble outbox (`app/core/scrobble_file.{h,cpp}`), see below |
 | `queue.tsv` (next to `state.tsv`; `defaultQueueFile()`) | `App` through `TextFiles` (`writeAtomically()`) | the music queue (`app/core/queue_file.{h,cpp}`), see below |
 
 - `config.yaml` is nested YAML (`speech: {rate: 220}` is `speech.rate`). It is
@@ -981,6 +997,13 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   only when the map differs from what was last loaded or written (a write that
   failed counts as not written, so the next exit tries again). A crash or
   power loss loses the place since the last exit.
+- **scrobbles.tsv (fixes.md 3.2).** The scrobble outbox: a header `oap-scrobbles<TAB>1`, then one line per entry,
+  oldest first: `server key<TAB>track id<TAB>time` (the key is `TrackCache::serverKey()`, the time ms since 1970;
+  tab, line break and backslash escaped as in queue.tsv). Never a URL, a token or the password. `saveScrobbles()`
+  replaces the file (atomically) each time the outbox changes and its text differs from what was read or last
+  written (`scrobbleText_`): at most two writes per heard track. `loadScrobbles()` in `start()` reads it
+  (a file over `kMaxScrobbleFileBytes`, not ours, or a damaged line gives no entries or skips the line; at most
+  `kMaxScrobbles` newest). An empty path or no `TextFiles` keeps the outbox in memory only.
 - **queue.tsv (queue.md step 2.8).** The music queue, written by `saveQueue()` in `saveOnExit()` (sleep, Power off,
   Restart, `shutdown()`) as text (`formatQueue()` in `app/core/queue_file.cpp`): a header `oap-queue<TAB>1`, then
   `title` (the list it came from), `shuffle`, `repeat`, `edited`, `position` (in the play order), `seconds` (in the
@@ -1115,7 +1138,7 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   request; answers only when the test calls `reply` / `replyPing` / `replyVersion` / `fail`, and then
   only on the next `poll()`; honours `cancel`; its stream URLs show the quality,
   `fake://stream/<id>?maxBitRate=<kbps>`, and with `saltUrls` differ on each call, as a
-  real server's do; `scrobble()` calls are recorded in `scrobbles`). `FakeLibraryStore` keeps the index in memory and counts saves, `FakeTagReader` maps path to tags and counts reads, and `FakeLibraryScanner` records each `ScanRequest` and delivers only on `finish()` + `poll()`. `FakeDownloader` records each `download()` and finishes only when the test calls `finish(id, result)` (which writes `dest` for `Ok`, or a `.part` for a failure, if asked) or `progress()`, then on the next `poll()`; honours `cancel`. `FakePlayer` records the `Transcoded` of the last open.
+  real server's do; `scrobble()` calls are recorded in `scrobbles` with their time, answered by the next `poll()` with `scrobbleError`, or held until `answerScrobble()`). `FakeLibraryStore` keeps the index in memory and counts saves, `FakeTagReader` maps path to tags and counts reads, and `FakeLibraryScanner` records each `ScanRequest` and delivers only on `finish()` + `poll()`. `FakeDownloader` records each `download()` and finishes only when the test calls `finish(id, result)` (which writes `dest` for `Ok`, or a `.part` for a failure, if asked) or `progress()`, then on the next `poll()`; honours `cancel`. `FakePlayer` records the `Transcoded` of the last open.
   `test_fake_music_server.cpp` checks that contract.
 - `test_queue.cpp` tests `Queue` alone (order, shuffle, repeat, edits, `restore()`, `around()`) with a chosen random
   generator; `test_queue_file.cpp` tests `formatQueue()` / `parseQueue()` (round trip, escapes, damaged files, no
