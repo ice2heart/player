@@ -27,7 +27,7 @@ the audio user interface, features, and an implementation roadmap. Sections mark
 - Screen or visual UI (an optional status LED is fine).
 - Streaming music services (Spotify etc.). A music server the user hosts
   (Subsonic, such as Navidrome) is not one of these: it is private and needs no
-  account with a company. Streaming from it is built (Home → Streaming, see
+  account with a company. Streaming from it is built (Home, one entry per server, see
   [docs/streaming.md](docs/streaming.md)). Albums and playlists can be downloaded
   and play offline, and streamed tracks are cached up to a size set in Settings.
 - Phone calls, messaging, general-purpose assistant features.
@@ -357,7 +357,7 @@ Home
 │   ├── Recently played
 │   ├── Refresh library        ("Updating the library.", then the result or the error)
 │   └── <album> → tracks (Album info, where it plays from, is in its Options)
-├── Streaming                  (own music server; named after it; docs/streaming.md. The music queue, local and server tracks mixed, resumes after a restart; docs/queue.md)
+├── <server name>              (one entry per server in config.yaml, in config order; "Server" when there is one and it has no name, else "Server 1", ...; its menu is Streaming, docs/streaming.md. The music queue, local and server tracks mixed, resumes after a restart; docs/queue.md)
 ├── Bookmarks
 ├── Settings
 │   ├── Speech (voice, rate, pitch, verbosity)

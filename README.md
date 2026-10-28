@@ -217,6 +217,24 @@ oap-headless [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--audio
   positions in `state.tsv` next to it (`--state` to move it). An old `settings.tsv`
   is not read.
   `config.yaml` can be edited by hand; see [docs/streaming.md](docs/streaming.md#configuration-one-yaml-file).
+- Music servers are a list in `config.yaml`. Each has its own Home entry:
+
+  ```yaml
+  servers:
+    - type: subsonic            # the only type so far; left out, it is subsonic
+      name: Music               # spoken on Home; default "Server", or "Server 1", "Server 2", ...
+      url: https://navidrome.microserver
+      user: ice
+      password: "..."           # quote it
+    - name: Jazz
+      url: https://jazz.example
+      user: ice
+      password: "..."
+  ```
+
+  The old single `server:` section still works and is read as a list of one. With both,
+  `servers:` wins. Factory reset keeps the servers. Quote a password or key: an all-digit one
+  is read as a number otherwise. Two entries with the same url and user are one server.
 - Downloaded and cached tracks are kept in `cache/` next to `state.tsv`; `--cache DIR` moves
   them (`oap-sim` has the same option). The device uses `/data/library/cache`.
 - `--input` is a comma-separated list of `evdev`, `terminal` and `none`. The default is

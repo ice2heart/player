@@ -1,6 +1,6 @@
 # Audiobookshelf and several servers: plan
 
-> Status: **a plan**, nothing built. The code is described in [architecture.md](architecture.md),
+> Status: **a plan**; phase 1 (several servers) is built, phase 2 (Audiobookshelf) is not. The code is described in [architecture.md](architecture.md),
 > the menu rules in [navigation.md](navigation.md) (see [Lists from the server](navigation.md#lists-from-the-server)
 > and [Music and Library](navigation.md#music-and-library)). The Subsonic plan this follows is
 > [streaming.md](streaming.md). Last updated: 2026-10-28.
@@ -203,7 +203,7 @@ An old `server:` section keeps working unchanged.
 | ✅ 1.5 | **Play from the right server.** A remote track carries its server key; streams, scrobbles, read-ahead and the automatic cache go to that link. `queue.tsv` entries find their link by url + user; an entry whose server is no longer in the config is skipped like a track that cannot play ("Cannot play Storm. Server not set up."). | A queue with a track from each server opens each stream from its own fake. A scrobble goes to the server that played. After a restart the mixed queue resumes from `queue.tsv` on both. A server removed from the config: its entries are skipped with that phrase and the others play. Nothing spoken or saved holds a URL. |
 | ✅ 1.6 | **Downloads per server.** Download album / playlist and the automatic cache use the link's downloader and its cache folder (`<cache>/<server key>/...`, as today). Downloaded in a server's menu lists only that server's downloads; one download at a time across all servers stays the rule. | Downloading an album on the second server calls only the second downloader and writes under its key. Each server's Downloaded lists its own. Starting a download on one server while another server downloads says "Another download is running." |
 | ✅ 1.7 | **Catalogue sync per server.** Start-up and Refresh sync every link. The state keys become `catalogue.<server key>.version` and `catalogue.<server key>.folder`; the old `catalogue.server` / `.version` / `.folder` are removed on the first sync (one extra fetch). Items of a key that is no longer configured are dropped; items of every configured key are kept. `audiobook_folder` is per server. Refresh texts as in [Menus](#menus). | Two servers: Music lists the albums of both; a changed version on one fetches only that one; a server removed from the config loses its items on the next sync; one server failing at start-up keeps its saved items and says nothing; Refresh with one failing says the count and "Music: server not reachable."; the old catalogue keys are gone after a sync. |
-| 1.8 | **Docs for phase 1 as built:** architecture.md (servers list, `ServerLink`, per-server state keys), navigation.md where the build differs, README config example, SPEC. | – |
+| ✅ 1.8 | **Docs for phase 1 as built:** architecture.md (servers list, `ServerLink`, per-server state keys), navigation.md where the build differs, README config example, SPEC. | – |
 
 **Device check (manual):** put the Navidrome server in `servers:` twice under two users (or
 the same server under another name in a second config), restart: Home says both names, both

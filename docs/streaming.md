@@ -173,6 +173,9 @@ server:
   audiobook_folder: Books   # optional (phase 4): the server's music folder whose albums are audiobooks, listed in Library; you set it, the player never writes it
 ```
 
+This is the first form. Several servers go in a `servers:` list with the same keys in each
+entry; `server:` is read as a list of one (see [audiobookshelf.md](audiobookshelf.md#configuration-a-list-of-servers)).
+
 (Phase 1 read `server.format` and `server.max_bitrate`; since step 2.4 the Streaming
 quality setting, `streaming.bitrate`, replaces them, and they are not read.)
 

@@ -396,12 +396,11 @@ Sleep timer, Options in the music player is Go to album · Album info (Star come
 
 ## Lists from the server
 
-The Streaming entry on Home is named after `server.name` in `config.yaml`
+The Streaming entry on Home is named after the server's `name` in `config.yaml`
 ("Server" when it is not set). Its lists come over the network, so they follow
 these rules too ([streaming.md](streaming.md) has the plan).
 
-**Several servers (planned, phase 1 of [audiobookshelf.md](audiobookshelf.md); today there is
-one).** Home gets one entry per server in `servers:`, in config order, between Music and
+**Several servers** ([audiobookshelf.md](audiobookshelf.md), phase 1). Home has one entry per server in `servers:`, in config order, between Music and
 Podcasts. Its name is the server's `name`; without one it is "Server" when only one server is
 set up, else "Server 1", "Server 2", ... by its place in the list. Each entry opens the menu
 of its own server, and its requests, Server status and "Loading" state belong to that
@@ -417,8 +416,8 @@ server alone. All the rules below hold for every server.
 - **An error is a list too**: "Server not reachable" (or "Wrong user name or
   password", "Server error"), then "Try again". OK on the error says what to do.
   Try again goes back to "Loading" and asks again. Items that had loaded stay.
-- **Without a server the list says why and what to do.** With no `server:`
-  section in `config.yaml` the Streaming menu has one item, "No server set up",
+- **Without a server the list says why and what to do.** With no server in
+  `config.yaml` (`servers:`, or the old `server:`) the Streaming menu has one item, "No server set up",
   and OK says how to add one. A server this player cannot use (another type, or a
   build without network support) gives "Server not supported". An empty answer says so too ("No albums",
   "No tracks", "No playlists").
@@ -604,10 +603,10 @@ Music
   result is never spoken. A second press while it runs says "Still updating.". With
   no server set up it only rescans the files. A refresh that changed nothing writes
   nothing.
-  **With several servers** it syncs every server and says "Updating the
-  library." and then "Library updated, 12 albums, 2 books." (a count of 0 is left out). A
-  server that fails adds its name and the error: "Music: server not reachable." When every
-  server fails it says only the errors.
+  **With several servers** it syncs every server, one after the other, and the count is of
+  the merged library. A server that fails adds its name and the error, in lower case:
+  "Library updated, 12 albums. Music: server not reachable." When every server fails it says
+  only the errors. (Counting books comes with phase 2.)
 - **Server books are in Library**, after the local books, with the value "on the
   server" (spoken after the title). They are never in Music. They open as books:
   chapters are the tracks, and the place is kept and resumed like a local book. A book that is
