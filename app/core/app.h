@@ -250,7 +250,7 @@ private:
         std::vector<QueueEntry> entries;
         std::string playedId; // Music: the index item Play now marks as played
     };
-    enum class QueueAction { PlayNow, PlayNext, AddToQueue };
+    enum class QueueAction { PlayNow, PlayNext, AddToQueue, Download };
     // What Options was pressed on. Local things and tracks the list already holds are Ready; an album,
     // playlist or artist of the server has to be loaded first.
     struct Pick {
@@ -285,6 +285,8 @@ private:
                               std::optional<RemoteSource> source, const std::string& artist, bool ofAlbum,
                               const std::string& albumId = {}) const;
     void choose(const Pick& pick, QueueAction action);
+    static RemoteSource sourceOf(const Pick& pick); // an album or playlist pick: the list it loads
+    bool offersDownload(const Pick& pick) const;     // a server album or playlist that is not whole on the device
     void requestNextAlbum();
     void onPickLoaded(std::uint64_t screen, MusicServer::Error error, std::vector<RemoteTrack> tracks);
     void onArtistAlbums(std::uint64_t screen, MusicServer::Error error, std::vector<RemoteAlbum> albums);
@@ -367,7 +369,8 @@ private:
     };
     bool canDownload() const; // a cache folder, a server and a downloader that works
     void startDownload(const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
-                       const RemoteSource& source);
+                       const RemoteSource& source, const std::function<void()>& started = {}); // `started`: once the job is going
+    void sayDownloadBusy(const RemoteSource& source);
     void fetchNextTrack();
     void onTrackDownloaded(Downloader::Result result);
     void deleteDropped(const RemoteSource& source, const std::vector<CachedTrack>& dropped); // their files, after the manifest was saved

@@ -1836,7 +1836,17 @@ namespace {
 constexpr const char* kPlayNow = "Play now";
 constexpr const char* kPlayNext = "Play next";
 constexpr const char* kAddToQueue = "Add to queue";
+constexpr const char* kDownloadAlbum = "Download album";
+constexpr const char* kDownloadPlaylist = "Download playlist";
 
+bool sameList(const RemoteSource& a, const RemoteSource& b) { return a.kind == b.kind && a.id == b.id; }
+
+// A list the user downloaded whole: every manifest track pinned and complete on disk (`onDisk` are the
+// complete ones). It plays from the disk at once, with no question to the server.
+bool isWholeDownload(const CachedList& list, const std::vector<RemoteTrack>& onDisk) {
+    return !list.tracks.empty() && onDisk.size() == list.tracks.size() &&
+           std::all_of(list.tracks.begin(), list.tracks.end(), [](const CachedTrack& t) { return t.pinned; });
+}
 // "Weather, 12 tracks": a single track is named alone.
 std::string selectionText(const std::string& title, size_t tracks) {
     return tracks == 1 ? title : title + ", " + countValue(tracks, "track");
@@ -1918,9 +1928,28 @@ std::vector<MenuItem> App::optionsMenu(const Pick& pick) {
         action(kPlayNext, [this, pick] { choose(pick, QueueAction::PlayNext); }),
         action(kAddToQueue, [this, pick] { choose(pick, QueueAction::AddToQueue); }),
     };
+    if (offersDownload(pick))
+        items.push_back(action(pick.kind == Pick::Kind::Album ? kDownloadAlbum : kDownloadPlaylist,
+                               [this, pick] { choose(pick, QueueAction::Download); }));
     // An album also says where it plays from; that only reports, so the Options screen stays.
     if (!pick.info.empty()) items.push_back(action("Album info", [this, info = pick.info] { say(info); }));
     return items;
+}
+
+RemoteSource App::sourceOf(const Pick& pick) {
+    return {pick.kind == Pick::Kind::Album ? RemoteSource::Kind::Album : RemoteSource::Kind::Playlist, pick.id};
+}
+
+// Download is offered for an album or playlist of the server where downloads work, unless it is already
+// whole on the device (every track pinned and complete: nothing is left to fetch).
+bool App::offersDownload(const Pick& pick) const {
+    if (pick.kind != Pick::Kind::Album && pick.kind != Pick::Kind::Playlist) return false;
+    if (!canDownload()) return false;
+    const TrackCache& store = trackCache();
+    const RemoteSource source = sourceOf(pick);
+    if (download_ && sameList(download_->source, source)) return true; // its manifest holds only what has arrived
+    const CachedList cached = store.load(source);
+    return !isWholeDownload(cached, completeTracks(store, source, cached));
 }
 
 // One track of a local list, alone. The queue is called after the track, as a loose track is.
@@ -1972,6 +2001,10 @@ void App::choose(const Pick& pick, QueueAction action) {
     cancelLoading(); // pressed again while it loads
     if (pick.kind == Pick::Kind::Ready) {
         perform(pick.make(), action);
+        return;
+    }
+    if (action == QueueAction::Download && download_) { // nothing to load: the progress, or the refusal
+        sayDownloadBusy(sourceOf(pick));
         return;
     }
     const std::uint64_t screen = screens_.back().id;
@@ -2035,6 +2068,20 @@ void App::onPickLoaded(std::uint64_t screen, MusicServer::Error error, std::vect
     if (error != MusicServer::Error::None) return failLoading(error);
     const Loading done = std::exchange(loading_, Loading{});
     const Pick& pick = done.pick;
+    if (done.action == QueueAction::Download) {
+        tts_.stop(); // "Loading." is over
+        if (tracks.empty()) { // stay on the Options, as perform() does
+            earcons_.play(Earcon::Error);
+            say(pick.title + " has no tracks.");
+            return;
+        }
+        // The Options screen goes away only once the download starts; a refusal is spoken on it.
+        startDownload(pick.title, pick.artist, tracks, sourceOf(pick), [this] {
+            popScreen();
+            earcons_.play(Earcon::Close);
+        });
+        return;
+    }
     Selection selection;
     switch (pick.kind) {
     case Pick::Kind::Album:
@@ -2143,14 +2190,6 @@ std::string downloadedName(const CachedList& list) {
     return list.source.kind == RemoteSource::Kind::Album ? "Album" : "Playlist";
 }
 
-bool sameList(const RemoteSource& a, const RemoteSource& b) { return a.kind == b.kind && a.id == b.id; }
-
-// A list the user downloaded whole: every manifest track pinned and complete on disk (`onDisk` are the
-// complete ones). It plays from the disk at once, with no question to the server.
-bool isWholeDownload(const CachedList& list, const std::vector<RemoteTrack>& onDisk) {
-    return !list.tracks.empty() && onDisk.size() == list.tracks.size() &&
-           std::all_of(list.tracks.begin(), list.tracks.end(), [](const CachedTrack& t) { return t.pinned; });
-}
 } // namespace
 
 // The tracks of `list` whose files are whole on disk, in manifest order.
@@ -4118,14 +4157,18 @@ bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, co
     return true;
 }
 
+// A download runs: for the same list it says how far it is, for another it refuses.
+void App::sayDownloadBusy(const RemoteSource& source) {
+    say(sameList(download_->source, source) ? downloadProgress() + "." : "Another download is running.");
+}
+
 // OK on a Download item. While that list downloads it says how far it is. A
 // download that failed has been dropped, so OK goes on with what is missing:
 // tracks already whole are skipped and the .part of the failed one continues.
 void App::startDownload(const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
-                        const RemoteSource& source) {
+                        const RemoteSource& source, const std::function<void()>& started) {
     if (download_) {
-        if (sameList(download_->source, source)) say(downloadProgress() + ".");
-        else say("Another download is running.");
+        sayDownloadBusy(source);
         return;
     }
     const TrackCache& store = trackCache();
@@ -4177,6 +4220,7 @@ void App::startDownload(const std::string& title, const std::string& artist, con
     }
     pauseAutoCache(); // an explicit download goes first
     download_ = std::move(job);
+    if (started) started(); // before the words: the screen it leaves would speak over them
     say(downloadProgress() + ".");
     fetchNextTrack();
 }

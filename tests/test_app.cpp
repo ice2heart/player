@@ -5116,6 +5116,178 @@ static std::vector<std::string> idsOf(const std::vector<CachedTrack>& tracks) {
     return ids;
 }
 
+// ---- Download in Options (fixes.md 2.6)
+
+class DownloadOptionsTest : public DownloadTest {
+protected:
+    // Streaming > Recently added with Weather and Rain Songs, on Weather; Options of it is open.
+    void openAlbumOptions(bool running = false) {
+        if (running) { // the App already runs: from Home
+            open("Server");
+            open("Recently added");
+        } else {
+            openList("Recently added");
+        }
+        answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}, {"al2", "Rain Songs", "Band", 3}});
+        press(Button::Options);
+        ASSERT_EQ(level().title, "Options, Weather");
+    }
+    // The same on the second album.
+    void openSecondAlbumOptions(bool running = false) {
+        if (running) {
+            open("Server");
+            open("Recently added");
+        } else {
+            openList("Recently added");
+        }
+        answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}, {"al2", "Rain Songs", "Band", 3}});
+        press(Button::Down);
+        press(Button::Options);
+        ASSERT_EQ(level().title, "Options, Rain Songs");
+    }
+    // Home > Music > Playlists > Road, Options open.
+    void openPlaylistOptions() {
+        indexPlaylist("p1", "Road", 3);
+        start();
+        open("Music");
+        open("Playlists");
+        press(Button::Options);
+        ASSERT_EQ(level().title, "Options, Road");
+    }
+};
+
+TEST_F(DownloadOptionsTest, TheOptionsOfAServerAlbumAndPlaylistOfferDownloadAfterAddToQueue) {
+    openAlbumOptions();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play now", "Play next", "Add to queue", "Download album"}));
+    app.reset();
+    openPlaylistOptions();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play now", "Play next", "Add to queue", "Download playlist"}));
+}
+
+TEST_F(DownloadOptionsTest, NoDownloadInOptionsWithoutACacheFolder) {
+    cache.clear();
+    openAlbumOptions();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play now", "Play next", "Add to queue"}));
+    app.reset();
+    openPlaylistOptions();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play now", "Play next", "Add to queue"}));
+}
+
+TEST_F(DownloadOptionsTest, AnAlbumWholeOnTheDeviceHasNoDownloadInOptions) {
+    openAlbum();
+    startDownload();
+    finishLast();
+    finishLast();
+    finishLast();
+    ASSERT_EQ(speech.last(), "Download finished, Weather.");
+    hold(Button::Home);
+    openAlbumOptions(true);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play now", "Play next", "Add to queue"}));
+    hold(Button::Home);
+    openSecondAlbumOptions(true);
+    EXPECT_EQ(labels().back(), "Download album") << "another album still has it";
+}
+
+TEST_F(DownloadOptionsTest, OkLoadsTheTracksThenStartsTheDownloadAndGoesBack) {
+    openAlbumOptions();
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Loading.");
+    EXPECT_EQ(level().title, "Options, Weather") << "waits on the Options screen";
+    EXPECT_EQ(server.lastRequest().kind, Kind::AlbumTracks);
+    EXPECT_EQ(server.lastRequest().arg, "al1");
+    EXPECT_TRUE(downloader.requests.empty());
+    answer(sized());
+    EXPECT_EQ(speech.last(), "Downloading, 0 of 3 tracks.");
+    EXPECT_EQ(level().title, "Recently added");
+    EXPECT_EQ(trackIdsRequested(), (std::vector<std::string>{"t1"}));
+    EXPECT_EQ(downloader.lastRequest().dest, (store().listFolder(albumSource("al1")) / "t1.flac").string());
+    finishLast();
+    finishLast();
+    finishLast();
+    EXPECT_EQ(trackIdsRequested(), (std::vector<std::string>{"t1", "t2", "t3"}));
+    EXPECT_EQ(speech.last(), "Download finished, Weather.");
+}
+
+TEST_F(DownloadOptionsTest, OkOnAPlaylistDownloadsIt) {
+    openPlaylistOptions();
+    open("Download playlist");
+    EXPECT_EQ(speech.last(), "Loading.");
+    EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+    EXPECT_EQ(server.lastRequest().arg, "p1");
+    answer(sized());
+    EXPECT_EQ(speech.last(), "Downloading, 0 of 3 tracks.");
+    EXPECT_EQ(level().title, "Playlists");
+    EXPECT_EQ(trackIdsRequested(), (std::vector<std::string>{"t1"}));
+    EXPECT_EQ(downloader.lastRequest().dest, (store().listFolder({RemoteSource::Kind::Playlist, "p1"}) / "t1.flac").string());
+}
+
+TEST_F(DownloadOptionsTest, ALoadThatFailsSpeaksTheErrorStaysInOptionsAndDownloadsNothing) {
+    openAlbumOptions();
+    open("Download album");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(level().title, "Options, Weather");
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(DownloadOptionsTest, AnAlbumWithNoTracksSaysSoStaysInOptionsAndDownloadsNothing) {
+    openAlbumOptions();
+    open("Download album");
+    answer(std::vector<RemoteTrack>{});
+    EXPECT_EQ(speech.last(), "Weather has no tracks.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(level().title, "Options, Weather");
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(DownloadOptionsTest, ARefusedDownloadIsSpokenOnTheOptionsAndTheyStay) {
+    seedWeather(store(), {{"t1", false}, {"t2", false}, {"t3", false}}); // all there, kept by the cache, not downloaded
+    openAlbumOptions();
+    EXPECT_EQ(labels().back(), "Download album") << "not a download of the user's: still offered";
+    open("Download album");
+    answer(sized());
+    EXPECT_EQ(speech.last(), "Already downloaded.");
+    EXPECT_EQ(level().title, "Options, Weather");
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(DownloadOptionsTest, LeavingOptionsWhileLoadingCancelsTheDownload) {
+    openAlbumOptions();
+    open("Download album");
+    const auto id = server.lastRequest().id;
+    press(Button::Home);
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), id), server.cancelled.end());
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(DownloadOptionsTest, WhileADownloadRunsOkOnTheSameAlbumGivesTheProgressWithoutLoading) {
+    openAlbum();
+    startDownload();
+    finishLast();
+    hold(Button::Home);
+    openAlbumOptions(true);
+    const size_t asked = server.requests.size();
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Downloading, 1 of 3 tracks.");
+    EXPECT_EQ(server.requests.size(), asked) << "no request";
+    EXPECT_EQ(downloader.requests.size(), 2u) << "no second job";
+    EXPECT_EQ(level().title, "Options, Weather");
+}
+
+TEST_F(DownloadOptionsTest, WhileADownloadRunsAnotherAlbumSaysSoWithoutLoading) {
+    openAlbum();
+    startDownload();
+    hold(Button::Home);
+    openSecondAlbumOptions(true);
+    const size_t asked = server.requests.size();
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Another download is running.");
+    EXPECT_EQ(server.requests.size(), asked) << "no request";
+    EXPECT_EQ(downloader.requests.size(), 1u);
+}
+
 TEST_F(DownloadTest, TheManifestFollowsTheServersOrderWhenTheListIsDownloadedAgain) {
     seedWeather(store(), {{"t3", true}, {"t1", true}}); // an earlier download, when the list was ordered otherwise
     openAlbum();
