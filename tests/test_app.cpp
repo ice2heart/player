@@ -3687,30 +3687,6 @@ TEST_F(TwoServersTest, EachEntryOpensTheStreamingMenuOfItsServer) {
     EXPECT_EQ(level().title, "Audiobooks");
 }
 
-TEST_F(TwoServersTest, TheOptionsOfASecondServersAlbumOfferNoDownloadUntilDownloadsArePerServer) {
-    cache = base / "cache";
-    start();
-    open("Audiobooks");
-    open("Recently added");
-    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 1}}, false));
-    app->tick();
-    press(Button::Options);
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play now", "Play next", "Add to queue"})) << "a download would use the first server";
-}
-
-TEST_F(TwoServersTest, ASecondServersAlbumPageOffersNoDownload) {
-    cache = base / "cache";
-    start();
-    open("Audiobooks");
-    open("Recently added");
-    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 1}}, false));
-    app->tick();
-    open("Dune");
-    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteTrack>{{"c1", "Part one", "Herbert", "Dune", 300, 1}}, false));
-    app->tick();
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play album", "Part one"}));
-}
-
 TEST_F(TwoServersTest, RecentlyAddedOnTheSecondServerAsksOnlyTheSecond) {
     start();
     const size_t asked = server.requests.size(); // the catalogue sync of the first
@@ -5640,7 +5616,7 @@ protected:
     }
 };
 
-TEST_F(DownloadTest, OnlyTheFirstServersDownloaderIsUsed) {
+TEST_F(DownloadTest, ADownloadOfTheFirstServerLeavesTheSecondsDownloaderAlone) {
     FakeMusicServer second;
     FakeDownloader secondDownloader;
     moreLinks.push_back(ServerLink{ServerConfig{}, "other-1", "Server 2", second, secondDownloader});
@@ -6457,8 +6433,9 @@ protected:
     }
 };
 
-// The cache is the first server's until step 1.6: a second server shows none of it and does not play from it.
-TEST_F(DownloadedTest, ASecondServerHasNoDownloadedAndAsksItsServerForAnAlbumTheFirstHasDownloaded) {
+// Each server has its own cache folder: a second server shows none of the first one's downloads and does not
+// play from them, even for an album with the same id.
+TEST_F(DownloadedTest, ASecondServerShowsNoneOfTheFirstServersDownloadsAndAsksItsServerForAnAlbumWithTheSameId) {
     FakeMusicServer second;
     FakeDownloader secondDownloader;
     ServerConfig config;
@@ -6469,7 +6446,11 @@ TEST_F(DownloadedTest, ASecondServerHasNoDownloadedAndAsksItsServerForAnAlbumThe
     start();
     open("Audiobooks");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Random albums",
-                                                  "Server status"}));
+                                                  "Downloaded", "Server status"}));
+    open("Downloaded");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No downloads"}));
+    hold(Button::Home);
+    open("Audiobooks");
     open("Recently added");
     ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"al1", "Weather", "Other", 3}}, false));
     app->tick();
@@ -14137,4 +14118,527 @@ TEST_F(TwoServerPlayTest, AServerThatCannotBeReachedDoesNotHoldBackTheScrobblesO
     const auto kept = parseScrobbles(diskFiles().read(scrobbleFile).value_or(""));
     ASSERT_EQ(kept.size(), 1u);
     EXPECT_EQ(kept[0].trackId, "t8") << "the unreachable server's entry stays for later";
+}
+
+// ---------------------------------------------------------------- downloads of each server
+
+// Two servers: the fixture's `server` ("Server", music.example, user bob) and `second` ("Audiobooks", books.example,
+// user ben), each with its own downloader and its own cache folder.
+class TwoServerDownloadTest : public DownloadedTest {
+protected:
+    void SetUp() override {
+        DownloadedTest::SetUp();
+        second.streamHost = "books";
+        ServerConfig config;
+        config.name = "Audiobooks";
+        config.url = "https://books.example";
+        config.user = "ben";
+        moreLinks.push_back(ServerLink{config, TrackCache::serverKey(config.url, config.user), "Audiobooks", second, secondDownloader});
+    }
+    FakeMusicServer second;
+    FakeDownloader secondDownloader;
+    TrackCache secondStore() const { return TrackCache(diskFiles(), cache, "https://books.example", "ben"); }
+    // Home > Audiobooks > Recently added > <name> (album `id`), on its first item.
+    void openSecondAlbum(const std::string& id, const std::string& name, std::vector<RemoteTrack> tracks = sized()) {
+        start();
+        open("Audiobooks");
+        open("Recently added");
+        ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{id, name, "Herbert", int(tracks.size())}}, false));
+        app->tick();
+        open(name);
+        ASSERT_TRUE(second.reply(second.lastRequest().id, std::move(tracks), false));
+        app->tick();
+    }
+    void finishSecond() {
+        ASSERT_TRUE(secondDownloader.finish(secondDownloader.lastRequest().id, Result::Ok, true));
+        app->tick();
+    }
+    // Home > <link> > Downloaded
+    void openDownloadedOf(const std::string& link) {
+        if (level().title != "Home") hold(Button::Home);
+        open(link);
+        open("Downloaded");
+    }
+    // Home > `link` > Downloaded > `list` > Delete download > Yes, delete
+    void deleteDownloadOf(const std::string& link, const std::string& list) {
+        openDownloadedOf(link);
+        open(list);
+        open("Delete download");
+        open("Yes, delete");
+    }
+    // The first server's Weather and the second's Dune, both as album "al1".
+    void seedBoth() {
+        seed(albumSource("al1"), "Weather", "Band", {{"t1", "Storm Front"}, {"t2", "Rain"}, {"t3", "Sunshine"}});
+        seed(albumSource("al1"), "Dune", "Herbert", {{"t1", "Part one"}, {"t2", "Part two"}}, secondStore());
+    }
+    std::string secondFile(const RemoteSource& source, const std::string& id) const {
+        return (secondStore().listFolder(source) / (id + ".mp3")).string();
+    }
+};
+
+TEST_F(TwoServerDownloadTest, DownloadingAnAlbumOnTheSecondServerCallsOnlyItsDownloaderAndWritesUnderItsKey) {
+    ASSERT_NO_FATAL_FAILURE(openSecondAlbum("b1", "Dune"));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play album", "Download album", "Storm Front", "Rain", "Sunshine"}));
+    open("Download album");
+    EXPECT_TRUE(downloader.requests.empty()) << "not the first server's";
+    ASSERT_EQ(secondDownloader.requests.size(), 1u);
+    EXPECT_EQ(secondDownloader.lastRequest().trackId, "t1");
+    EXPECT_EQ(secondDownloader.lastRequest().dest, (secondStore().listFolder(albumSource("b1")) / "t1.flac").string());
+    EXPECT_NE(secondDownloader.lastRequest().dest.find(TrackCache::serverKey("https://books.example", "ben")), std::string::npos);
+    finishSecond();
+    ASSERT_EQ(secondDownloader.requests.size(), 2u) << "the next track goes to the same downloader";
+    finishSecond();
+    finishSecond();
+    EXPECT_TRUE(downloader.requests.empty());
+    CachedList list = secondStore().load(albumSource("b1"));
+    EXPECT_EQ(list.name, "Dune");
+    ASSERT_EQ(list.tracks.size(), 3u);
+    EXPECT_TRUE(list.tracks[0].pinned);
+    for (const CachedTrack& t : list.tracks) EXPECT_EQ(t.changed, "") << "the download is marked whole in its own manifest";
+    EXPECT_TRUE(store().lists(false).empty()) << "nothing under the first server's key";
+    EXPECT_FALSE(fs::exists(store().listFolder(albumSource("b1"))));
+    EXPECT_EQ(speech.last(), "Download finished, Dune.");
+}
+
+TEST_F(TwoServerDownloadTest, ASecondServersAlbumOffersDownloadInItsOptionsToo) {
+    start();
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 3}}, false));
+    app->tick();
+    press(Button::Options);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play now", "Play next", "Add to queue", "Download album"}));
+    open("Download album");
+    EXPECT_EQ(second.lastRequest().kind, Kind::AlbumTracks);
+    ASSERT_TRUE(second.reply(second.lastRequest().id, sized(), false));
+    app->tick();
+    ASSERT_EQ(secondDownloader.requests.size(), 1u);
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(TwoServerDownloadTest, ASecondServerWithoutADownloaderOffersNoDownload) {
+    secondDownloader.isConfigured = false;
+    ASSERT_NO_FATAL_FAILURE(openSecondAlbum("b1", "Dune"));
+    EXPECT_EQ(labels().at(1), "Storm Front");
+}
+
+TEST_F(TwoServerDownloadTest, EachServersDownloadedListsItsOwnDownloads) {
+    seed(albumSource("al1"), "Weather", "Band", {{"t1", "Storm Front"}});
+    seed(albumSource("b1"), "Dune", "Herbert", {{"t1", "Part one"}}, secondStore());
+    start();
+    openDownloadedOf("Server");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Weather"}));
+    openDownloadedOf("Audiobooks");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Dune"}));
+}
+
+TEST_F(TwoServerDownloadTest, ADownloadedListOfTheSecondServerPlaysFromItsFolder) {
+    seedBoth();
+    start();
+    openDownloadedOf("Audiobooks");
+    open("Dune");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play album", "Delete download", "Part one", "Part two"}));
+    open("Part two");
+    EXPECT_EQ(player.file, secondFile(albumSource("al1"), "t2")) << "not the first server's t2";
+    EXPECT_TRUE(second.requests.empty() || second.lastRequest().kind != Kind::AlbumTracks);
+}
+
+TEST_F(TwoServerDownloadTest, AnAlbumDownloadedWholeOnTheSecondServerPlaysFromItsFilesWithoutAskingTheServer) {
+    seedBoth();
+    start();
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"al1", "Dune", "Herbert", 2}}, false));
+    app->tick();
+    const size_t asked = second.requests.size();
+    press(Button::Options);
+    open("Play now");
+    EXPECT_EQ(second.requests.size(), asked);
+    EXPECT_EQ(player.file, secondFile(albumSource("al1"), "t1"));
+}
+
+TEST_F(TwoServerDownloadTest, AListThatFailedOnASecondServerOffersItsOwnDownloaded) {
+    seed(albumSource("b1"), "Dune", "Herbert", {{"t1", "Part one"}}, secondStore());
+    start();
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.fail(second.lastRequest().id, MusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again", "Downloaded"}));
+    open("Downloaded");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Dune"}));
+}
+
+TEST_F(TwoServerDownloadTest, StartingADownloadOnTheSecondServerWhileTheFirstDownloadsSaysAnotherIsRunning) {
+    start();
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(sized());
+    startDownload();
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    hold(Button::Home);
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"al1", "Dune", "Herbert", 3}}, false));
+    app->tick();
+    open("Dune");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, sized(), false));
+    app->tick();
+    // The same id on the other server is another list: not the progress of the one that runs.
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Another download is running.");
+    EXPECT_TRUE(secondDownloader.requests.empty());
+    EXPECT_EQ(downloader.requests.size(), 1u);
+}
+
+TEST_F(TwoServerDownloadTest, DownloadFromTheOptionsOfTheFirstServerWhileTheSecondDownloadsSaysAnotherIsRunning) {
+    ASSERT_NO_FATAL_FAILURE(openSecondAlbum("al1", "Dune"));
+    open("Download album");
+    ASSERT_EQ(secondDownloader.requests.size(), 1u);
+    hold(Button::Home);
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    press(Button::Options);
+    EXPECT_EQ(labels().back(), "Download album") << "offered: the album that downloads is the other server's";
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Another download is running.");
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(TwoServerDownloadTest, TheSameAlbumIdOnTheOtherServerIsNotWholeBecauseTheFirstOneIsDownloaded) {
+    seed(albumSource("al1"), "Weather", "Band", {{"t1", "Storm Front"}, {"t2", "Rain"}, {"t3", "Sunshine"}});
+    start();
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"al1", "Dune", "Herbert", 3}}, false));
+    app->tick();
+    press(Button::Options);
+    EXPECT_EQ(labels().back(), "Download album") << "the first server's download of al1 is not this one";
+}
+
+TEST_F(TwoServerDownloadTest, DeletingADownloadOfTheSecondServerLeavesTheFirstServersListWithTheSameId) {
+    seedBoth();
+    start();
+    ASSERT_NO_FATAL_FAILURE(deleteDownloadOf("Audiobooks", "Dune"));
+    EXPECT_EQ(speech.last().rfind("Deleted Dune.", 0), 0u) << speech.last();
+    EXPECT_TRUE(secondStore().load(albumSource("al1")).tracks.empty());
+    EXPECT_EQ(store().load(albumSource("al1")).tracks.size(), 3u);
+    EXPECT_TRUE(fs::exists(fileOf(albumSource("al1"), "t1")));
+}
+
+TEST_F(TwoServerDownloadTest, DeletingTheRunningDownloadOfTheSecondServerCancelsItOnItsDownloader) {
+    ASSERT_NO_FATAL_FAILURE(openSecondAlbum("b1", "Dune"));
+    open("Download album");
+    const auto id = secondDownloader.lastRequest().id;
+    finishSecond(); // t1 is in, t2 is fetched
+    const auto running = secondDownloader.lastRequest().id;
+    ASSERT_NE(id, running);
+    ASSERT_NO_FATAL_FAILURE(deleteDownloadOf("Audiobooks", "Dune"));
+    EXPECT_EQ(secondDownloader.cancelled, (std::vector<Downloader::RequestId>{running}));
+    EXPECT_TRUE(downloader.cancelled.empty());
+    EXPECT_FALSE(fs::exists(secondStore().listFolder(albumSource("b1"))));
+}
+
+TEST_F(TwoServerDownloadTest, DeletingTheFirstServersListLeavesTheSecondServersDownloadOfTheSameIdRunning) {
+    seed(albumSource("al1"), "Weather", "Band", {{"t1", "Storm Front"}});
+    ASSERT_NO_FATAL_FAILURE(openSecondAlbum("al1", "Dune"));
+    open("Download album");
+    ASSERT_EQ(secondDownloader.requests.size(), 1u);
+    ASSERT_NO_FATAL_FAILURE(deleteDownloadOf("Server", "Weather"));
+    EXPECT_TRUE(secondDownloader.cancelled.empty()) << "the download that runs is of the other server";
+    finishSecond();
+    EXPECT_EQ(secondDownloader.requests.size(), 2u);
+}
+
+TEST_F(TwoServerDownloadTest, AListPlayingFromTheFirstServerDoesNotBlockDeletingTheSecondServersListWithTheSameId) {
+    seedBoth();
+    start();
+    openDownloadedOf("Server");
+    open("Weather");
+    open("Storm Front");
+    ASSERT_TRUE(player.playing());
+    ASSERT_NO_FATAL_FAILURE(deleteDownloadOf("Audiobooks", "Dune"));
+    EXPECT_TRUE(secondStore().load(albumSource("al1")).tracks.empty());
+}
+
+TEST_F(TwoServerDownloadTest, AListPlayingFromTheSecondServerBlocksDeletingItsDownloadButNotTheFirstServersOfTheSameId) {
+    seedBoth();
+    start();
+    openDownloadedOf("Audiobooks");
+    open("Dune");
+    open("Part one");
+    ASSERT_TRUE(player.playing());
+    ASSERT_NO_FATAL_FAILURE(deleteDownloadOf("Audiobooks", "Dune"));
+    EXPECT_EQ(speech.last(), "Cannot delete Dune while it is loaded in the player. Play something else first.");
+    EXPECT_EQ(secondStore().load(albumSource("al1")).tracks.size(), 2u);
+    ASSERT_NO_FATAL_FAILURE(deleteDownloadOf("Server", "Weather"));
+    EXPECT_TRUE(store().load(albumSource("al1")).tracks.empty());
+}
+
+TEST_F(TwoServerDownloadTest, DeletingTheSecondServersListLeavesTheFirstServersAutomaticTransferOfTheSameIdRunning) {
+    clock.setWallTime(1'800'000'000);
+    seed(albumSource("al1"), "Dune", "Herbert", {{"t1", "Part one"}}, secondStore());
+    start();
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    for (int i = 0; i < 11; ++i) idle(1s);
+    ASSERT_EQ(downloader.requests.size(), 1u) << "the track is being cached on the first server";
+    hold(Button::Forward);
+    for (int i = 0; i < 11; ++i) idle(1s); // Rain waits behind Storm Front
+    ASSERT_NO_FATAL_FAILURE(deleteDownloadOf("Audiobooks", "Dune"));
+    EXPECT_TRUE(downloader.cancelled.empty());
+    ASSERT_TRUE(downloader.finish(downloader.requests.front().id, Result::Ok, true));
+    app->tick();
+    ASSERT_EQ(downloader.requests.size(), 2u) << "Rain is still fetched";
+    EXPECT_EQ(downloader.lastRequest().trackId, "t2");
+}
+
+TEST_F(TwoServerDownloadTest, ADownloadDeletedOnTheSecondServerIsStreamedAgainAfterItsFilesWereIndexed) {
+    seed(albumSource("b1"), "Dune", "Herbert", {{"t1", "Part one"}, {"t2", "Part two"}}, secondStore());
+    start();
+    ASSERT_TRUE(app->playRemote("Dune", sized(), 0, albumSource("b1"), 0, "Herbert", 1));
+    EXPECT_EQ(player.file, secondFile(albumSource("b1"), "t1")) << "from its file: the index of the second server is made";
+    ASSERT_TRUE(app->playRemote("Other", {{"o1", "One", "Duo", "Other", 100, 1, "mp3", 5}}, 0, albumSource("al2")));
+    ASSERT_NO_FATAL_FAILURE(deleteDownloadOf("Audiobooks", "Dune"));
+    ASSERT_TRUE(app->playRemote("Dune", sized(), 0, albumSource("b1"), 0, "Herbert", 1));
+    EXPECT_EQ(player.file, "fake://books/t1");
+    player.preloads.clear();
+    player.pos = player.length - 5;
+    app->tick();
+    EXPECT_EQ(player.preloads, (std::vector<std::string>{"fake://books/t2"})) << "t2 is not taken for a file: it is gone with the list";
+}
+
+TEST_F(TwoServerDownloadTest, ALastStreamOfTheSecondServerResumesFromItsServer) {
+    state.setString("last_player", "music");
+    state.setString("last_stream.server", "https://books.example");
+    state.setString("last_stream.user", "ben");
+    state.setString("last_stream.kind", "album");
+    state.setString("last_stream.id", "b1");
+    state.setString("last_stream.title", "Dune");
+    state.setString("last_stream.track", "1");
+    state.setString("last_stream.track_id", "t2");
+    state.setString("last_stream.pos", "42");
+    start();
+    const size_t asked = server.requests.size();
+    open("Now playing");
+    ASSERT_FALSE(second.requests.empty());
+    EXPECT_EQ(second.lastRequest().kind, Kind::AlbumTracks);
+    EXPECT_EQ(second.lastRequest().arg, "b1");
+    EXPECT_EQ(server.requests.size(), asked) << "the first server is not asked";
+    ASSERT_TRUE(second.reply(second.lastRequest().id, sized(), false));
+    app->tick();
+    EXPECT_EQ(player.file, "fake://books/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+}
+
+TEST_F(TwoServerDownloadTest, ALastStreamOfTheSecondServerPlaysFromItsDownloadWhenItIsWhole) {
+    state.setString("last_player", "music");
+    state.setString("last_stream.server", "https://books.example");
+    state.setString("last_stream.user", "ben");
+    state.setString("last_stream.kind", "album");
+    state.setString("last_stream.id", "al1");
+    state.setString("last_stream.title", "Dune");
+    state.setString("last_stream.track", "1");
+    state.setString("last_stream.track_id", "t2");
+    seedBoth();
+    start();
+    open("Now playing");
+    EXPECT_TRUE(second.requests.empty() || second.lastRequest().kind != Kind::AlbumTracks) << "no question to the server";
+    EXPECT_EQ(player.file, secondFile(albumSource("al1"), "t2"));
+}
+
+TEST_F(TwoServerDownloadTest, ALastStreamOfTheSecondServerDoesNotPlayFromTheFirstServersDownloadOfTheSameId) {
+    state.setString("last_player", "music");
+    state.setString("last_stream.server", "https://books.example");
+    state.setString("last_stream.user", "ben");
+    state.setString("last_stream.kind", "album");
+    state.setString("last_stream.id", "al1");
+    state.setString("last_stream.title", "Dune");
+    state.setString("last_stream.track", "1");
+    state.setString("last_stream.track_id", "t2");
+    seed(albumSource("al1"), "Weather", "Band", {{"t1", "Storm Front"}, {"t2", "Rain"}, {"t3", "Sunshine"}}); // the first server's
+    start();
+    open("Now playing");
+    ASSERT_FALSE(second.requests.empty());
+    EXPECT_EQ(second.lastRequest().kind, Kind::AlbumTracks) << "the first server's files are not this list";
+    EXPECT_TRUE(player.opened.empty());
+}
+
+TEST_F(TwoServerDownloadTest, ALastStreamOfAnotherUserOnTheSameServerIsNotResumed) {
+    state.setString("last_player", "music");
+    state.setString("last_stream.server", "https://books.example");
+    state.setString("last_stream.user", "someone-else");
+    state.setString("last_stream.kind", "album");
+    state.setString("last_stream.id", "b1");
+    state.setString("last_stream.title", "Dune");
+    start();
+    EXPECT_NE(labels().front(), "Now playing");
+}
+
+TEST_F(TwoServerDownloadTest, LeavingTheScreenCancelsTheResumeOnTheSecondServer) {
+    state.setString("last_player", "music");
+    state.setString("last_stream.server", "https://books.example");
+    state.setString("last_stream.user", "ben");
+    state.setString("last_stream.kind", "album");
+    state.setString("last_stream.id", "b1");
+    state.setString("last_stream.title", "Dune");
+    start();
+    open("Now playing");
+    const auto id = second.lastRequest().id;
+    press(Button::Down); // a new screen or a move: the request is dropped
+    open("Library");
+    EXPECT_NE(std::find(second.cancelled.begin(), second.cancelled.end(), id), second.cancelled.end());
+    EXPECT_TRUE(server.cancelled.empty());
+}
+
+TEST_F(TwoServerDownloadTest, ALastStreamOfAServerThatIsNotSetUpIsNotResumed) {
+    state.setString("last_player", "music");
+    state.setString("last_stream.server", "https://gone.example");
+    state.setString("last_stream.user", "ben");
+    state.setString("last_stream.kind", "album");
+    state.setString("last_stream.id", "b1");
+    state.setString("last_stream.title", "Dune");
+    start();
+    EXPECT_NE(labels().front(), "Now playing");
+}
+
+TEST_F(TwoServerDownloadTest, ALinkWithNoCacheOfItsOwnHasNoDownloadedWhileTheFirstServerHasOne) {
+    moreLinks.clear();
+    moreLinks.push_back(ServerLink{ServerConfig{}, "other-1", "Server 2", second, secondDownloader}); // no url: its cache stores nothing
+    start();
+    open("Server 2");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Random albums", "Server status"}));
+    hold(Button::Home);
+    open("Server");
+    EXPECT_EQ(labels().at(4), "Downloaded");
+}
+
+TEST_F(TwoServerDownloadTest, TheOptionsOfASecondServersAlbumOfferNoDownloadWithoutItsDownloader) {
+    secondDownloader.isConfigured = false;
+    start();
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 3}}, false));
+    app->tick();
+    press(Button::Options);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play now", "Play next", "Add to queue"}));
+}
+
+// The first server's al1 downloads; the second's al1 is another list, here whole on the disk.
+TEST_F(TwoServerDownloadTest, TheSameIdAsTheRunningDownloadOnTheOtherServerIsAnotherListInTheOptions) {
+    seed(albumSource("al1"), "Dune", "Herbert", {{"t1", "Part one"}}, secondStore());
+    start();
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(sized());
+    startDownload();
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    hold(Button::Home);
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"al1", "Dune", "Herbert", 1}}, false));
+    app->tick();
+    press(Button::Options);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play now", "Play next", "Add to queue"})) << "whole on the second server: nothing to download";
+}
+
+TEST_F(TwoServerDownloadTest, ADownloadFromTheOptionsOfTheSecondServerWhileTheFirstDownloadsTheSameIdSaysAnotherIsRunning) {
+    start();
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    open("Weather");
+    answer(sized());
+    startDownload();
+    hold(Button::Home);
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"al1", "Dune", "Herbert", 3}}, false));
+    app->tick();
+    press(Button::Options);
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Another download is running.") << "not the progress of the first server's al1";
+    EXPECT_TRUE(second.requests.size() == 1u) << "nothing is loaded for it";
+    EXPECT_TRUE(secondDownloader.requests.empty());
+}
+
+TEST_F(TwoServerDownloadTest, ShutdownCancelsTheTransferOfTheSecondServerOnItsDownloader) {
+    ASSERT_NO_FATAL_FAILURE(openSecondAlbum("b1", "Dune"));
+    open("Download album");
+    const auto id = secondDownloader.lastRequest().id;
+    app->shutdown();
+    EXPECT_EQ(secondDownloader.cancelled, (std::vector<Downloader::RequestId>{id}));
+    EXPECT_TRUE(downloader.cancelled.empty());
+}
+
+TEST_F(TwoServerDownloadTest, ThePartOfAFailedDownloadOfTheSecondServerIsKeptForTheNextTry) {
+    ASSERT_NO_FATAL_FAILURE(openSecondAlbum("b1", "Dune"));
+    app->setCacheGigabyte(5);
+    open("Download album");
+    ASSERT_TRUE(secondDownloader.finish(secondDownloader.lastRequest().id, Result::Unreachable, true, "", "0123456789"));
+    app->tick();
+    const fs::path part = secondStore().listFolder(albumSource("b1")) / "t1.flac.part";
+    ASSERT_TRUE(fs::exists(part));
+    app->shutdown(); // 10 bytes with the part: over the limit of 5
+    EXPECT_TRUE(fs::exists(part)) << "OK on Download continues from it";
+}
+
+TEST_F(TwoServerDownloadTest, TheRestOfARunningDownloadOfTheSecondServerKeepsItsParts) {
+    ASSERT_NO_FATAL_FAILURE(openSecondAlbum("b1", "Dune"));
+    app->setCacheGigabyte(5);
+    open("Download album");
+    const fs::path folder = secondStore().listFolder(albumSource("b1"));
+    fs::create_directories(folder);
+    std::ofstream(folder / "t1.flac.part", std::ios::binary) << std::string(10, 'p');
+    std::ofstream(folder / "t2.mp3.part", std::ios::binary) << std::string(10, 'p');
+    app->shutdown(); // saves and trims before it cancels
+    EXPECT_TRUE(fs::exists(folder / "t1.flac.part"));
+    EXPECT_TRUE(fs::exists(folder / "t2.mp3.part"));
+}
+
+TEST_F(TwoServerDownloadTest, ATrackTheServerNoLongerListsIsDroppedFromTheSecondServersDownload) {
+    seed(albumSource("b1"), "Dune", "Herbert", {{"t1", "Part one"}, {"t2", "Part two"}, {"t3", "Part three"}}, secondStore());
+    ASSERT_TRUE(fs::exists(secondFile(albumSource("b1"), "t3")));
+    std::vector<RemoteTrack> now = {{"t1", "Part one", "Herbert", "Dune", 100, 1}, {"t2", "Part two", "Herbert", "Dune", 100, 2}};
+    ASSERT_NO_FATAL_FAILURE(openSecondAlbum("b1", "Dune", now));
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Already downloaded.");
+    EXPECT_FALSE(fs::exists(secondFile(albumSource("b1"), "t3"))) << "its file went from the second server's folder";
+    EXPECT_EQ(secondStore().load(albumSource("b1")).tracks.size(), 2u);
+}
+
+TEST_F(TwoServerDownloadTest, AFinishedFileOfTheSecondServerWhoseManifestCannotBeWrittenIsNotLeftUnlisted) {
+    ReadOnlyFiles readOnly;
+    textFiles = &readOnly;
+    ASSERT_NO_FATAL_FAILURE(openSecondAlbum("b1", "Dune"));
+    open("Download album");
+    const std::string dest = secondDownloader.lastRequest().dest;
+    finishSecond();
+    EXPECT_EQ(speech.last(), "Cannot download Storm Front. Cannot write the file.");
+    EXPECT_FALSE(fs::exists(dest));
+    app.reset(); // before readOnly goes
+}
+
+TEST_F(TwoServerDownloadTest, AListPlayingForAnotherUserOfTheSameUrlDoesNotBlockDeletingTheListOfTheSecondServer) {
+    FakeMusicServer third;
+    FakeDownloader thirdDownloader;
+    ServerConfig config;
+    config.name = "Carl";
+    config.url = "https://books.example"; // the second server's url, another user: another server, another cache folder
+    config.user = "carl";
+    moreLinks.push_back(ServerLink{config, TrackCache::serverKey(config.url, config.user), "Carl", third, thirdDownloader});
+    seedBoth();
+    seed(albumSource("al1"), "Emma", "Austen", {{"t1", "One"}, {"t2", "Two"}}, TrackCache(diskFiles(), cache, config.url, config.user));
+    start();
+    openDownloadedOf("Carl");
+    open("Emma");
+    open("One");
+    ASSERT_TRUE(player.playing());
+    ASSERT_NO_FATAL_FAILURE(deleteDownloadOf("Audiobooks", "Dune"));
+    EXPECT_TRUE(secondStore().load(albumSource("al1")).tracks.empty());
+    app.reset(); // before the fakes go
 }

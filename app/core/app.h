@@ -326,7 +326,7 @@ private:
     // `albumId`: the server album they are all of (`ofAlbum`); else each track names its own.
     std::vector<QueueEntry> remoteEntries(const std::string& title, const std::vector<RemoteTrack>& tracks, bool ofAlbum,
                                           const std::string& artist, const std::string& albumId = {}, size_t link = 0) const;
-    bool queuedFrom(const RemoteSource& source) const; // a track of that downloaded list is in the music queue
+    bool queuedFrom(const RemoteSource& source, size_t link) const; // a track of that downloaded list is in the music queue
 
     // Lists loaded from the server (docs/streaming.md). A list opens at once with
     // "Loading" and is filled when the answer comes. The answer finds its screen
@@ -373,6 +373,7 @@ private:
             RemoteTrack track;
             size_t number = 0; // its place in the list, from 1
         };
+        size_t link = 0; // the server it is fetched from and written for (servers_): one download runs at a time across all of them
         RemoteSource source;
         std::string title, artist; // of the list, kept in its manifest
         std::vector<std::string> order; // the ids of the list as the server has it, without repeats
@@ -382,28 +383,29 @@ private:
         size_t finished = 0;    // of those, whole in the cache
         Downloader::RequestId request = 0;
     };
-    bool canDownload() const; // a cache folder, a server and a downloader that works
-    void startDownload(const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
+    void startDownload(size_t link, const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
                        const RemoteSource& source, const std::function<void()>& started = {}); // `started`: once the job is going
-    void sayDownloadBusy(const RemoteSource& source);
+    void sayDownloadBusy(const RemoteSource& source, size_t link);
+    bool downloading(const RemoteSource& source, size_t link) const; // that list of that server is the download that runs
     void fetchNextTrack();
     void onTrackDownloaded(Downloader::Result result);
     void deleteDropped(const RemoteSource& source, const std::vector<CachedTrack>& dropped, size_t link); // their files, after the manifest was saved
     void failDownload(const RemoteTrack& track, size_t number, const std::string& reason);
     void finishDownload();
     std::string downloadProgress() const; // "Downloading, 3 of 9 tracks", empty when none runs
-    const TrackCache& trackCache() const { return trackCacheOf(0); } // the first server's: downloads use only it for now (step 1.6)
-    std::vector<MenuItem> downloadedMenu();                               // Streaming > Downloaded
-    std::vector<MenuItem> downloadedListMenu(const RemoteSource& source); // one downloaded album or playlist
+    const TrackCache& trackCache() const { return trackCacheOf(0); } // the first server's: only what is not per link yet uses it (Music's playlists and the catalogue, step 1.7; server books, phase 2)
+    std::vector<MenuItem> downloadedMenu(size_t link);                               // Streaming > Downloaded of servers_[link]
+    std::vector<MenuItem> downloadedListMenu(const RemoteSource& source, size_t link); // one downloaded album or playlist of that server
     static std::vector<RemoteTrack> completeTracks(const TrackCache& store, const RemoteSource& source, const CachedList& list);
-    bool hasDownloads() const; // some list has a complete pinned track (a download of the user's): the error lists offer Downloaded
-    void deleteDownload(const RemoteSource& source, const std::string& title);
+    bool hasDownloads(size_t link) const; // some list has a complete pinned track (a download of the user's): the error lists offer Downloaded
+    void deleteDownload(const RemoteSource& source, const std::string& title, size_t link);
     void checkServer(size_t link); // Server status of servers_[link]
 
     // The remote list that an older version kept in state.tsv `last_stream.*` (queue.tsv replaces it), to
-    // resume after a restart. Only for the server set up now (its url and user); none
+    // resume after a restart. Only for a server set up now (its url and user, found among the links); none
     // once a local book has been opened since, or when it is not readable.
     struct StreamPlace {
+        size_t link = 0; // the server it is of: the link whose url and user were saved
         RemoteSource source;
         std::string title; // of the album or playlist
         size_t track = 0;
@@ -539,11 +541,11 @@ private:
     void pumpAutoCache();        // tick(): starts the next queued track if nothing else downloads
     void cancelAutoRequest();    // autoRequest_, on the downloader of autoJob_'s server
     void pauseAutoCache();       // an explicit download starts: the running transfer waits
-    void dropAutoCache(const RemoteSource& list); // a list is deleted: nothing of it is fetched
+    void dropAutoCache(const RemoteSource& list, size_t link); // a list of that server is deleted: nothing of it is fetched
     void onAutoCached(Downloader::Result result);
     void trimCache(bool flushPlays); // evicts over the limit; flushPlays: the plays in memory to the manifests
     std::vector<std::filesystem::path> partsInUse() const; // .part files of the running and waiting transfers
-    std::string trackDestination(const RemoteSource& source, const RemoteTrack& track, size_t link) const; // where a track is downloaded to (downloads: link 0 until step 1.6)
+    std::string trackDestination(const RemoteSource& source, const RemoteTrack& track, size_t link) const; // where a track is downloaded to
     // A fetched track into its list's manifest and the index (shared by both kinds of download).
     struct ManifestUpdate {
         std::string title, artist;  // of the list
@@ -595,8 +597,8 @@ private:
     std::vector<ServerLink> servers_;
     ServerConfig serverConfig_; // of the first server: what it is called in saved state; empty with none
     std::string serverKey_;     // its key; empty with none
-    MusicServer& server_;       // the first server's: playing, downloads and the catalogue use only it for now
-    Downloader& downloader_;
+    MusicServer& server_;       // the first server's: the catalogue, Save as playlist and server books use only it for now
+    Downloader& downloader_;    // the first server's, or the stand-in: only for polling when there is no list; transfers go to servers_[link].downloader
     LibraryIndex index_;
     LibraryScanner& scanner_;
     LibraryScanner::RequestId scanRequest_ = 0; // 0: none running
@@ -640,6 +642,7 @@ private:
     size_t pingLink_ = 0;                             // the server it was asked of (servers_)
     std::uint64_t resumeScreen_ = 0;    // the Library screen a server book loads for (resume_), 0: none or not tied to a screen
     MusicServer::RequestId resume_ = 0; // resumeStream(): the list being loaded, 0 when none; a new screen cancels it
+    size_t resumeLink_ = 0;             // the server it was asked of (servers_)
     Loading loading_;
     Saving saving_;
     std::optional<Download> download_;

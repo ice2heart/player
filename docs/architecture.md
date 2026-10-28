@@ -597,7 +597,7 @@ Options in the music player (`playerOptionsMenu()`, "Options, <track>")
 └── Album info             (title, number of tracks, status)
 
 The Options of a server album or playlist (Music and Streaming) have Download album / Download playlist after
-Add to queue (`optionsMenu()`), where `offersDownload()`: `canDownload()` and the list is not already whole on the
+Add to queue (`optionsMenu()`), where `offersDownload()`: `canDownloadFrom(pick.link)` and the list is not already whole on the
 device (every manifest track pinned and complete, `isWholeDownload()`). `choose()` with `QueueAction::Download`
 loads the tracks ("Loading."), then `onPickLoaded()` calls `startDownload()` with a `started` callback that pops the
 Options screen and plays the close sound only once the download has started; a refusal is spoken on the Options.
@@ -633,11 +633,18 @@ the same track id on another server is not taken for the pre-opened one), `Track
 submission go to that server), `AutoCache::link` (its downloader, its cache folder `<cache>/<server key>/...`, its manifest), and the
 `LinkState` of each link (`links_`): marked-down state with its ping schedule, `AheadMemo`, the play times for the cache, the
 cache byte count, the `TrackCache` and its index (`trackCacheOf(link)`, `cachedFile(link, id)`; the same track id on two servers
-is two tracks). `trimCache()` trims each server's cache on its own, to the same limit. `playRemote()`, `trackItems()`, `remoteSelection()` and
+is two tracks). `trimCache()` trims each server's cache on its own, to the same limit (so the automatic caches of N servers can take N times the Cache size; unpinned tracks only). `playRemote()`, `trackItems()`, `remoteSelection()` and
 Options picks carry the link, so a list of the second server queues entries of the second server. A track of a server
 that is not set up cannot play ("Cannot play Storm. Server not set up."); its entry stays in the queue and in `queue.tsv`.
-Still the first link's until steps 1.6 and 1.7: Download album / playlist, Downloaded (a second server's menu has none, and
-offers no Download item), `startDownload()`, the catalogue sync, Save as playlist, and playlists. A scrobble in the outbox
+Downloads are per link too (step 1.6): `Download::link` is the server a download is fetched from (`servers_[link].downloader`) and
+written for (`trackCacheOf(link)`, `<cache>/<server key>/...`); `trackItems()` and `offersDownload()` ask `canDownloadFrom(link)`;
+Downloaded (`downloadedMenu(link)`, `downloadedListMenu(source, link)`, `hasDownloads(link)`) lists that server's cache only, and
+Delete download (`deleteDownload(source, title, link)`) touches its list, its cache index and its automatic jobs only
+(`dropAutoCache(list, link)`; `queuedFrom()` and the loaded-list check compare links), because two servers can have a list
+with the same id. One download runs at a time across all servers (`download_` is a single optional): starting another says
+"Another download is running." unless it is the same list of the same server (`downloading(source, link)`), which says its
+progress. The older `last_stream.*` state finds its link by url and user (`StreamPlace::link`, `resumeStream()`).
+Still the first link's until step 1.7: the catalogue sync, Save as playlist, Music's playlists, and server books (phase 2). A scrobble in the outbox
 whose server is not set up stays in `scrobbles.tsv` (bounded by `kMaxScrobbles`) and is sent when that server is back.
 
 **Lists from the server** (`App::openRemoteList`) open at once with one item,
@@ -970,7 +977,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   that was not set: not recorded (a track cached then has `lastPlayed` 0, "never
   played", and goes first).
 - **Downloads (3.4):** `trackItems()` adds "Download album" / "Download playlist"
-  after the Play item when `canDownload()`. `startDownload()` reads the list's
+  after the Play item when `canDownloadFrom(link)`. `startDownload(link, ...)` reads the list's
   manifest, skips (and pins) the tracks whose files are whole, checks the free
   space of the cache root against the sizes of the rest (`App::setFreeSpace()`,
   default `std::filesystem::space()`; an unknown size counts as 0, a failed query
