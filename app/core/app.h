@@ -198,6 +198,7 @@ private:
     void fetchBookIds(const std::string& folderId, int offset);
     void fetchCatalogue(int offset);
     void applyCatalogue();
+    void fetchPlaylists();
     void finishSync(MusicServer::Error error);
     void refreshLibrary();
     void finishRefresh();
@@ -292,6 +293,8 @@ private:
         MusicServer::RequestId request = 0;
         std::string name;      // "Queue, 27 October 14:05"
         size_t notSaved = 0;   // entries left out
+        size_t songCount = 0;  // entries sent
+        std::string server;    // the server key it is saved on (catalogueServerKey() when it was asked)
     };
     void saveAsPlaylist();
     void cancelSaving();
@@ -570,6 +573,7 @@ private:
         std::string folder;  // server.audiobook_folder at the start, kept in state with the version
         std::set<std::string> bookIds; // the server album ids in that folder
         std::vector<IndexItem> items;
+        std::vector<IndexPlaylist> savedPlaylists; // made by Save as playlist while the sync runs
     };
     MusicServer::RequestId catalogueRequest_ = 0; // 0: no sync running
     Catalogue catalogue_;

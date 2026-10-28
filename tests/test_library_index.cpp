@@ -508,3 +508,99 @@ TEST(LibraryIndex, ARescanOfTheSameItemKeepsTheMarkedPlayTimeAndWritesNothing) {
     EXPECT_EQ(store.saves, 0);
     EXPECT_EQ(index.find("a")->lastPlayed, kNow);
 }
+
+// ---- Playlists (docs/fixes.md 2.4)
+
+TEST(LibraryIndexPlaylists, AreLoadedFromTheStoreByServerAndId) {
+    FakeLibraryStore store;
+    store.playlists = {{kKeyA, "p1", "Road Trip", 12, 5}, {kKeyB, "p1", "Same id", 1, 6}};
+    LibraryIndex index(store);
+    ASSERT_EQ(index.playlists().size(), 2u);
+    EXPECT_EQ(index.playlists().at(LibraryIndex::seenRef(kKeyA, SeenKind::Playlist, "p1")).name, "Road Trip");
+    EXPECT_EQ(index.playlists().at(LibraryIndex::seenRef(kKeyB, SeenKind::Playlist, "p1")).name, "Same id");
+    EXPECT_EQ(index.playlistServers(), (std::set<std::string>{kKeyA, kKeyB}));
+}
+
+TEST(LibraryIndexPlaylists, ReplacingOneServersPlaylistsLeavesTheOthersAlone) {
+    FakeLibraryStore store;
+    store.playlists = {{kKeyA, "p1", "Old", 12, 5}, {kKeyA, "p2", "Gone", 1, 5}, {kKeyB, "p1", "Other server", 1, 6}};
+    LibraryIndex index(store);
+    index.replacePlaylists(kKeyA, {{"", "p1", "New", 3, 9}});
+    EXPECT_TRUE(index.save());
+    EXPECT_EQ(store.playlists, (std::vector<IndexPlaylist>{{kKeyA, "p1", "New", 3, 9}, {kKeyB, "p1", "Other server", 1, 6}}))
+        << "the server is filled in from the key";
+    index.replacePlaylists(kKeyA, {});
+    EXPECT_TRUE(index.save());
+    EXPECT_EQ(store.playlists, (std::vector<IndexPlaylist>{{kKeyB, "p1", "Other server", 1, 6}}));
+}
+
+TEST(LibraryIndexPlaylists, AddingOneReplacesThePlaylistWithTheSameId) {
+    FakeLibraryStore store;
+    store.playlists = {{kKeyA, "p1", "Old", 12, 5}};
+    LibraryIndex index(store);
+    index.addPlaylist({kKeyA, "p2", "Added", 2, 7});
+    index.addPlaylist({kKeyA, "p1", "Renamed", 12, 5});
+    EXPECT_TRUE(index.save());
+    EXPECT_EQ(store.playlists, (std::vector<IndexPlaylist>{{kKeyA, "p1", "Renamed", 12, 5}, {kKeyA, "p2", "Added", 2, 7}}));
+}
+
+TEST(LibraryIndexPlaylists, UnchangedPlaylistsWriteNothing) {
+    FakeLibraryStore store;
+    store.playlists = {{kKeyA, "p1", "Road Trip", 12, 5}};
+    LibraryIndex index(store);
+    index.replacePlaylists(kKeyA, {{kKeyA, "p1", "Road Trip", 12, 5}});
+    index.addPlaylist({kKeyA, "p1", "Road Trip", 12, 5});
+    EXPECT_TRUE(index.save());
+    EXPECT_EQ(store.playlistSaves, 0);
+}
+
+TEST(LibraryIndexPlaylists, AFailedSaveIsRetriedAndItemsDoNotRewritePlaylists) {
+    FakeLibraryStore store;
+    LibraryIndex index(store);
+    index.addPlaylist({kKeyA, "p1", "Road Trip", 12, 5});
+    store.failSaves = true;
+    EXPECT_FALSE(index.save());
+    store.failSaves = false;
+    EXPECT_TRUE(index.save());
+    EXPECT_EQ(store.playlists.size(), 1u);
+    EXPECT_EQ(store.playlistSaves, 1);
+    index.upsert(album("a", "Alpha"), kNow);
+    EXPECT_TRUE(index.save());
+    EXPECT_EQ(store.playlistSaves, 1) << "only a change of the playlists writes them";
+}
+
+TEST(LibraryIndexPlaylists, ItemsAndPlaylistsAreSavedApartAndTheFailureOfOneIsNotTheOthers) {
+    FakeLibraryStore store;
+    LibraryIndex index(store);
+    index.upsert(album("a", "Alpha"), kNow);
+    index.addPlaylist({kKeyA, "p1", "Road Trip", 12, 5});
+    store.failPlaylistSaves = true;
+    store.failItemSaves = true;
+    store.failPlaylistSaves = false;
+    EXPECT_FALSE(index.save());
+    EXPECT_EQ(store.playlists.size(), 1u) << "the playlists are tried although the items failed";
+    store.failItemSaves = false;
+    index.addPlaylist({kKeyA, "p2", "Another", 1, 5});
+    store.failPlaylistSaves = true;
+    EXPECT_TRUE(index.saveItems()) << "the playlists do not count";
+    EXPECT_EQ(store.items.count("a"), 1u);
+    EXPECT_FALSE(index.savePlaylists());
+    EXPECT_FALSE(index.save());
+    EXPECT_EQ(store.playlists.size(), 1u) << "p2 is not written";
+    store.failPlaylistSaves = false;
+    EXPECT_TRUE(index.save());
+    EXPECT_EQ(store.playlists.size(), 2u);
+}
+
+TEST(LibraryIndexPlaylists, AFailedItemSaveDoesNotLoseThePlaylistsAndTheOtherWayRound) {
+    FakeLibraryStore store;
+    LibraryIndex index(store);
+    index.upsert(album("a", "Alpha"), kNow);
+    index.addPlaylist({kKeyA, "p1", "Road Trip", 12, 5});
+    store.failSaves = true;
+    EXPECT_FALSE(index.save());
+    store.failSaves = false;
+    EXPECT_TRUE(index.save());
+    EXPECT_EQ(store.items.count("a"), 1u);
+    EXPECT_EQ(store.playlists.size(), 1u);
+}

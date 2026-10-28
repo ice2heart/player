@@ -228,7 +228,26 @@ TEST(SubsonicJson, Playlists) {
     EXPECT_EQ(list.items[0].id, "p1");
     EXPECT_EQ(list.items[0].name, "Morning");
     EXPECT_EQ(list.items[0].songCount, 12);
+    EXPECT_EQ(list.items[0].changed, "2026-03-01T10:00:00.5Z");
     EXPECT_EQ(list.items[1].name, "Сон 💤");
+    EXPECT_EQ(list.items[1].changed, "") << "a server that does not say";
+}
+
+TEST(SubsonicJson, CreatedPlaylistGivesTheNewId) {
+    auto created = parseCreatedPlaylist(subsonicFixture("playlist_created.json"));
+    EXPECT_EQ(created.error, Error::None);
+    EXPECT_EQ(created.id, "pl-77");
+}
+
+TEST(SubsonicJson, CreatedPlaylistWithNoPlaylistInTheAnswerIsOkWithNoId) {
+    auto created = parseCreatedPlaylist(subsonicFixture("ping.json")); // a plain "ok"
+    EXPECT_EQ(created.error, Error::None);
+    EXPECT_EQ(created.id, "");
+}
+
+TEST(SubsonicJson, CreatedPlaylistErrorsGiveNoId) {
+    EXPECT_EQ(parseCreatedPlaylist(subsonicFixture("error_40_wrong_login.json")).error, Error::BadLogin);
+    EXPECT_EQ(parseCreatedPlaylist(subsonicFixture("not_json.html")).error, Error::Server);
 }
 
 TEST(SubsonicJson, PlaylistTracks) {

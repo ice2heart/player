@@ -525,8 +525,9 @@ TEST(Subsonic, ScrobbleSaysNowPlayingOrPlayed) {
 struct CreateResult {
     int calls = 0;
     Error error = Error::None;
-    std::function<void(Error)> callback() {
-        return [this](Error e) { ++calls, error = e; };
+    std::string playlistId;
+    std::function<void(Error, std::string)> callback() {
+        return [this](Error e, std::string id) { ++calls, error = e, playlistId = std::move(id); };
     }
 };
 
@@ -543,6 +544,17 @@ TEST(Subsonic, CreatePlaylistSendsTheNameAndOneSongIdPerTrackWithTokenAuthAndNoP
     server.subsonic->poll();
     EXPECT_EQ(result.calls, 1);
     EXPECT_EQ(result.error, Error::None);
+    EXPECT_EQ(result.playlistId, "") << "an answer without the playlist";
+}
+
+TEST(Subsonic, CreatePlaylistGivesTheIdOfTheNewPlaylist) {
+    Server server;
+    CreateResult result;
+    server.subsonic->createPlaylist("q", {"t1"}, result.callback());
+    server.http->answer(0, kOk, subsonicFixture("playlist_created.json"));
+    server.subsonic->poll();
+    EXPECT_EQ(result.error, Error::None);
+    EXPECT_EQ(result.playlistId, "pl-77");
 }
 
 TEST(Subsonic, CreatePlaylistEncodesIdsThatHoldSpecialCharacters) {

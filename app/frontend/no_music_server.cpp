@@ -24,8 +24,8 @@ MusicServer::RequestId NoMusicServer::artistAlbums(std::string, Done<RemoteAlbum
 MusicServer::RequestId NoMusicServer::albumTracks(std::string, Done<RemoteTrack> done) { return fail(std::move(done)); }
 MusicServer::RequestId NoMusicServer::playlists(Done<RemotePlaylist> done) { return fail(std::move(done)); }
 MusicServer::RequestId NoMusicServer::playlistTracks(std::string, Done<RemoteTrack> done) { return fail(std::move(done)); }
-MusicServer::RequestId NoMusicServer::createPlaylist(std::string, std::vector<std::string>, std::function<void(Error)> done) {
-    return add([done = std::move(done)] { done(Error::NotConfigured); });
+MusicServer::RequestId NoMusicServer::createPlaylist(std::string, std::vector<std::string>, std::function<void(Error, std::string)> done) {
+    return add([done = std::move(done)] { done(Error::NotConfigured, {}); });
 }
 
 void NoMusicServer::cancel(RequestId id) {

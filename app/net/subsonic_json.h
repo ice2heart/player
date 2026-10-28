@@ -49,6 +49,11 @@ Parsed<RemoteArtist> parseArtists(std::string_view body);   // getArtists, all i
 Parsed<RemoteAlbum> parseArtist(std::string_view body);     // getArtist: the artist's albums
 Parsed<RemoteTrack> parseAlbum(std::string_view body);      // getAlbum: its songs
 Parsed<RemotePlaylist> parsePlaylists(std::string_view body);
+struct CreatedPlaylist {
+    Error error = Error::None;
+    std::string id; // the new playlist's id; empty on an error, or when the answer has no playlist
+};
+CreatedPlaylist parseCreatedPlaylist(std::string_view body); // createPlaylist
 Parsed<RemoteTrack> parsePlaylist(std::string_view body);   // getPlaylist: its entries
 // getOpenSubsonicExtensions: the names of the extensions the server has.
 Parsed<std::string> parseExtensions(std::string_view body);

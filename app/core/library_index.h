@@ -78,8 +78,23 @@ public:
     // False if the item is unknown.
     bool markPlayed(const std::string& id, int64_t when);
 
-    // Writes the changed items and deletes the removed ones; nothing is called when
-    // nothing changed. False if the store failed (the changes are kept for the next try).
+    // The playlists of the servers, by `<server key>:playlist:<id>` (seenRef()), kept apart from the
+    // items: they have no tracks, and a sync replaces them as a list.
+    const std::map<std::string, IndexPlaylist>& playlists() const { return playlists_; }
+    // A sync of one server's playlists: they replace every playlist of `serverKey`. An empty list
+    // removes them all.
+    void replacePlaylists(const std::string& serverKey, const std::vector<IndexPlaylist>& playlists);
+    // Adds a playlist, or replaces the one with the same server and id.
+    void addPlaylist(IndexPlaylist playlist);
+    // The servers that have a playlist in the index.
+    std::set<std::string> playlistServers() const;
+
+    // Writes the changed items and deletes the removed ones; nothing is called when nothing
+    // changed. False if the store failed (the changes are kept for the next try).
+    bool saveItems();
+    // Writes the playlists if they changed, with the same rules.
+    bool savePlaylists();
+    // saveItems() and savePlaylists(): both are always tried.
     bool save();
     // save(), and the play times set by markPlayed() with it: for exit and sleep.
     bool savePlayTimes();
@@ -93,6 +108,8 @@ private:
     std::set<std::string> changed_;
     std::set<std::string> removed_;
     std::set<std::string> played_; // marked played, not written yet
+    std::map<std::string, IndexPlaylist> playlists_;
+    bool playlistsChanged_ = false; // not written yet
 
     // Lookup tables, rebuilt on demand after a change.
     mutable bool indexed_ = false;

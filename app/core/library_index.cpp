@@ -45,6 +45,10 @@ LibraryIndex::LibraryIndex(LibraryStore& store) : store_(&store) {
         std::string id = item.id;
         items_[id] = std::move(item);
     }
+    for (auto& playlist : store.loadPlaylists()) {
+        std::string ref = seenRef(playlist.server, SeenKind::Playlist, playlist.id);
+        playlists_[ref] = std::move(playlist);
+    }
 }
 
 std::string LibraryIndex::seenRef(const std::string& serverKey, SeenKind kind, const std::string& id) {
@@ -206,7 +210,35 @@ bool LibraryIndex::savePlayTimes() {
     return save(); // on failure the play times stay marked for the next try
 }
 
-bool LibraryIndex::save() {
+void LibraryIndex::replacePlaylists(const std::string& serverKey, const std::vector<IndexPlaylist>& playlists) {
+    std::map<std::string, IndexPlaylist> next;
+    for (const auto& [ref, playlist] : playlists_)
+        if (playlist.server != serverKey) next.emplace(ref, playlist);
+    for (IndexPlaylist playlist : playlists) {
+        playlist.server = serverKey;
+        std::string ref = seenRef(serverKey, SeenKind::Playlist, playlist.id);
+        next[ref] = std::move(playlist);
+    }
+    if (next == playlists_) return;
+    playlists_ = std::move(next);
+    playlistsChanged_ = true;
+}
+
+void LibraryIndex::addPlaylist(IndexPlaylist playlist) {
+    std::string ref = seenRef(playlist.server, SeenKind::Playlist, playlist.id);
+    auto it = playlists_.find(ref);
+    if (it != playlists_.end() && it->second == playlist) return;
+    playlists_[ref] = std::move(playlist);
+    playlistsChanged_ = true;
+}
+
+std::set<std::string> LibraryIndex::playlistServers() const {
+    std::set<std::string> servers;
+    for (const auto& [ref, playlist] : playlists_) servers.insert(playlist.server);
+    return servers;
+}
+
+bool LibraryIndex::saveItems() {
     if (changed_.empty() && removed_.empty()) return true;
     std::vector<IndexItem> changed;
     for (const auto& id : changed_) changed.push_back(items_.at(id));
@@ -216,6 +248,21 @@ bool LibraryIndex::save() {
     changed_.clear();
     removed_.clear();
     return true;
+}
+
+bool LibraryIndex::savePlaylists() {
+    if (!playlistsChanged_) return true;
+    std::vector<IndexPlaylist> all;
+    for (const auto& [ref, playlist] : playlists_) all.push_back(playlist);
+    if (!store_->savePlaylists(all)) return false;
+    playlistsChanged_ = false;
+    return true;
+}
+
+bool LibraryIndex::save() {
+    bool items = saveItems();
+    bool playlists = savePlaylists();
+    return items && playlists;
 }
 
 } // namespace oap

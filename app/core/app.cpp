@@ -399,8 +399,12 @@ void App::dropOtherServers(const std::string& key) {
         for (const auto& track : item.tracks)
             for (const auto& ref : track.seenOn) others.insert(keyOfRef(ref));
     }
+    for (const auto& server : index_.playlistServers()) others.insert(server);
     others.erase(key);
-    for (const auto& other : others) index_.replaceServer(other, {}, clock_.wallTime());
+    for (const auto& other : others) {
+        index_.replaceServer(other, {}, clock_.wallTime());
+        index_.replacePlaylists(other, {});
+    }
     index_.save();
 }
 
@@ -412,7 +416,7 @@ std::string downloadedName(const CachedList& list); // below, with the downloade
 // reference of the server it came from, taken from its manifest: the album's own and one per
 // track. The reference is kept only while the server still lists the album (or while no
 // catalogue of this server is known yet), because an album that left the server has no
-// reference. Playlists are not albums and are not in the index.
+// reference. Playlists are not albums: the index keeps them apart (fetchPlaylists()).
 void App::syncDownloads() {
     std::vector<IndexItem> items;
     const TrackCache& store = trackCache();
@@ -484,7 +488,7 @@ void App::onCatalogueVersion(MusicServer::Error error, const std::string& versio
     // index (it was lost) the version does not matter either.
     if (!version.empty() && haveItems && state_.getString(kCatalogueServer) == catalogue_.key &&
         state_.getString(kCatalogueVersion) == version && state_.getString(kCatalogueFolder) == audiobookFolder())
-        return finishSync(MusicServer::Error::None);
+        return fetchPlaylists(); // the catalogue is as it was, the playlists may not be
     catalogue_.version = version;
     catalogue_.folder = audiobookFolder();
     if (catalogue_.folder.empty()) fetchCatalogue(0);
@@ -550,8 +554,33 @@ void App::fetchCatalogue(int offset) {
                 return fetchCatalogue(offset + int(albums.size()));
             if (more && !albums.empty()) return finishSync(MusicServer::Error::Server);
             applyCatalogue();
-            finishSync(MusicServer::Error::None);
+            fetchPlaylists();
         });
+}
+
+// The last step of a sync: the server's playlists replace the stored ones. If the request fails the old
+// ones stay (the sync ends with the error, as for the catalogue).
+void App::fetchPlaylists() {
+    catalogueRequest_ = server_.playlists([this](MusicServer::Error error, std::vector<RemotePlaylist> playlists, bool) {
+        catalogueRequest_ = 0;
+        if (error != MusicServer::Error::None) return finishSync(error);
+        std::vector<IndexPlaylist> stored;
+        for (const RemotePlaylist& p : playlists) {
+            IndexPlaylist playlist;
+            playlist.server = catalogue_.key;
+            playlist.id = p.id;
+            playlist.name = p.name;
+            playlist.songCount = p.songCount;
+            playlist.changed = parseIsoTime(p.changed);
+            stored.push_back(std::move(playlist));
+        }
+        // A playlist saved while this request was out may be missing from the answer.
+        for (const IndexPlaylist& added : catalogue_.savedPlaylists)
+            if (std::none_of(stored.begin(), stored.end(), [&](const IndexPlaylist& p) { return p.id == added.id; })) stored.push_back(added);
+        index_.replacePlaylists(catalogue_.key, stored);
+        index_.savePlaylists();
+        finishSync(MusicServer::Error::None);
+    });
 }
 
 // Every page came: the server items of the index become the albums fetched.
@@ -561,7 +590,8 @@ void App::applyCatalogue() {
     catalogue_.bookIds.clear();
     syncDownloads(); // a download of an album the server dropped loses its reference
     linkToServer();
-    if (index_.save() && !catalogue_.version.empty()) { // else the next start checks again
+    // Only the items decide: a playlists table that cannot be written must not make the next start fetch the albums again.
+    if (index_.saveItems() && !catalogue_.version.empty()) { // else the next start checks again
         state_.setString(kCatalogueServer, catalogue_.key);
         state_.setString(kCatalogueVersion, catalogue_.version);
         if (catalogue_.folder.empty()) state_.clearPrefix(kCatalogueFolder); // as before this setting
@@ -569,10 +599,12 @@ void App::applyCatalogue() {
     }
 }
 
-// The sync is over: with an error the index is as it was.
+// The sync is over. An error before the albums came leaves the index as it was; one from getPlaylists leaves
+// the albums replaced and the playlists as they were.
 void App::finishSync(MusicServer::Error error) {
     catalogue_.items.clear();
     catalogue_.bookIds.clear();
+    catalogue_.savedPlaylists.clear();
     refresh_.error = error;
     finishRefresh();
 }
@@ -2617,14 +2649,20 @@ void App::saveAsPlaylist() {
     }
     ids.resize(std::min(ids.size(), MusicServer::kMaxPlaylistTracks)); // the rest would not fit in the request
     const std::uint64_t screen = screens_.back().id;
-    saving_ = Saving{screen, 0, queuePlaylistName(clock_.wallTime()), queue_.size() - ids.size()};
+    saving_ = Saving{screen, 0, queuePlaylistName(clock_.wallTime()), queue_.size() - ids.size(), ids.size(), catalogueServerKey()};
     say("Saving.");
-    saving_.request = server_.createPlaylist(saving_.name, std::move(ids), [this](MusicServer::Error error) { // never runs once cancelSaving() has cancelled it
+    saving_.request = server_.createPlaylist(saving_.name, std::move(ids), [this](MusicServer::Error error, std::string playlistId) { // never runs once cancelSaving() has cancelled it
         const Saving done = std::exchange(saving_, Saving{});
         tts_.stop(); // "Saving." is over
         if (error != MusicServer::Error::None) {
             earcons_.play(Earcon::Error);
             return say(errorText(error) + ".");
+        }
+        if (!playlistId.empty() && !done.server.empty()) { // in the index at once, without a sync
+            IndexPlaylist playlist{done.server, playlistId, done.name, int(done.songCount), clock_.wallTime()};
+            index_.addPlaylist(playlist);
+            index_.savePlaylists();
+            if (catalogueRequest_ && done.server == catalogue_.key) catalogue_.savedPlaylists.push_back(std::move(playlist)); // see fetchPlaylists()
         }
         earcons_.play(Earcon::Close);
         say("Saved " + done.name + "." + (done.notSaved ? " " + countValue(done.notSaved, "track") + " not saved." : ""));

@@ -21,6 +21,8 @@ namespace fs = std::filesystem;
 
 const std::string kRefA = "music_example_com-0123456789abcdef:album:3a1f9c";
 const std::string kRefB = "other_example_org-fedcba9876543210:album:77";
+const std::string kServerA = "music_example_com-0123456789abcdef";
+const std::string kServerB = "other_example_org-fedcba9876543210";
 const std::string kRefTrack = "music_example_com-0123456789abcdef:track:t9";
 
 class SqliteLibraryStoreTest : public testing::Test {
@@ -236,6 +238,67 @@ TEST_F(SqliteLibraryStoreTest, AFailedSaveStoresNothingAndTheStoreKeepsWorking) 
     EXPECT_EQ(loaded.size(), 2u);
     EXPECT_EQ(loaded["a"], a2);
     EXPECT_EQ(loaded["b"], bad);
+}
+
+TEST_F(SqliteLibraryStoreTest, PlaylistsRoundTripAndAreReplacedAsAWhole) {
+    const std::vector<IndexPlaylist> first = {{kServerA, "p1", "Road Trip", 12, 1772359200},
+                                              {kServerA, "p2", "Chill \xD0\xBC\xD1\x83\xD0\xB7\xD1\x8B\xD0\xBA\xD0\xB0", 0, 0},
+                                              {kServerB, "p1", "Same id, other server", 3, 5}};
+    {
+        SqliteLibraryStore store(file);
+        EXPECT_TRUE(store.loadPlaylists().empty());
+        ASSERT_TRUE(store.savePlaylists(first));
+        EXPECT_EQ(store.loadPlaylists(), first);
+    }
+    SqliteLibraryStore reopened(file);
+    EXPECT_EQ(reopened.loadPlaylists(), first) << "kept in the file";
+
+    const std::vector<IndexPlaylist> second = {{kServerA, "p2", "Chill", 4, 99}};
+    ASSERT_TRUE(reopened.savePlaylists(second));
+    EXPECT_EQ(reopened.loadPlaylists(), second) << "the old list is replaced, not added to";
+    ASSERT_TRUE(reopened.savePlaylists({}));
+    EXPECT_TRUE(reopened.loadPlaylists().empty());
+}
+
+TEST_F(SqliteLibraryStoreTest, PlaylistsAndItemsAreStoredApart) {
+    SqliteLibraryStore store(file);
+    ASSERT_TRUE(store.save({album("a", "Alpha")}, {}));
+    ASSERT_TRUE(store.savePlaylists({{kServerA, "p1", "Road Trip", 12, 1}}));
+    ASSERT_TRUE(store.save({album("b", "Beta")}, {"a"}));
+    EXPECT_EQ(store.loadPlaylists().size(), 1u) << "saving items leaves the playlists";
+    ASSERT_TRUE(store.savePlaylists({}));
+    EXPECT_EQ(byId(store.load()).size(), 1u) << "saving playlists leaves the items";
+}
+
+TEST_F(SqliteLibraryStoreTest, AFailedPlaylistSaveKeepsTheOldPlaylists) {
+    SqliteLibraryStore store(file);
+    const std::vector<IndexPlaylist> old = {{kServerA, "p1", "Road Trip", 12, 1}};
+    ASSERT_TRUE(store.savePlaylists(old));
+    // The same playlist twice breaks the key halfway through the write.
+    EXPECT_FALSE(store.savePlaylists({{kServerA, "p2", "New", 1, 1}, {kServerA, "p2", "New again", 2, 2}}));
+    EXPECT_EQ(store.loadPlaylists(), old);
+    EXPECT_TRUE(store.savePlaylists({{kServerA, "p2", "New", 1, 1}})) << "and the store keeps working";
+}
+
+TEST_F(SqliteLibraryStoreTest, AVersion2DatabaseOpensWithItsItemsAndGainsThePlaylistsTable) {
+    {
+        // A file as the version before this one wrote it: no playlists table, version 2.
+        SqliteLibraryStore store(file);
+        ASSERT_TRUE(store.save({album("a", "Alpha")}, {}));
+    }
+    rawExec(file, "DROP TABLE playlists; UPDATE schema_version SET version = 2;");
+    ASSERT_EQ(rawScalar(file, "SELECT count(*) FROM sqlite_master WHERE name = 'playlists'"), "0");
+
+    SqliteLibraryStore store(file);
+    EXPECT_EQ(byId(store.load()).size(), 1u) << "the items are kept";
+    EXPECT_FALSE(fs::exists(SqliteLibraryStore::asidePath(file))) << "it is not moved aside";
+    EXPECT_TRUE(store.loadPlaylists().empty());
+    const std::vector<IndexPlaylist> playlists = {{kServerA, "p1", "Road Trip", 12, 1}};
+    ASSERT_TRUE(store.savePlaylists(playlists));
+    EXPECT_EQ(rawScalar(file, "SELECT version FROM schema_version"), "3");
+    SqliteLibraryStore reopened(file);
+    EXPECT_EQ(reopened.loadPlaylists(), playlists);
+    EXPECT_EQ(byId(reopened.load()).size(), 1u);
 }
 
 TEST_F(SqliteLibraryStoreTest, DamagedFileOpensEmptyAndIsMovedAside) {

@@ -14,9 +14,18 @@ namespace oap {
 
 namespace {
 
-constexpr int kSchemaVersion = 2; // 2: items.track_count and items.created (4.8); version 1 is moved aside and rebuilt by scan and sync
+// 2: items.track_count and items.created (4.8); version 1 is moved aside and rebuilt by scan and sync.
+// 3: the playlists table; a version 2 file gains it and keeps everything else.
+constexpr int kSchemaVersion = 3;
+constexpr int kFirstUpgradableVersion = 2;
 constexpr mode_t kFileMode = 0600; // the index lists what the user listens to
 constexpr int kItemRef = -1;       // `track` of a refs row that belongs to the item itself
+
+constexpr const char* kPlaylistsTable =
+    "CREATE TABLE playlists ("
+    " server TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,"
+    " song_count INTEGER NOT NULL, changed INTEGER NOT NULL,"
+    " PRIMARY KEY (server, id));";
 
 constexpr const char* kSchema =
     "CREATE TABLE schema_version (version INTEGER NOT NULL);"
@@ -33,7 +42,7 @@ constexpr const char* kSchema =
     " PRIMARY KEY (item_id, position));"
     "CREATE TABLE refs ("
     " item_id TEXT NOT NULL, track INTEGER NOT NULL, seq INTEGER NOT NULL, ref TEXT NOT NULL,"
-    " PRIMARY KEY (item_id, track, seq));";
+    " PRIMARY KEY (item_id, track, seq));"; // createSchema() adds kPlaylistsTable
 
 // A prepared statement, finalized on every path out.
 class Stmt {
@@ -102,9 +111,10 @@ void secureFile(const std::filesystem::path& file) {
     ::close(fd);
 }
 
-enum class Check { Fresh, Ok, Unusable, Error };
+enum class Check { Fresh, Ok, Upgrade, Unusable, Error };
 
 // Fresh: no tables, so the schema is to be created. Ok: our schema, our version.
+// Upgrade: our schema of the version before, which gains the new table.
 // Unusable: damaged, not a database, or another version: to be moved aside.
 // Error: the file could not be read now (locked, no permission, I/O error); it may be fine, so it stays.
 Check inspect(sqlite3* db) {
@@ -118,12 +128,25 @@ Check inspect(sqlite3* db) {
     if (result == "0") return Check::Fresh;
     rc = scalar(db, "SELECT version FROM schema_version", result); // no such table: not ours
     if (rc != SQLITE_ROW) return damaged(rc) || rc == SQLITE_ERROR ? Check::Unusable : Check::Error;
-    return result == std::to_string(kSchemaVersion) ? Check::Ok : Check::Unusable;
+    if (result == std::to_string(kSchemaVersion)) return Check::Ok;
+    return result == std::to_string(kFirstUpgradableVersion) ? Check::Upgrade : Check::Unusable;
+}
+
+// A version 2 file: adds the playlists table and the new version, in one transaction.
+bool upgradeSchema(sqlite3* db) {
+    if (!exec(db, "BEGIN IMMEDIATE")) return false;
+    Stmt update(db, "UPDATE schema_version SET version = ?");
+    update.integer(1, kSchemaVersion);
+    if (!exec(db, kPlaylistsTable) || !update || !update.run() || !exec(db, "COMMIT")) {
+        exec(db, "ROLLBACK");
+        return false;
+    }
+    return true;
 }
 
 bool createSchema(sqlite3* db) {
     if (!exec(db, "BEGIN IMMEDIATE")) return false;
-    if (!exec(db, kSchema)) {
+    if (!exec(db, kSchema) || !exec(db, kPlaylistsTable)) {
         exec(db, "ROLLBACK");
         return false;
     }
@@ -233,7 +256,8 @@ SqliteLibraryStore::SqliteLibraryStore(const std::filesystem::path& file) : file
             check = rc == SQLITE_NOTADB || rc == SQLITE_CORRUPT ? Check::Unusable : rc != SQLITE_OK ? Check::Error : inspect(db);
         }
         if (check == Check::Fresh && !createSchema(db)) check = Check::Error;
-        if (check == Check::Ok || check == Check::Fresh) {
+        if (check == Check::Upgrade && !upgradeSchema(db)) check = Check::Error;
+        if (check == Check::Ok || check == Check::Fresh || check == Check::Upgrade) {
             db_ = db;
             return;
         }
@@ -312,6 +336,43 @@ std::vector<IndexItem> SqliteLibraryStore::load() {
     }
     if (refRows.failed()) return {};
     return items;
+}
+
+std::vector<IndexPlaylist> SqliteLibraryStore::loadPlaylists() {
+    std::vector<IndexPlaylist> playlists;
+    if (!db_) return playlists;
+    Stmt rows(db_, "SELECT server, id, name, song_count, changed FROM playlists ORDER BY server, id");
+    if (!rows) return {};
+    while (rows.row()) {
+        IndexPlaylist playlist;
+        playlist.server = rows.str(0);
+        playlist.id = rows.str(1);
+        playlist.name = rows.str(2);
+        playlist.songCount = int(rows.i64(3));
+        playlist.changed = rows.i64(4);
+        playlists.push_back(std::move(playlist));
+    }
+    if (rows.failed()) return {};
+    return playlists;
+}
+
+bool SqliteLibraryStore::savePlaylists(const std::vector<IndexPlaylist>& playlists) {
+    if (!db_) return false;
+    Stmt insert(db_, "INSERT INTO playlists VALUES (?,?,?,?,?)");
+    if (!insert || !exec(db_, "BEGIN IMMEDIATE")) return false;
+    bool ok = exec(db_, "DELETE FROM playlists");
+    for (const auto& playlist : playlists) {
+        if (!ok) break;
+        insert.text(1, playlist.server);
+        insert.text(2, playlist.id);
+        insert.text(3, playlist.name);
+        insert.integer(4, playlist.songCount);
+        insert.integer(5, playlist.changed);
+        ok = insert.run();
+    }
+    if (ok && exec(db_, "COMMIT")) return true;
+    exec(db_, "ROLLBACK");
+    return false;
 }
 
 bool SqliteLibraryStore::save(const std::vector<IndexItem>& changed, const std::vector<std::string>& removed) {

@@ -144,6 +144,7 @@ RemotePlaylist playlist(const YAML::Node& node) {
     playlist.id = text(node, "id");
     playlist.name = text(node, "name");
     playlist.songCount = integer(node, "songCount");
+    playlist.changed = text(node, "changed");
     return playlist;
 }
 
@@ -242,6 +243,13 @@ Parsed<RemoteAlbum> parseArtist(std::string_view body) { return parseList<Remote
 Parsed<RemoteTrack> parseAlbum(std::string_view body) { return parseList<RemoteTrack>(body, "album", "song", track); }
 Parsed<RemotePlaylist> parsePlaylists(std::string_view body) {
     return parseList<RemotePlaylist>(body, "playlists", "playlist", playlist);
+}
+CreatedPlaylist parseCreatedPlaylist(std::string_view body) {
+    CreatedPlaylist result;
+    Envelope envelope = open(body);
+    result.error = envelope.error;
+    if (envelope.error == Error::None) result.id = text(child(envelope.response, "playlist"), "id");
+    return result;
 }
 Parsed<RemoteTrack> parsePlaylist(std::string_view body) { return parseList<RemoteTrack>(body, "playlist", "entry", track); }
 

@@ -208,7 +208,7 @@ public:
         return out;
     }
     bool save(const std::vector<IndexItem>& changed, const std::vector<std::string>& removed) override {
-        if (failSaves) return false;
+        if (failSaves || failItemSaves) return false;
         ++saves;
         for (const auto& item : changed) {
             items[item.id] = item;
@@ -220,8 +220,19 @@ public:
         }
         return true;
     }
+    std::vector<IndexPlaylist> loadPlaylists() override { return playlists; }
+    bool savePlaylists(const std::vector<IndexPlaylist>& all) override {
+        if (failSaves || failPlaylistSaves) return false;
+        ++playlistSaves;
+        playlists = all;
+        return true;
+    }
 
     std::map<std::string, IndexItem> items;
+    std::vector<IndexPlaylist> playlists; // what was last saved
+    int playlistSaves = 0;
+    bool failItemSaves = false;     // only save() fails
+    bool failPlaylistSaves = false; // only savePlaylists() fails
     int saves = 0;
     std::vector<std::string> savedIds;   // every item written, in order
     std::vector<std::string> removedIds; // every item deleted, in order
@@ -359,8 +370,8 @@ public:
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override {
         return add(std::move(done), Kind::PlaylistTracks, std::move(playlistId));
     }
-    RequestId createPlaylist(std::string name, std::vector<std::string> trackIds, std::function<void(Error)> done) override {
-        RequestId id = add(std::move(done), Kind::CreatePlaylist, std::move(name));
+    RequestId createPlaylist(std::string name, std::vector<std::string> trackIds, std::function<void(Error, std::string)> done) override {
+        RequestId id = add(CreateDone{std::move(done)}, Kind::CreatePlaylist, std::move(name));
         requests.back().trackIds = std::move(trackIds);
         if (requests.back().trackIds.size() > kMaxPlaylistTracks && isConfigured) fail(id, Error::Server); // as Subsonic
         return id;
@@ -416,13 +427,13 @@ public:
         pending_.erase(it);
         return true;
     }
-    // Answer a createPlaylist: it worked.
-    bool replyCreated(RequestId id) {
+    // Answer a createPlaylist: it worked, and the server gave the new playlist this id (empty: it did not say).
+    bool replyCreated(RequestId id, std::string playlistId = "new-playlist") {
         auto it = pending_.find(id);
         if (it == pending_.end()) return false;
         auto* done = std::get_if<CreateDone>(&it->second);
         if (!done) throw std::logic_error("FakeMusicServer::replyCreated: not a createPlaylist");
-        ready_.emplace_back(id, [cb = std::move(*done)] { cb(Error::None); });
+        ready_.emplace_back(id, [cb = std::move(done->call), playlistId = std::move(playlistId)] { cb(Error::None, playlistId); });
         pending_.erase(it);
         return true;
     }
@@ -468,7 +479,9 @@ public:
 private:
     using PingDone = std::function<void(Error, ServerInfo)>;
     using VersionDone = std::function<void(Error, std::string)>;
-    using CreateDone = std::function<void(Error)>;
+    struct CreateDone { // a type of its own: VersionDone has the same signature
+        std::function<void(Error, std::string)> call;
+    };
     using Callback =
         std::variant<PingDone, VersionDone, CreateDone, Done<RemoteAlbum>, Done<RemoteFolder>, Done<RemoteArtist>, Done<RemoteTrack>,
                  Done<RemotePlaylist>>;
@@ -500,7 +513,7 @@ private:
         return [cb = std::move(cb), error] { cb(error, {}); };
     }
     static std::function<void()> failure(CreateDone cb, Error error) {
-        return [cb = std::move(cb), error] { cb(error); };
+        return [cb = std::move(cb.call), error] { cb(error, {}); };
     }
     template <class T> static std::function<void()> failure(Done<T> cb, Error error) {
         return [cb = std::move(cb), error] { cb(error, {}, false); };

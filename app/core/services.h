@@ -78,6 +78,17 @@ struct IndexItem {
     bool operator==(const IndexItem&) const = default;
 };
 
+// A playlist of a server, as the index keeps it (Music -> Playlists reads these). Not an
+// IndexItem: it has no tracks of its own, and a sync replaces the whole list.
+struct IndexPlaylist {
+    std::string server;        // TrackCache::serverKey() of the server it is on
+    std::string id;            // the server's playlist id
+    std::string name;
+    int songCount = 0;
+    int64_t changed = 0;       // wall time the server last changed it, 0: unknown
+    bool operator==(const IndexPlaylist&) const = default;
+};
+
 // Where the library index is kept between runs. Core holds the index in memory
 // and only loads and saves it through this; the real store (SQLite) lives in app/library/.
 class LibraryStore {
@@ -88,6 +99,10 @@ public:
     // Writes `changed` (each replaces the stored item with its id) and deletes the items
     // named in `removed`, all or nothing. False on failure: nothing is then stored.
     virtual bool save(const std::vector<IndexItem>& changed, const std::vector<std::string>& removed) = 0;
+    // The stored playlists; empty when there are none or they cannot be read.
+    virtual std::vector<IndexPlaylist> loadPlaylists() = 0;
+    // Replaces every stored playlist with `playlists`, all or nothing. False on failure: the old ones stay.
+    virtual bool savePlaylists(const std::vector<IndexPlaylist>& playlists) = 0;
 };
 
 // What the tags of a local audio file say. A text field the file does not have is
@@ -293,6 +308,7 @@ struct RemoteFolder {
 struct RemotePlaylist {
     std::string id, name;
     int songCount = 0;
+    std::string changed; // ISO 8601, when the server last changed it; empty if it does not say
 };
 
 // A server to browse and stream from (Subsonic first, implemented in app/net/).
@@ -337,10 +353,10 @@ public:
     // a caller sends at most this many (App says how many tracks it left out).
     static constexpr std::size_t kMaxPlaylistTracks = 150;
     // Makes a new playlist `name` with `trackIds` in that order (Subsonic: createPlaylist). `done` gets
-    // None, or why it failed. Not configured: NotConfigured. More than kMaxPlaylistTracks ids are not
-    // sent: the answer is Error::Server.
+    // None and the new playlist's id (empty if the server does not say), or why it failed. Not configured:
+    // NotConfigured. More than kMaxPlaylistTracks ids are not sent: the answer is Error::Server.
     virtual RequestId createPlaylist(std::string name, std::vector<std::string> trackIds,
-                                     std::function<void(Error)> done) = 0;
+                                     std::function<void(Error, std::string playlistId)> done) = 0;
     virtual void cancel(RequestId id) = 0; // its callback will not run; unknown ids are ignored
     // The stream of a track: the original file with `maxBitRate` 0, else a
     // transcode to at most that many kbit/s. Empty URLs when not configured.

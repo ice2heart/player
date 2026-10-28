@@ -47,7 +47,7 @@ TEST(NoMusicServer, EveryRequestFinishesWithNotConfiguredOnTheNextPoll) {
 TEST(NoMusicServer, CreatePlaylistAnswersNotConfiguredAndSendsNothing) {
     NoMusicServer server;
     std::vector<Error> got;
-    auto id = server.createPlaylist("Queue", {"a"}, [&](Error e) { got.push_back(e); });
+    auto id = server.createPlaylist("Queue", {"a"}, [&](Error e, std::string) { got.push_back(e); });
     EXPECT_NE(id, 0u);
     EXPECT_TRUE(got.empty()) << "answered from poll()";
     server.poll();

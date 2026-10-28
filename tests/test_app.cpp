@@ -6815,13 +6815,23 @@ protected:
         return size_t(std::count_if(server.requests.begin(), server.requests.end(),
                                     [kind](const auto& r) { return r.kind == kind; }));
     }
+    // The sync ends with getPlaylists: unless a test holds that answer back (holdPlaylists), the
+    // server answers it with serverPlaylists as soon as it is asked.
+    std::vector<RemotePlaylist> serverPlaylists;
+    bool holdPlaylists = false;
+    void settlePlaylists() {
+        if (holdPlaylists || server.requests.empty() || server.requests.back().kind != Kind::Playlists) return;
+        if (server.reply(server.requests.back().id, serverPlaylists)) app->tick();
+    }
     void answerVersion(const std::string& version) {
         ASSERT_TRUE(server.replyVersion(lastOf(Kind::CatalogueVersion), version));
         app->tick();
+        settlePlaylists();
     }
     void answerAlbums(std::vector<RemoteAlbum> albums, bool more = false) {
         ASSERT_TRUE(server.reply(lastOf(Kind::Albums), std::move(albums), more));
         app->tick();
+        settlePlaylists();
     }
     void fail(FakeMusicServer::Kind kind, MusicServer::Error error) {
         ASSERT_TRUE(server.fail(lastOf(kind), error));
@@ -7001,6 +7011,156 @@ TEST_F(CatalogueTest, AFailedSaveDoesNotStoreTheVersion) {
     indexStore.failSaves = true;
     answerAlbums({album("a1", "One")});
     EXPECT_EQ(state.getString("catalogue.version"), "");
+}
+
+// ---- Playlists in the index (docs/fixes.md 2.4)
+
+static RemotePlaylist remotePlaylist(const std::string& id, const std::string& name, int songs, const std::string& changed = "") {
+    RemotePlaylist p;
+    p.id = id;
+    p.name = name;
+    p.songCount = songs;
+    p.changed = changed;
+    return p;
+}
+
+TEST_F(CatalogueTest, AfterASyncTheIndexHasTheServersPlaylists) {
+    serverPlaylists = {remotePlaylist("p1", "Road Trip", 12, "2026-03-01T10:00:00Z"), remotePlaylist("p2", "Chill", 3)};
+    start();
+    answerVersion("v1");
+    ASSERT_EQ(countOf(Kind::Playlists), 0u) << "after the catalogue, not before";
+    answerAlbums({album("a1", "One")});
+    ASSERT_EQ(countOf(Kind::Playlists), 1u);
+    EXPECT_EQ(indexStore.playlists, (std::vector<IndexPlaylist>{{key(), "p1", "Road Trip", 12, 1772359200}, {key(), "p2", "Chill", 3, 0}}));
+}
+
+TEST_F(CatalogueTest, ASyncOfAnUnchangedCatalogueStillFetchesThePlaylists) {
+    seedServerAlbum("al1", "Kept");
+    seedVersion("v1");
+    serverPlaylists = {remotePlaylist("p1", "New on the server", 4)};
+    start();
+    answerVersion("v1");
+    EXPECT_EQ(countOf(Kind::Albums), 0u);
+    ASSERT_EQ(countOf(Kind::Playlists), 1u);
+    ASSERT_EQ(indexStore.playlists.size(), 1u);
+    EXPECT_EQ(indexStore.playlists[0].name, "New on the server");
+}
+
+TEST_F(CatalogueTest, APlaylistGoneFromTheServersListIsGoneAfterTheNextSync) {
+    indexStore.playlists = {{key(), "p1", "Kept", 5, 10}, {key(), "p2", "Deleted on the server", 7, 20}};
+    seedServerAlbum("al1", "Kept");
+    seedVersion("v1");
+    serverPlaylists = {remotePlaylist("p1", "Kept, renamed", 6)};
+    start();
+    answerVersion("v1");
+    EXPECT_EQ(indexStore.playlists, (std::vector<IndexPlaylist>{{key(), "p1", "Kept, renamed", 6, 0}}));
+}
+
+TEST_F(CatalogueTest, AServerWithNoPlaylistsLeavesNoneInTheIndex) {
+    indexStore.playlists = {{key(), "p1", "Only one", 5, 10}};
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One")});
+    EXPECT_TRUE(indexStore.playlists.empty());
+}
+
+TEST_F(CatalogueTest, ASyncThatFailsKeepsTheOldPlaylists) {
+    const std::vector<IndexPlaylist> old = {{key(), "p1", "Old", 5, 10}};
+    serverPlaylists = {remotePlaylist("p9", "Never stored", 1)};
+    {
+        SCOPED_TRACE("the version fails");
+        indexStore.playlists = old;
+        start();
+        fail(Kind::CatalogueVersion, MusicServer::Error::Unreachable);
+        EXPECT_EQ(indexStore.playlists, old);
+        EXPECT_EQ(countOf(Kind::Playlists), 0u);
+        app->shutdown();
+        app.reset();
+    }
+    {
+        SCOPED_TRACE("the albums fail");
+        start();
+        answerVersion("v2");
+        fail(Kind::Albums, MusicServer::Error::Server);
+        EXPECT_EQ(indexStore.playlists, old);
+        EXPECT_EQ(countOf(Kind::Playlists), 0u);
+        app->shutdown();
+        app.reset();
+    }
+    {
+        SCOPED_TRACE("getPlaylists fails");
+        holdPlaylists = true;
+        start();
+        answerVersion("v3");
+        answerAlbums({album("a1", "One")});
+        fail(Kind::Playlists, MusicServer::Error::Unreachable);
+        EXPECT_EQ(indexStore.playlists, old);
+    }
+}
+
+TEST_F(CatalogueTest, PlaylistsThatCannotBeWrittenDoNotStopTheCatalogueVersionBeingStored) {
+    serverPlaylists = {remotePlaylist("p1", "Road Trip", 12)};
+    indexStore.failPlaylistSaves = true;
+    indexStore.playlists = {{key("former"), "x", "Of the old user", 1, 0}}; // start-up drops it, and cannot write that
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One")});
+    EXPECT_EQ(state.getString("catalogue.version"), "v1") << "or every start would fetch all the albums again";
+    EXPECT_EQ(indexStore.items.count(ref("a1")), 1u);
+    ASSERT_EQ(indexStore.playlists.size(), 1u) << "what was stored stays";
+    EXPECT_EQ(indexStore.playlists[0].id, "x");
+    indexStore.failPlaylistSaves = false;
+    app->shutdown();
+    app.reset();
+    start();
+    answerVersion("v1");
+    EXPECT_EQ(countOf(Kind::Albums), 1u) << "unchanged: no second album list";
+    ASSERT_EQ(indexStore.playlists.size(), 1u) << "the playlists are written at the next sync";
+    EXPECT_EQ(indexStore.playlists[0].id, "p1");
+}
+
+TEST_F(CatalogueTest, RefreshSpeaksAGetPlaylistsError) {
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One")});
+    holdPlaylists = true;
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v2");
+    answerAlbums({album("a1", "One")});
+    EXPECT_EQ(speech.last(), "Updating the library.") << "the sync waits for the playlists";
+    fail(Kind::Playlists, MusicServer::Error::Unreachable);
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+}
+
+TEST_F(CatalogueTest, ARefreshWaitsForThePlaylistsBeforeItSaysTheLibraryIsUpdated) {
+    serverPlaylists = {remotePlaylist("p1", "Road Trip", 12)};
+    start();
+    answerVersion("v1");
+    answerAlbums({album("a1", "One")});
+    holdPlaylists = true;
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("v1");
+    EXPECT_EQ(speech.last(), "Updating the library.");
+    holdPlaylists = false;
+    settlePlaylists();
+    EXPECT_EQ(speech.last(), "Library updated, 3 albums.");
+}
+
+TEST_F(CatalogueTest, PlaylistsOfAnotherServerOrUserAreDroppedAtStartUp) {
+    indexStore.playlists = {{key("former"), "p1", "Of the old user", 1, 0}, {key(), "p2", "Of ice", 2, 0}};
+    seedServerAlbum("al2", "Of ice");
+    seedVersion("v1");
+    start(false);
+    EXPECT_EQ(indexStore.playlists, (std::vector<IndexPlaylist>{{key(), "p2", "Of ice", 2, 0}}));
+}
+
+TEST_F(CatalogueTest, WithNoServerThePlaylistsOfEveryServerAreDropped) {
+    indexStore.playlists = {{key(), "p1", "Gone", 1, 0}};
+    settings.setString("server.url", "");
+    start(false);
+    EXPECT_TRUE(indexStore.playlists.empty());
 }
 
 TEST_F(CatalogueTest, ItemsOfAnotherServerOrUserAreDroppedAtStartUp) {
@@ -11094,6 +11254,10 @@ protected:
         QueueListTest::SetUp();
         clock.setWallTime(at(27, 10, 14, 5));
     }
+    size_t requestsOf(FakeMusicServer::Kind kind) const {
+        return size_t(std::count_if(server.requests.begin(), server.requests.end(),
+                                    [kind](const FakeMusicServer::Request& r) { return r.kind == kind; }));
+    }
     size_t creates() const {
         return size_t(std::count_if(server.requests.begin(), server.requests.end(),
                                     [](const FakeMusicServer::Request& r) { return r.kind == FakeMusicServer::Kind::CreatePlaylist; }));
@@ -11134,6 +11298,97 @@ TEST_F(SavePlaylistTest, SendsTheServerTracksInPlayOrderAndSaysItSavedThem) {
     EXPECT_EQ(sounds.last(), Earcon::Close);
     EXPECT_EQ(level().title, "Queue");
     EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T4", "T2", "T3"}));
+}
+
+TEST_F(SavePlaylistTest, TheSavedPlaylistIsInTheIndexAtOnceWithoutASync) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(save());
+    EXPECT_TRUE(indexStore.playlists.empty()) << "not before the server has made it";
+    const size_t requests = server.requests.size();
+    ASSERT_TRUE(server.replyCreated(created().id, "pl-77"));
+    app->tick();
+    ASSERT_EQ(indexStore.playlists.size(), 1u);
+    const IndexPlaylist& p = indexStore.playlists[0];
+    EXPECT_EQ(p.server, TrackCache::serverKey("https://music.example", "ann"));
+    EXPECT_EQ(p.id, "pl-77");
+    EXPECT_EQ(p.name, "Queue, 27 October 14:05");
+    EXPECT_EQ(p.songCount, 3);
+    EXPECT_EQ(p.changed, at(27, 10, 14, 5));
+    EXPECT_EQ(server.requests.size(), requests) << "no getPlaylists, no sync";
+    EXPECT_EQ(requestsOf(FakeMusicServer::Kind::Playlists), 0u);
+}
+
+TEST_F(SavePlaylistTest, APlaylistSavedWhileTheSyncAsksForPlaylistsSurvivesAnAnswerThatDoesNotHaveIt) {
+    play(tracks(2));
+    ASSERT_EQ(server.lastRequest().kind, FakeMusicServer::Kind::CatalogueVersion);
+    ASSERT_TRUE(server.replyVersion(server.lastRequest().id, "v1"));
+    app->tick();
+    ASSERT_EQ(server.lastRequest().kind, FakeMusicServer::Kind::Albums);
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteAlbum>{}));
+    app->tick();
+    ASSERT_EQ(server.lastRequest().kind, FakeMusicServer::Kind::Playlists) << "the sync waits for getPlaylists";
+    const auto playlistsRequest = server.lastRequest().id;
+    ASSERT_NO_FATAL_FAILURE(save());
+    ASSERT_TRUE(server.replyCreated(created().id, "pl-77"));
+    app->tick();
+    ASSERT_TRUE(server.reply(playlistsRequest, std::vector<RemotePlaylist>{remotePlaylist("other", "Made before", 1)}));
+    app->tick();
+    ASSERT_EQ(indexStore.playlists.size(), 2u);
+    EXPECT_EQ(indexStore.playlists[0].id, "other");
+    EXPECT_EQ(indexStore.playlists[1].id, "pl-77") << "the answer was asked before the playlist existed";
+}
+
+TEST_F(SavePlaylistTest, WhenTheAnswerHasThePlaylistTooItIsTheServersVersionThatCounts) {
+    play(tracks(2));
+    ASSERT_TRUE(server.replyVersion(server.lastRequest().id, "v1"));
+    app->tick();
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteAlbum>{}));
+    app->tick();
+    const auto playlistsRequest = server.lastRequest().id;
+    ASSERT_NO_FATAL_FAILURE(save());
+    ASSERT_TRUE(server.replyCreated(created().id, "pl-77"));
+    app->tick();
+    ASSERT_TRUE(server.reply(playlistsRequest, std::vector<RemotePlaylist>{remotePlaylist("pl-77", "Renamed on the server", 2)}));
+    app->tick();
+    ASSERT_EQ(indexStore.playlists.size(), 1u);
+    EXPECT_EQ(indexStore.playlists[0].name, "Renamed on the server");
+}
+
+TEST_F(SavePlaylistTest, TheIndexCountsOnlyTheTracksThatWereSent) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), remoteEntry("t2", "Rain"), remoteEntry("t5", "Dusk")}));
+    ASSERT_NO_FATAL_FAILURE(save());
+    ASSERT_NO_FATAL_FAILURE(answer());
+    ASSERT_EQ(indexStore.playlists.size(), 1u);
+    EXPECT_EQ(indexStore.playlists[0].songCount, 2);
+}
+
+TEST_F(SavePlaylistTest, AFailedSaveAddsNothingToTheIndex) {
+    play(tracks(2));
+    ASSERT_NO_FATAL_FAILURE(save());
+    ASSERT_TRUE(server.fail(created().id, MusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_TRUE(indexStore.playlists.empty());
+}
+
+TEST_F(SavePlaylistTest, AnAnswerWithoutAPlaylistIdSavesButAddsNothingToTheIndex) {
+    play(tracks(2));
+    ASSERT_NO_FATAL_FAILURE(save());
+    ASSERT_TRUE(server.replyCreated(created().id, ""));
+    app->tick();
+    EXPECT_EQ(speech.last(), "Saved Queue, 27 October 14:05.");
+    EXPECT_TRUE(indexStore.playlists.empty());
+}
+
+TEST_F(SavePlaylistTest, ASavedPlaylistJoinsTheOnesAlreadyInTheIndex) {
+    const std::string key = TrackCache::serverKey("https://music.example", "ann");
+    indexStore.playlists = {{key, "old", "Older", 9, 5}};
+    play(tracks(2));
+    ASSERT_NO_FATAL_FAILURE(save());
+    ASSERT_NO_FATAL_FAILURE(answer());
+    ASSERT_EQ(indexStore.playlists.size(), 2u);
+    EXPECT_EQ(indexStore.playlists[0].id, "new-playlist");
+    EXPECT_EQ(indexStore.playlists[1].id, "old");
 }
 
 TEST_F(SavePlaylistTest, SendsTheIdsInThePlayOrderOfAShuffledQueue) {

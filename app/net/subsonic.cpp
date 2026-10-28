@@ -225,10 +225,10 @@ MusicServer::RequestId Subsonic::playlistTracks(std::string playlistId, Done<Rem
 }
 
 MusicServer::RequestId Subsonic::createPlaylist(std::string name, std::vector<std::string> trackIds,
-                                                std::function<void(Error)> done) {
+                                                std::function<void(Error, std::string)> done) {
     if (configured() && trackIds.size() > kMaxPlaylistTracks) { // the URL would be too long: say so, send nothing
         RequestId id = ++lastId_;
-        waiting_.emplace(id, [done = std::move(done)](Reply) { done(Error::Server); });
+        waiting_.emplace(id, [done = std::move(done)](Reply) { done(Error::Server, {}); });
         std::lock_guard lock(inbox_->mutex);
         inbox_->ready.emplace_back(id, Reply{Error::Server, {}, false});
         return id;
@@ -236,8 +236,15 @@ MusicServer::RequestId Subsonic::createPlaylist(std::string name, std::vector<st
     Params params = {{"name", std::move(name)}};
     for (std::string& trackId : trackIds) params.emplace_back("songId", std::move(trackId));
     return request(
-        "createPlaylist", params, [](const std::string& body) { return Reply{subsonic::parseStatus(body), {}, false}; },
-        [done = std::move(done)](Reply reply) { done(reply.error); });
+        "createPlaylist", params,
+        [](const std::string& body) {
+            auto result = subsonic::parseCreatedPlaylist(body);
+            return Reply{result.error, std::move(result.id), false};
+        },
+        [done = std::move(done)](Reply reply) {
+            auto* id = std::get_if<std::string>(&reply.data);
+            done(reply.error, reply.error == Error::None && id ? std::move(*id) : std::string());
+        });
 }
 
 void Subsonic::cancel(RequestId id) {
