@@ -226,10 +226,13 @@ Screen playerScreen(bool music) {
     return {music ? Screen::Kind::MusicPlayer : Screen::Kind::BookPlayer, "Now playing", {}, {}};
 }
 
-// The default random numbers of Shuffle: one generator for the run, seeded once.
-std::size_t systemRandom(std::size_t bound) {
-    static std::mt19937_64 generator{std::random_device{}()};
-    return std::uniform_int_distribution<std::size_t>(0, bound - 1)(generator);
+// The default random numbers of Shuffle: one generator for the run, seeded from the clock (core reads no
+// other source of chance; a front end or a test can set its own with setRandom()).
+QueueRandom clockRandom(const Clock& clock) {
+    const std::uint64_t seed = static_cast<std::uint64_t>(clock.now().time_since_epoch().count()) ^
+                               (static_cast<std::uint64_t>(clock.wallTime()) << 20);
+    auto generator = std::make_shared<std::mt19937_64>(seed);
+    return [generator](std::size_t bound) { return std::uniform_int_distribution<std::size_t>(0, bound - 1)(*generator); };
 }
 
 // Room left on the disk of `folder`, which must exist.
@@ -297,7 +300,7 @@ App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeContro
     : tts_(speech), player_(player), earcons_(sounds), volume_(volume), server_(server), downloader_(downloader),
       index_(libraryStore), scanner_(scanner), config_(config), state_(state),
       savedState_(state.values()), queueFile_(std::move(queueFile)), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)),
-      freeSpace_(spaceOnDisk), random_(systemRandom), lastActivity_(clock.now()) {
+      freeSpace_(spaceOnDisk), random_(clockRandom(clock)), lastActivity_(clock.now()) {
     textFiles_ = files;
 }
 
@@ -2484,7 +2487,7 @@ std::vector<MenuItem> App::musicPlayerMenu() {
 // A "Setting with list" item that the queue backs instead of config.yaml: OK opens the list on the current
 // value, choosing one applies it at once and goes back.
 MenuItem App::queueSetting(const std::string& label, std::vector<std::string> names, std::function<size_t()> current,
-                           std::function<void(size_t)> apply) {
+                           std::function<bool(size_t)> apply) {
     MenuItem item;
     item.label = label;
     item.value = [names, current] { return names[current()]; };
@@ -2494,8 +2497,7 @@ MenuItem App::queueSetting(const std::string& label, std::vector<std::string> na
         const size_t now = current();
         for (size_t i = 0; i < names.size(); ++i) {
             MenuItem option = action(names[i], [this, apply, i] {
-                apply(i);
-                back();
+                if (apply(i)) back(); // refused: the list stays, with the reason said
             });
             if (i == now) option.value = [] { return std::string("current"); };
             items.push_back(std::move(option));
@@ -2508,19 +2510,25 @@ MenuItem App::queueSetting(const std::string& label, std::vector<std::string> na
 // The lists are in the order of the enums.
 MenuItem App::shuffleItem() {
     return queueSetting("Shuffle", {"off", "tracks", "albums"}, [this] { return size_t(queue_.shuffle()); },
-                        [this](size_t i) { setShuffle(QueueShuffle(i)); });
+                        [this](size_t i) { return setShuffle(QueueShuffle(i)); });
 }
 
 MenuItem App::repeatItem() {
     // Read when a track ends, so there is nothing to apply now.
     return queueSetting("Repeat", {"off", "all", "track"}, [this] { return size_t(queue_.repeat()); },
-                        [this](size_t i) { queue_.setRepeat(QueueRepeat(i)); });
+                        [this](size_t i) {
+                            queue_.setRepeat(QueueRepeat(i));
+                            return true;
+                        });
 }
 
 // The current entry stays current and keeps playing; what follows is shuffled (or put back in order).
-void App::setShuffle(QueueShuffle mode) {
+// Not while a track the user chose is opening: its undo names the track by its place in the play order.
+bool App::setShuffle(QueueShuffle mode) {
+    if (queueLocked()) return false;
     queue_.setShuffle(mode, random_);
     followQueue();
+    return true;
 }
 
 // The queue was reordered: what the player holds by the position of its track follows the current entry.
@@ -2588,8 +2596,7 @@ namespace {
 std::string queuePlaylistName(std::time_t when) {
     static const char* const months[] = {"January", "February", "March",     "April",   "May",      "June",
                                          "July",    "August",   "September", "October", "November", "December"};
-    std::tm t{};
-    localtime_r(&when, &t);
+    const std::tm t = *std::localtime(&when); // as the spoken time does
     char buf[16];
     std::snprintf(buf, sizeof buf, "%02d:%02d", t.tm_hour, t.tm_min);
     return "Queue, " + std::to_string(t.tm_mday) + " " + months[t.tm_mon % 12] + " " + buf;
@@ -2658,7 +2665,9 @@ void App::finishQueueEdit(size_t screensAbove, size_t index, const std::string& 
     closeScreens(screens_.size() - (screensAbove - 1));
     popScreen(); // rebuilds the Queue list
     Screen& list = screens_.back();
-    list.index = std::min(index, list.items.empty() ? 0 : list.items.size() - 1);
+    // On an entry: not on Save as playlist, which follows the last one, so OK again cannot start a request.
+    const size_t last = queue_.empty() ? 0 : queue_.size() - 1;
+    list.index = std::min({index, last, list.items.empty() ? 0 : list.items.size() - 1});
     earcons_.play(Earcon::Close);
     say(said);
 }
@@ -3075,12 +3084,12 @@ void App::restorePrevious() {
 // is where they were. The other player's book is parked with its place, so Continue brings it
 // back; a book of the same kind replaces the loaded one and leaves the parked one alone.
 App::OpenResult App::switchTo(const Book& book, bool music, size_t file, double position, bool autoplay,
-                              Then opened, std::optional<Queue> queue) {
+                              Then opened, std::optional<Queue> queue, bool continuing) {
     dropPendingOpen(); // a failure goes back to what was loaded before it
     cancelMarkPing();  // Play's answer is for the queue that was loaded
     // A queue edited by hand that this one replaces is kept once this one has opened.
     std::optional<PreviousQueue> kept;
-    if (music && queue) kept = editedQueue();
+    if (music && queue && !continuing) kept = editedQueue();
     size_t wasFile = fileIndex_;
     bool wasOpen = player_.isOpen(), wasPlaying = player_.playing();
     double wasAt = player_.position();
@@ -3232,7 +3241,7 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
 }
 
 // A music queue entry plays only if its file is there, or it is of the server set up now (url and user) and
-// that server is not marked down. Menu tries a server that is marked down: the user chose from what it just
+// that server is not marked down or the track is downloaded. Menu tries a server that is marked down: the user chose from what it just
 // listed, and an open that works clears the mark.
 App::Availability App::availability(size_t i, Origin origin) const {
     const QueueEntry& e = queue_.at(i);
@@ -3241,7 +3250,9 @@ App::Availability App::availability(size_t i, Origin origin) const {
         return std::filesystem::exists(e.path, ec) ? Availability::Yes : Availability::Gone;
     }
     if (!ofServerNow(e)) return Availability::Gone;
-    return serverDown_ && origin != Origin::Menu ? Availability::ServerDown : Availability::Yes;
+    if (!serverDown_ || origin == Origin::Menu) return Availability::Yes;
+    // A downloaded track plays from its file, whatever the server does.
+    return cachedFile(e.trackId, true) ? Availability::Yes : Availability::ServerDown;
 }
 
 // A remote entry of the server in the config: the same address and user (a cached copy of it is too).
@@ -3428,11 +3439,20 @@ bool App::remoteAhead() const {
     return false;
 }
 
+bool App::remoteAheadMemo() {
+    AheadMemo& m = aheadMemo_;
+    if (!m.known || m.revision != queue_.revision() || m.file != fileIndex_ || m.music != music_ || m.loaded != !!book_ ||
+        m.configured != server_.configured()) {
+        m = AheadMemo{queue_.revision(), fileIndex_, music_, !!book_, server_.configured(), true, remoteAhead()};
+    }
+    return m.ahead;
+}
+
 // tick(): while the server is marked down and the music player has its entries ahead, ping it when due. With
 // none ahead the pings stop and the schedule starts again (10 s) when there are.
 void App::checkServerMark(TimePoint now) {
     if (!serverDown_) return;
-    if (sleeping_ || !remoteAhead()) {
+    if (sleeping_ || !remoteAheadMemo()) {
         pingDue_ = now + kPingFirst;
         pingStep_ = 0;
         return;
@@ -3543,7 +3563,7 @@ void App::continueParked() {
                  pausedAt_.reset();
                  enterPlayerFrom(screen);
              },
-             target.music ? std::optional<Queue>(std::move(target.queue)) : std::nullopt);
+             target.music ? std::optional<Queue>(std::move(target.queue)) : std::nullopt, true);
 }
 
 void App::pause(bool announce) {
@@ -4398,6 +4418,7 @@ void App::powerOff() {
 void App::restart(bool saveFirst) {
     if (saveFirst) saveOnExit();
     shutDown_ = false;
+    cancelMarkPing(); // Play's answer must not start the music of the queue that is gone
     pendingOpen_.reset();
     player_.close();
     book_.reset();

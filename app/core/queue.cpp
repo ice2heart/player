@@ -1,12 +1,15 @@
 #include "core/queue.h"
 
 #include <algorithm>
+#include <atomic>
 #include <numeric>
 #include <utility>
 
 namespace oap {
 
 namespace {
+
+std::atomic<std::uint64_t> lastRevision{0};
 
 template <class T>
 void shuffleWith(std::vector<T>& v, const QueueRandom& random) {
@@ -16,6 +19,8 @@ void shuffleWith(std::vector<T>& v, const QueueRandom& random) {
 
 } // namespace
 
+void Queue::touch() { revision_ = ++lastRevision; }
+
 void Queue::replace(std::vector<QueueEntry> entries, std::size_t start) {
     entries_ = std::move(entries);
     order_.resize(entries_.size());
@@ -24,9 +29,10 @@ void Queue::replace(std::vector<QueueEntry> entries, std::size_t start) {
     shuffle_ = QueueShuffle::Off;
     repeat_ = QueueRepeat::Off;
     edited_ = false;
+    touch();
 }
 
-void Queue::restore(std::vector<QueueEntry> entries, std::vector<std::size_t> order, std::size_t position,
+bool Queue::restore(std::vector<QueueEntry> entries, std::vector<std::size_t> order, std::size_t position,
                     QueueShuffle shuffle, QueueRepeat repeat, bool edited) {
     std::vector<bool> seen(entries.size(), false);
     bool valid = order.size() == entries.size();
@@ -34,6 +40,9 @@ void Queue::restore(std::vector<QueueEntry> entries, std::vector<std::size_t> or
         valid = order[i] < entries.size() && !seen[order[i]];
         if (valid) seen[order[i]] = true;
     }
+    // With shuffle off the play order is the original one (move() relies on it).
+    if (valid && shuffle == QueueShuffle::Off && entries.size() > 0)
+        for (std::size_t i = 0; valid && i < order.size(); ++i) valid = order[i] == i;
     entries_ = std::move(entries);
     if (valid) {
         order_ = std::move(order);
@@ -48,6 +57,8 @@ void Queue::restore(std::vector<QueueEntry> entries, std::vector<std::size_t> or
     pos_ = valid && position < entries_.size() ? position : 0;
     repeat_ = repeat;
     edited_ = edited;
+    touch();
+    return valid;
 }
 
 Queue Queue::around(std::size_t limit) const {
@@ -80,6 +91,7 @@ void Queue::insertAt(std::size_t originalIndex, std::size_t orderPos, const std:
     std::iota(added.begin(), added.end(), originalIndex);
     order_.insert(order_.begin() + static_cast<std::ptrdiff_t>(orderPos), added.begin(), added.end());
     edited_ = true;
+    touch();
 }
 
 void Queue::playNext(const std::vector<QueueEntry>& entries) {
@@ -101,6 +113,7 @@ bool Queue::remove(std::size_t position, bool* removedCurrent) {
     if (pos_ >= order_.size()) pos_ = 0; // the last was current: the next is the first
     if (order_.empty()) shuffle_ = QueueShuffle::Off; // nothing to be shuffled
     edited_ = true;
+    touch();
     if (removedCurrent) *removedCurrent = wasCurrent;
     return true;
 }
@@ -120,6 +133,7 @@ bool Queue::move(std::size_t from, std::size_t to) {
         std::iota(order_.begin(), order_.end(), std::size_t{0});
     }
     edited_ = true;
+    touch();
     return true;
 }
 
@@ -129,6 +143,7 @@ Queue::Step Queue::advance() {
 }
 
 Queue::Step Queue::next() {
+    touch();
     if (pos_ + 1 < order_.size()) {
         ++pos_;
         return Step::Moved;
@@ -142,6 +157,7 @@ Queue::Step Queue::next() {
 }
 
 Queue::Step Queue::previous() {
+    touch();
     if (pos_ > 0) {
         --pos_;
         return Step::Moved;
@@ -164,11 +180,13 @@ std::optional<std::size_t> Queue::upcoming() const {
 bool Queue::setCurrent(std::size_t position) {
     if (position >= order_.size()) return false;
     pos_ = position;
+    touch();
     return true;
 }
 
 void Queue::setShuffle(QueueShuffle mode, const QueueRandom& random) {
     if (empty()) return; // nothing to shuffle; a new queue starts with shuffle off
+    touch();
     shuffle_ = mode;
     if (mode == QueueShuffle::Off) {
         const std::size_t current = order_[pos_];

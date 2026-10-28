@@ -3,6 +3,7 @@
 // current entry, shuffle, repeat and whether the user edited it by hand. A plain class: no App, no I/O.
 // The random generator is passed in, so tests choose the shuffle.
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
@@ -48,8 +49,9 @@ public:
     // Rebuilds a queue that was saved: `order` is the play order (indexes into `entries`), `position` the
     // current entry in it. Nothing read from a file is trusted: an `order` that is not each index exactly once
     // gives the original order with shuffle off and the first entry current (the position was in the lost order), and a `position`
-    // past the end gives the first entry.
-    void restore(std::vector<QueueEntry> entries, std::vector<std::size_t> order, std::size_t position,
+    // past the end gives the first entry. So does an order that is not the original one with shuffle off: only a
+    // shuffled queue has another. Returns whether `order` and `position` were kept.
+    bool restore(std::vector<QueueEntry> entries, std::vector<std::size_t> order, std::size_t position,
                  QueueShuffle shuffle, QueueRepeat repeat, bool edited);
 
     // A copy cut to at most `limit` entries: a window of the play order around the current entry (as centred
@@ -84,9 +86,17 @@ public:
     // name, and the rest of the current album plays first). Off gives back the original order with the
     // same current entry. On an empty queue it does nothing.
     void setShuffle(QueueShuffle mode, const QueueRandom& random);
-    void setRepeat(QueueRepeat mode) { repeat_ = mode; }
+    void setRepeat(QueueRepeat mode) {
+        repeat_ = mode;
+        touch();
+    }
     QueueShuffle shuffle() const { return shuffle_; }
     QueueRepeat repeat() const { return repeat_; }
+
+    // A stamp that is new whenever the entries, their order, the current entry, shuffle or repeat change, and
+    // is shared by copies: two queues with the same stamp are the same (a cache key for what is worked out
+    // from the queue). 0 for a queue never touched.
+    std::uint64_t revision() const { return revision_; }
 
     // True once the user added, moved or removed something since replace().
     bool edited() const { return edited_; }
@@ -104,6 +114,7 @@ public:
     const std::vector<std::size_t>& playOrder() const { return order_; }
 
 private:
+    void touch();
     void insertAt(std::size_t originalIndex, std::size_t orderPos, const std::vector<QueueEntry>& entries);
 
     std::vector<QueueEntry> entries_; // original order
@@ -112,6 +123,7 @@ private:
     QueueShuffle shuffle_ = QueueShuffle::Off;
     QueueRepeat repeat_ = QueueRepeat::Off;
     bool edited_ = false;
+    std::uint64_t revision_ = 0;
 };
 
 } // namespace oap

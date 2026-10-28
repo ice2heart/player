@@ -144,8 +144,8 @@ std::optional<SavedQueue> parseQueue(const std::string& text) {
         }
     }
     if (entries.empty()) return std::nullopt;
-    saved.queue.restore(std::move(entries), std::move(order), position, shuffle, repeat, edited);
-    if (saved.queue.position() != position) saved.position = 0; // another entry is current: the seconds were not its own
+    const bool kept = saved.queue.restore(std::move(entries), std::move(order), position, shuffle, repeat, edited);
+    if (!kept || saved.queue.position() != position) saved.position = 0; // another entry is current: the seconds were not its own
     return saved;
 }
 

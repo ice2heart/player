@@ -73,7 +73,7 @@ public:
     using FreeSpace = std::function<std::optional<std::uintmax_t>(const std::filesystem::path&)>;
     void setFreeSpace(FreeSpace freeSpace) { freeSpace_ = std::move(freeSpace); }
     // Where Shuffle gets its numbers: a random number in [0, bound). The default is a generator seeded from
-    // std::random_device; a test sets one that makes the shuffle known.
+    // the Clock; a test sets one that makes the shuffle known.
     void setRandom(QueueRandom random) { random_ = std::move(random); }
     // How many bytes the Cache size setting counts a gigabyte as (a test sets a small one).
     void setCacheGigabyte(std::uintmax_t bytes) { cacheGigabyte_ = bytes; }
@@ -216,10 +216,10 @@ private:
     std::vector<MenuItem> bookPlayerMenu();
     std::vector<MenuItem> chaptersMenu();
     MenuItem queueSetting(const std::string& label, std::vector<std::string> names, std::function<size_t()> current,
-                          std::function<void(size_t)> apply);
+                          std::function<bool(size_t)> apply); // false: refused, the list stays
     MenuItem shuffleItem();
     MenuItem repeatItem();
-    void setShuffle(QueueShuffle mode);
+    bool setShuffle(QueueShuffle mode); // false while a track the user chose is opening
     void followQueue();
 
     // The Queue list (docs/queue.md, "The Queue list"); entries are named by their play order position.
@@ -425,9 +425,10 @@ private:
     // Plays `queue` as it is (its current entry, shuffle and repeat) in place of the loaded one.
     bool playKept(const Book& list, Queue queue, Then opened = {}, double position = 0);
     static std::vector<QueueEntry> entriesOf(const Book& list); // the queue entries of a local or server list
-    // `queue` is the music queue when `music`; the book player has none.
+    // `queue` is the music queue when `music`; the book player has none. `continuing`: it is the parked player
+    // coming back, so the edited queue parked is not one it replaces.
     OpenResult switchTo(const Book& book, bool music, size_t file, double position, bool autoplay, Then opened = {},
-                        std::optional<Queue> queue = std::nullopt);
+                        std::optional<Queue> queue = std::nullopt, bool continuing = false);
 
     // The tracks of the loaded player: the play order of the queue (music), or the files of the book.
     // fileIndex_ is the current one in both.
@@ -458,6 +459,7 @@ private:
     void continueAfterFailure(size_t file, const std::string& title); // a track of the queue did not open at the end of the one before
     void markServerDown();
     void clearServerDown();
+    bool remoteAheadMemo(); // the same, worked out again only when the queue or the current track changed
     bool remoteAhead() const; // some entry that can come up (from the current one on, or any with Repeat all) is of the server set up now
     void checkServerMark(Clock::TimePoint now); // tick(): the background pings
     void startMarkPing(bool forPlay);
@@ -679,6 +681,13 @@ private:
     TimePoint pingDue_;                       // when the next background ping is sent (while serverDown_)
     int pingStep_ = 0;                        // pings that went unanswered: picks the wait to the next
     MusicServer::RequestId markPing_ = 0;     // in flight, 0: none
+    // remoteAhead() worked out for this queue stamp, current track and player; checkServerMark() asks every
+    // tick and the queue is long.
+    struct AheadMemo {
+        std::uint64_t revision = 0;
+        size_t file = 0;
+        bool music = false, loaded = false, configured = false, known = false, ahead = false;
+    } aheadMemo_;
     // The track pre-opened (checkReadAhead()), if any. Only opening that track
     // takes the pre-open, and that moves fileIndex_ on to it. The player takes
     // a pre-open over only for the same URL, so opening that track at the same

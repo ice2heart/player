@@ -177,7 +177,8 @@ random generator is passed in, so tests choose the shuffle.
   - its local file is missing;
   - its server is not the one set up now (another url or user), there is no server, or
     the build has no network support;
-  - its server is **marked down** (below).
+  - its server is **marked down** (below) and it is not downloaded: a track with a complete copy in the
+    cache plays from that file whatever the server does.
 - **A server that fails is marked down.** When a remote track does not open because
   the server cannot be reached, or a stream breaks off and `Player`'s retries give up,
   the server is marked down. Its entries are then skipped without being opened, since
@@ -351,7 +352,12 @@ Phase 2 is built as planned, with these differences. The code is described in
 - **Repeat all** wraps Left / Right and Previous on the first and last track too; with nothing playable
   the queue ends with "End of queue" instead of going round. **Go to first track** is the first entry in
   the play order.
-- **A cached copy of a track of a server that is marked down is skipped too** (it is still a remote entry).
+- **A downloaded track of a server that is marked down plays.** The plan skipped every remote entry of a
+  marked-down server; `availability()` now finds a complete cached copy first, so an album that is
+  downloaded plays to its end offline. Pings still run while it is ahead (it is a remote entry).
+- **Shuffle waits like Move and Remove** while a track the user chose is still opening (it says "Loading. Try
+  again when it has started." and the list stays). After Move, Remove and Play next the cursor of the Queue
+  list stays on an entry, never on Save as playlist.
 - **The Queue list counts its trailing items:** Save as playlist, Previous queue and Clear queue are items, so a
   queue of 30 is "5 of 32".
 

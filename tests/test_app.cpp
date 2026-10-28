@@ -9492,6 +9492,32 @@ TEST_F(UnavailableTest, AServerTrackThatFailsAtOnceMarksTheServerDownToo) {
     EXPECT_EQ(std::count(player.opened.begin(), player.opened.end(), "fake://stream/t3"), 0);
 }
 
+TEST_F(UnavailableTest, ADownloadedTrackStillPlaysWhileTheServerIsMarkedDown) {
+    cache = base / "cache";
+    TrackCache store(diskFiles(), cache, "https://music.example", "ann");
+    fs::create_directories(store.listFolder(albumSource("weather")));
+    std::vector<CachedTrack> tracks;
+    for (std::string id : {"t3", "t4"}) {
+        touch(store.listFolder(albumSource("weather")) / (id + ".mp3"));
+        tracks.push_back({id, id + ".mp3", id, 100, "", true, 0});
+    }
+    ASSERT_TRUE(store.save(cachedAlbum("weather", tracks)));
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), remoteEntry("t2", "Rain"),
+                                         remoteEntry("t3", "Fog"), remoteEntry("t4", "Mist"),
+                                         remoteEntry("t5", "Dusk")}));
+    player.unopenable = {"fake://stream/t2"};
+    trackEnds();
+    finishOpen(); // Rain fails: the server is marked down
+    const std::string fog = (store.listFolder(albumSource("weather")) / "t3.mp3").string();
+    EXPECT_EQ(player.file, fog) << "downloaded: no wait on the server";
+    EXPECT_TRUE(player.playing());
+    trackEnds();
+    EXPECT_EQ(player.file, (store.listFolder(albumSource("weather")) / "t4.mp3").string());
+    trackEnds();
+    EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.") << "Dusk is not downloaded";
+}
+
 TEST_F(UnavailableTest, SkippingToAMarkedDownServerTrackWithAKeyPassesItToo) {
     start_();
     ASSERT_TRUE(app->playQueue("Mixed", mixed()));
@@ -9755,6 +9781,17 @@ TEST_F(UnavailableTest, PowerOffWhilePlayAsksTheServerDropsTheAnswer) {
     EXPECT_FALSE(server.replyPing(ping, {"navidrome", "0.64.2"})) << "cancelled";
     app->tick();
     EXPECT_FALSE(player.playing());
+}
+
+TEST_F(UnavailableTest, RestartWhilePlayAsksTheServerDropsTheAnswer) {
+    rainBreaksOff();
+    press(Button::PlayPause);
+    auto ping = server.lastRequest().id;
+    hold(Button::Power);
+    open("Restart");
+    EXPECT_FALSE(server.replyPing(ping, {"navidrome", "0.64.2"})) << "cancelled";
+    app->tick();
+    EXPECT_FALSE(player.playing()) << "nothing starts by itself after a restart";
 }
 
 TEST_F(UnavailableTest, NoPingsWhileTheDeviceSleeps) {
@@ -10476,6 +10513,22 @@ TEST_F(PlayerOptionsTest, RestoringAQueueThatWasParkedBehindABookBringsBackItsPo
     EXPECT_EQ(player.pos, 33);
 }
 
+TEST_F(PlayerOptionsTest, ContinuingAnEditedParkedQueueDoesNotOfferItAsItsOwnPreviousQueue) {
+    playRoadTrip();
+    addToQueueOn("Lullaby");
+    hold(Button::Home);
+    open("Library");
+    open("Alpha"); // the book plays; the edited music queue waits
+    hold(Button::Home);
+    ASSERT_EQ(labels()[1], "Continue");
+    press(Button::Down);
+    press(Button::Ok);
+    ASSERT_EQ(app->screens().back().kind, Screen::Kind::MusicPlayer);
+    press(Button::Ok);
+    open("Queue");
+    EXPECT_FALSE(hasLabel("Previous queue"));
+}
+
 TEST_F(PlayerOptionsTest, RestoringThePreviousQueueBringsBackItsShuffleAndRepeat) {
     playRoadTrip();
     app->setRandom([](size_t) { return size_t(0); });
@@ -10762,6 +10815,22 @@ TEST_F(ShuffleRepeatTest, ShufflingWhileAServerTrackOpensKeepsTrackOfWhichTrackI
     finishOpen();
     EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.") << "nothing after Rain plays";
     EXPECT_EQ(countOf(speech.said, "Rain, source unavailable."), 0);
+    EXPECT_EQ(app->nowPlaying().chapter, "Rain");
+}
+
+TEST_F(ShuffleRepeatTest, ShuffleWaitsWhileATrackTheUserChoseIsStillOpening) {
+    play({localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm"), remoteEntry("t3", "Rain"),
+          localEntry(lullaby(), "Lullaby")}, 1);
+    hold(Button::Forward);
+    ASSERT_TRUE(player.opening()) << "Rain takes a moment";
+    press(Button::Ok);
+    open("Shuffle");
+    open("tracks");
+    EXPECT_EQ(speech.last(), "Loading. Try again when it has started.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(level().title, "Shuffle") << "the list stays";
+    finishOpen();
+    EXPECT_EQ(settingValue("Shuffle"), "off");
     EXPECT_EQ(app->nowPlaying().chapter, "Rain");
 }
 
@@ -11219,6 +11288,21 @@ TEST_F(QueueListTest, RemoveTakesAnEntryOutAndTheOthersKeepPlaying) {
     EXPECT_EQ(level().index, 3u) << "on the entry that took its place";
     EXPECT_TRUE(player.playing());
     EXPECT_EQ(app->nowPlaying().chapter, "T1");
+}
+
+TEST_F(QueueListTest, RemovingTheLastEntryLeavesTheCursorOnTheNewLastEntryNotOnSaveAsPlaylist) {
+    play(tracks(5));
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T5", "Remove"));
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T2", "T3", "T4"}));
+    EXPECT_EQ(level().items[level().index].label, "T4");
+}
+
+TEST_F(QueueListTest, PingsStopWhenTheLastServerTrackAheadIsRemoved) {
+    rainFails(); // Calm plays, Dusk (server) is ahead and the server is marked down
+    idle(1s);
+    ASSERT_NO_FATAL_FAILURE(optionsOn("Dusk", "Remove"));
+    idle(10min);
+    EXPECT_EQ(pings(), 0) << "nothing of the server is ahead any more";
 }
 
 TEST_F(QueueListTest, RemovingTheCurrentEntryStopsItAndMakesTheNextOneCurrentPaused) {

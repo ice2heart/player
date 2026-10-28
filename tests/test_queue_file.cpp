@@ -159,6 +159,16 @@ TEST(QueueFile, AWrongPlayOrderGivesTheOriginalOrder) {
     }
 }
 
+TEST(QueueFile, AWrongPlayOrderDropsTheSecondsEvenWhenThePositionWasZero) {
+    for (const char* order : {"order\t0\t0\t1", "order\t2\t0\t1"}) { // the second one is valid, but not with shuffle off
+        auto back = parseQueue(std::string("oap-queue\t1\nshuffle\toff\nposition\t0\nseconds\t30\n") + order +
+                               "\nL\t/a.mp3\ta\t\t\nL\t/b.mp3\tb\t\t\nL\t/c.mp3\tc\t\t\n");
+        ASSERT_TRUE(back) << order;
+        EXPECT_EQ(back->queue.position(), 0u) << order;
+        EXPECT_EQ(back->position, 0.0) << order << ": the seconds were of another entry";
+    }
+}
+
 TEST(QueueFile, APositionPastTheEndGivesTheFirstEntryAndBadNumbersGiveZero) {
     for (const char* position : {"position\t3", "position\t99999999999999999999", "position\t-1", "position\tx"}) {
         auto back = parseQueue(std::string("oap-queue\t1\nseconds\t30\n") + position + "\nL\t/a.mp3\ta\t\t\nL\t/b.mp3\tb\t\t\nL\t/c.mp3\tc\t\t\n");

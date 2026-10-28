@@ -316,8 +316,8 @@ Sleep timer, Options in the music player is Go to album · Album info (Star come
 - Save as playlist says "Saving." first, then "Saved Queue, 27 October 14:05." and how many tracks were not
   saved. At most 150 tracks go in one playlist (the request is a GET); the rest are counted as not saved.
 - A track you choose from a list the server just gave (OK in a menu) is tried even while the server is
-  marked down; the entries that follow it are skipped until a ping answers. Cached copies of a track of a
-  server that is marked down are skipped too.
+  marked down; the entries that follow it are skipped until a ping answers, except the ones that are
+  downloaded: they play from their files.
 - The queue file keeps up to 5000 entries around the current one. The Previous queue is not kept
   across a restart. A restored queue does not cache tracks automatically until another list plays.
 

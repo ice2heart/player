@@ -551,6 +551,57 @@ TEST(QueueRestore, ADuplicateMissingOrOutOfRangeOrderFallsBackToTheOriginalOrder
     }
 }
 
+TEST(QueueRestore, AnotherOrderWithShuffleOffFallsBackToTheOriginalOrderAndMoveMovesTheRightEntry) {
+    Queue q;
+    EXPECT_FALSE(q.restore(tracks({"a", "b", "c"}), {2, 0, 1}, 1, QueueShuffle::Off, QueueRepeat::Off, false));
+    EXPECT_EQ(order(q), "abc");
+    EXPECT_EQ(currentTitle(q), "a");
+    ASSERT_TRUE(q.move(0, 2));
+    EXPECT_EQ(order(q), "bca");
+    Queue ok;
+    EXPECT_TRUE(ok.restore(tracks({"a", "b", "c"}), {0, 1, 2}, 1, QueueShuffle::Off, QueueRepeat::Off, false));
+    EXPECT_EQ(currentTitle(ok), "b");
+}
+
+TEST(QueueRevision, EveryChangeGetsANewStampAndCopiesShareIt) {
+    Queue q;
+    std::uint64_t seen = q.revision();
+    auto changed = [&] {
+        const bool is = q.revision() != seen;
+        seen = q.revision();
+        return is;
+    };
+    q.replace(tracks({"a", "b", "c", "d"}));
+    EXPECT_TRUE(changed()) << "replace";
+    q.append(tracks({"e"}));
+    EXPECT_TRUE(changed()) << "append";
+    q.playNext(tracks({"f"}));
+    EXPECT_TRUE(changed()) << "playNext";
+    ASSERT_TRUE(q.move(0, 2));
+    EXPECT_TRUE(changed()) << "move";
+    ASSERT_TRUE(q.remove(1));
+    EXPECT_TRUE(changed()) << "remove";
+    ASSERT_TRUE(q.setCurrent(2));
+    EXPECT_TRUE(changed()) << "setCurrent";
+    q.next();
+    EXPECT_TRUE(changed()) << "next";
+    q.previous();
+    EXPECT_TRUE(changed()) << "previous";
+    q.setShuffle(QueueShuffle::Tracks, kZero);
+    EXPECT_TRUE(changed()) << "setShuffle";
+    q.setRepeat(QueueRepeat::All);
+    EXPECT_TRUE(changed()) << "setRepeat";
+    EXPECT_TRUE(q.restore(tracks({"a", "b"}), {1, 0}, 0, QueueShuffle::Tracks, QueueRepeat::Off, false));
+    EXPECT_TRUE(changed()) << "restore";
+    Queue copy = q;
+    EXPECT_EQ(copy.revision(), q.revision());
+    q.append(tracks({"g"}));
+    EXPECT_NE(copy.revision(), q.revision());
+    EXPECT_FALSE(q.setCurrent(99));
+    EXPECT_TRUE(changed()) << "append";
+    EXPECT_FALSE(changed()) << "a refused change leaves the stamp";
+}
+
 TEST(QueueRestore, APositionPastTheEndIsTheFirstEntryAndNothingIsNothing) {
     Queue q;
     q.restore(tracks({"a", "b"}), {1, 0}, 5, QueueShuffle::Tracks, QueueRepeat::Off, false);
