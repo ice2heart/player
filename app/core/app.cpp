@@ -1450,11 +1450,13 @@ MenuItem App::albumEntry(const MergedAlbum& m) {
         album.id = ref.starts_with(prefix) ? ref.substr(prefix.size()) : std::string();
         album.name = item.title;
         album.artist = item.artist;
-        MenuItem entry = action(item.title, [this, album, info, id = item.id] { openRemoteAlbum(album, info, id); });
+        MenuItem entry = action(item.title, [this, album, id = item.id] { openRemoteAlbum(album, id); });
         entry.okHint = "open";
         if (int n = trackCountOf(item); n > 0) entry.value = [n] { return countValue(size_t(n), "track"); };
         if (album.id.empty()) return entry;
-        return withOptions(std::move(entry), remotePick(Pick::Kind::Album, album.id, album.name, album.artist, item.id));
+        Pick pick = remotePick(Pick::Kind::Album, album.id, album.name, album.artist, item.id);
+        pick.info = info;
+        return withOptions(std::move(entry), std::move(pick));
     }
     Book a = bookOf(item);
     if (a.files.size() == 1 && a.files.front() == a.path) { // a loose track, not a folder
@@ -1467,14 +1469,16 @@ MenuItem App::albumEntry(const MergedAlbum& m) {
         track.okHint = "play";
         return withOptions(std::move(track), localTrackPick(a, 0, item.id));
     }
-    MenuItem entry = submenu(a.title, [this, a, info, id = item.id] { return albumMenu(a, info, id); });
+    MenuItem entry = submenu(a.title, [this, a, id = item.id] { return albumMenu(a, id); });
     entry.value = [n = a.files.size()] { return countValue(n, "track"); };
     if (a.files.empty()) return entry;
-    return withOptions(std::move(entry), localAlbumPick(a, item.id));
+    Pick pick = localAlbumPick(a, item.id);
+    pick.info = info; // where it plays from is in the album's Options
+    return withOptions(std::move(entry), std::move(pick));
 }
 
-// The tracks of an album, then "Album info" (where it plays from), which only reports.
-std::vector<MenuItem> App::albumMenu(const Book& album, const std::string& info, const std::string& playedId) {
+// The tracks of an album.
+std::vector<MenuItem> App::albumMenu(const Book& album, const std::string& playedId) {
     std::vector<MenuItem> items;
     for (size_t i = 0; i < album.files.size(); ++i) {
         MenuItem track = action(partTitle(album, i), [this, album, i, playedId] {
@@ -1485,8 +1489,11 @@ std::vector<MenuItem> App::albumMenu(const Book& album, const std::string& info,
         track.okHint = "play";
         items.push_back(withOptions(std::move(track), localTrackPick(album, i, playedId)));
     }
-    if (!info.empty()) items.push_back(action("Album info", [this, info] { say(info); }));
     return items;
+}
+
+void App::openLocalAlbum(const Book& album, const std::string& playedId, size_t at) {
+    openMenu(album.title, [this, album, playedId] { return albumMenu(album, playedId); }, at);
 }
 
 // ---------------------------------------------------------------- streaming
@@ -1581,7 +1588,7 @@ App::FetchPage App::fetchPages(std::function<MusicServer::RequestId(int offset, 
 // Opens at once with "Loading"; onPage() fills it in. With a page size, the
 // following pages are fetched in the background while the server has more.
 void App::openRemoteList(const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
-                         std::string emptyHelp, ListOrder order) {
+                         std::string emptyHelp, ListOrder order, std::string focusKey) {
     pushScreen({Screen::Kind::Menu, title, {}, {}}); // no build: popScreen() keeps what has loaded
     screens_.back().order = order;
     std::uint64_t id = screens_.back().id;
@@ -1590,6 +1597,7 @@ void App::openRemoteList(const std::string& title, FetchPage fetch, int pageSize
     list.pageSize = pageSize;
     list.emptyLabel = std::move(emptyLabel);
     list.emptyHelp = std::move(emptyHelp);
+    list.focusKey = std::move(focusKey);
     requestPage(id, 0, true);
     showStatus(id);
     earcons_.play(Earcon::Open);
@@ -1620,10 +1628,16 @@ void App::onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<M
     // The user is on "Loading" (not on an item that has loaded): move them to what came.
     bool onLoading = list.waiting && screen->index >= first;
     list.waiting = false;
+    size_t focus = first; // where the user lands: the first new item, or the one the list was opened for
     if (error != MusicServer::Error::None) {
         list.error = error;
     } else {
         size_t count = items.size();
+        for (size_t i = 0; i < count && !list.focusKey.empty(); ++i)
+            if (items[i].key == list.focusKey) {
+                focus = first + i;
+                list.focusKey.clear();
+            }
         screen->items.insert(screen->items.begin() + std::ptrdiff_t(list.loaded), std::make_move_iterator(items.begin()),
                              std::make_move_iterator(items.end()));
         list.loaded += count;
@@ -1631,7 +1645,7 @@ void App::onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<M
         if (list.pageSize > 0 && more && count > 0) requestPage(screenId, list.offset + int(count), false);
     }
     showStatus(screenId);
-    if (onLoading) screen->index = std::min(first, screen->items.size() - 1);
+    if (onLoading) screen->index = std::min(focus, screen->items.size() - 1);
     // Filled silently when the user has moved on to another screen, or sleeps.
     if (!onLoading || &screens_.back() != screen || sleeping_) return;
     tts_.stop();
@@ -1681,19 +1695,16 @@ void App::openAlbumList(const std::string& title, const std::string& listType, i
                    byName ? ListOrder::ByName : ListOrder::None);
 }
 
-void App::openRemoteAlbum(const RemoteAlbum& album, const std::string& info, const std::string& playedId) {
+void App::openRemoteAlbum(const RemoteAlbum& album, const std::string& playedId, const std::string& focusTrack) {
     openRemoteList(album.name,
                    fetchPages<RemoteTrack>(
                        [this, id = album.id](int, MusicServer::Done<RemoteTrack> done) {
                            return server_.albumTracks(id, std::move(done));
                        },
-                       [this, name = album.name, artist = album.artist, id = album.id, info, playedId](const std::vector<RemoteTrack>& tracks) {
-                           std::vector<MenuItem> items = trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id}, artist,
-                                                                    std::nullopt, playedId);
-                           if (!items.empty() && !info.empty()) items.push_back(action("Album info", [this, info] { say(info); }));
-                           return items;
+                       [this, name = album.name, artist = album.artist, id = album.id, playedId](const std::vector<RemoteTrack>& tracks) {
+                           return trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id}, artist, std::nullopt, playedId);
                        }),
-                   0, "No tracks", "This album has no tracks on the server.");
+                   0, "No tracks", "This album has no tracks on the server.", ListOrder::None, focusTrack);
 }
 
 // `withArtist`: lists of many artists say whose album it is; one artist's list says how long.
@@ -1734,10 +1745,12 @@ std::vector<MenuItem> App::trackItems(const std::string& title, const std::vecto
         std::string label = tracks[i].title.empty() ? "Track " + std::to_string(i + 1) : tracks[i].title;
         MenuItem track = action(label, [play, list, i] { play(list, i); });
         track.okHint = "play";
+        track.key = tracks[i].id;
         Pick pick;
         pick.make = [this, title, artist, source, list, i, label, playedId] {
             const RemoteTrack& t = (*list)[i];
-            Selection selection = remoteSelection(title, {t}, std::nullopt, artist, source.kind == RemoteSource::Kind::Album);
+            Selection selection = remoteSelection(title, {t}, std::nullopt, artist, source.kind == RemoteSource::Kind::Album,
+                                                  source.kind == RemoteSource::Kind::Album ? source.id : std::string());
             selection.title = selection.list.title = label;
             selection.playedId = playedId;
             return selection;
@@ -1761,9 +1774,13 @@ std::string selectionText(const std::string& title, size_t tracks) {
 }
 } // namespace
 
-// Options on the selected item of a menu. In a player it is for the playing track (queue.md step 2.5):
-// until then, and for an item with no actions, it says "No options" with the edge sound.
+// Options on the selected item of a menu; in the music player, for the playing track. The book player and
+// an item with no actions say "No options" with the edge sound.
 void App::openOptions() {
+    if (mode() == Mode::Player && music_ && book_ && !queue_.empty()) {
+        openMenu("Options, " + trackTitle(fileIndex_), [this] { return playerOptionsMenu(); });
+        return;
+    }
     if (mode() == Mode::Menu && !screens_.empty()) {
         const Screen& screen = screens_.back();
         if (!screen.items.empty() && screen.items[screen.index].options) {
@@ -1776,17 +1793,65 @@ void App::openOptions() {
     say("No options.");
 }
 
+std::vector<MenuItem> App::playerOptionsMenu() {
+    return {
+        action("Go to album", [this] { goToAlbum(); }),
+        action("Album info", [this] { sayPlayerInfo(); }),
+    };
+}
+
+// Leaves the Options screen and opens the album of the playing track, on that track: a local one from the
+// index, a server one loaded from the server. A track whose album is not known says so and stays.
+void App::goToAlbum() {
+    const QueueEntry* entry = queue_.current();
+    if (!entry) return;
+    const QueueEntry track = *entry; // opening a screen changes nothing here, but a copy is cheap and safe
+    if (track.kind == QueueEntry::Kind::Local) {
+        const IndexItem* item = index_.findByLocation(track.path).item;
+        Book album = item ? bookOf(*item) : Book{};
+        const bool loose = album.files.size() == 1 && album.files.front() == album.path; // a track, not a folder
+        if (!item || loose) {
+            earcons_.play(Earcon::Error);
+            say("No album for this track.");
+            return;
+        }
+        size_t at = 0;
+        for (size_t i = 0; i < album.files.size(); ++i)
+            if (album.files[i] == track.path) at = i;
+        const std::string playedId = item->id; // before the screens change
+        popScreen();
+        openLocalAlbum(album, playedId, at);
+        return;
+    }
+    if (availability(fileIndex_, Origin::Menu) != Availability::Yes || track.albumId.empty()) {
+        earcons_.play(Earcon::Error);
+        say("No album for this track.");
+        return;
+    }
+    const IndexItem* item = index_.findBySeen(LibraryIndex::seenRef(catalogueServerKey(), SeenKind::Album, track.albumId));
+    RemoteAlbum album;
+    album.id = track.albumId;
+    album.name = track.album;
+    album.artist = track.artist;
+    const std::string playedId = item ? item->id : std::string();
+    popScreen();
+    openRemoteAlbum(album, playedId, track.trackId);
+}
+
 MenuItem App::withOptions(MenuItem item, Pick pick) {
     item.options = [this, pick = std::move(pick)] { return optionsMenu(pick); };
     return item;
 }
 
 std::vector<MenuItem> App::optionsMenu(const Pick& pick) {
-    return {
+    std::vector<MenuItem> items = {
         action(kPlayNow, [this, pick] { choose(pick, QueueAction::PlayNow); }),
         action(kPlayNext, [this, pick] { choose(pick, QueueAction::PlayNext); }),
         action(kAddToQueue, [this, pick] { choose(pick, QueueAction::AddToQueue); }),
     };
+    // An album also says where it plays from; that only reports, so the Options screen stays.
+    if (!pick.info.empty()) items.push_back(action("Album info", [this, info = pick.info] { say(info); }));
+    return items;
 }
 
 // One track of a local list, alone. The queue is called after the track, as a loose track is.
@@ -1823,11 +1888,12 @@ App::Pick App::remotePick(Pick::Kind kind, const std::string& id, const std::str
 }
 
 App::Selection App::remoteSelection(const std::string& title, const std::vector<RemoteTrack>& tracks,
-                                    std::optional<RemoteSource> source, const std::string& artist, bool ofAlbum) const {
+                                    std::optional<RemoteSource> source, const std::string& artist, bool ofAlbum,
+                                    const std::string& albumId) const {
     Selection selection;
     selection.title = title;
     selection.list = remoteBook(title, tracks, std::move(source), artist);
-    selection.entries = remoteEntries(title, tracks, ofAlbum, artist);
+    selection.entries = remoteEntries(title, tracks, ofAlbum, artist, albumId);
     return selection;
 }
 
@@ -1903,7 +1969,7 @@ void App::onPickLoaded(std::uint64_t screen, MusicServer::Error error, std::vect
     Selection selection;
     switch (pick.kind) {
     case Pick::Kind::Album:
-        selection = remoteSelection(pick.title, tracks, RemoteSource{RemoteSource::Kind::Album, pick.id}, pick.artist, true);
+        selection = remoteSelection(pick.title, tracks, RemoteSource{RemoteSource::Kind::Album, pick.id}, pick.artist, true, pick.id);
         break;
     case Pick::Kind::Playlist:
         selection = remoteSelection(pick.title, tracks, RemoteSource{RemoteSource::Kind::Playlist, pick.id}, "", false);
@@ -2338,11 +2404,7 @@ std::vector<MenuItem> App::playerMenuBase(const std::string& parts, const std::s
     MenuItem timer = submenu("Sleep timer", [this] { return sleepTimerMenu(); });
     timer.selected = [this] { return sleepTimerIndex(); };
     items.push_back(timer);
-    items.push_back(action(info, [this] {
-        if (!book_) return;
-        auto ch = chapters();
-        say(book_->title + ". " + std::to_string(ch.size()) + " " + unit() + "s. " + playerStatus());
-    }));
+    if (!info.empty()) items.push_back(action(info, [this] { sayPlayerInfo(); }));
     items.push_back(action(start, [this] {
         // Once it is open; if it fails, the error is said and the user stays in the menu.
         loadFile(0, 0, willPlay(), Origin::Menu, [this, screen = screens_.back().id] { enterPlayerFrom(screen); });
@@ -2350,8 +2412,14 @@ std::vector<MenuItem> App::playerMenuBase(const std::string& parts, const std::s
     return items;
 }
 
+void App::sayPlayerInfo() {
+    if (!book_) return;
+    auto ch = chapters();
+    say(book_->title + ". " + std::to_string(ch.size()) + " " + unit() + "s. " + playerStatus());
+}
+
 // The music player: "Tracks" lists the album until the queue (queue.md, step 2.7) takes its place.
-std::vector<MenuItem> App::musicPlayerMenu() { return playerMenuBase("Tracks", "Album info", "Go to first track"); }
+std::vector<MenuItem> App::musicPlayerMenu() { return playerMenuBase("Tracks", "", "Go to first track"); }
 
 std::vector<MenuItem> App::bookPlayerMenu() {
     std::vector<MenuItem> items = playerMenuBase("Chapters", "Book info", "Go to start of book");
@@ -2368,6 +2436,12 @@ std::vector<MenuItem> App::chaptersMenu() {
             // Once it is open; if it fails, the error is said and the user stays in the list.
             gotoChapter(int(i), Origin::Menu, [this, screen = screens_.back().id] { enterPlayerFrom(screen); });
         }));
+    }
+    // Until the Queue list (queue.md step 2.7) takes this list's place and holds it.
+    if (music_ && previous_) {
+        MenuItem previous = action("Previous queue", [this] { restorePrevious(); });
+        previous.value = [n = previous_->queue.size()] { return countValue(n, "track"); };
+        items.push_back(std::move(previous));
     }
     return items;
 }
@@ -2560,6 +2634,12 @@ bool App::playServerBook(const Book& book, size_t file, double position, Then op
 // neither saves a position nor replaces the book that start() resumes; a remote
 // list keeps its place as last_stream (rememberPosition()).
 bool App::playEntries(const Book& list, std::vector<QueueEntry> entries, size_t track, Then opened, double position) {
+    Queue queue;
+    queue.replace(std::move(entries), track);
+    return playKept(list, std::move(queue), std::move(opened), position);
+}
+
+bool App::playKept(const Book& list, Queue queue, Then opened, double position) {
     if (book_) rememberPosition();
     // Only once it plays: if it fails, the book before it keeps its sleep timer and rewind.
     auto playing = [this, opened = std::move(opened)] {
@@ -2567,8 +2647,7 @@ bool App::playEntries(const Book& list, std::vector<QueueEntry> entries, size_t 
         pausedAt_.reset();
         if (opened) opened();
     };
-    Queue queue;
-    queue.replace(std::move(entries), track);
+    const size_t track = queue.position();
     return switchTo(list, true, track, position, true, std::move(playing), std::move(queue)) != OpenResult::Failed;
 }
 
@@ -2625,7 +2704,7 @@ Book App::remoteBook(const std::string& title, const std::vector<RemoteTrack>& t
 
 // A server album is one album, whatever its tracks say (a disc 2 tag); a playlist has the albums of its tracks.
 std::vector<QueueEntry> App::remoteEntries(const std::string& title, const std::vector<RemoteTrack>& tracks, bool ofAlbum,
-                                           const std::string& artist) const {
+                                           const std::string& artist, const std::string& albumId) const {
     std::vector<QueueEntry> entries;
     for (const RemoteTrack& t : tracks) {
         QueueEntry e;
@@ -2633,6 +2712,7 @@ std::vector<QueueEntry> App::remoteEntries(const std::string& title, const std::
         e.serverUrl = serverIdentity(config_.getString(kServerUrl));
         e.user = config_.getString(kServerUser);
         e.trackId = t.id;
+        e.albumId = ofAlbum && !albumId.empty() ? albumId : t.albumId;
         e.title = t.title;
         e.album = ofAlbum || t.album.empty() ? title : t.album;
         e.artist = t.artist.empty() ? artist : t.artist;
@@ -2650,10 +2730,30 @@ bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& t
         return false;
     }
     const bool ofAlbum = source && source->kind == RemoteSource::Kind::Album;
+    const std::string albumId = ofAlbum ? source->id : std::string();
     Book list = remoteBook(title, tracks, std::move(source), artist);
-    std::vector<QueueEntry> entries = remoteEntries(title, tracks, ofAlbum, artist);
+    std::vector<QueueEntry> entries = remoteEntries(title, tracks, ofAlbum, artist, albumId);
     std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
     return playEntries(list, std::move(entries), index, [this, screen] { enterPlayerFrom(screen); }, position);
+}
+
+std::optional<App::PreviousQueue> App::editedQueue() const {
+    if (book_ && music_ && queue_.edited()) return PreviousQueue{*book_, queue_};
+    if (parked_ && parked_->music && parked_->queue.edited()) return PreviousQueue{parked_->book, parked_->queue};
+    return std::nullopt;
+}
+
+// OK on "Previous queue": it replaces the queue (which is kept in turn if it was edited) and plays its
+// current entry. Nothing is left to restore when the queue it replaced was not edited.
+void App::restorePrevious() {
+    if (!previous_) return;
+    PreviousQueue back = *previous_;
+    const bool keepsReplaced = editedQueue().has_value();
+    std::uint64_t screen = screens_.back().id;
+    playKept(back.list, std::move(back.queue), [this, keepsReplaced, screen] {
+        if (!keepsReplaced) previous_.reset();
+        enterPlayerFrom(screen);
+    });
 }
 
 // Loads `book` into the music player (`music`) or the book player from `file`. If none of its
@@ -2664,6 +2764,9 @@ App::OpenResult App::switchTo(const Book& book, bool music, size_t file, double 
                               Then opened, std::optional<Queue> queue) {
     dropPendingOpen(); // a failure goes back to what was loaded before it
     cancelMarkPing();  // Play's answer is for the queue that was loaded
+    // A queue edited by hand that this one replaces is kept once this one has opened.
+    std::optional<PreviousQueue> kept;
+    if (music && queue) kept = editedQueue();
     size_t wasFile = fileIndex_;
     bool wasOpen = player_.isOpen(), wasPlaying = player_.playing();
     double wasAt = player_.position();
@@ -2693,7 +2796,8 @@ App::OpenResult App::switchTo(const Book& book, bool music, size_t file, double 
     };
     // The player used last: a music list that cannot be resumed later (local files) does not count.
     bool resumable = !music || (book.remote && book.source);
-    auto playing = [this, music, resumable, path = book.path.string(), opened = std::move(opened)] {
+    auto playing = [this, music, resumable, kept = std::move(kept), path = book.path.string(), opened = std::move(opened)] {
+        if (kept) previous_ = kept;
         if (resumable) state_.setString(kLastPlayer, music ? kPlayerMusic : kPlayerBook);
         if (!music) state_.setString(kLastBook, path); // start() and "Now playing" resume it
         if (opened) opened();
@@ -3964,6 +4068,7 @@ void App::restart(bool saveFirst) {
     book_.reset();
     queue_ = Queue{};
     parked_.reset();
+    previous_.reset();
     music_ = false;
     closeScreens(0);
     sleepDeadline_.reset();

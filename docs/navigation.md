@@ -206,8 +206,8 @@ Settings no longer change in place with Left / Right (rule 6). Left / Right in m
 
 **As built (step 2.4):** Options on a menu item opens "Options, <item>" with Play now, Play next
 and Add to queue, on local tracks, local albums and Play all, and on remote tracks, albums,
-playlists and artists. Every other item, and Options in a player, still plays the edge sound and
-says "No options"; the player's Options (Go to album, Album info, Star) is step 2.5. A remote
+playlists and artists. Every other item, and Options in the book player, plays the edge sound and
+says "No options". An album's Options also has Album info (step 2.5). A remote
 album, playlist or artist is loaded first ("Loading."); Play now says "Playing Weather." and the
 other two "Added Weather, 12 tracks. 30 in queue."; with no music queue loaded they say "Press play."
 instead (and while a book plays they leave it playing and keep the queue for Continue).
@@ -299,8 +299,8 @@ Player menu (music player)
   the user chooses it.
 
 **As built (phase 1):** the music player holds one list (an album, a playlist, or Play
-all), its Player menu is Tracks · Sleep timer · Album info · Go to first track, Options
-says "No options" everywhere, and the rules above for OK on a track replacing a queue,
+all), its Player menu is Tracks · Sleep timer · Go to first track, Options
+in the music player is Go to album · Album info (step 2.5; Star comes with streaming.md 2a.1), and the rules above for OK on a track replacing a queue,
 Options actions, Shuffle, Repeat and the Queue list do not apply yet. OK on a track plays
 from there to the end of its list, as before.
 
@@ -461,7 +461,7 @@ Music
   "Loading" and no "Try again". A scan or sync that finishes meanwhile replaces
   the index silently, and the menu shows it the next time you come back to it
   (the selected item stays). Opening a server album that is not downloaded loads
-  its tracks, so that list follows "Lists from the server": "Loading", the error with "Try again", "Play album" first, Album info last.
+  its tracks, so that list follows "Lists from the server": "Loading", the error with "Try again", "Play album" first.
   Offline that album gives the error item and a device album still plays.
 - **Artists** lists each artist once, local and server together, sorted by name without a
   leading "The" (the server's `ignoredArticles` is not read yet); names in Cyrillic and other
@@ -483,13 +483,16 @@ Music
   is that of the last play and, for an album on both, the latest of its items. A time
   before 2020-01-01 is a clock that was never set and counts as none. Play times are saved
   on exit and sleep only.
-- **Album info** is the last item of an album's list, after the tracks. OK says
-  where the album plays from ("On the device", "Downloaded" or "On the server"),
+- **Album info** is in the Options of an album (Music lists), after Play now, Play next and Add to queue:
+  OK says where the album plays from ("On the device", "Downloaded" or "On the server"),
   then "Also on the server" for an entry that is on the device or downloaded and
-  also on the server, the artist, and the number of tracks. It only reports, so it stays where it
-  is. Nothing else speaks where an album plays from. Target
-  ([queue.md](queue.md) step 2.5): Album info moves to Options, from the end of an
-  album's list and from the Player menu, and the list no longer ends with it.
+  also on the server, the artist, and the number of tracks. It only reports, so the Options
+  screen stays. A loose track has none. Nothing else speaks where an album plays from. The
+  music player's Options has its own Album info (title, tracks, status), and **Go to album**,
+  which opens the album of the playing track on that track (a loose track says "No album for this track.").
+- **Previous queue:** when a queue edited by hand is replaced, it is kept, and it ends the "Tracks" list of
+  the music Player menu (the Queue list, step 2.7, takes it over). OK restores it (entries, order, current
+  entry, shuffle and repeat) and plays; the queue it replaces is kept in turn if it was edited.
 - **Refresh library** is an action that reports and stays. It says "Updating the
   library." at once, then the result ("Library updated, 12 albums.") or the error
   ("Server not reachable.", "Wrong user name or password.", "Server error."). Keys

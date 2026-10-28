@@ -323,7 +323,7 @@ The rules behind this table, and the checklist for new menus, are in
 | Home short | | previous screen | previous screen |
 | Home long | | home menu | home menu |
 | Volume up / down | content volume ± 5 % (`kVolumeStep`) on every screen, held repeats; edge sound once per press at 0 and 100 % | | |
-| Options | "No options." with the edge sound, in menus and players (no item has options yet) | | |
+| Options | "Options, <item>" on an item with actions; in the music player "Options, <track>" (Go to album, Album info); otherwise "No options." with the edge sound | | |
 | Talk | "not available yet" | | |
 | Power short | sleep | | |
 | Power long | power menu | | |
@@ -467,8 +467,8 @@ Home
 │   ├── Play all                   (the files on the device, albums in the order of Albums A to Z; with only server albums it says "No music")
 │   ├── Artists → <artist> → <albums>   (local and server artists once each, sorted without "The"; "Unknown artist" last)
 │   ├── Albums A to Z → <albums>   (every merged entry, server-only ones too)
-│   │   <album on the device> → <tracks> · Album info   (OK plays from that track to the end; a loose track plays at once)
-│   │   <server-only album> → Loading, then Play album · Download album · <tracks> · Album info   (as in Streaming)
+│   │   <album on the device> → <tracks>   (OK plays; Album info is in its Options) from that track to the end; a loose track plays at once)
+│   │   <server-only album> → Loading, then Play album · Download album · <tracks>   (as in Streaming)
 │   ├── Genres → <genre> → <albums>   (tags and server genre, names merged without case; albums with no genre are left out)
 │   ├── Recently added → <albums>      (newest first, at most 50; "No new albums")
 │   ├── Recently played → <albums>     (last played first, at most 50; "Nothing played yet")
@@ -523,8 +523,13 @@ Player menu of the book player (OK on its screen; `bookPlayerMenu()`)
 Player menu of the music player (`musicPlayerMenu()`; "Tracks" until the queue, queue.md step 2.7)
 ├── Tracks → <tracks>              (opens on the current track)
 ├── Sleep timer → …
-├── Album info
 └── Go to first track
+
+Options in the music player (`playerOptionsMenu()`, "Options, <track>")
+├── Go to album            (local: the index item of the file; remote: the album id of the entry; opens on the playing track)
+└── Album info             (title, number of tracks, status)
+
+Tracks also ends with "Previous queue" when `previous_` holds an edited queue (until the Queue list, step 2.7)
 
 Power menu (hold Power): Sleep · Power off · Restart · Cancel
 ```
@@ -629,15 +634,15 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   track reference per track id, from the manifest). It runs whenever Music is built and before
   Refresh counts, so a download made or deleted meanwhile shows; the reference is kept only while
   the server item exists (or no server catalogue is known yet). A cached album plays as a local `Book`
-  with its titles from the manifest. Album info is the last item of an album's list.
+  with its titles from the manifest. Album info is in that album's Options (`Pick::info`).
 - **The Music tree (4.9).** `musicMenu()` is Play all, Artists, Albums A to Z, Refresh library
   (Genres, Recently added and Recently played, below); an empty index gives "Scanning" or
   "No music" and Refresh. Every list is a `submenu()` whose builder runs `mergeAlbums()` again,
   so it is a local menu rebuilt when you come back to it, with no "Loading". `albumList()` sorts
   merged entries by title and `albumEntry()` makes one item: an album whose primary is local or
   cached opens `albumMenu()` at once (a loose file plays at once), and a server-only album calls
-  `openRemoteAlbum(album, info)`, the same code as Streaming (`openRemoteList()`: "Loading", the
-  error with "Try again", "Play album" first), with Album info added last; the server's album id
+  `openRemoteAlbum(album, playedId, focusTrack)`, the same code as Streaming (`openRemoteList()`: "Loading", the
+  error with "Try again", "Play album" first); `focusTrack` opens it on that track (`MenuItem::key`, `RemoteList::focusKey`); the server's album id
   is cut from the item's reference `<key>:album:<id>`. A merged album plays from its device files
   and never asks the server. `artistsMenu()` groups the merged entries by `artistKey()` (case and
   spacing ignored, so "Band" and "band" are one) and sorts with `artistLess()`: natural,

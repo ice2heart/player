@@ -18,6 +18,7 @@ struct QueueEntry {
     std::string serverUrl{}; // Remote: the server key is serverUrl + user. Never a password or a stream URL.
     std::string user{};
     std::string trackId{};   // Remote
+    std::string albumId{};   // Remote: the server's id of its album, empty if unknown
     std::string title{}, album{}, artist{};
     double duration = 0;     // seconds, Remote (0 if unknown)
     bool operator==(const QueueEntry&) const = default;

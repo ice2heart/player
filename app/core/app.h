@@ -166,7 +166,8 @@ private:
     std::vector<MenuItem> recentlyPlayedMenu();
     std::vector<MenuItem> albumList(std::vector<MergedAlbum> albums, bool byTitle = true); // else as given
     MenuItem albumEntry(const MergedAlbum& album);
-    std::vector<MenuItem> albumMenu(const Book& album, const std::string& info = {}, const std::string& playedId = {});
+    std::vector<MenuItem> albumMenu(const Book& album, const std::string& playedId = {});
+    void openLocalAlbum(const Book& album, const std::string& playedId, size_t at); // its list, on track `at`
     Book bookOf(const IndexItem& item) const;
     void openServerBook(const IndexItem& item); // Library, "Now playing": plays it from its saved place (its files if downloaded, else "Loading.")
     bool resumeServerBook();                    // "Now playing" / Play with nothing loaded: false when `last_book` names none
@@ -201,7 +202,7 @@ private:
     std::vector<MenuItem> powerMenu();
     std::vector<MenuItem> helpMenu();
     std::vector<MenuItem> playerMenu();
-    std::vector<MenuItem> playerMenuBase(const std::string& parts, const std::string& info, const std::string& start);
+    std::vector<MenuItem> playerMenuBase(const std::string& parts, const std::string& info, const std::string& start); // no `info`: none
     std::vector<MenuItem> musicPlayerMenu();
     std::vector<MenuItem> bookPlayerMenu();
     std::vector<MenuItem> chaptersMenu();
@@ -224,6 +225,7 @@ private:
         enum class Kind { Ready, Album, Playlist, Artist };
         Kind kind = Kind::Ready;
         std::string title, artist, id, playedId; // remote: what to load
+        std::string info;                       // an album: what Album info says, empty: no such action
         std::function<Selection()> make;        // Ready
     };
     // The load an action waits for. It belongs to the Options screen: leaving that screen, sleep and power
@@ -238,6 +240,9 @@ private:
         std::vector<RemoteTrack> tracks;
     };
     void openOptions();                              // the Options button
+    std::vector<MenuItem> playerOptionsMenu();       // Options in the music player: for the playing track
+    void goToAlbum();                                // opens the playing track's album, on that track
+    void sayPlayerInfo();                            // Album info / Book info: title, parts, where it is
     MenuItem withOptions(MenuItem item, Pick pick);  // `item` gets the Options of `pick`
     std::vector<MenuItem> optionsMenu(const Pick& pick);
     static Pick localTrackPick(const Book& album, size_t track, const std::string& playedId);
@@ -245,7 +250,8 @@ private:
     Pick remotePick(Pick::Kind kind, const std::string& id, const std::string& title, const std::string& artist,
                     const std::string& playedId = {});
     Selection remoteSelection(const std::string& title, const std::vector<RemoteTrack>& tracks,
-                              std::optional<RemoteSource> source, const std::string& artist, bool ofAlbum) const;
+                              std::optional<RemoteSource> source, const std::string& artist, bool ofAlbum,
+                              const std::string& albumId = {}) const;
     void choose(const Pick& pick, QueueAction action);
     void requestNextAlbum();
     void onPickLoaded(std::uint64_t screen, MusicServer::Error error, std::vector<RemoteTrack> tracks);
@@ -258,8 +264,9 @@ private:
     // Remote tracks as a list (Book) and as queue entries; `ofAlbum`: all are of the album called `title`.
     static Book remoteBook(const std::string& title, const std::vector<RemoteTrack>& tracks,
                            std::optional<RemoteSource> source, const std::string& artist);
+    // `albumId`: the server album they are all of (`ofAlbum`); else each track names its own.
     std::vector<QueueEntry> remoteEntries(const std::string& title, const std::vector<RemoteTrack>& tracks, bool ofAlbum,
-                                          const std::string& artist) const;
+                                          const std::string& artist, const std::string& albumId = {}) const;
     bool queuedFrom(const RemoteSource& source) const; // a track of that downloaded list is in the music queue
 
     // Lists loaded from the server (docs/streaming.md). A list opens at once with
@@ -275,19 +282,21 @@ private:
         MusicServer::RequestId request = 0; // the page being loaded, 0 when none
         int offset = 0;                     // of that page, or of the page that failed
         bool waiting = false;               // the user waits for it: a "Loading" item is shown
+        std::string focusKey;               // the item (MenuItem::key) to open on when it has loaded
         MusicServer::Error error = MusicServer::Error::None; // the last page failed
     };
     template <class T>
     static FetchPage fetchPages(std::function<MusicServer::RequestId(int offset, MusicServer::Done<T>)> request,
                                 std::function<std::vector<MenuItem>(const std::vector<T>&)> toItems);
     void openRemoteList(const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
-                        std::string emptyHelp, ListOrder order = ListOrder::None);
+                        std::string emptyHelp, ListOrder order = ListOrder::None, std::string focusKey = {});
     void requestPage(std::uint64_t screenId, int offset, bool waiting);
     void onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<MenuItem> items, bool more);
     void showStatus(std::uint64_t screenId); // Loading, the error, or why it is empty, after the loaded items
     void openAlbumList(const std::string& title, const std::string& listType, int pageSize, bool paged, bool byName = false);
-    // `info`: Album info, last. `playedId`: the index item to mark as played when it plays (Music).
-    void openRemoteAlbum(const RemoteAlbum& album, const std::string& info = {}, const std::string& playedId = {});
+    // `playedId`: the index item to mark as played when it plays (Music).
+    // `focusTrack`: the id of the track to open on, once the list has loaded.
+    void openRemoteAlbum(const RemoteAlbum& album, const std::string& playedId = {}, const std::string& focusTrack = {});
     std::vector<MenuItem> albumItems(const std::vector<RemoteAlbum>& albums, bool withArtist);
     std::vector<MenuItem> trackItems(const std::string& title, const std::vector<RemoteTrack>& tracks,
                                      const std::string& playAll, const RemoteSource& source,
@@ -375,6 +384,8 @@ private:
     // Replaces the music queue with `entries` and plays from `track`. `list` is what they came from
     // (its title, and for a server album or playlist its `source` and track details).
     bool playEntries(const Book& list, std::vector<QueueEntry> entries, size_t track, Then opened = {}, double position = 0);
+    // Plays `queue` as it is (its current entry, shuffle and repeat) in place of the loaded one.
+    bool playKept(const Book& list, Queue queue, Then opened = {}, double position = 0);
     static std::vector<QueueEntry> entriesOf(const Book& list); // the queue entries of a local or server list
     // `queue` is the music queue when `music`; the book player has none.
     OpenResult switchTo(const Book& book, bool music, size_t file, double position, bool autoplay, Then opened = {},
@@ -581,6 +592,15 @@ private:
         Queue queue; // the music queue of a parked music player
     };
     std::optional<Parked> parked_;
+    // The queue edited by hand that the last replacement kept, for "Previous queue" (queue.md); OK on it
+    // brings it back. Set once the new queue has opened.
+    struct PreviousQueue {
+        Book list;
+        Queue queue;
+    };
+    std::optional<PreviousQueue> previous_;
+    std::optional<PreviousQueue> editedQueue() const; // the music queue a new one would replace, if edited by hand
+    void restorePrevious();
     // Set while a remote track is loaded but closed: after a failed open (opening
     // it again at once would wait on the same dead server) or at the end of the
     // list. play() opens it at this position.

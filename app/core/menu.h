@@ -32,6 +32,8 @@ struct MenuItem {
     std::function<std::vector<MenuItem>()> options;
     // What OK does, for the Beginner hint ("play"). Empty: "open" for a submenu, "select" for an action.
     std::string okHint;
+    // What the item stands for (a server track id), so a list can open on it. Empty: nothing.
+    std::string key;
 };
 
 // One entry of the screen stack: a spoken list, or a program such as a player (the

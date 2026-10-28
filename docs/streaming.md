@@ -514,8 +514,8 @@ Decided for this phase:
 - **Duplicates:** when a local album and a server album are the same (MusicBrainz album
   id, or else artist + album + track count, with case and spaces ignored), one entry is
   shown and the local files are preferred, then a download (`cached`), then the server.
-- **Where it plays from** is spoken only when asked: an "Album info" item at the end of
-  an album's list. If [queue.md](queue.md) step 2.5 is built first, it moves to Options.
+- **Where it plays from** is spoken only when asked: an "Album info" action in the
+  Options of an album (queue.md step 2.5).
 - **Play all** in Music plays what is on the device (local and downloaded), never the
   whole server.
 - **Streaming** stays a separate Home entry for now. It may later become a filter
@@ -618,7 +618,7 @@ does. A book that is both on the device and on the server is listed twice in Lib
 a read stuck on a hung mount can delay exit (the state and the play times are saved first). A download of a book that left the index is listed in
 Music as an album, and "Now playing" for it goes. Local music played after a server book
 leaves `last_book` alone, so a restart resumes the book. The manifest's `changed` column is
-still empty, and Album info moves to Options when queue.md step 2.5 is built.
+still empty.
 
 
 ## Phase 5: sync and playlists

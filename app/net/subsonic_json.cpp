@@ -116,6 +116,7 @@ RemoteTrack track(const YAML::Node& node) {
     track.title = text(node, "title");
     track.artist = text(node, "artist");
     track.album = text(node, "album");
+    track.albumId = text(node, "albumId");
     track.duration = number(node, "duration");
     track.track = integer(node, "track");
     track.suffix = text(node, "suffix");

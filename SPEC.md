@@ -350,7 +350,7 @@ Home
 │   ├── Recently added
 │   ├── Recently played
 │   ├── Refresh library        ("Updating the library.", then the result or the error)
-│   └── <album> → tracks · Album info (where it plays from; at the end of the list)
+│   └── <album> → tracks (Album info, where it plays from, is in its Options)
 ├── Streaming                  (own music server; named after it; the last album or playlist resumes after a restart; docs/streaming.md)
 ├── Bookmarks
 ├── Settings
@@ -377,7 +377,7 @@ Home
 | Back / Forward long or deep | previous / next chapter or track; announces chapter name |
 | Up / Down             | choose the step unit for Back / Forward; speaks it ("Track") |
 | Volume up / down      | content volume, held repeats; earcon pitch indicates level, edge sound at the limits |
-| Options               | actions for the playing track (Go to album, Album info, Star); until the queue is built it says "No options" |
+| Options               | actions for the playing track (Go to album, Album info; Star later); the book player says "No options" |
 | Play long             | "Chapter 7 of 22, 'The Storm'. 14 minutes left in chapter, 6 hours 3 minutes left in book." |
 | OK                    | player menu: speed, bookmark add, sleep timer, chapters, info |
 | Talk                  | voice command |

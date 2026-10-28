@@ -197,6 +197,15 @@ TEST(SubsonicJson, AlbumTracks) {
     EXPECT_DOUBLE_EQ(list.items[1].duration, 214.5);
 }
 
+TEST(SubsonicJson, ATrackKeepsTheIdOfItsAlbum) {
+    auto list = parseAlbum(R"({"subsonic-response":{"status":"ok","version":"1.16.1","album":{"id":"a1","song":[)"
+                           R"({"id":"s1","title":"One","albumId":"a1"},{"id":"s2","title":"Two"}]}}})");
+    ASSERT_EQ(list.error, Error::None);
+    ASSERT_EQ(list.items.size(), 2u);
+    EXPECT_EQ(list.items[0].albumId, "a1");
+    EXPECT_EQ(list.items[1].albumId, "") << "the server did not say";
+}
+
 TEST(SubsonicJson, TrackSuffixAndSize) {
     auto list = parseAlbum(subsonicFixture("album.json"));
     ASSERT_EQ(list.error, Error::None);
