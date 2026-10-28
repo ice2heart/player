@@ -14115,6 +14115,28 @@ TEST_F(TwoServerPlayTest, TheTrackThatPlaysIsNotEvictedFromItsOwnServersCacheOnl
     EXPECT_FALSE(booksCache.find("x")) << "the other server's x is only a cached copy over the limit";
 }
 
+TEST_F(TwoServerPlayTest, ATrackOfTheOtherServerWithTheSameIdAsOneOfTheQueuesListIsNotCachedIntoThatList) {
+    start_();
+    ASSERT_TRUE(app->playRemote("Weather", {{"x1", "Storm", "Band", "Weather", 200, 1, "flac", 5}, {"t1", "Rain", "Band", "Weather", 180, 2, "mp3", 5}},
+                                0, albumSource("al1"), 0, "Band"));
+    finishOpen();
+    hold(Button::Home);
+    open("Audiobooks");
+    open("Recently added");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteAlbum>{{"b1", "Dune", "Herbert", 1}}, false));
+    app->tick();
+    press(Button::Options);
+    open("Play next");
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteTrack>{{"t1", "Part one", "Herbert", "Dune", 300, 1, "mp3", 5}}, false));
+    app->tick();
+    trackEnds();
+    finishOpen();
+    ASSERT_EQ(player.file, "fake://books/t1");
+    listen(30s);
+    EXPECT_TRUE(downloader.requests.empty());
+    EXPECT_TRUE(secondDownloader.requests.empty()) << "t1 of the other server is not a track of Weather";
+}
+
 TEST_F(TwoServerPlayTest, AServerThatCannotBeReachedDoesNotHoldBackTheScrobblesOfTheOther) {
     ASSERT_TRUE(diskFiles().writeAtomically(scrobbleFile, formatScrobbles({{firstKey(), "t8", 8000}, {secondKey(), "b7", 7000}})));
     server.scrobbleError = MusicServer::Error::Unreachable; // the first server never takes one, and is not marked down

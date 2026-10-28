@@ -56,9 +56,9 @@ public:
 
     // `config` holds what the user sets (config.yaml), `state` the positions and
     // the book to resume (state.tsv). State is written only on exit and on sleep.
-    // `servers` are the servers set up, in config order (the objects in them outlive the App); for now only the
-    // first is used. Its server gives the stream URLs of remote tracks and its downloader fetches tracks
-    // into the cache (Download album / playlist). With none (an empty list) App behaves as with a server that
+    // `servers` are the servers set up, in config order (the objects in them outlive the App); each
+    // one is used. A server gives the stream URLs of its remote tracks and its downloader fetches tracks
+    // into its cache (Download album / playlist). With none (an empty list) App behaves as with a server that
     // is not configured. `libraryStore` keeps the library
     // index between runs: the App loads it and Library and Music list it.
     // `scanner` lists the local files in the background: start() asks for a scan, and a finished
@@ -329,13 +329,13 @@ private:
     // The server a remote queue entry is of: the link whose url and user it names. None when that server is
     // not set up now (removed from the config, or no server).
     std::optional<size_t> linkOf(const QueueEntry& entry) const;
-    std::optional<size_t> trackLink(size_t i) const; // linkOf() of music entry `i`; the tracks of a server book: the first server (until phase 2 gives it a link)
+    std::optional<size_t> trackLink(size_t i) const; // linkOf() of music entry `i`; the tracks of a server book: the server of the book
     void perform(Selection selection, QueueAction action); // goes back to the list, then does it and says so
     void playNow(Selection selection);
     void addToQueue(Selection selection, bool next);
     // Remote tracks as a list (Book) and as queue entries; `ofAlbum`: all are of the album called `title`.
     static Book remoteBook(const std::string& title, const std::vector<RemoteTrack>& tracks,
-                           std::optional<RemoteSource> source, const std::string& artist);
+                           std::optional<RemoteSource> source, const std::string& artist, size_t link = 0);
     // `albumId`: the server album they are all of (`ofAlbum`); else each track names its own.
     std::vector<QueueEntry> remoteEntries(const std::string& title, const std::vector<RemoteTrack>& tracks, bool ofAlbum,
                                           const std::string& artist, const std::string& albumId = {}, size_t link = 0) const;

@@ -2100,7 +2100,7 @@ App::Selection App::remoteSelection(const std::string& title, const std::vector<
                                     const std::string& albumId, size_t link) const {
     Selection selection;
     selection.title = title;
-    selection.list = remoteBook(title, tracks, std::move(source), artist);
+    selection.list = remoteBook(title, tracks, std::move(source), artist, link);
     selection.entries = remoteEntries(title, tracks, ofAlbum, artist, albumId, link);
     return selection;
 }
@@ -2443,8 +2443,8 @@ void App::openPlaylist(size_t link, const std::string& id, const std::string& na
 // Removes the list's folder. The list that is loaded in the player is refused (its
 // next tracks would have to come from the network); a download of it is cancelled first.
 void App::deleteDownload(const RemoteSource& source, const std::string& title, size_t link) {
-    // A server book (not the music queue, whose lists queuedFrom() finds by server): by id only, as it has no link yet (phase 2).
-    const bool loaded = !music_ && book_ && book_->remote && book_->source && sameList(*book_->source, source);
+    // A server book (not the music queue, whose lists queuedFrom() finds by server).
+    const bool loaded = !music_ && book_ && book_->remote && book_->source && book_->link == link && sameList(*book_->source, source);
     if (loaded || queuedFrom(source, link)) {
         earcons_.play(Earcon::Error);
         say("Cannot delete " + title + " while it is loaded in the player. Play something else first.");
@@ -3289,8 +3289,9 @@ bool App::playQueue(const std::string& title, std::vector<QueueEntry> entries, s
 }
 
 Book App::remoteBook(const std::string& title, const std::vector<RemoteTrack>& tracks, std::optional<RemoteSource> source,
-                     const std::string& artist) {
+                     const std::string& artist, size_t link) {
     Book list;
+    list.link = link;
     list.title = title;
     list.remote = true;
     list.source = std::move(source);
@@ -3336,7 +3337,7 @@ bool App::playRemote(const std::string& title, const std::vector<RemoteTrack>& t
     }
     const bool ofAlbum = source && source->kind == RemoteSource::Kind::Album;
     const std::string albumId = ofAlbum ? source->id : std::string();
-    Book list = remoteBook(title, tracks, std::move(source), artist);
+    Book list = remoteBook(title, tracks, std::move(source), artist, link);
     std::vector<QueueEntry> entries = remoteEntries(title, tracks, ofAlbum, artist, albumId, link);
     std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
     return playEntries(list, std::move(entries), index, [this, screen] { enterPlayerFrom(screen); }, position);
@@ -4587,6 +4588,8 @@ void App::checkAutoCache() {
         trackKey(fileIndex_) != scrobble_->trackId)
         return;
     // Only a track of the list the queue came from: its details and its folder are that list's.
+    // A queue can mix servers, and ids are only unique on one: the track must be of the server the list is on.
+    if (scrobble_->link != book_->link) return;
     const std::optional<size_t> inList = listIndexOf(scrobble_->trackId, fileIndex_);
     if (!inList) return;
     std::uintmax_t limit = cacheLimit();
