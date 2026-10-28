@@ -525,6 +525,12 @@ void App::syncNext() {
 
 void App::onCatalogueVersion(MusicServer::Error error, const std::string& version) {
     if (error != MusicServer::Error::None) return finishSync(error);
+    // A Books server (Audiobookshelf) has no cheap check: its whole book list is fetched every time and
+    // only what changed is written. Everything it lists is a book; it has no folder and no version to keep.
+    if (servers_[catalogue_.link].server.catalogue() == MusicServer::Catalogue::Books) {
+        catalogue_.books = true;
+        return fetchCatalogue(0);
+    }
     bool haveItems = false;
     for (const auto& [id, item] : index_.items())
         if (item.source == IndexItem::Source::Server && LibraryIndex::refOnServer(item.seenOn, catalogue_.key))
@@ -581,7 +587,7 @@ void App::fetchCatalogue(int offset) {
                 IndexItem item;
                 item.id = LibraryIndex::seenRef(catalogue_.key, SeenKind::Album, a.id);
                 item.source = IndexItem::Source::Server;
-                item.kind = catalogue_.bookIds.count(a.id) ? IndexItem::Kind::Book : IndexItem::Kind::Music;
+                item.kind = catalogue_.books || catalogue_.bookIds.count(a.id) ? IndexItem::Kind::Book : IndexItem::Kind::Music;
                 item.title = a.name;
                 item.artist = a.artist;
                 item.album = a.name;
@@ -681,7 +687,11 @@ void App::finishRefresh() {
         syncDownloads(); // a merged album counts once
         index_.save();
         const size_t albums = mergeAlbums(index_.items()).size();
-        text = "Library updated" + (albums ? ", " + countValue(albums, "album") : std::string()) + ".";
+        size_t books = 0; // the books of the servers; local books are not counted
+        for (const auto& [id, item] : index_.items())
+            if (item.source == IndexItem::Source::Server && item.kind == IndexItem::Kind::Book) ++books;
+        text = "Library updated" + (albums ? ", " + countValue(albums, "album") : std::string()) +
+               (books ? ", " + countValue(books, "book") : std::string()) + ".";
     }
     // A server that fails says its name (with one server there is nothing to tell apart) and the error.
     for (const SyncFailure& failure : syncFailures_) {
@@ -3201,8 +3211,9 @@ void App::openServerBook(const IndexItem& item) {
     say("Loading.");
     resumeScreen_ = screen; // leaving this screen drops the request (closeScreens())
     resumeLink_ = link;
-    resume_ = servers_[link].server.albumTracks(albumId, [this, screen, ref, title = item.title, author = item.artist, albumId, link](
-                                               MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
+    // A Books server gives the book (its tracks, later its chapters); any other the tracks of the album.
+    auto opened = [this, screen, ref, title = item.title, author = item.artist, albumId, link](MusicServer::Error error,
+                                                                                            std::vector<RemoteTrack> tracks) {
         resume_ = 0; // a new screen or sleep would have cancelled it: the user is still where they asked
         resumeScreen_ = 0;
         tts_.stop();
@@ -3219,7 +3230,13 @@ void App::openServerBook(const IndexItem& item) {
         Book book = serverBookOf(ref, title, author, albumId, tracks, link);
         auto [file, pos] = savedPlace(book);
         playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
-    });
+    };
+    if (servers_[link].server.catalogue() == MusicServer::Catalogue::Books)
+        resume_ = servers_[link].server.book(albumId, [opened](MusicServer::Error error, RemoteBook book) { opened(error, std::move(book.tracks)); });
+    else
+        resume_ = servers_[link].server.albumTracks(albumId, [opened](MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
+            opened(error, std::move(tracks));
+        });
 }
 
 // playMusic() for a book: its chapters are the tracks (the book player) and it keeps its place.

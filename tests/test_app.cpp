@@ -9452,7 +9452,7 @@ TEST_F(ServerBookTest, TheFolderAlbumsAreInLibraryAfterTheLocalBooksAndNotInMusi
     open("Refresh library");
     ASSERT_NO_FATAL_FAILURE(deliverScan());
     answerVersion("v1");
-    EXPECT_EQ(speech.last(), "Library updated, 3 albums.") << "Lullaby, Road Trip and Weather, not the book";
+    EXPECT_EQ(speech.last(), "Library updated, 3 albums, 1 book.") << "Lullaby, Road Trip and Weather, and the book apart";
 }
 
 TEST_F(ServerBookTest, WithoutTheFolderNothingChangesAndTheServerIsNotAskedForFolders) {
@@ -9729,6 +9729,172 @@ TEST_F(ServerBookTest, AServerBookOfAnotherServerIsNotListed) {
     start();
     open("Library");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta"}));
+}
+
+// ---------------------------------------------------------------- books of a Books server in Library (audiobookshelf.md 2.5)
+
+class BooksServerTest : public MusicTreeTest {
+protected:
+    void SetUp() override {
+        MusicTreeTest::SetUp();
+        server.catalogueKind = MusicServer::Catalogue::Books;
+    }
+    // The start-up sync: a Books server's version is not looked at, the book list is always fetched.
+    void syncBooks(std::vector<RemoteAlbum> books, bool more = false) {
+        answerVersion("");
+        answerAlbums(std::move(books), more);
+    }
+    static RemoteAlbum book(const std::string& id, const std::string& title) {
+        RemoteAlbum a = album(id, title);
+        a.artist = "Author";
+        return a;
+    }
+    static RemoteBook bookOf(std::vector<RemoteTrack> tracks) {
+        RemoteBook b;
+        b.tracks = std::move(tracks);
+        return b;
+    }
+};
+
+TEST_F(BooksServerTest, LibraryListsTheBooksAfterTheLocalOnesWithOnTheServer) {
+    start();
+    syncBooks({book("b2", "Zeta"), book("b1", "Dune")});
+    EXPECT_EQ(countOf(Kind::MusicFolders), 0u);
+    ASSERT_TRUE(indexStore.items.count(ref("b1")));
+    EXPECT_EQ(indexStore.items.at(ref("b1")).kind, IndexItem::Kind::Book);
+    EXPECT_EQ(indexStore.items.at(ref("b1")).source, IndexItem::Source::Server);
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta", "Dune", "Zeta"}));
+    ASSERT_TRUE(level().items[2].value);
+    EXPECT_EQ(level().items[2].value(), "on the server");
+    press(Button::Down);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Dune, on the server, 3 of 4");
+}
+
+TEST_F(BooksServerTest, TheBookListIsFetchedWheneverTheServerIsSyncedAndNoVersionIsKept) {
+    start();
+    syncBooks({book("b1", "Dune")});
+    EXPECT_EQ(state.getString(versionKey()), "");
+    app->shutdown();
+    app.reset();
+    start(false);
+    ASSERT_EQ(countOf(Kind::Albums), 1u);
+    state.setString(versionKey(), "v9");
+    answerVersion("v9"); // even a version that matches the stored one
+    EXPECT_EQ(countOf(Kind::Albums), 2u) << "the second start-up asks for the list again";
+}
+
+TEST_F(BooksServerTest, ASecondPageIsAskedWhileTheServerHasMore) {
+    start();
+    syncBooks({book("b1", "Dune")}, true);
+    ASSERT_EQ(server.lastRequest().kind, Kind::Albums);
+    EXPECT_EQ(server.lastRequest().offset, 1);
+    EXPECT_EQ(server.lastRequest().size, 500);
+    EXPECT_EQ(server.lastRequest().folder, "");
+    EXPECT_FALSE(indexStore.items.count(ref("b1"))) << "nothing is replaced until the last page";
+    answerAlbums({book("b2", "Emma")});
+    EXPECT_TRUE(indexStore.items.count(ref("b1")));
+    EXPECT_TRUE(indexStore.items.count(ref("b2")));
+}
+
+TEST_F(BooksServerTest, ABookTheServerDroppedIsGoneAfterTheNextSync) {
+    start();
+    syncBooks({book("b1", "Dune"), book("b2", "Emma")});
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("");
+    answerAlbums({book("b1", "Dune")});
+    EXPECT_FALSE(indexStore.items.count(ref("b2")));
+    hold(Button::Home);
+    open("Library");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta", "Dune"}));
+}
+
+TEST_F(BooksServerTest, ASyncThatChangedNothingWritesNoIndex) {
+    start();
+    syncBooks({book("b1", "Dune")});
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    const int saves = indexStore.saves;
+    answerVersion("");
+    answerAlbums({book("b1", "Dune")});
+    EXPECT_EQ(indexStore.saves, saves);
+    EXPECT_EQ(speech.last(), "Library updated, 2 albums, 1 book.");
+}
+
+TEST_F(BooksServerTest, MusicNeverListsTheBooks) {
+    start();
+    syncBooks({book("b1", "Dune")});
+    open("Music");
+    open("Albums A to Z");
+    for (const auto& label : labels()) EXPECT_NE(label, "Dune");
+    hold(Button::Home);
+    open("Music");
+    open("Artists");
+    for (const auto& label : labels()) EXPECT_NE(label, "Author");
+    hold(Button::Home);
+    open("Music");
+    open("Recently added");
+    for (const auto& label : labels()) EXPECT_NE(label, "Dune");
+}
+
+TEST_F(BooksServerTest, RefreshCountsTheBooks) {
+    start();
+    syncBooks({book("b1", "Dune"), book("b2", "Emma")});
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("");
+    answerAlbums({book("b1", "Dune"), book("b2", "Emma")});
+    EXPECT_EQ(speech.last(), "Library updated, 2 albums, 2 books.");
+}
+
+TEST_F(BooksServerTest, RefreshWithOnlyBooksAndNoLocalAlbumsSaysTheBooks) {
+    fs::remove_all(music);
+    start();
+    syncBooks({book("b1", "Dune"), book("b2", "Emma")});
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("");
+    answerAlbums({book("b1", "Dune"), book("b2", "Emma")});
+    EXPECT_EQ(speech.last(), "Library updated, 2 books.");
+}
+
+TEST_F(BooksServerTest, OpeningABookAsksTheServerForTheBookAndPlaysItsTracks) {
+    start();
+    syncBooks({book("b1", "Dune")});
+    open("Library");
+    open("Dune");
+    EXPECT_EQ(speech.last(), "Loading.");
+    EXPECT_EQ(countOf(Kind::AlbumTracks), 0u) << "through book(), not the tracks of an album";
+    ASSERT_EQ(server.lastRequest().kind, Kind::Book);
+    EXPECT_EQ(server.lastRequest().arg, "b1");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), bookOf(weather())));
+    app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_EQ(app->nowPlaying().chapterCount, 3);
+}
+
+TEST_F(BooksServerTest, ABookTheServerCannotGiveSaysSo) {
+    start();
+    syncBooks({book("b1", "Dune")});
+    open("Library");
+    open("Dune");
+    ASSERT_NO_FATAL_FAILURE(fail(Kind::Book, MusicServer::Error::Unreachable));
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+}
+
+TEST_F(BooksServerTest, ABookWithNoTracksSaysItHasNoChapters) {
+    start();
+    syncBooks({book("b1", "Dune")});
+    open("Library");
+    open("Dune");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), bookOf({})));
+    app->tick();
+    EXPECT_EQ(speech.last(), "This book has no chapters on the server.");
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
 }
 
 // ---------------------------------------------------------------- resume a server book (docs/streaming.md 4.12)

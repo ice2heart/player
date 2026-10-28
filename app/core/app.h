@@ -616,6 +616,7 @@ private:
         std::string version; // what getArtists said, kept in state when the sync is saved
         std::string folder;  // its audiobook_folder at the start, kept in state with the version
         std::set<std::string> bookIds; // the server album ids in that folder
+        bool books = false;  // a Books server: everything it lists is a book
         std::vector<IndexItem> items;
         std::vector<IndexPlaylist> savedPlaylists; // made by Save as playlist while the sync runs
     };

@@ -606,7 +606,8 @@ Music
   **With several servers** it syncs every server, one after the other, and the count is of
   the merged library. A server that fails adds its name and the error, in lower case:
   "Library updated, 12 albums. Music: server not reachable." When every server fails it says
-  only the errors. (Counting books comes with phase 2.)
+  only the errors. The books of the servers are counted after the albums ("Library updated,
+  12 albums, 2 books."); with none of either it says "Library updated.".
 - **Server books are in Library**, after the local books, with the value "on the
   server" (spoken after the title). They are never in Music. They open as books:
   chapters are the tracks, and the place is kept and resumed like a local book. A book that is

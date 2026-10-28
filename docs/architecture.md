@@ -712,12 +712,19 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   unknown; used by Recently added). **Music -> Refresh
   library** (last item of Music, also under "Scanning" / "No music") says "Updating the
   library.", starts a scan and a sync unless the start-up ones still run (it joins them), and
-  when both are done says "Library updated, N albums." (merged entries: an album that is local and on the server counts once; "Library
+  when both are done says "Library updated, N albums, M books." (merged entries: an album that is local and on the server counts once;
+  M is the server books in the index, local books are not counted; either count is left out when 0, "Library
   updated." with none), then for each server that failed its name and the error ("Music: server not reachable.";
   with one server only the error, "Server not reachable."). When every server tried failed it says only the errors.
-  Books are not counted yet (phase 2). It speaks only if the Music screen it was pressed on is still on
+  It speaks only if the Music screen it was pressed on is still on
   top and the device is awake. A second press meanwhile says "Still updating.".
   `shutdown()` cancels the sync.
+- **Books of a Books server (audiobookshelf.md 2.5).** A server whose `catalogue()` is `Books`
+  skips the version check and `audiobook_folder`: `onCatalogueVersion()` fetches its whole book list
+  every time (`fetchCatalogue()`, pages of 500, `catalogue_.books`), every item is `Kind::Book`, and no
+  version or folder is stored. `replaceServer()` / `saveItems()` write only what changed, so an unchanged
+  list writes no index. Library lists them like folder books; `openServerBook()` asks `book()` for these
+  servers (their tracks; the chapters come with 2.6) and `albumTracks()` for the others.
 - **Audiobooks from the server (4.11).** `MusicServer::musicFolders()` (`getMusicFolders`,
   `RemoteFolder{id, name}`) and a trailing `musicFolderId` on `albums()` (`getAlbumList2`; empty:
   all). `server.audiobook_folder` in `config.yaml` (the folder's name, exact match; set by the
