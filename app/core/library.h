@@ -31,6 +31,7 @@ struct Book {
     // tracks, its place is kept under `pos:` + `path` (the library item id, never a URL) and it
     // is not a `last_stream`.
     bool serverBook = false;
+    size_t link = 0; // serverBook: the server it is of (App's list of servers)
     std::optional<RemoteSource> source; // remote: where the list came from; none: it is not resumed
     // Remote, for the automatic cache (one per file; may be shorter, then unknown): the original
     // file's type (e.g. "flac") and size in bytes, and the artist of the list (an album's, may be empty).

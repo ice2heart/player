@@ -10,6 +10,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <iterator>
 #include <set>
@@ -56,12 +57,11 @@ constexpr int kUnitCount = 3;
 constexpr int kLargeBookStep = 600; // seconds: the "10 minutes" unit
 // The catalogue version of the server the index was last synced with (getArtists `lastModified`),
 // and the server key it belongs to. In state.tsv, never in config.yaml.
-constexpr const char* kCatalogueServer = "catalogue.server";
-constexpr const char* kCatalogueVersion = "catalogue.version";
+constexpr const char* kOldCatalogueServer = "catalogue.server"; // before several servers: removed by the first sync
+constexpr const char* kOldCatalogueVersion = "catalogue.version";
 // The audiobook folder the server items were sorted with (kCatalogueVersion alone would not
 // change when the setting does), and the setting itself: config.yaml's, never written by the device.
-constexpr const char* kCatalogueFolder = "catalogue.folder";
-constexpr const char* kAudiobookFolder = "server.audiobook_folder";
+constexpr const char* kOldCatalogueFolder = "catalogue.folder";
 constexpr size_t kRecentAlbums = 50; // the most albums Recently added and Recently played list
 constexpr int kCataloguePage = 500;          // albums per request (the most getAlbumList2 gives)
 constexpr size_t kCatalogueLimit = 200000;   // a server that never stops paging is an error
@@ -295,10 +295,6 @@ App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeContro
          Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot, std::filesystem::path cacheRoot,
          TextFiles* files, std::filesystem::path queueFile, std::filesystem::path scrobbleFile)
     : tts_(speech), player_(player), earcons_(sounds), volume_(volume), servers_(std::move(servers)),
-      serverConfig_(servers_.empty() ? ServerConfig{} : servers_.front().config),
-      serverKey_(servers_.empty() ? std::string{} : servers_.front().key),
-      server_(servers_.empty() ? static_cast<MusicServer&>(noServer_) : servers_.front().server),
-      downloader_(servers_.empty() ? static_cast<Downloader&>(noDownloader_) : servers_.front().downloader),
       index_(libraryStore), scanner_(scanner), config_(config), state_(state),
       savedState_(state.values()), queueFile_(std::move(queueFile)), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)),
       freeSpace_(spaceOnDisk), random_(clockRandom(clock)), lastActivity_(clock.now()) {
@@ -386,18 +382,28 @@ void App::onScanned(std::vector<IndexItem> items) {
 
 // ---------------------------------------------------------------- server catalogue
 
-std::string App::catalogueServerKey() const {
-    return serverKey_; // empty: no server set up
-}
-
 namespace {
 std::string keyOfRef(const std::string& ref) { return ref.substr(0, ref.find(':')); }
+
+// "catalogue.<server key>.version": what the server's catalogue was when the index was last synced with it
+// (getArtists `lastModified`), and "catalogue.<server key>.folder": the audiobook folder its items were sorted with.
+std::string versionKey(const std::string& serverKey) { return "catalogue." + serverKey + ".version"; }
+std::string folderKey(const std::string& serverKey) { return "catalogue." + serverKey + ".folder"; }
 } // namespace
 
-// What was seen on another server (or the same one under another user), or on any server once
-// none is set up, is not this server's: its server items and its references go. Items on this
-// device stay.
-void App::dropOtherServers(const std::string& key) {
+std::optional<App::ServerRef> App::serverRefOf(const std::vector<std::string>& seenOn) const {
+    for (size_t link = 0; link < servers_.size(); ++link) {
+        if (servers_[link].key.empty()) continue;
+        if (auto ref = LibraryIndex::refOnServer(seenOn, servers_[link].key)) return ServerRef{link, *ref};
+    }
+    return std::nullopt;
+}
+
+// What was seen on a server that is not set up now (removed from config.yaml, or the same one under another
+// user), or on any server once none is set up, is gone: its server items, its references, its playlists and
+// the version it was synced at. Items on this device stay. The keys of the single-server catalogue go too:
+// the first sync of every server asks again.
+void App::dropUnsetServers() {
     std::set<std::string> others;
     for (const auto& [id, item] : index_.items()) {
         for (const auto& ref : item.seenOn) others.insert(keyOfRef(ref));
@@ -405,28 +411,45 @@ void App::dropOtherServers(const std::string& key) {
             for (const auto& ref : track.seenOn) others.insert(keyOfRef(ref));
     }
     for (const auto& server : index_.playlistServers()) others.insert(server);
-    others.erase(key);
+    for (const ServerLink& link : servers_) others.erase(link.key);
     for (const auto& other : others) {
         index_.replaceServer(other, {}, clock_.wallTime());
         index_.replacePlaylists(other, {});
     }
     index_.save();
+    // The versions of servers that are not set up, whether or not the index holds anything of them.
+    std::set<std::string> keep;
+    for (const ServerLink& link : servers_) {
+        keep.insert(versionKey(link.key));
+        keep.insert(folderKey(link.key));
+    }
+    const std::string prefix = "catalogue.";
+    std::vector<std::string> stale;
+    for (const auto& [name, value] : state_.values())
+        if (name.starts_with(prefix) && !keep.contains(name))
+            for (const char* suffix : {".version", ".folder"})
+                if (name.size() > prefix.size() + std::strlen(suffix) && name.ends_with(suffix)) stale.push_back(name);
+    for (const std::string& name : stale) state_.erase(name);
+    state_.erase(kOldCatalogueServer);
+    state_.erase(kOldCatalogueVersion);
+    state_.erase(kOldCatalogueFolder);
 }
 
 namespace {
 std::string downloadedName(const CachedList& list); // below, with the downloaded lists
 }
 
-// The pinned albums of the cache are the Cached items of the index. A download carries the
+// The pinned albums of the caches are the Cached items of the index. A download carries the
 // reference of the server it came from, taken from its manifest: the album's own and one per
 // track. The reference is kept only while the server still lists the album (or while no
 // catalogue of this server is known yet), because an album that left the server has no
 // reference. Playlists are not albums: the index keeps them apart (fetchPlaylists()).
 void App::syncDownloads() {
     std::vector<IndexItem> items;
-    const TrackCache& store = trackCache();
-    if (store.enabled()) {
-        std::string key = catalogueServerKey();
+    for (size_t link = 0; link < servers_.size(); ++link) {
+        const TrackCache& store = trackCacheOf(link);
+        if (!store.enabled()) continue;
+        const std::string& key = servers_[link].key;
         bool catalogue = false;
         for (const auto& [id, item] : index_.items())
             if (item.source == IndexItem::Source::Server && LibraryIndex::refOnServer(item.seenOn, key)) catalogue = true;
@@ -463,21 +486,38 @@ void App::syncDownloads() {
     index_.replaceSource(IndexItem::Source::Cached, items, clock_.wallTime());
 }
 
-// Local and downloaded items with no reference to the server that are a server album by the
+// Local and downloaded items with no reference to a server that are one of its albums by the
 // name rule get its reference (merged entries keep it, so a later sync matches by it).
 void App::linkToServer() {
-    std::string key = catalogueServerKey();
-    if (key.empty()) return;
-    for (const AlbumLink& link : linkByName(key, index_.items())) index_.addSeenOn(link.itemId, link.reference);
+    for (const ServerLink& link : servers_) {
+        if (link.key.empty()) continue;
+        for (const AlbumLink& found : linkByName(link.key, index_.items())) index_.addSeenOn(found.itemId, found.reference);
+    }
 }
 
+// Every server in turn, in config order: one request at a time, so the device does one thing over
+// Wi-Fi. A sync that is already running (the start-up one) is not started twice.
 void App::startSync() {
-    std::string key = catalogueServerKey();
-    dropOtherServers(key); // with no server set up that is every server
-    if (key.empty() || !server_.configured() || catalogueRequest_) return; // nothing to sync, or a sync is running
+    dropUnsetServers(); // with no server set up that is every server
+    if (syncRunning_) return;
+    syncRunning_ = true;
+    syncLink_ = 0;
+    syncTried_ = 0;
+    syncFailures_.clear();
+    syncNext();
+}
+
+void App::syncNext() {
+    while (syncLink_ < servers_.size() && (!servers_[syncLink_].server.configured() || servers_[syncLink_].key.empty())) ++syncLink_;
+    if (syncLink_ >= servers_.size()) { // nothing left to ask
+        syncRunning_ = false;
+        return finishRefresh();
+    }
+    ++syncTried_;
     catalogue_ = {};
-    catalogue_.key = key;
-    catalogueRequest_ = server_.catalogueVersion([this](MusicServer::Error error, std::string version) {
+    catalogue_.link = syncLink_;
+    catalogue_.key = servers_[syncLink_].key;
+    catalogueRequest_ = servers_[syncLink_].server.catalogueVersion([this](MusicServer::Error error, std::string version) {
         catalogueRequest_ = 0;
         onCatalogueVersion(error, version);
     });
@@ -489,25 +529,24 @@ void App::onCatalogueVersion(MusicServer::Error error, const std::string& versio
     for (const auto& [id, item] : index_.items())
         if (item.source == IndexItem::Source::Server && LibraryIndex::refOnServer(item.seenOn, catalogue_.key))
             haveItems = true;
+    const std::string folder = servers_[catalogue_.link].config.audiobookFolder;
     // A server that gives no version cannot be told unchanged. Without server items in the
     // index (it was lost) the version does not matter either.
-    if (!version.empty() && haveItems && state_.getString(kCatalogueServer) == catalogue_.key &&
-        state_.getString(kCatalogueVersion) == version && state_.getString(kCatalogueFolder) == audiobookFolder())
+    if (!version.empty() && haveItems && state_.getString(versionKey(catalogue_.key)) == version &&
+        state_.getString(folderKey(catalogue_.key)) == folder)
         return fetchPlaylists(); // the catalogue is as it was, the playlists may not be
     catalogue_.version = version;
-    catalogue_.folder = audiobookFolder();
+    catalogue_.folder = folder;
     if (catalogue_.folder.empty()) fetchCatalogue(0);
     else fetchBookFolder();
 }
 
-std::string App::audiobookFolder() const { return config_.getString(kAudiobookFolder); }
-
-// server.audiobook_folder names a music folder: its albums are the audiobooks. The ids of its
+// The server's audiobook_folder names a music folder: its albums are the audiobooks. The ids of its
 // albums are fetched first, then the whole catalogue, and the ones in the folder become books.
 // A folder the server does not have makes no books, and the sync is not remembered (the name may be
 // a typo, and the next start asks again).
 void App::fetchBookFolder() {
-    catalogueRequest_ = server_.musicFolders([this](MusicServer::Error error, std::vector<RemoteFolder> folders, bool) {
+    catalogueRequest_ = servers_[catalogue_.link].server.musicFolders([this](MusicServer::Error error, std::vector<RemoteFolder> folders, bool) {
         catalogueRequest_ = 0;
         if (error != MusicServer::Error::None) return finishSync(error);
         for (const RemoteFolder& f : folders)
@@ -518,7 +557,7 @@ void App::fetchBookFolder() {
 }
 
 void App::fetchBookIds(const std::string& folderId, int offset) {
-    catalogueRequest_ = server_.albums(
+    catalogueRequest_ = servers_[catalogue_.link].server.albums(
         "alphabeticalByName", offset, kCataloguePage,
         [this, folderId, offset](MusicServer::Error error, std::vector<RemoteAlbum> albums, bool more) {
             catalogueRequest_ = 0;
@@ -533,7 +572,7 @@ void App::fetchBookIds(const std::string& folderId, int offset) {
 }
 
 void App::fetchCatalogue(int offset) {
-    catalogueRequest_ = server_.albums(
+    catalogueRequest_ = servers_[catalogue_.link].server.albums(
         "alphabeticalByName", offset, kCataloguePage,
         [this, offset](MusicServer::Error error, std::vector<RemoteAlbum> albums, bool more) {
             catalogueRequest_ = 0;
@@ -566,7 +605,7 @@ void App::fetchCatalogue(int offset) {
 // The last step of a sync: the server's playlists replace the stored ones. If the request fails the old
 // ones stay (the sync ends with the error, as for the catalogue).
 void App::fetchPlaylists() {
-    catalogueRequest_ = server_.playlists([this](MusicServer::Error error, std::vector<RemotePlaylist> playlists, bool) {
+    catalogueRequest_ = servers_[catalogue_.link].server.playlists([this](MusicServer::Error error, std::vector<RemotePlaylist> playlists, bool) {
         catalogueRequest_ = 0;
         if (error != MusicServer::Error::None) return finishSync(error);
         std::vector<IndexPlaylist> stored;
@@ -597,25 +636,26 @@ void App::applyCatalogue() {
     linkToServer();
     // Only the items decide: a playlists table that cannot be written must not make the next start fetch the albums again.
     if (index_.saveItems() && !catalogue_.version.empty()) { // else the next start checks again
-        state_.setString(kCatalogueServer, catalogue_.key);
-        state_.setString(kCatalogueVersion, catalogue_.version);
-        if (catalogue_.folder.empty()) state_.clearPrefix(kCatalogueFolder); // as before this setting
-        else state_.setString(kCatalogueFolder, catalogue_.folder);
+        state_.setString(versionKey(catalogue_.key), catalogue_.version);
+        if (catalogue_.folder.empty()) state_.erase(folderKey(catalogue_.key)); // as before this setting
+        else state_.setString(folderKey(catalogue_.key), catalogue_.folder);
     }
 }
 
-// The sync is over. An error before the albums came leaves the index as it was; one from getPlaylists leaves
-// the albums replaced and the playlists as they were.
+// The sync of this server is over, and the next one starts. An error before the albums came leaves the
+// server's items as they were; one from getPlaylists leaves the albums replaced and the playlists as they were.
+// Another server's error does not stop the others.
 void App::finishSync(MusicServer::Error error) {
     catalogue_.items.clear();
     catalogue_.bookIds.clear();
     catalogue_.savedPlaylists.clear();
-    refresh_.error = error;
-    finishRefresh();
+    if (error != MusicServer::Error::None) syncFailures_.push_back({catalogue_.link, error});
+    syncLink_ = catalogue_.link + 1;
     if (error == MusicServer::Error::None) sendScrobbles(); // the server answers
+    syncNext();
 }
 
-// Music -> Refresh library: rescans the files and, with a server, checks its catalogue. A scan or
+// Music -> Refresh library: rescans the files and, with servers, checks their catalogues. A scan or
 // sync that is already running (the start-up one) is joined, not started twice.
 void App::refreshLibrary() {
     if (refresh_.active) {
@@ -627,22 +667,32 @@ void App::refreshLibrary() {
     refresh_.screen = screens_.empty() ? 0 : screens_.back().id;
     say("Updating the library.");
     if (!scanRequest_) startScan();
-    if (!catalogueRequest_) startSync();
+    if (!syncRunning_) startSync();
 }
 
 // Called when a scan or a sync ends: when none is left, a Refresh that waits speaks its result,
 // but only on the screen it started on and while awake (a late result is never spoken).
 void App::finishRefresh() {
-    if (!refresh_.active || scanRequest_ || catalogueRequest_) return;
+    if (!refresh_.active || scanRequest_ || syncRunning_) return;
     Refresh done = std::exchange(refresh_, {});
     if (sleeping_ || screens_.empty() || screens_.back().id != done.screen) return;
-    if (done.error != MusicServer::Error::None) {
-        say(errorText(done.error) + ".");
-        return;
+    std::string text;
+    if (syncFailures_.size() < syncTried_ || syncTried_ == 0) { // some server answered, or none was asked
+        syncDownloads(); // a merged album counts once
+        index_.save();
+        const size_t albums = mergeAlbums(index_.items()).size();
+        text = "Library updated" + (albums ? ", " + countValue(albums, "album") : std::string()) + ".";
     }
-    syncDownloads(); // a merged album counts once
-    index_.save();
-    say("Library updated, " + countValue(mergeAlbums(index_.items()).size(), "album") + ".");
+    // A server that fails says its name (with one server there is nothing to tell apart) and the error.
+    for (const SyncFailure& failure : syncFailures_) {
+        std::string error = errorText(failure.error);
+        if (servers_.size() > 1) {
+            error[0] = char(std::tolower(static_cast<unsigned char>(error[0])));
+            error = linkName(failure.link) + ": " + error;
+        }
+        text += (text.empty() ? "" : " ") + error + ".";
+    }
+    say(text);
 }
 
 void App::shutdown() {
@@ -656,7 +706,11 @@ void App::shutdown() {
     autoJob_.reset();
     autoQueue_.clear();
     if (scanRequest_) scanner_.cancel(std::exchange(scanRequest_, 0));
-    if (catalogueRequest_) server_.cancel(std::exchange(catalogueRequest_, 0));
+    if (catalogueRequest_) serverAt(catalogue_.link).cancel(std::exchange(catalogueRequest_, 0));
+    syncRunning_ = false;
+    syncFailures_.clear();
+    syncTried_ = 0;
+    catalogue_ = {};
     refresh_ = {};
     pendingOpen_.reset();
     player_.cancelPreload();
@@ -708,8 +762,8 @@ void App::tick() {
     auto now = clock_.now();
     for (const ButtonEvent& ev : gestures_.poll(now)) onGesture(ev);
     if (servers_.empty()) { // the stand-ins answer through poll() too
-        server_.poll();
-        downloader_.poll();
+        noServer_.poll();
+        noDownloader_.poll();
     }
     for (ServerLink& link : servers_) {
         link.server.poll(); // answers from the server fill their lists
@@ -1578,18 +1632,19 @@ MenuItem App::albumEntry(const MergedAlbum& m) {
     const IndexItem& item = *m.primary;
     std::string info = albumInfoText(m);
     if (item.source == IndexItem::Source::Server) {
-        std::string key = catalogueServerKey();
-        std::string ref = LibraryIndex::refOnServer(item.seenOn, key).value_or(item.id);
-        std::string prefix = LibraryIndex::seenRef(key, SeenKind::Album, ""); // `<key>:album:`
+        const std::optional<ServerRef> on = serverRefOf(item.seenOn); // the server it is of: it plays from there
+        // (An item of a server that is not set up is dropped by the sync at start-up, before any list is built.)
+        const size_t link = on ? on->link : 0;
+        const std::string prefix = on ? LibraryIndex::seenRef(servers_[link].key, SeenKind::Album, "") : std::string(); // `<key>:album:`
         RemoteAlbum album;
-        album.id = ref.starts_with(prefix) ? ref.substr(prefix.size()) : std::string();
+        album.id = on && on->ref.starts_with(prefix) ? on->ref.substr(prefix.size()) : std::string();
         album.name = item.title;
         album.artist = item.artist;
-        MenuItem entry = action(item.title, [this, album, id = item.id] { openRemoteAlbum(album, id); });
+        MenuItem entry = action(item.title, [this, album, id = item.id, link] { openRemoteAlbum(album, id, {}, link); });
         entry.okHint = "open";
         if (int n = trackCountOf(item); n > 0) entry.value = [n] { return countValue(size_t(n), "track"); };
         if (album.id.empty()) return entry;
-        Pick pick = remotePick(Pick::Kind::Album, album.id, album.name, album.artist, item.id);
+        Pick pick = remotePick(Pick::Kind::Album, album.id, album.name, album.artist, item.id, link);
         pick.info = info;
         return withOptions(std::move(entry), std::move(pick));
     }
@@ -2322,20 +2377,23 @@ struct PlaylistEntry {
 };
 } // namespace
 
-// The playlists of the server set up now (the index holds no other server's, dropOtherServers()): those in the index, and the downloaded ones from the cache
+// The playlists of the servers set up now (the index holds no other server's, dropUnsetServers()): those in the index, and the downloaded ones from the cache
 // manifests (a downloaded playlist deleted on the server, or never synced, is still there). One entry
-// for a playlist in both, named and counted as the index has it. Sorted by name.
-static std::vector<PlaylistEntry> playlistEntries(const LibraryIndex& index, const TrackCache& store) {
+// for a playlist of a server in both, named and counted as the index has it. Sorted by name.
+std::vector<App::PlaylistEntry> App::playlistEntries() const {
     std::vector<PlaylistEntry> entries;
-    std::map<std::string, size_t> byId;
-    for (const auto& [ref, p] : index.playlists()) {
-        byId.emplace(p.id, entries.size());
-        entries.push_back({p.id, p.name, size_t(std::max(p.songCount, 0))});
-    }
-    if (store.enabled()) {
+    std::set<std::pair<size_t, std::string>> seen;
+    for (size_t link = 0; link < servers_.size(); ++link) {
+        for (const auto& [ref, p] : index_.playlists()) {
+            if (p.server != servers_[link].key) continue;
+            seen.emplace(link, p.id);
+            entries.push_back({link, p.id, p.name, size_t(std::max(p.songCount, 0))});
+        }
+        const TrackCache& store = trackCacheOf(link);
+        if (!store.enabled()) continue;
         for (const CachedList& list : store.lists(true)) {
-            if (list.source.kind != RemoteSource::Kind::Playlist || byId.contains(list.source.id)) continue;
-            entries.push_back({list.source.id, downloadedName(list), list.tracks.size()});
+            if (list.source.kind != RemoteSource::Kind::Playlist || seen.contains({link, list.source.id})) continue;
+            entries.push_back({link, list.source.id, downloadedName(list), list.tracks.size()});
         }
     }
     std::stable_sort(entries.begin(), entries.end(),
@@ -2344,17 +2402,17 @@ static std::vector<PlaylistEntry> playlistEntries(const LibraryIndex& index, con
 }
 
 bool App::hasPlaylists() const {
-    return !playlistEntries(index_, trackCache()).empty();
+    return !playlistEntries().empty();
 }
 
 // Music > Playlists is a local menu: read from the index and the manifests when it is opened.
 std::vector<MenuItem> App::playlistsMenu() {
     std::vector<MenuItem> items;
-    for (const PlaylistEntry& p : playlistEntries(index_, trackCache())) {
-        MenuItem item = action(p.name, [this, id = p.id, name = p.name] { openPlaylist(id, name); });
+    for (const PlaylistEntry& p : playlistEntries()) {
+        MenuItem item = action(p.name, [this, link = p.link, id = p.id, name = p.name] { openPlaylist(link, id, name); });
         item.okHint = "open";
         if (p.tracks > 0) item.value = [n = p.tracks] { return countValue(n, "track"); };
-        items.push_back(withOptions(std::move(item), remotePick(Pick::Kind::Playlist, p.id, p.name, "")));
+        items.push_back(withOptions(std::move(item), remotePick(Pick::Kind::Playlist, p.id, p.name, "", {}, p.link)));
     }
     if (items.empty())
         items.push_back(action("No playlists", [this] { say("Make a playlist on the server, or save the queue as a playlist."); }));
@@ -2363,21 +2421,21 @@ std::vector<MenuItem> App::playlistsMenu() {
 
 // A playlist that is whole on the disk opens from its files at once, with no question to the server;
 // any other loads its tracks (Lists from the server: "Loading", the error, "Try again", "Downloaded").
-void App::openPlaylist(const std::string& id, const std::string& name) {
+void App::openPlaylist(size_t link, const std::string& id, const std::string& name) {
     RemoteSource source{RemoteSource::Kind::Playlist, id};
-    const TrackCache& store = trackCache();
+    const TrackCache& store = trackCacheOf(link);
     if (store.enabled()) {
         CachedList cached = store.load(source);
         if (isWholeDownload(cached, completeTracks(store, source, cached))) {
-            openMenu(name, [this, source] { return downloadedListMenu(source, 0); }); // (Music's playlists are the first server's until step 1.7)
+            openMenu(name, [this, source, link] { return downloadedListMenu(source, link); });
             return;
         }
     }
-    openRemoteList(0, name,
+    openRemoteList(link, name,
                    fetchPages<RemoteTrack>(
-                       [this, id](int, MusicServer::Done<RemoteTrack> done) { return server_.playlistTracks(id, std::move(done)); },
-                       [this, name, id](const std::vector<RemoteTrack>& tracks) {
-                           return trackItems(name, tracks, "Play playlist", {RemoteSource::Kind::Playlist, id}, "");
+                       [this, link, id](int, MusicServer::Done<RemoteTrack> done) { return serverAt(link).playlistTracks(id, std::move(done)); },
+                       [this, name, id, link](const std::vector<RemoteTrack>& tracks) {
+                           return trackItems(name, tracks, "Play playlist", {RemoteSource::Kind::Playlist, id}, "", std::nullopt, {}, link);
                        }),
                    0, "No tracks", "This playlist is empty. Add tracks to it on the server.");
 }
@@ -2792,23 +2850,26 @@ std::string queuePlaylistName(std::time_t when) {
 }
 } // namespace
 
-// Saves the tracks of the first server, in play order, as a playlist on it. The queue is not touched,
+// Saves the tracks of the queue's first server (the server of its first track from a server), in play order,
+// as a playlist on it. The queue is not touched,
 // whatever the answer is; the answer is spoken on the Queue list it was asked from, and dropped if the
 // user has left it (closeScreens(), sleep, power off).
 void App::saveAsPlaylist() {
     if (saving_.request) return say("Saving.");
+    std::optional<size_t> target;
+    for (size_t i = 0; i < queue_.size() && !target; ++i) target = linkOf(queue_.at(i));
     std::vector<std::string> ids;
     for (size_t i = 0; i < queue_.size(); ++i)
-        if (linkOf(queue_.at(i)) == std::optional<size_t>(0)) ids.push_back(queue_.at(i).trackId); // the first server's (playlists of other servers: later)
+        if (target && linkOf(queue_.at(i)) == target) ids.push_back(queue_.at(i).trackId); // the other servers' tracks are "not saved"
     if (ids.empty()) {
         earcons_.play(Earcon::Error);
         return say("Only tracks from the server can be saved.");
     }
     ids.resize(std::min(ids.size(), MusicServer::kMaxPlaylistTracks)); // the rest would not fit in the request
     const std::uint64_t screen = screens_.back().id;
-    saving_ = Saving{screen, 0, queuePlaylistName(clock_.wallTime()), queue_.size() - ids.size(), ids.size(), catalogueServerKey()};
+    saving_ = Saving{screen, 0, queuePlaylistName(clock_.wallTime()), queue_.size() - ids.size(), ids.size(), *target, servers_[*target].key};
     say("Saving.");
-    saving_.request = server_.createPlaylist(saving_.name, std::move(ids), [this](MusicServer::Error error, std::string playlistId) { // never runs once cancelSaving() has cancelled it
+    saving_.request = serverAt(*target).createPlaylist(saving_.name, std::move(ids), [this](MusicServer::Error error, std::string playlistId) { // never runs once cancelSaving() has cancelled it
         const Saving done = std::exchange(saving_, Saving{});
         tts_.stop(); // "Saving." is over
         if (error != MusicServer::Error::None) {
@@ -2827,7 +2888,7 @@ void App::saveAsPlaylist() {
 }
 
 void App::cancelSaving() {
-    if (saving_.request) server_.cancel(saving_.request);
+    if (saving_.request) serverAt(saving_.link).cancel(saving_.request);
     saving_ = Saving{};
 }
 
@@ -2989,7 +3050,7 @@ std::optional<size_t> App::linkOf(const QueueEntry& e) const {
 std::optional<size_t> App::trackLink(size_t i) const {
     if (!trackRemote(i)) return std::nullopt;
     if (music_) return linkOf(queue_.at(i));
-    return servers_.empty() ? std::nullopt : std::optional<size_t>(0);
+    return book_->link < servers_.size() ? std::optional<size_t>(book_->link) : std::nullopt; // a server book
 }
 
 std::string App::trackKey(size_t i) const {
@@ -3054,13 +3115,14 @@ bool App::openBook(const Book& book, bool autoplay) {
     return true;
 }
 
-// The server book `last_book` names: the item id of a book of this server in the index
-// (`<server key>:album:<id>`, never a URL), which a local path cannot be. None when the server
-// is not set up, `last_book` is a local book or another server's, or the book left the index.
+// The server book `last_book` names: the item id of a book of a server set up in the index
+// (`<server key>:album:<id>`, never a URL), which a local path cannot be. None when that server
+// is not set up, `last_book` is a local book, or the book left the index.
 const IndexItem* App::savedServerBook() const {
     std::string last = state_.getString(kLastBook);
-    std::string key = catalogueServerKey();
-    if (last.empty() || key.empty() || !server_.configured() || !last.starts_with(LibraryIndex::seenRef(key, SeenKind::Album, "")))
+    if (last.empty()) return nullptr;
+    const std::optional<ServerRef> on = serverRefOf({last});
+    if (!on || !servers_[on->link].server.configured() || !last.starts_with(LibraryIndex::seenRef(servers_[on->link].key, SeenKind::Album, "")))
         return nullptr;
     const IndexItem* item = index_.find(last);
     return item && item->source == IndexItem::Source::Server && item->kind == IndexItem::Kind::Book ? item : nullptr;
@@ -3081,8 +3143,9 @@ bool App::isServerBookId(const std::string& id) {
 
 // The chapters of a server book: the tracks of the album, under the item id as its path.
 Book App::serverBookOf(const std::string& ref, const std::string& title, const std::string& author,
-                       const std::string& albumId, const std::vector<RemoteTrack>& tracks) {
+                       const std::string& albumId, const std::vector<RemoteTrack>& tracks, size_t link) {
     Book book;
+    book.link = link;
     book.title = title;
     book.artist = author;
     book.path = ref;
@@ -3108,10 +3171,16 @@ Book App::serverBookOf(const std::string& ref, const std::string& title, const s
 // `last_book`, as for a local book; the music player keeps its own place (`last_stream`). Its place is a file index of the
 // list as the server gives it now: a list shorter than the saved index starts at the first chapter.
 void App::openServerBook(const IndexItem& item) {
-    std::string key = catalogueServerKey();
-    std::string ref = LibraryIndex::refOnServer(item.seenOn, key).value_or(item.id);
-    std::string prefix = LibraryIndex::seenRef(key, SeenKind::Album, ""); // `<key>:album:`
-    if (key.empty() || !ref.starts_with(prefix)) {
+    const std::optional<ServerRef> on = serverRefOf(item.seenOn); // its server: the book is loaded and plays from there
+    if (!on) {
+        earcons_.play(Earcon::Error);
+        say("Server not reachable.");
+        return;
+    }
+    const size_t link = on->link;
+    const std::string& ref = on->ref;
+    const std::string prefix = LibraryIndex::seenRef(servers_[link].key, SeenKind::Album, ""); // `<key>:album:`
+    if (!ref.starts_with(prefix)) {
         earcons_.play(Earcon::Error);
         say("Server not reachable.");
         return;
@@ -3120,19 +3189,19 @@ void App::openServerBook(const IndexItem& item) {
     cancelResume();
     std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
     RemoteSource source{RemoteSource::Kind::Album, albumId};
-    const TrackCache& store = trackCache();
+    const TrackCache& store = trackCacheOf(link);
     CachedList cached = store.enabled() ? store.load(source) : CachedList{};
     std::vector<RemoteTrack> onDisk = completeTracks(store, source, cached);
     if (isWholeDownload(cached, onDisk)) {
-        Book book = serverBookOf(ref, item.title, item.artist, albumId, onDisk);
+        Book book = serverBookOf(ref, item.title, item.artist, albumId, onDisk, link);
         auto [file, pos] = savedPlace(book);
         playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
         return;
     }
     say("Loading.");
     resumeScreen_ = screen; // leaving this screen drops the request (closeScreens())
-    resumeLink_ = 0; // a server book is the first server's until phase 2 gives it a link
-    resume_ = server_.albumTracks(albumId, [this, screen, ref, title = item.title, author = item.artist, albumId](
+    resumeLink_ = link;
+    resume_ = servers_[link].server.albumTracks(albumId, [this, screen, ref, title = item.title, author = item.artist, albumId, link](
                                                MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
         resume_ = 0; // a new screen or sleep would have cancelled it: the user is still where they asked
         resumeScreen_ = 0;
@@ -3147,7 +3216,7 @@ void App::openServerBook(const IndexItem& item) {
             say("This book has no chapters on the server.");
             return;
         }
-        Book book = serverBookOf(ref, title, author, albumId, tracks);
+        Book book = serverBookOf(ref, title, author, albumId, tracks, link);
         auto [file, pos] = savedPlace(book);
         playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
     });

@@ -30,6 +30,7 @@ public:
     void clear() { values_.clear(); }
     void clearExcept(const std::vector<std::string>& prefixes); // keeps the keys starting with any of `prefixes`
     void clearPrefix(const std::string& prefix); // removes the keys starting with `prefix`
+    void erase(const std::string& key) { values_.erase(key); } // removes that key only
 
     int getInt(const std::string& key, int fallback) const;
     void setInt(const std::string& key, int value) { values_[key] = std::to_string(value); }

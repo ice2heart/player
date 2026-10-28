@@ -604,7 +604,7 @@ Music
   result is never spoken. A second press while it runs says "Still updating.". With
   no server set up it only rescans the files. A refresh that changed nothing writes
   nothing.
-  **With several servers (planned, phase 1)** it syncs every server and says "Updating the
+  **With several servers** it syncs every server and says "Updating the
   library." and then "Library updated, 12 albums, 2 books." (a count of 0 is left out). A
   server that fails adds its name and the error: "Music: server not reachable." When every
   server fails it says only the errors.

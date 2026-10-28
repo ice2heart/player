@@ -3622,7 +3622,7 @@ TEST_F(StreamingTest, AnEmptyListWithAServerInTheConfigSaysItIsNotSupported) {
     EXPECT_EQ(labels(), (std::vector<std::string>{"Server not supported"}));
 }
 
-TEST_F(StreamingTest, OnlyTheFirstServerOfTheListIsUsed) {
+TEST_F(StreamingTest, ALoadingListOfTheFirstServerAsksNothingOfTheOthers) {
     FakeMusicServer second;
     FakeDownloader secondDownloader;
     moreLinks.push_back(ServerLink{ServerConfig{}, "other-1", "Server 2", second, secondDownloader});
@@ -3631,7 +3631,7 @@ TEST_F(StreamingTest, OnlyTheFirstServerOfTheListIsUsed) {
     EXPECT_EQ(server.requests.size(), 1u);
     answer(someAlbums("N", 1));
     idle(1s);
-    EXPECT_TRUE(second.requests.empty());
+    for (const auto& r : second.requests) EXPECT_EQ(r.kind, FakeMusicServer::Kind::CatalogueVersion) << "only its own sync, no list";
 }
 
 // Two servers: the first is the fixture's `server` ("Music"), the second a fake of its own ("Audiobooks").
@@ -7924,9 +7924,10 @@ protected:
         indexStore.items[item.id] = item;
     }
     void seedVersion(const std::string& version) {
-        state.setString("catalogue.server", key());
-        state.setString("catalogue.version", version);
+        state.setString(versionKey(), version);
     }
+    std::string versionKey(const std::string& serverKey = "") const { return "catalogue." + (serverKey.empty() ? key() : serverKey) + ".version"; }
+    std::string folderKey(const std::string& serverKey = "") const { return "catalogue." + (serverKey.empty() ? key() : serverKey) + ".folder"; }
 
     // The newest request of `kind`.
     MusicServer::RequestId lastOf(FakeMusicServer::Kind kind) const {
@@ -8035,8 +8036,7 @@ TEST_F(CatalogueTest, ChangedVersionFetchesAllAlbumsAndReplacesTheServerItems) {
     EXPECT_EQ(item.firstSeen, 100) << "an album the index knew keeps its first-seen time";
     EXPECT_TRUE(indexStore.items.count(ref("al3")));
     EXPECT_FALSE(indexStore.items.count(ref("gone"))) << "an album the server dropped is gone";
-    EXPECT_EQ(state.getString("catalogue.version"), "v2");
-    EXPECT_EQ(state.getString("catalogue.server"), key());
+    EXPECT_EQ(state.getString(versionKey()), "v2");
 }
 
 TEST_F(CatalogueTest, AllPagesAreFetchedWhileTheServerHasMore) {
@@ -8073,7 +8073,7 @@ TEST_F(CatalogueTest, AServerThatNeverStopsPagingEndsInAnErrorAndKeepsTheSavedIt
     EXPECT_EQ(server.pendingCount(), 0u) << "the sync gave up";
     EXPECT_TRUE(indexStore.items.count(ref("old")));
     EXPECT_FALSE(indexStore.items.count(ref("x0")));
-    EXPECT_EQ(state.getString("catalogue.version"), "");
+    EXPECT_EQ(state.getString(versionKey()), "");
 }
 
 TEST_F(CatalogueTest, ASyncErrorAtStartUpSaysNothingAndKeepsTheSavedItems) {
@@ -8097,7 +8097,7 @@ TEST_F(CatalogueTest, AnAlbumListErrorAtStartUpSaysNothingKeepsTheItemsAndTheOld
     fail(Kind::Albums, MusicServer::Error::Server);
     EXPECT_EQ(speech.said.size(), spoken);
     EXPECT_TRUE(indexStore.items.count(ref("al1")));
-    EXPECT_EQ(state.getString("catalogue.version"), "v1") << "the next start tries again";
+    EXPECT_EQ(state.getString(versionKey()), "v1") << "the next start tries again";
 }
 
 TEST_F(CatalogueTest, ASyncThatChangedNothingWritesNothing) {
@@ -8108,7 +8108,7 @@ TEST_F(CatalogueTest, ASyncThatChangedNothingWritesNothing) {
     app.reset();
     const int saves = indexStore.saves;
     start(); // the version is stored in state, which the test keeps in memory
-    state.setString("catalogue.version", "other"); // a changed version, the same albums
+    state.setString(versionKey(), "other"); // a changed version, the same albums
     answerVersion("v2");
     answerAlbums({album("a1", "One")});
     EXPECT_EQ(indexStore.saves, saves);
@@ -8134,7 +8134,7 @@ TEST_F(CatalogueTest, AFailedSaveDoesNotStoreTheVersion) {
     answerVersion("v1");
     indexStore.failSaves = true;
     answerAlbums({album("a1", "One")});
-    EXPECT_EQ(state.getString("catalogue.version"), "");
+    EXPECT_EQ(state.getString(versionKey()), "");
 }
 
 // ---- Playlists in the index (docs/fixes.md 2.4)
@@ -8229,7 +8229,7 @@ TEST_F(CatalogueTest, PlaylistsThatCannotBeWrittenDoNotStopTheCatalogueVersionBe
     start();
     answerVersion("v1");
     answerAlbums({album("a1", "One")});
-    EXPECT_EQ(state.getString("catalogue.version"), "v1") << "or every start would fetch all the albums again";
+    EXPECT_EQ(state.getString(versionKey()), "v1") << "or every start would fetch all the albums again";
     EXPECT_EQ(indexStore.items.count(ref("a1")), 1u);
     ASSERT_EQ(indexStore.playlists.size(), 1u) << "what was stored stays";
     EXPECT_EQ(indexStore.playlists[0].id, "x");
@@ -8305,8 +8305,7 @@ TEST_F(CatalogueTest, ItemsOfAnotherServerOrUserAreDroppedAtStartUp) {
 
 TEST_F(CatalogueTest, AStoredVersionOfAnotherServerIsNotThisServers) {
     seedServerAlbum("al1", "One");
-    seedVersion("v1");
-    state.setString("catalogue.server", key("former"));
+    state.setString(versionKey(key("former")), "v1");
     start();
     answerVersion("v1");
     EXPECT_EQ(countOf(Kind::Albums), 1u);
@@ -8314,8 +8313,7 @@ TEST_F(CatalogueTest, AStoredVersionOfAnotherServerIsNotThisServers) {
 
 TEST_F(CatalogueTest, ANewServerOnTheSameIndexIsSyncedFromScratch) {
     seedServerAlbum("al1", "Of the old server", TrackCache::serverKey("https://old.example", "ice"));
-    seedVersion("v1"); // the stored version belongs to the old key below
-    state.setString("catalogue.server", TrackCache::serverKey("https://old.example", "ice"));
+    state.setString(versionKey(TrackCache::serverKey("https://old.example", "ice")), "v1"); // the old server's version, not this one's
     start();
     answerVersion("v1");
     EXPECT_EQ(countOf(Kind::Albums), 1u) << "the same version of another server means nothing";
@@ -9452,7 +9450,7 @@ TEST_F(ServerBookTest, WithoutTheFolderNothingChangesAndTheServerIsNotAskedForFo
     EXPECT_EQ(indexStore.items.at(ref("b1")).kind, IndexItem::Kind::Music);
     open("Library");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta"}));
-    EXPECT_EQ(state.values().count("catalogue.folder"), 0u) << "nothing new in the state";
+    EXPECT_EQ(state.values().count(folderKey()), 0u) << "nothing new in the state";
     hold(Button::Home);
     open("Music");
     open("Albums A to Z");
@@ -9469,8 +9467,8 @@ TEST_F(ServerBookTest, AFolderTheServerDoesNotHaveMakesNoBooks) {
     answerAlbums({dune()});
     open("Library");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta"}));
-    EXPECT_EQ(state.getString("catalogue.version"), "") << "not remembered: the next start asks again, in case the name was a typo";
-    EXPECT_EQ(state.values().count("catalogue.folder"), 0u);
+    EXPECT_EQ(state.getString(versionKey()), "") << "not remembered: the next start asks again, in case the name was a typo";
+    EXPECT_EQ(state.values().count(folderKey()), 0u);
 }
 
 TEST_F(ServerBookTest, AFailedFolderListKeepsTheSavedItemsAndSaysNothing) {
@@ -9482,7 +9480,7 @@ TEST_F(ServerBookTest, AFailedFolderListKeepsTheSavedItemsAndSaysNothing) {
     EXPECT_EQ(speech.said.size(), spoken);
     EXPECT_EQ(countOf(Kind::Albums), 0u) << "no album list is taken without knowing which are books";
     EXPECT_TRUE(indexStore.items.count(ref("old")));
-    EXPECT_EQ(state.getString("catalogue.version"), "");
+    EXPECT_EQ(state.getString(versionKey()), "");
 }
 
 TEST_F(ServerBookTest, TheFolderIsTakenInPagesLikeTheCatalogue) {
@@ -9511,7 +9509,7 @@ TEST_F(ServerBookTest, ChangingTheFolderSyncsAgainEvenWhenTheCatalogueVersionIsT
 TEST_F(ServerBookTest, TheSameFolderAndVersionFetchNothing) {
     seedServerAlbum("b1", "Dune");
     seedVersion("v1");
-    state.setString("catalogue.folder", "Books");
+    state.setString(folderKey(), "Books");
     start();
     answerVersion("v1");
     EXPECT_EQ(countOf(Kind::MusicFolders), 0u);
@@ -9521,8 +9519,8 @@ TEST_F(ServerBookTest, TheSameFolderAndVersionFetchNothing) {
 TEST_F(ServerBookTest, TheFolderIsRememberedInTheStateWithTheVersion) {
     start();
     syncWithFolder({dune()}, {dune()});
-    EXPECT_EQ(state.getString("catalogue.folder"), "Books");
-    EXPECT_EQ(state.getString("catalogue.version"), "v1");
+    EXPECT_EQ(state.getString(folderKey()), "Books");
+    EXPECT_EQ(state.getString(versionKey()), "v1");
 }
 
 TEST_F(ServerBookTest, OpeningABookShowsLoadingThenPlaysItAsChaptersAndSaysChapter) {
@@ -9957,6 +9955,15 @@ TEST_F(ServerBookResumeTest, ALastBookOfAnotherServerOrOneThatLeftTheIndexIsNotR
     app.reset();
     seedServerAlbum("m1", "Weather"); // an album of this server, not a book
     state.setString("last_book", ref("m1"));
+    start();
+    EXPECT_NE(level().items[0].label, "Now playing");
+}
+
+TEST_F(ServerBookResumeTest, ALastBookOfAServerThisBuildCannotUseIsNotResumed) {
+    seedServerAlbum("b1", "Dune");
+    indexStore.items.at(ref("b1")).kind = IndexItem::Kind::Book;
+    state.setString("last_book", ref("b1"));
+    server.isConfigured = false;
     start();
     EXPECT_NE(level().items[0].label, "Now playing");
 }
@@ -14641,4 +14648,391 @@ TEST_F(TwoServerDownloadTest, AListPlayingForAnotherUserOfTheSameUrlDoesNotBlock
     ASSERT_NO_FATAL_FAILURE(deleteDownloadOf("Audiobooks", "Dune"));
     EXPECT_TRUE(secondStore().load(albumSource("al1")).tracks.empty());
     app.reset(); // before the fakes go
+}
+
+// ---------------------------------------------------------------- catalogue sync per server (audiobookshelf.md 1.7)
+
+// Two servers: the first is the fixture's `server` ("Music", user ice), the second a fake of its own ("Audiobooks", user ben).
+// The sync asks one server at a time, in config order: the second is asked once the first is done.
+class TwoServerCatalogueTest : public CatalogueTest {
+protected:
+    void SetUp() override {
+        CatalogueTest::SetUp();
+        settings.setString("server.name", "Music");
+        second.streamHost = "books";
+        moreLinks.push_back(secondLink());
+    }
+    ServerLink secondLink(const std::string& folder = "") {
+        ServerConfig config;
+        config.name = "Audiobooks";
+        config.url = "https://books.example";
+        config.user = "ben";
+        config.audiobookFolder = folder;
+        return ServerLink{config, secondKey(), "Audiobooks", second, secondDownloader};
+    }
+    std::string secondKey() const { return TrackCache::serverKey("https://books.example", "ben"); }
+    std::string secondRef(const std::string& id) const { return ref(id, secondKey()); }
+    void seedOnSecond(const std::string& id, const std::string& title) { seedServerAlbum(id, title, secondKey()); }
+
+    static MusicServer::RequestId newest(FakeMusicServer& fake, FakeMusicServer::Kind kind) {
+        for (auto it = fake.requests.rbegin(); it != fake.requests.rend(); ++it)
+            if (it->kind == kind) return it->id;
+        ADD_FAILURE() << "no such request";
+        return 0;
+    }
+    static size_t asked(const FakeMusicServer& fake, FakeMusicServer::Kind kind) {
+        return size_t(std::count_if(fake.requests.begin(), fake.requests.end(), [kind](const auto& r) { return r.kind == kind; }));
+    }
+    // One server's whole sync: its version, its albums (when it changes) and its playlists.
+    void syncOf(FakeMusicServer& fake, const std::string& version, std::vector<RemoteAlbum> albums,
+                std::vector<RemotePlaylist> playlists = {}) {
+        ASSERT_TRUE(fake.replyVersion(newest(fake, Kind::CatalogueVersion), version));
+        app->tick();
+        if (fake.requests.back().kind == Kind::Albums) {
+            ASSERT_TRUE(fake.reply(fake.requests.back().id, std::move(albums), false));
+            app->tick();
+        }
+        ASSERT_EQ(fake.requests.back().kind, Kind::Playlists);
+        ASSERT_TRUE(fake.reply(fake.requests.back().id, std::move(playlists)));
+        app->tick();
+    }
+    // The first server has no audiobook folder (album a1 "Storm"); the second has "Books" (book b1 "Dune"). Both synced.
+    void syncWithBooksOnSecond() {
+        settings.setString("server.audiobook_folder", "");
+        moreLinks.clear();
+        moreLinks.push_back(secondLink("Books"));
+        start();
+        ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {album("a1", "Storm")}));
+        ASSERT_TRUE(second.replyVersion(newest(second, Kind::CatalogueVersion), "w1"));
+        app->tick();
+        ASSERT_EQ(second.requests.back().kind, Kind::MusicFolders);
+        ASSERT_TRUE(second.reply(second.requests.back().id, std::vector<RemoteFolder>{{"1", "Music"}, {"2", "Books"}}));
+        app->tick();
+        ASSERT_EQ(second.requests.back().kind, Kind::Albums);
+        EXPECT_EQ(second.requests.back().folder, "2");
+        ASSERT_TRUE(second.reply(second.requests.back().id, std::vector<RemoteAlbum>{album("b1", "Dune")}, false));
+        app->tick();
+        ASSERT_TRUE(second.reply(second.requests.back().id, std::vector<RemoteAlbum>{album("b1", "Dune")}, false));
+        app->tick();
+        ASSERT_TRUE(second.reply(second.requests.back().id, std::vector<RemotePlaylist>{}));
+        app->tick();
+    }
+    void failVersionOf(FakeMusicServer& fake, MusicServer::Error error) {
+        ASSERT_TRUE(fake.fail(newest(fake, Kind::CatalogueVersion), error));
+        app->tick();
+    }
+    // The state of a sync that already ran for the server named by `serverKey`.
+    void seedSynced(const std::string& serverKey, const std::string& version) { state.setString(versionKey(serverKey), version); }
+
+    FakeMusicServer second;
+    FakeDownloader secondDownloader;
+};
+
+TEST_F(TwoServerCatalogueTest, MusicListsTheAlbumsOfBothServers) {
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {album("a1", "Storm")}));
+    ASSERT_NO_FATAL_FAILURE(syncOf(second, "w1", {album("b1", "Calm")}));
+    EXPECT_TRUE(indexStore.items.count(ref("a1")));
+    EXPECT_TRUE(indexStore.items.count(secondRef("b1")));
+    open("Music");
+    open("Albums A to Z");
+    EXPECT_TRUE(hasLabel("Storm"));
+    EXPECT_TRUE(hasLabel("Calm"));
+    EXPECT_EQ(state.getString(versionKey()), "v1");
+    EXPECT_EQ(state.getString(versionKey(secondKey())), "w1");
+}
+
+TEST_F(TwoServerCatalogueTest, TheServersAreAskedOneAfterTheOther) {
+    start();
+    EXPECT_EQ(asked(server, Kind::CatalogueVersion), 1u);
+    EXPECT_TRUE(second.requests.empty()) << "the first has not answered";
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {album("a1", "Storm")}));
+    EXPECT_EQ(asked(second, Kind::CatalogueVersion), 1u);
+}
+
+TEST_F(TwoServerCatalogueTest, AlbumOfEachServerOpensItsTracksFromThatServer) {
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {album("a1", "Storm")}));
+    ASSERT_NO_FATAL_FAILURE(syncOf(second, "w1", {album("b1", "Calm")}));
+    open("Music");
+    open("Albums A to Z");
+    open("Calm");
+    EXPECT_EQ(asked(second, Kind::AlbumTracks), 1u);
+    EXPECT_EQ(asked(server, Kind::AlbumTracks), 0u);
+    EXPECT_EQ(second.requests.back().arg, "b1");
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    open("Storm");
+    EXPECT_EQ(asked(server, Kind::AlbumTracks), 1u);
+    EXPECT_EQ(server.requests.back().arg, "a1");
+    EXPECT_EQ(asked(second, Kind::AlbumTracks), 1u);
+}
+
+TEST_F(TwoServerCatalogueTest, OptionsOfAnAlbumOfTheSecondServerInMusicLoadItFromThatServer) {
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {album("a1", "Storm")}));
+    ASSERT_NO_FATAL_FAILURE(syncOf(second, "w1", {album("b1", "Calm")}));
+    open("Music");
+    open("Albums A to Z");
+    for (size_t i = 0; i < level().items.size() && level().items[level().index].label != "Calm"; ++i) press(Button::Down);
+    ASSERT_EQ(level().items[level().index].label, "Calm");
+    press(Button::Options);
+    open("Play now");
+    EXPECT_EQ(asked(second, Kind::AlbumTracks), 1u);
+    EXPECT_EQ(asked(server, Kind::AlbumTracks), 0u);
+    EXPECT_EQ(second.requests.back().arg, "b1");
+}
+
+TEST_F(TwoServerCatalogueTest, AChangedVersionOnOneServerFetchesOnlyThatOne) {
+    seedServerAlbum("a1", "Storm");
+    seedOnSecond("b1", "Calm");
+    seedVersion("v1");
+    seedSynced(secondKey(), "w1");
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {}));
+    ASSERT_NO_FATAL_FAILURE(syncOf(second, "w2", {album("b1", "Calm"), album("b2", "Quiet")}));
+    EXPECT_EQ(asked(server, Kind::Albums), 0u) << "unchanged";
+    EXPECT_EQ(asked(second, Kind::Albums), 1u);
+    EXPECT_TRUE(indexStore.items.count(secondRef("b2")));
+    EXPECT_EQ(state.getString(versionKey(secondKey())), "w2");
+    EXPECT_EQ(state.getString(versionKey()), "v1");
+}
+
+TEST_F(TwoServerCatalogueTest, AServerRemovedFromTheConfigLosesItsItemsOnTheNextSync) {
+    seedServerAlbum("a1", "Storm");
+    seedOnSecond("b1", "Calm");
+    seedVersion("v1");
+    seedSynced(secondKey(), "w1");
+    state.setString(folderKey(secondKey()), "Books");
+    const std::string ghost = TrackCache::serverKey("https://ghost.example", "ice"); // in no item, only in the state
+    seedSynced(ghost, "g1");
+    state.setString(folderKey(ghost), "Books");
+    moreLinks.clear(); // the second server is gone from config.yaml
+    start();
+    EXPECT_FALSE(indexStore.items.count(secondRef("b1")));
+    EXPECT_FALSE(storeHolds("books.example"));
+    EXPECT_EQ(state.values().count(versionKey(secondKey())), 0u) << "and the version it was synced at";
+    EXPECT_EQ(state.values().count(folderKey(secondKey())), 0u) << "and its audiobook folder";
+    EXPECT_EQ(state.values().count(versionKey(ghost)), 0u) << "also of a server the index holds nothing of";
+    EXPECT_EQ(state.values().count(folderKey(ghost)), 0u);
+    EXPECT_TRUE(indexStore.items.count(ref("a1"))) << "the server that stays keeps its items";
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {}));
+    EXPECT_TRUE(indexStore.items.count(ref("a1")));
+    EXPECT_EQ(state.getString(versionKey()), "v1");
+}
+
+TEST_F(TwoServerCatalogueTest, ItemsOfEveryConfiguredServerAreKeptWhenOneIsSynced) {
+    seedServerAlbum("a1", "Storm");
+    seedOnSecond("b1", "Calm");
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {album("a2", "Wind")}));
+    EXPECT_FALSE(indexStore.items.count(ref("a1"))) << "replaced by the server's own list";
+    EXPECT_TRUE(indexStore.items.count(secondRef("b1"))) << "the other server has not answered yet";
+}
+
+TEST_F(TwoServerCatalogueTest, OneServerFailingAtStartUpKeepsItsSavedItemsAndSaysNothing) {
+    seedServerAlbum("a1", "Storm");
+    seedOnSecond("b1", "Calm");
+    seedVersion("v1");
+    seedSynced(secondKey(), "w1");
+    start();
+    const size_t spoken = speech.said.size();
+    ASSERT_NO_FATAL_FAILURE(failVersionOf(server, MusicServer::Error::Unreachable));
+    EXPECT_EQ(asked(second, Kind::CatalogueVersion), 1u) << "the others are still synced";
+    ASSERT_NO_FATAL_FAILURE(syncOf(second, "w2", {album("b2", "Quiet")}));
+    EXPECT_EQ(speech.said.size(), spoken);
+    EXPECT_TRUE(indexStore.items.count(ref("a1"))) << "the saved items of the server that failed";
+    EXPECT_EQ(state.getString(versionKey()), "v1") << "and its version: the next start asks again";
+    EXPECT_TRUE(indexStore.items.count(secondRef("b2"))) << "the other one went on";
+    EXPECT_FALSE(indexStore.items.count(secondRef("b1")));
+}
+
+TEST_F(TwoServerCatalogueTest, RefreshWithOneServerFailingSaysTheCountAndWhichServerFailed) {
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {}));
+    ASSERT_NO_FATAL_FAILURE(syncOf(second, "w1", {album("b1", "Calm")}));
+    refresh();
+    EXPECT_EQ(speech.last(), "Updating the library.");
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    ASSERT_NO_FATAL_FAILURE(failVersionOf(server, MusicServer::Error::Unreachable));
+    EXPECT_EQ(speech.last(), "Updating the library.") << "Audiobooks has not answered";
+    ASSERT_NO_FATAL_FAILURE(syncOf(second, "w1", {}));
+    EXPECT_EQ(speech.last(), "Library updated, 3 albums. Music: server not reachable.");
+}
+
+TEST_F(TwoServerCatalogueTest, RefreshNamesTheSecondServerToo) {
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {}));
+    ASSERT_NO_FATAL_FAILURE(syncOf(second, "w1", {}));
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {}));
+    ASSERT_NO_FATAL_FAILURE(failVersionOf(second, MusicServer::Error::BadLogin));
+    EXPECT_EQ(speech.last(), "Library updated, 2 albums. Audiobooks: wrong user name or password.");
+}
+
+TEST_F(TwoServerCatalogueTest, RefreshWithEveryServerFailingSaysOnlyTheErrors) {
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {}));
+    ASSERT_NO_FATAL_FAILURE(syncOf(second, "w1", {}));
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    ASSERT_NO_FATAL_FAILURE(failVersionOf(server, MusicServer::Error::Unreachable));
+    ASSERT_NO_FATAL_FAILURE(failVersionOf(second, MusicServer::Error::Server));
+    EXPECT_EQ(speech.last(), "Music: server not reachable. Audiobooks: server error.");
+}
+
+TEST_F(TwoServerCatalogueTest, RefreshOfAServerThatIsNotConfiguredIsNotAFailure) {
+    second.isConfigured = false;
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {}));
+    EXPECT_TRUE(second.requests.empty());
+    refresh();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {}));
+    EXPECT_EQ(speech.last(), "Library updated, 2 albums.");
+}
+
+TEST_F(TwoServerCatalogueTest, TheOldCatalogueKeysAreGoneAfterASyncAndTheCatalogueIsFetchedAgain) {
+    seedServerAlbum("a1", "Storm");
+    state.setString("catalogue.server", key());
+    state.setString("catalogue.version", "v1");
+    state.setString("catalogue.folder", "Books");
+    start();
+    EXPECT_EQ(state.values().count("catalogue.server"), 0u);
+    EXPECT_EQ(state.values().count("catalogue.version"), 0u);
+    EXPECT_EQ(state.values().count("catalogue.folder"), 0u);
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {album("a1", "Storm")}));
+    EXPECT_EQ(asked(server, Kind::Albums), 1u) << "the same version, but nothing says it was synced: one extra fetch";
+    EXPECT_EQ(state.getString(versionKey()), "v1");
+}
+
+// The first server has no audiobook folder and syncs; the second has "Books" and syncs its book Dune.
+TEST_F(TwoServerCatalogueTest, TheAudiobookFolderIsPerServer) {
+    ASSERT_NO_FATAL_FAILURE(syncWithBooksOnSecond());
+    EXPECT_EQ(asked(server, Kind::MusicFolders), 0u) << "no folder set for the first server";
+    EXPECT_EQ(indexStore.items.at(secondRef("b1")).kind, IndexItem::Kind::Book);
+    EXPECT_EQ(indexStore.items.at(ref("a1")).kind, IndexItem::Kind::Music);
+    EXPECT_EQ(state.getString(folderKey(secondKey())), "Books");
+    EXPECT_EQ(state.values().count(folderKey()), 0u);
+}
+
+TEST_F(TwoServerCatalogueTest, ABookOfTheSecondServerLoadsAndPlaysFromIt) {
+    ASSERT_NO_FATAL_FAILURE(syncWithBooksOnSecond());
+    open("Library");
+    open("Dune");
+    EXPECT_EQ(asked(second, Kind::AlbumTracks), 1u);
+    EXPECT_EQ(asked(server, Kind::AlbumTracks), 0u);
+    ASSERT_TRUE(second.reply(second.requests.back().id, std::vector<RemoteTrack>{{"c1", "Part one", "Herbert", "Dune", 100, 1}}));
+    app->tick();
+    EXPECT_EQ(player.file, "fake://books/c1") << "the book plays from the server it is of";
+}
+
+TEST_F(TwoServerCatalogueTest, LeavingABookOfTheSecondServerWhileItLoadsCancelsItsRequest) {
+    ASSERT_NO_FATAL_FAILURE(syncWithBooksOnSecond());
+    open("Library");
+    open("Dune");
+    const auto id = second.requests.back().id;
+    hold(Button::Home);
+    EXPECT_FALSE(second.reply(id, std::vector<RemoteTrack>{{"c1", "Part one", "Herbert", "Dune", 100, 1}})) << "cancelled on the server it was asked of";
+}
+
+TEST_F(TwoServerCatalogueTest, ADownloadOfEachServerKeepsTheReferenceOfItsOwnServer) {
+    cache = base / "cache";
+    clock.setWallTime(1'800'000'000);
+    for (const auto& [url, user, id] : {std::tuple<std::string, std::string, std::string>{"https://music.example", "ice", "a1"},
+                                         {"https://books.example", "ben", "b1"}}) {
+        TrackCache store(diskFiles(), cache, url, user);
+        RemoteSource source{RemoteSource::Kind::Album, id};
+        fs::create_directories(store.listFolder(source));
+        touch(store.listFolder(source) / "t1.mp3");
+        ASSERT_TRUE(store.save(CachedList{source, "Down " + id, "Band", {{"t1", "t1.mp3", "Song", 100, "", true, 0}}}));
+    }
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {album("a1", "Storm")}));
+    ASSERT_NO_FATAL_FAILURE(syncOf(second, "w1", {album("b1", "Calm")}));
+    ASSERT_TRUE(indexStore.items.count("cached:" + ref("a1")));
+    ASSERT_TRUE(indexStore.items.count("cached:" + secondRef("b1")));
+    EXPECT_EQ(indexStore.items.at("cached:" + ref("a1")).seenOn, (std::vector<std::string>{ref("a1")}));
+    EXPECT_EQ(indexStore.items.at("cached:" + secondRef("b1")).seenOn, (std::vector<std::string>{secondRef("b1")}));
+    EXPECT_FALSE(indexStore.items.count("cached:" + ref("b1"))) << "not under the other server's key";
+}
+
+TEST_F(TwoServerCatalogueTest, ALocalAlbumThatIsAnAlbumOfTheSecondServerGetsItsReference) {
+    for (const char* f : {"01 - Sunrise.mp3", "02 - Highway.mp3"}) {
+        TrackTags t;
+        t.album = "Road Trip";
+        t.albumArtist = "Band";
+        t.title = f;
+        tags.tags[roadTrip() / f] = t;
+    }
+    start();
+    RemoteAlbum onServer = album("rt", "Road Trip");
+    onServer.songCount = 2;
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {}));
+    ASSERT_NO_FATAL_FAILURE(syncOf(second, "w1", {onServer}));
+    bool linked = false;
+    for (const auto& [id, item] : indexStore.items)
+        if (item.source == IndexItem::Source::Local && item.title == "Road Trip")
+            linked = std::count(item.seenOn.begin(), item.seenOn.end(), secondRef("rt")) == 1 && item.seenOn.size() == 1;
+    EXPECT_TRUE(linked) << "the local album is the second server's, and only its";
+}
+
+TEST_F(TwoServerCatalogueTest, MusicPlaylistsListThoseOfBothServersAndOpenFromTheirOwn) {
+    start();
+    ASSERT_NO_FATAL_FAILURE(syncOf(server, "v1", {}, {{"p1", "Road", 3, ""}}));
+    ASSERT_NO_FATAL_FAILURE(syncOf(second, "w1", {}, {{"p9", "Night", 2, ""}}));
+    open("Music");
+    open("Playlists");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Night", "Road"}));
+    open("Night");
+    EXPECT_EQ(asked(second, Kind::PlaylistTracks), 1u);
+    EXPECT_EQ(asked(server, Kind::PlaylistTracks), 0u);
+    EXPECT_EQ(second.requests.back().arg, "p9");
+}
+
+TEST_F(TwoServerPlayTest, SaveAsPlaylistGoesToTheServerOfTheQueuesFirstServerTrack) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("t1", "Storm"), onSecond("t7", "Dune"), onSecond("t8", "Part two")}));
+    finishOpen();
+    press(Button::Ok);
+    open("Queue");
+    open("Save as playlist");
+    ASSERT_EQ(server.lastRequest().kind, FakeMusicServer::Kind::CreatePlaylist) << "the first track is the first server's";
+    EXPECT_EQ(server.lastRequest().trackIds, (std::vector<std::string>{"t1"}));
+    EXPECT_TRUE(second.requests.empty() || second.requests.back().kind != FakeMusicServer::Kind::CreatePlaylist);
+    ASSERT_TRUE(server.replyCreated(server.lastRequest().id));
+    app->tick();
+    EXPECT_NE(speech.last().find("2 tracks not saved"), std::string::npos) << speech.last();
+}
+
+TEST_F(TwoServerPlayTest, SaveAsPlaylistOfATrackFromTheSecondServerIsMadeOnTheSecondServer) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Dune", {onSecond("t7", "Part one"), onSecond("t8", "Part two")}));
+    finishOpen();
+    press(Button::Ok);
+    open("Queue");
+    open("Save as playlist");
+    ASSERT_FALSE(second.requests.empty());
+    EXPECT_EQ(second.requests.back().kind, FakeMusicServer::Kind::CreatePlaylist);
+    EXPECT_EQ(second.requests.back().trackIds, (std::vector<std::string>{"t7", "t8"}));
+    for (const auto& r : server.requests) EXPECT_NE(r.kind, FakeMusicServer::Kind::CreatePlaylist);
+    ASSERT_TRUE(second.replyCreated(second.requests.back().id, "np"));
+    app->tick();
+    ASSERT_EQ(indexStore.playlists.size(), 1u);
+    EXPECT_EQ(indexStore.playlists.front().server, secondKey());
+}
+
+TEST_F(TwoServerPlayTest, LeavingTheQueueWhileSavingToTheSecondServerCancelsItsRequest) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Dune", {onSecond("t7", "Part one")}));
+    finishOpen();
+    press(Button::Ok);
+    open("Queue");
+    open("Save as playlist");
+    ASSERT_FALSE(second.requests.empty());
+    const auto id = second.requests.back().id;
+    hold(Button::Home);
+    EXPECT_FALSE(second.replyCreated(id)) << "cancelled on the server it was asked of";
 }

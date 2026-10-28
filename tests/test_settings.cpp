@@ -193,3 +193,13 @@ TEST(Settings, TsvSkipsLinesWithoutTab) {
     auto values = oap::parseTsv("garbage\nvolume\t20\n");
     EXPECT_EQ(values, (oap::SettingsMap{{"volume", "20"}}));
 }
+
+TEST(Settings, EraseRemovesThatKeyAndNotTheKeysThatStartWithIt) {
+    oap::Settings s;
+    s.setString("catalogue.version", "v1");
+    s.setString("catalogue.version-ab12.version", "v2");
+    s.erase("catalogue.version");
+    EXPECT_EQ(s.getString("catalogue.version"), "");
+    EXPECT_EQ(s.getString("catalogue.version-ab12.version"), "v2");
+    s.erase("never.set"); // nothing happens
+}

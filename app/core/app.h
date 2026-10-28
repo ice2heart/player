@@ -177,7 +177,7 @@ private:
     std::vector<MenuItem> artistsMenu();
     std::vector<MenuItem> playlistsMenu();             // Music > Playlists: the index and the downloads
     bool hasPlaylists() const;
-    void openPlaylist(const std::string& id, const std::string& name);
+    void openPlaylist(size_t link, const std::string& id, const std::string& name);
     std::vector<MenuItem> genresMenu();
     std::vector<MenuItem> recentAlbums(std::int64_t (*when)(const MergedAlbum&), const std::string& empty);
     std::vector<MenuItem> recentlyAddedMenu();
@@ -190,19 +190,31 @@ private:
     void openServerBook(const IndexItem& item); // Library, "Now playing": plays it from its saved place (its files if downloaded, else "Loading.")
     bool resumeServerBook();                    // "Now playing" / Play with nothing loaded: false when `last_book` names none
     static bool isServerBookId(const std::string& id);
-    const IndexItem* savedServerBook() const;   // `last_book` when it names a server book of this server
+    const IndexItem* savedServerBook() const;   // `last_book` when it names a server book of a server set up
     static Book serverBookOf(const std::string& ref, const std::string& title, const std::string& author,
-                             const std::string& albumId, const std::vector<RemoteTrack>& tracks);
-    std::string audiobookFolder() const;
+                             const std::string& albumId, const std::vector<RemoteTrack>& tracks, size_t link);
+    // The server an item is of: the first link, in config order, that the item has a reference on, and that reference.
+    struct ServerRef {
+        size_t link = 0;
+        std::string ref; // `<server key>:album:<id>` or the same for a track
+    };
+    std::optional<ServerRef> serverRefOf(const std::vector<std::string>& seenOn) const;
+    struct PlaylistEntry {
+        size_t link = 0;
+        std::string id, name;
+        size_t tracks = 0;
+    };
+    std::vector<PlaylistEntry> playlistEntries() const; // of every server, by name
     void startScan();
     void syncDownloads();   // the pinned albums of the cache as Cached items (docs/streaming.md 4.8)
     void linkToServer();    // local items with no reference that are a server album by the name rule
     void onScanned(std::vector<IndexItem> items);
-    // The server catalogue (docs/streaming.md 4.7): checks the version, fetches the albums when
-    // it changed and replaces the server items of the index. Silent unless Refresh library asked.
-    std::string catalogueServerKey() const; // empty: no server to sync with
-    void dropOtherServers(const std::string& key);
+    // The server catalogue (docs/streaming.md 4.7): for each server in turn, checks the version, fetches
+    // the albums when it changed and replaces that server's items of the index. Silent unless Refresh
+    // library asked.
+    void dropUnsetServers();   // items, playlists and saved versions of servers that are not set up now; the older single-server keys
     void startSync();
+    void syncNext();           // the next server that can be synced, else the sync is over
     void onCatalogueVersion(MusicServer::Error error, const std::string& version);
     void fetchBookFolder();
     void fetchBookIds(const std::string& folderId, int offset);
@@ -309,7 +321,8 @@ private:
         std::string name;      // "Queue, 27 October 14:05"
         size_t notSaved = 0;   // entries left out
         size_t songCount = 0;  // entries sent
-        std::string server;    // the server key it is saved on (catalogueServerKey() when it was asked)
+        size_t link = 0;       // the server it is saved on
+        std::string server;    // its key
     };
     void saveAsPlaylist();
     void cancelSaving();
@@ -393,7 +406,6 @@ private:
     void failDownload(const RemoteTrack& track, size_t number, const std::string& reason);
     void finishDownload();
     std::string downloadProgress() const; // "Downloading, 3 of 9 tracks", empty when none runs
-    const TrackCache& trackCache() const { return trackCacheOf(0); } // the first server's: only what is not per link yet uses it (Music's playlists and the catalogue, step 1.7; server books, phase 2)
     std::vector<MenuItem> downloadedMenu(size_t link);                               // Streaming > Downloaded of servers_[link]
     std::vector<MenuItem> downloadedListMenu(const RemoteSource& source, size_t link); // one downloaded album or playlist of that server
     static std::vector<RemoteTrack> completeTracks(const TrackCache& store, const RemoteSource& source, const CachedList& list);
@@ -595,27 +607,31 @@ private:
     NoMusicServer noServer_;   // stands in for the server when none is set up
     NoDownloader noDownloader_;
     std::vector<ServerLink> servers_;
-    ServerConfig serverConfig_; // of the first server: what it is called in saved state; empty with none
-    std::string serverKey_;     // its key; empty with none
-    MusicServer& server_;       // the first server's: the catalogue, Save as playlist and server books use only it for now
-    Downloader& downloader_;    // the first server's, or the stand-in: only for polling when there is no list; transfers go to servers_[link].downloader
     LibraryIndex index_;
     LibraryScanner& scanner_;
     LibraryScanner::RequestId scanRequest_ = 0; // 0: none running
     struct Catalogue {
-        std::string key;     // the server being synced
+        size_t link = 0;     // the server being synced (servers_)
+        std::string key;     // its key
         std::string version; // what getArtists said, kept in state when the sync is saved
-        std::string folder;  // server.audiobook_folder at the start, kept in state with the version
+        std::string folder;  // its audiobook_folder at the start, kept in state with the version
         std::set<std::string> bookIds; // the server album ids in that folder
         std::vector<IndexItem> items;
         std::vector<IndexPlaylist> savedPlaylists; // made by Save as playlist while the sync runs
     };
-    MusicServer::RequestId catalogueRequest_ = 0; // 0: no sync running
+    MusicServer::RequestId catalogueRequest_ = 0; // 0: no request of the sync is out (between two servers too)
     Catalogue catalogue_;
+    bool syncRunning_ = false; // some server is being synced, or is next
+    size_t syncLink_ = 0;      // the server being synced, or the next to try
+    struct SyncFailure {
+        size_t link = 0;
+        MusicServer::Error error = MusicServer::Error::None;
+    };
+    std::vector<SyncFailure> syncFailures_; // of this sync
+    size_t syncTried_ = 0;                  // servers this sync asked
     struct Refresh { // Music -> Refresh library, while it runs
         bool active = false;
         std::uint64_t screen = 0; // the Music screen it was pressed on: the result is spoken only there
-        MusicServer::Error error = MusicServer::Error::None;
     };
     Refresh refresh_;
     Settings& config_;
