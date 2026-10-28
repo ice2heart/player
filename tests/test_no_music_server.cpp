@@ -1,4 +1,4 @@
-#include "frontend/no_music_server.h"
+#include "core/no_music_server.h"
 
 #include <gtest/gtest.h>
 

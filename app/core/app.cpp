@@ -65,9 +65,6 @@ constexpr const char* kAudiobookFolder = "server.audiobook_folder";
 constexpr size_t kRecentAlbums = 50; // the most albums Recently added and Recently played list
 constexpr int kCataloguePage = 500;          // albums per request (the most getAlbumList2 gives)
 constexpr size_t kCatalogueLimit = 200000;   // a server that never stops paging is an error
-constexpr const char* kServerName = "server.name"; // the Streaming entry on Home
-constexpr const char* kServerUrl = "server.url";
-constexpr const char* kServerUser = "server.user";
 // The remote list that played last, resumed by "Now playing" after a restart.
 // The server is named by its url and user (never the password, nor a stream
 // URL, which holds the login), so a place on another server is not resumed.
@@ -293,11 +290,15 @@ MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn, L
 }
 } // namespace
 
-App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
-         Downloader& downloader, LibraryStore& libraryStore, LibraryScanner& scanner, Settings& config, Settings& state,
+App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume,
+         std::vector<ServerLink> servers, LibraryStore& libraryStore, LibraryScanner& scanner, Settings& config, Settings& state,
          Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot, std::filesystem::path cacheRoot,
          TextFiles* files, std::filesystem::path queueFile, std::filesystem::path scrobbleFile)
-    : tts_(speech), player_(player), earcons_(sounds), volume_(volume), server_(server), downloader_(downloader),
+    : tts_(speech), player_(player), earcons_(sounds), volume_(volume), servers_(std::move(servers)),
+      serverConfig_(servers_.empty() ? ServerConfig{} : servers_.front().config),
+      serverKey_(servers_.empty() ? std::string{} : servers_.front().key),
+      server_(servers_.empty() ? static_cast<MusicServer&>(noServer_) : servers_.front().server),
+      downloader_(servers_.empty() ? static_cast<Downloader&>(noDownloader_) : servers_.front().downloader),
       index_(libraryStore), scanner_(scanner), config_(config), state_(state),
       savedState_(state.values()), queueFile_(std::move(queueFile)), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)),
       freeSpace_(spaceOnDisk), random_(clockRandom(clock)), lastActivity_(clock.now()) {
@@ -385,7 +386,7 @@ void App::onScanned(std::vector<IndexItem> items) {
 // ---------------------------------------------------------------- server catalogue
 
 std::string App::catalogueServerKey() const {
-    return TrackCache::serverKey(config_.getString(kServerUrl), config_.getString(kServerUser)); // empty: no server set up
+    return serverKey_; // empty: no server set up
 }
 
 namespace {
@@ -1280,7 +1281,7 @@ std::vector<MenuItem> App::homeMenu() {
     }
     items.push_back(submenu("Library", [this] { return libraryMenu(); }, ListOrder::ByName));
     items.push_back(submenu("Music", [this] { return musicMenu(); }));
-    std::string server = config_.getString(kServerName);
+    const std::string& server = serverConfig_.name; // the Streaming entry on Home
     items.push_back(submenu(server.empty() ? "Server" : server, [this] { return streamingMenu(); }));
     items.push_back(submenu("Podcasts", [this] {
         return std::vector<MenuItem>{action("No podcasts yet", [this] { say("Podcast support is coming later."); })};
@@ -2219,7 +2220,7 @@ bool App::queuedFrom(const RemoteSource& source) const {
     if (!trackCache().enabled()) return false;
     std::set<std::string> ids;
     for (const CachedTrack& t : trackCache().load(source).tracks) ids.insert(t.id);
-    const std::string url = serverIdentity(config_.getString(kServerUrl)), user = config_.getString(kServerUser);
+    const std::string url = serverConfig_.url, user = serverConfig_.user;
     for (const QueueEntry& e : queue->originalEntries())
         if (e.kind == QueueEntry::Kind::Remote && e.serverUrl == url && e.user == user && ids.count(e.trackId)) return true;
     return false;
@@ -2407,9 +2408,9 @@ void App::checkServer() {
 
 std::optional<App::StreamPlace> App::savedStream() const {
     if (!server_.configured()) return std::nullopt;
-    std::string url = serverIdentity(config_.getString(kServerUrl));
+    std::string url = serverConfig_.url;
     if (url.empty() || serverIdentity(state_.getString(kLastStreamServer)) != url ||
-        state_.getString(kLastStreamUser) != config_.getString(kServerUser))
+        state_.getString(kLastStreamUser) != serverConfig_.user)
         return std::nullopt; // another server, or none: its ids mean nothing here
     StreamPlace place;
     std::string kind = state_.getString(kLastStreamKind);
@@ -3199,8 +3200,8 @@ std::vector<QueueEntry> App::remoteEntries(const std::string& title, const std::
     for (const RemoteTrack& t : tracks) {
         QueueEntry e;
         e.kind = QueueEntry::Kind::Remote;
-        e.serverUrl = serverIdentity(config_.getString(kServerUrl));
-        e.user = config_.getString(kServerUser);
+        e.serverUrl = serverConfig_.url;
+        e.user = serverConfig_.user;
         e.trackId = t.id;
         e.albumId = ofAlbum && !albumId.empty() ? albumId : t.albumId;
         e.title = t.title;
@@ -3432,7 +3433,7 @@ App::Availability App::availability(size_t i, Origin origin) const {
 // A remote entry of the server in the config: the same address and user (a cached copy of it is too).
 bool App::ofServerNow(const QueueEntry& e) const {
     return e.kind == QueueEntry::Kind::Remote && server_.configured() &&
-           e.serverUrl == serverIdentity(config_.getString(kServerUrl)) && e.user == config_.getString(kServerUser);
+           e.serverUrl == serverConfig_.url && e.user == serverConfig_.user;
 }
 
 void App::addSkipped(SkippedRun& skipped, size_t file, Availability why) {
@@ -3659,7 +3660,7 @@ void App::onScrobbleAnswer(const ScrobbleEntry& sent, MusicServer::Error error) 
 // Entries that can come up that belong to the server set up now.
 bool App::remoteAhead() const {
     if (!book_ || !music_ || !server_.configured()) return false;
-    const std::string url = serverIdentity(config_.getString(kServerUrl)), user = config_.getString(kServerUser);
+    const std::string url = serverConfig_.url, user = serverConfig_.user;
     // With Repeat all or album the entries before the current one come up again (after the last / the album's last).
     const size_t from = queue_.repeat() == QueueRepeat::All || queue_.repeat() == QueueRepeat::Album ? 0 : fileIndex_;
     for (size_t i = from; i < queue_.size(); ++i)
@@ -4161,7 +4162,7 @@ const TrackCache& App::trackCache() const {
     static NoTextFiles none;
     if (!trackCache_)
         trackCache_.emplace(textFiles_ ? *textFiles_ : none, textFiles_ ? cacheRoot_ : std::filesystem::path(),
-                            config_.getString(kServerUrl), config_.getString(kServerUser));
+                            serverConfig_.url, serverConfig_.user);
     return *trackCache_;
 }
 

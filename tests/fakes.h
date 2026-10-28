@@ -6,6 +6,7 @@
 #include "config/disk_text_files.h"
 #include "core/services.h"
 #include "core/settings.h"
+#include "core/track_cache.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -323,6 +324,15 @@ private:
     std::map<RequestId, Done> pending_;
     std::vector<std::pair<RequestId, std::function<void()>>> ready_;
 };
+
+// The list of one server App gets from a front end whose config.yaml sets up the first server of `settings` (none:
+// an entry with no url, as a front end with no server would not make one, but tests still pass their fakes).
+inline std::vector<ServerLink> linkTo(const Settings& settings, MusicServer& server, Downloader& downloader) {
+    std::vector<ServerConfig> configs = serverConfigs(settings);
+    ServerConfig config = configs.empty() ? ServerConfig{} : configs.front();
+    std::string key = TrackCache::serverKey(config.url, config.user);
+    return {ServerLink{config, key, "Server", server, downloader}};
+}
 
 // A music server that answers only when the test says so. Every request is
 // recorded and stays pending until the test calls reply() / replyPing() / fail().

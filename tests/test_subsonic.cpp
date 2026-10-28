@@ -485,30 +485,16 @@ TEST(Subsonic, IdsAreUniqueAndNeverZero) {
     EXPECT_EQ(ids.count(0), 0u);
 }
 
-TEST(Subsonic, ConfigComesFromTheServerSettings) {
-    oap::Settings settings;
-    settings.setString("server.url", "https://music.example");
-    settings.setString("server.user", "ice");
-    settings.setString("server.password", "sesame");
-    Server server(Subsonic::configFrom(settings));
+TEST(Subsonic, ConfigComesFromAServerEntry) {
+    oap::ServerConfig entry;
+    entry.url = "https://music.example";
+    entry.user = "ice";
+    entry.password = "sesame";
+    entry.apiKey = "not-for-subsonic";
+    Server server(Subsonic::configFrom(entry));
     EXPECT_TRUE(server.subsonic->configured());
     EXPECT_EQ(server.subsonic->stream("s1", 0).url, kBase + "stream" + kAuth + "&id=s1");
-    EXPECT_FALSE(Server(Subsonic::configFrom(oap::Settings())).subsonic->configured());
-}
-
-TEST(Subsonic, IsMadeFromConfigOnlyForTypeSubsonicWithAUrl) {
-    oap::Settings settings;
-    settings.setString("server.url", "https://music.example");
-    EXPECT_NE(Subsonic::fromConfig(settings), nullptr) << "no type: subsonic";
-    settings.setString("server.type", "subsonic");
-    auto server = Subsonic::fromConfig(settings);
-    ASSERT_NE(server, nullptr);
-    EXPECT_TRUE(server->configured());
-    settings.setString("server.type", "Subsonic");
-    EXPECT_NE(Subsonic::fromConfig(settings), nullptr) << "a type is not case sensitive";
-    settings.setString("server.type", "audiobookshelf");
-    EXPECT_EQ(Subsonic::fromConfig(settings), nullptr) << "another type of server";
-    EXPECT_EQ(Subsonic::fromConfig(oap::Settings()), nullptr) << "no server section";
+    EXPECT_FALSE(Server(Subsonic::configFrom(oap::ServerConfig())).subsonic->configured());
 }
 
 TEST(Subsonic, ScrobbleSaysNowPlayingOrPlayed) {

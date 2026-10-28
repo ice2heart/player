@@ -1,5 +1,7 @@
 #pragma once
 
+#include "settings.h"
+
 #include <chrono>
 #include <cstdint>
 #include <ctime>
@@ -413,6 +415,17 @@ public:
                                Progress progress, Done done) = 0;
     virtual void cancel(RequestId id) = 0; // unknown ids are ignored
     virtual void poll() = 0;               // UI thread: run the callbacks
+};
+
+// One server set up in config.yaml, as App gets it: its config, its key (TrackCache::serverKey(url, user):
+// cache folders, `seenOn` references, saved places), the name spoken for it and the objects that talk to it.
+// The objects belong to the front end (a `Servers`) and outlive App.
+struct ServerLink {
+    ServerConfig config;
+    std::string key;
+    std::string name;
+    MusicServer& server;
+    Downloader& downloader;
 };
 
 } // namespace oap

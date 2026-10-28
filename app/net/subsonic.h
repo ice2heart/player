@@ -16,8 +16,6 @@
 
 namespace oap {
 
-class Settings;
-
 // A Subsonic server (Navidrome, Gonic, Airsonic, ...), API 1.16.1 with token
 // auth: each request sends u, t = md5(password + salt) and a fresh random salt s,
 // never the password. Answers are parsed on the HTTP thread; the callbacks run
@@ -28,13 +26,8 @@ public:
     struct Config {
         std::string url, user, password;
     };
-    // The server.* keys of config.yaml.
-    static Config configFrom(const Settings& config);
-    // The server config.yaml sets up, if it is a Subsonic one: `server.type` is
-    // "subsonic" (in any case) or left out, and there is a `server.url`. Else nullptr, and the
-    // front end uses a server that is not configured.
-    static bool handles(const Settings& config); // fromConfig() would make a server
-    static std::unique_ptr<Subsonic> fromConfig(const Settings& config);
+    // The url, user and password of a Subsonic entry of config.yaml.
+    static Config configFrom(const ServerConfig& server);
 
     using SaltSource = std::function<std::string()>;
     static std::string randomSalt();

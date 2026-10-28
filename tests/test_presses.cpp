@@ -53,7 +53,7 @@ protected:
     void SetUp() override {
         dir = testTempDir();
         fs::remove_all(dir);
-        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, config, state, clock, dir / "books", dir / "music");
+        app = std::make_unique<App>(speech, player, sounds, volume, linkTo(config, server, downloader), indexStore, scanner, config, state, clock, dir / "books", dir / "music");
         app->start();
         t0 = clock.now();
     }

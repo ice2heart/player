@@ -411,14 +411,13 @@ int main(int argc, char** argv) {
     Player player(mixer);
     SystemClock clock;
     SettingsFiles settings(config, state);
-    std::unique_ptr<MusicServer> server = makeMusicServer(settings.config());
-    std::unique_ptr<Downloader> downloader = makeDownloader(settings.config());
+    Servers servers = makeServers(settings.config());
     // The library index (library.db) and the background scan of the local files that keeps it up to date.
     SqliteLibraryStore libraryStore(libraryDb);
     FfmpegTagReader tagReader;
     ThreadedScanner scanner(tagReader);
     DiskTextFiles manifests; // the cache's manifests, written atomically
-    App app(tts, player, earcons, mixer, *server, *downloader, libraryStore, scanner, settings.config(), settings.state(), clock, library, music, cache,
+    App app(tts, player, earcons, mixer, servers.links(), libraryStore, scanner, settings.config(), settings.state(), clock, library, music, cache,
             &manifests, defaultQueueFile(state), defaultScrobbleFile(state));
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
@@ -533,7 +532,7 @@ int main(int argc, char** argv) {
     }
 
     app.shutdown();
-    finishMusicServer(*server);
+    servers.finish();
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();

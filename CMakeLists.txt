@@ -46,6 +46,8 @@ add_library(oapcore STATIC
     app/core/album_merge.cpp
     app/core/library_index.cpp
     app/core/mixer.cpp
+    app/core/no_downloader.cpp
+    app/core/no_music_server.cpp
     app/core/queue.cpp
     app/core/queue_file.cpp
     app/core/scrobble_file.cpp
@@ -140,8 +142,6 @@ endif()
 add_library(oapfrontend STATIC
     app/frontend/gamepad.cpp
     app/frontend/held_buttons.cpp
-    app/frontend/no_downloader.cpp
-    app/frontend/no_music_server.cpp
     app/frontend/pick_font.cpp
     app/frontend/presses.cpp
     app/frontend/terminal_keys.cpp
@@ -150,8 +150,8 @@ add_library(oapfrontend STATIC
 target_link_libraries(oapfrontend PUBLIC oapcore Threads::Threads)
 target_compile_options(oapfrontend PRIVATE -Wall -Wextra)
 
-# ---- music server: makeMusicServer(), the server a front end gives App. Subsonic
-# with OAP_BUILD_NET (OAP_HAVE_NET), else NoMusicServer. Kept out of oapfrontend,
+# ---- servers: makeServers(), the list of servers a front end gives App. A Subsonic one per entry
+# of config.yaml with OAP_BUILD_NET (OAP_HAVE_NET), else none. Kept out of oapfrontend,
 # which has no dependencies.
 add_library(oapmusicserver STATIC app/frontend/make_music_server.cpp)
 target_link_libraries(oapmusicserver PUBLIC oapfrontend)

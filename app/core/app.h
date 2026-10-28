@@ -5,6 +5,8 @@
 #include "library.h"
 #include "library_index.h"
 #include "menu.h"
+#include "no_downloader.h"
+#include "no_music_server.h"
 #include "queue.h"
 #include "scrobble_file.h"
 #include "services.h"
@@ -53,9 +55,10 @@ public:
 
     // `config` holds what the user sets (config.yaml), `state` the positions and
     // the book to resume (state.tsv). State is written only on exit and on sleep.
-    // `server` gives the stream URLs of remote tracks; a front end without one
-    // passes a server that is not configured. `downloader` fetches tracks of
-    // that server into the cache (Download album / playlist). `libraryStore` keeps the library
+    // `servers` are the servers set up, in config order (the objects in them outlive the App); for now only the
+    // first is used. Its server gives the stream URLs of remote tracks and its downloader fetches tracks
+    // into the cache (Download album / playlist). With none (an empty list) App behaves as with a server that
+    // is not configured. `libraryStore` keeps the library
     // index between runs: the App loads it and Library and Music list it.
     // `scanner` lists the local files in the background: start() asks for a scan, and a finished
     // one replaces the local items of the index, which is saved only if it changed. Both must
@@ -63,8 +66,8 @@ public:
     // downloaded tracks (empty: none, and none without `files` either, which reads and
     // writes their manifests); it is left out of Library and Music
     // when it lies inside them.
-    App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume, MusicServer& server,
-        Downloader& downloader, LibraryStore& libraryStore, LibraryScanner& scanner, Settings& config, Settings& state,
+    App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume,
+        std::vector<ServerLink> servers, LibraryStore& libraryStore, LibraryScanner& scanner, Settings& config, Settings& state,
         Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot, std::filesystem::path cacheRoot = {}, TextFiles* files = nullptr,
         std::filesystem::path queueFile = {}, std::filesystem::path scrobbleFile = {});
 
@@ -571,7 +574,12 @@ private:
     MediaPlayer& player_;
     SoundEffects& earcons_;
     VolumeControl& volume_;
-    MusicServer& server_;
+    NoMusicServer noServer_;   // stands in for the server when none is set up
+    NoDownloader noDownloader_;
+    std::vector<ServerLink> servers_;
+    ServerConfig serverConfig_; // of the first server: what it is called in saved state; empty with none
+    std::string serverKey_;     // its key; empty with none
+    MusicServer& server_;       // the first server's, only it is used for now
     Downloader& downloader_;
     LibraryIndex index_;
     LibraryScanner& scanner_;

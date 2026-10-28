@@ -1,6 +1,5 @@
 #include "subsonic.h"
 
-#include "core/settings.h"
 #include "net/md5.h"
 #include "net/subsonic_json.h"
 
@@ -15,7 +14,6 @@ namespace {
 
 constexpr const char* kApiVersion = "1.16.1";
 constexpr const char* kClientName = "oap";
-constexpr const char* kServerType = "subsonic"; // server.type in config.yaml
 constexpr int kSaltLength = 12; // hex digits
 constexpr int kHttpOkFirst = 200, kHttpOkLast = 299;
 // The OpenSubsonic extension that lets stream() start a transcode later, and its parameter (seconds).
@@ -55,24 +53,7 @@ const char* errorName(MusicServer::Error error) {
 
 } // namespace
 
-Subsonic::Config Subsonic::configFrom(const Settings& config) {
-    Config c;
-    c.url = config.getString("server.url");
-    c.user = config.getString("server.user");
-    c.password = config.getString("server.password");
-    return c;
-}
-
-bool Subsonic::handles(const Settings& config) {
-    std::string type = config.getString("server.type", kServerType);
-    std::transform(type.begin(), type.end(), type.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-    return type == kServerType && serverConfigured(config);
-}
-
-std::unique_ptr<Subsonic> Subsonic::fromConfig(const Settings& config) {
-    if (!handles(config)) return nullptr;
-    return std::make_unique<Subsonic>(configFrom(config));
-}
+Subsonic::Config Subsonic::configFrom(const ServerConfig& server) { return {server.url, server.user, server.password}; }
 
 std::string Subsonic::randomSalt() {
     thread_local std::mt19937_64 generator = [] {

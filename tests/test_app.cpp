@@ -105,9 +105,17 @@ protected:
         fs::remove(queueFile);
     }
 
+    // The list of servers start() gives the App: the fakes, then `moreLinks`.
+    std::vector<ServerLink> serverLinks() {
+        if (noServerLinks) return {};
+        std::vector<ServerLink> links = linkTo(settings, server, downloader);
+        for (const ServerLink& more : moreLinks) links.push_back(more);
+        return links;
+    }
+
     // Starts the App and, unless `scan` is false, lets its background scan finish.
     void start(bool scan = true) {
-        app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache, textFiles, queueFile, scrobbleFile);
+        app = std::make_unique<App>(speech, player, sounds, volume, serverLinks(), indexStore, scanner, settings, state, clock, root, music, cache, textFiles, queueFile, scrobbleFile);
         app->start();
         if (scan) ASSERT_NO_FATAL_FAILURE(deliverScan());
     }
@@ -208,6 +216,8 @@ protected:
     FakeSounds sounds;
     FakeVolume volume;
     FakeMusicServer server;
+    bool noServerLinks = false;         // start() gives the App an empty list of servers
+    std::vector<ServerLink> moreLinks;  // servers after the first, for start()
     FakeDownloader downloader;
     FakeLibraryStore indexStore;    // library.db
     FakeLibraryScanner scanner; // the background scan: the test delivers it (deliverScan())
@@ -3359,13 +3369,22 @@ protected:
 
 TEST_F(StreamingTest, StreamingIsOnHomeUnderTheServerName) {
     settings.setString("server.name", "Home server");
+    settings.setString("server.url", "https://music.example"); // a name without a url is no server
     start();
     EXPECT_EQ(labels(), (std::vector<std::string>{"Library", "Music", "Home server", "Podcasts", "Settings", "System",
                                                   "Help"}));
+    const size_t asked = server.requests.size(); // the catalogue sync of a server that is set up
     open("Home server");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists",
                                                   "Random albums", "Server status"}));
-    EXPECT_TRUE(server.requests.empty()) << "nothing is asked before a list is opened";
+    EXPECT_EQ(server.requests.size(), asked) << "nothing is asked before a list is opened";
+}
+
+TEST_F(StreamingTest, TheNameOfAServerInTheServersListIsOnHome) {
+    settings.setString("servers.0.name", "Audio shelf");
+    settings.setString("servers.0.url", "https://music.example");
+    start();
+    EXPECT_EQ(labels()[2], "Audio shelf");
 }
 
 TEST_F(StreamingTest, AnEmptyServerNameIsCalledServer) {
@@ -3583,6 +3602,36 @@ TEST_F(StreamingTest, WithoutAServerTheMenuSaysHowToSetOneUp) {
     EXPECT_NE(speech.last().find("add a server section"), std::string::npos) << speech.last();
     EXPECT_NE(speech.last().find("config.yaml"), std::string::npos) << speech.last();
     EXPECT_TRUE(server.requests.empty());
+}
+
+TEST_F(StreamingTest, AnEmptyListOfServersSaysNoServerSetUp) {
+    noServerLinks = true;
+    openServer();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No server set up"}));
+    press(Button::Ok);
+    EXPECT_NE(speech.last().find("add a server section"), std::string::npos) << speech.last();
+    EXPECT_TRUE(server.requests.empty()) << "the fake is not on the list";
+    idle(1s);
+}
+
+TEST_F(StreamingTest, AnEmptyListWithAServerInTheConfigSaysItIsNotSupported) {
+    noServerLinks = true; // the front end made no link for it
+    settings.setString("server.type", "audiobookshelf");
+    settings.setString("server.url", "https://books.example");
+    openServer();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server not supported"}));
+}
+
+TEST_F(StreamingTest, OnlyTheFirstServerOfTheListIsUsed) {
+    FakeMusicServer second;
+    FakeDownloader secondDownloader;
+    moreLinks.push_back(ServerLink{ServerConfig{}, "other-1", "Server 2", second, secondDownloader});
+    openServer();
+    open("Recently added");
+    EXPECT_EQ(server.requests.size(), 1u);
+    answer(someAlbums("N", 1));
+    idle(1s);
+    EXPECT_TRUE(second.requests.empty());
 }
 
 TEST_F(StreamingTest, AServerThisPlayerCannotUseSaysSo) {
@@ -4835,7 +4884,7 @@ TEST_F(AppTest, TheStreamingQualityIsSavedAndKeptAcrossARestart) {
     app.reset();
     Settings reloaded{&configFile}; // config.yaml as the next start reads it
     reloaded.load();
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, reloaded, state, clock, root, music);
+    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(reloaded, server, downloader), indexStore, scanner, reloaded, state, clock, root, music);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
     EXPECT_EQ(player.file, "fake://stream/t1?maxBitRate=320");
@@ -5260,19 +5309,6 @@ TEST_F(ScrobbleOutboxTest, EntriesOfAnotherServerStayAndAreNotSentUntilItIsSetUp
     EXPECT_TRUE(outbox().empty());
 }
 
-TEST_F(ScrobbleOutboxTest, AnAnswerThatComesAfterTheServerWasChangedStillClearsItsEntry) {
-    writeOutbox({{otherKey(), "x1", 1000}});
-    server.holdScrobbles = true;
-    hearFirstTrack();
-    ASSERT_EQ(outbox().size(), 2u);
-    settings.setString("server.url", "https://other.example"); // set up for another server while t1 is out
-    ASSERT_TRUE(server.answerScrobble());
-    app->tick();
-    ASSERT_EQ(submissions().size(), 2u) << "the other server's entry is sent now";
-    EXPECT_EQ(submissions()[1], Scrobble("x1", true));
-    EXPECT_EQ(outbox(), (std::vector<ScrobbleEntry>{{otherKey(), "x1", 1000}})) << "t1 left, x1 waits for its answer";
-}
-
 TEST_F(ScrobbleOutboxTest, AnAnswerAfterShutdownClearsItsEntryAndSendsNoMore) {
     writeOutbox({{ourKey(), "t0", 500}, {ourKey(), "t5", 600}});
     server.holdScrobbles = true;
@@ -5363,6 +5399,16 @@ protected:
     }
 };
 
+TEST_F(DownloadTest, OnlyTheFirstServersDownloaderIsUsed) {
+    FakeMusicServer second;
+    FakeDownloader secondDownloader;
+    moreLinks.push_back(ServerLink{ServerConfig{}, "other-1", "Server 2", second, secondDownloader});
+    openAlbum();
+    startDownload();
+    EXPECT_EQ(downloader.requests.size(), 1u);
+    EXPECT_TRUE(secondDownloader.requests.empty());
+}
+
 TEST_F(DownloadTest, AlbumAndPlaylistOfferDownloadRightAfterPlay) {
     indexPlaylist("p1", "Road", 3);
     openAlbum();
@@ -5402,7 +5448,7 @@ TEST_F(DownloadTest, NoDownloadItemWithoutACacheFolderAServerOrADownloader) {
 }
 
 TEST_F(DownloadTest, AnAppWithoutTextFilesHasNoCacheEvenWithAFolder) {
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache);
+    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(settings, server, downloader), indexStore, scanner, settings, state, clock, root, music, cache);
     app->start();
     open("Server");
     open("Recently added");
@@ -7421,7 +7467,7 @@ TEST_F(AutoCacheLimitTest, CachingATrackDoesNotScanTheManifestsAgainWhileTheCach
     cacheTrack("x", false, 100, 5, albumSource("other1"), "One");
     cacheTrack("y", false, 100, 5, albumSource("other2"), "Two");
     CountingFiles counting;
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache, &counting);
+    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(settings, server, downloader), indexStore, scanner, settings, state, clock, root, music, cache, &counting);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
     listen(11s);
@@ -7497,7 +7543,7 @@ TEST_F(AutoCacheLimitTest, EvictionDoesNotMakeTheNextLookupScanTheManifestsAgain
     cacheTrack("a", false, 100, 5, albumSource("other1"), "One");
     cacheTrack("b", false, 100, 5, albumSource("other2"), "Two");
     CountingFiles counting;
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache, &counting);
+    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(settings, server, downloader), indexStore, scanner, settings, state, clock, root, music, cache, &counting);
     app->setCacheGigabyte(10);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
@@ -7515,7 +7561,7 @@ TEST_F(AutoCacheLimitTest, PoweringOffTrimsOnce) {
     cacheTrack("a", false, 100, 5, albumSource("other1"), "One");
     cacheTrack("b", false, 100, 5, albumSource("other2"), "Two");
     CountingFiles counting;
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, settings, state, clock, root, music, cache, &counting);
+    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(settings, server, downloader), indexStore, scanner, settings, state, clock, root, music, cache, &counting);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
     app->shutdown(); // the first exit scans, and the plays go to the manifests
@@ -7546,7 +7592,7 @@ TEST_F(AutoCacheLimitTest, TheSizeIsSavedAndKeptAcrossARestart) {
     Settings reloaded{&configFile};
     reloaded.load();
     EXPECT_EQ(reloaded.getInt("cache.limit_gb", 1), 4);
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, reloaded, state, clock, root, music, cache, &diskFiles());
+    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(reloaded, server, downloader), indexStore, scanner, reloaded, state, clock, root, music, cache, &diskFiles());
     app->start();
     open("Settings");
     open("Cache size");
@@ -7556,7 +7602,7 @@ TEST_F(AutoCacheLimitTest, TheSizeIsSavedAndKeptAcrossARestart) {
     app.reset();
     Settings off{&configFile};
     off.load();
-    app = std::make_unique<App>(speech, player, sounds, volume, server, downloader, indexStore, scanner, off, state, clock, root, music, cache, &diskFiles());
+    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(off, server, downloader), indexStore, scanner, off, state, clock, root, music, cache, &diskFiles());
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1")));
     listen(60s);
