@@ -143,4 +143,145 @@ int64_t parseIsoTime(const std::string& text) {
     return daysFromCivil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second - offset;
 }
 
+namespace {
+
+// Unicode blocks the script of a letter is read from.
+constexpr char32_t kLatin1Letters = 0xC0, kMultiply = 0xD7, kDivide = 0xF7, kLatinExtBEnd = 0x24F;
+constexpr char32_t kLatinExtAdditional = 0x1E00, kLatinExtAdditionalEnd = 0x1EFF;
+constexpr char32_t kGreekStart = 0x370, kGreekEnd = 0x3FF, kGreekExtStart = 0x1F00, kGreekExtEnd = 0x1FFF;
+constexpr char32_t kCyrillicStart = 0x400, kCyrillicEnd = 0x52F, kCyrillicSupStart = 0x1C80,
+                   kCyrillicSupEnd = 0x1C8F, kCyrillicExtBStart = 0xA640, kCyrillicExtBEnd = 0xA69F;
+constexpr char32_t kHebrewStart = 0x590, kHebrewEnd = 0x5FF, kHebrewPresStart = 0xFB1D, kHebrewPresEnd = 0xFB4F;
+constexpr char32_t kArabicStart = 0x600, kArabicEnd = 0x6FF, kArabicSupStart = 0x750, kArabicSupEnd = 0x77F,
+                   kArabicPresAStart = 0xFB50, kArabicPresAEnd = 0xFDFF, kArabicPresBStart = 0xFE70,
+                   kArabicPresBEnd = 0xFEFF;
+constexpr char32_t kHiraganaStart = 0x3040, kKatakanaEnd = 0x30FF, kKatakanaExtStart = 0x31F0,
+                   kKatakanaExtEnd = 0x31FF, kHalfwidthKatakanaStart = 0xFF66, kHalfwidthKatakanaEnd = 0xFF9F;
+constexpr char32_t kHangulJamoStart = 0x1100, kHangulJamoEnd = 0x11FF, kHangulCompatStart = 0x3130,
+                   kHangulCompatEnd = 0x318F, kHangulSyllablesStart = 0xAC00, kHangulSyllablesEnd = 0xD7AF;
+constexpr char32_t kHanExtAStart = 0x3400, kHanExtAEnd = 0x4DBF, kHanStart = 0x4E00, kHanEnd = 0x9FFF,
+                   kHanCompatStart = 0xF900, kHanCompatEnd = 0xFAFF, kHanExtBStart = 0x20000,
+                   kHanExtEnd = 0x323AF;
+constexpr char32_t kKatakanaMiddleDot = 0x30FB;
+constexpr char32_t kGeneralPunctuationStart = 0x2000, kGeneralPunctuationEnd = 0x206F;
+constexpr char32_t kCjkSymbolsStart = 0x3000, kCjkSymbolsEnd = 0x303F;
+constexpr char32_t kFullwidthFormsStart = 0xFF00, kFullwidthFormsEnd = 0xFF65; // fullwidth ASCII, punctuation
+constexpr char32_t kSymbolsStart = 0x2070, kSymbolsEnd = 0x2BFF; // super/subscripts, currency, arrows, math, shapes
+constexpr char32_t kEmojiStart = 0x1F000, kEmojiEnd = 0x1FAFF;
+constexpr char32_t kLatinLigaturesStart = 0xFB00, kLatinLigaturesEnd = 0xFB06;
+constexpr char32_t kCombiningMarksStart = 0x300, kCombiningMarksEnd = 0x36F, kModifierLettersStart = 0x2B0,
+                   kModifierLettersEnd = 0x2FF, kVariationSelectorsStart = 0xFE00, kVariationSelectorsEnd = 0xFE0F,
+                   kVariationSelectorsSupStart = 0xE0100, kVariationSelectorsSupEnd = 0xE01EF;
+constexpr char32_t kIterationMark = 0x3005, kClosingMark = 0x3007; // 々 〆 〇 are Han letters
+constexpr char32_t kEnclosedCjkStart = 0x3190, kEnclosedCjkEnd = 0x33FF, kCjkFormsStart = 0xFE30,
+                   kCjkFormsEnd = 0xFE6F, kFullwidthSignsStart = 0xFFE0, kFullwidthSignsEnd = 0xFFEE;
+constexpr char32_t kSurrogatesStart = 0xD800, kSurrogatesEnd = 0xDFFF, kMaxCodePoint = 0x10FFFF;
+constexpr char32_t kArabicIndicDigit0 = 0x660, kArabicIndicDigit9 = 0x669;
+
+bool in(char32_t c, char32_t a, char32_t b) { return c >= a && c <= b; }
+
+// A mark belongs to the letter before it.
+enum class Kind { Neutral, Letter, Mark };
+
+struct Cls {
+    Kind kind;
+    Script script;
+};
+
+Cls classify(char32_t c, bool malformed) {
+    const Cls neutral{Kind::Neutral, Script::Latin};
+    auto letter = [](Script s) { return Cls{Kind::Letter, s}; };
+    if (malformed || in(c, kSurrogatesStart, kSurrogatesEnd) || c > kMaxCodePoint) return neutral;
+    if (c < 0x80) {
+        bool alpha = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        return alpha ? letter(Script::Latin) : neutral;
+    }
+    if (c < kLatin1Letters) return neutral;
+    if (in(c, kCombiningMarksStart, kCombiningMarksEnd) || in(c, kModifierLettersStart, kModifierLettersEnd) ||
+        in(c, kVariationSelectorsStart, kVariationSelectorsEnd) ||
+        in(c, kVariationSelectorsSupStart, kVariationSelectorsSupEnd))
+        return {Kind::Mark, Script::Latin};
+    if (c <= kLatinExtBEnd) return (c == kMultiply || c == kDivide) ? neutral : letter(Script::Latin);
+    if (in(c, kLatinExtAdditional, kLatinExtAdditionalEnd) || in(c, kLatinLigaturesStart, kLatinLigaturesEnd)) return letter(Script::Latin);
+    if (in(c, kGreekStart, kGreekEnd) || in(c, kGreekExtStart, kGreekExtEnd)) return letter(Script::Greek);
+    if (in(c, kCyrillicStart, kCyrillicEnd) || in(c, kCyrillicSupStart, kCyrillicSupEnd) ||
+        in(c, kCyrillicExtBStart, kCyrillicExtBEnd))
+        return letter(Script::Cyrillic);
+    if (in(c, kHebrewStart, kHebrewEnd) || in(c, kHebrewPresStart, kHebrewPresEnd)) return letter(Script::Hebrew);
+    if (in(c, kArabicIndicDigit0, kArabicIndicDigit9)) return neutral;
+    if (in(c, kArabicStart, kArabicEnd) || in(c, kArabicSupStart, kArabicSupEnd) ||
+        in(c, kArabicPresAStart, kArabicPresAEnd) || in(c, kArabicPresBStart, kArabicPresBEnd))
+        return letter(Script::Arabic);
+    if (in(c, kIterationMark, kClosingMark)) return letter(Script::Han);
+    if (in(c, kGeneralPunctuationStart, kGeneralPunctuationEnd) || in(c, kCjkSymbolsStart, kCjkSymbolsEnd) ||
+        in(c, kSymbolsStart, kSymbolsEnd) || in(c, kFullwidthFormsStart, kFullwidthFormsEnd) ||
+        in(c, kEmojiStart, kEmojiEnd) ||
+        in(c, kEnclosedCjkStart, kEnclosedCjkEnd) || in(c, kCjkFormsStart, kCjkFormsEnd) ||
+        in(c, kFullwidthSignsStart, kFullwidthSignsEnd))
+        return neutral;
+    if (c == kKatakanaMiddleDot) return neutral;
+    if (in(c, kHiraganaStart, kKatakanaEnd) || in(c, kKatakanaExtStart, kKatakanaExtEnd) ||
+        in(c, kHalfwidthKatakanaStart, kHalfwidthKatakanaEnd))
+        return letter(Script::Japanese);
+    if (in(c, kHangulJamoStart, kHangulJamoEnd) || in(c, kHangulCompatStart, kHangulCompatEnd) ||
+        in(c, kHangulSyllablesStart, kHangulSyllablesEnd))
+        return letter(Script::Hangul);
+    if (in(c, kHanExtAStart, kHanExtAEnd) || in(c, kHanStart, kHanEnd) || in(c, kHanCompatStart, kHanCompatEnd) ||
+        in(c, kHanExtBStart, kHanExtEnd))
+        return letter(Script::Han);
+    return letter(Script::Other);
+}
+
+bool japanese(Script s) { return s == Script::Han || s == Script::Japanese; }
+
+} // namespace
+
+std::vector<ScriptRun> scriptRuns(std::string_view text) {
+    struct Piece {
+        size_t begin, end;
+        Cls cls;
+    };
+    std::vector<Piece> pieces;
+    for (size_t i = 0; i < text.size();) {
+        size_t begin = i;
+        char32_t c = nextCodePoint(text, i);
+        bool malformed = static_cast<unsigned char>(text[begin]) >= 0x80 && i - begin == 1;
+        pieces.push_back({begin, i, classify(c, malformed)});
+    }
+    for (size_t k = 0; k < pieces.size(); ++k)
+        if (pieces[k].cls.kind == Kind::Mark)
+            pieces[k].cls = k > 0 && pieces[k - 1].cls.kind == Kind::Letter ? pieces[k - 1].cls
+                                                                              : Cls{Kind::Neutral, Script::Latin};
+    // Marks join the letter before them. A stretch of neutrals takes the script of the letters on
+    // both sides when they agree (Han and kana agree as Japanese), else Latin.
+    std::vector<Script> scripts(pieces.size(), Script::Latin);
+    for (size_t k = 0; k < pieces.size();) {
+        if (pieces[k].cls.kind == Kind::Letter) {
+            scripts[k] = pieces[k].cls.script;
+            ++k;
+            continue;
+        }
+        size_t e = k;
+        while (e < pieces.size() && pieces[e].cls.kind == Kind::Neutral) ++e;
+        if (k > 0 && e < pieces.size()) {
+            Script before = pieces[k - 1].cls.script, after = pieces[e].cls.script;
+            if (before == after || (japanese(before) && japanese(after)))
+                for (size_t j = k; j < e; ++j) scripts[j] = before; // a Han/kana mix is promoted below
+        }
+        k = e;
+    }
+    std::vector<ScriptRun> runs;
+    for (size_t k = 0; k < pieces.size(); ++k) {
+        Script s = scripts[k];
+        std::string_view bytes = text.substr(pieces[k].begin, pieces[k].end - pieces[k].begin);
+        if (!runs.empty() && (runs.back().script == s || (japanese(runs.back().script) && japanese(s)))) {
+            if (runs.back().script != s) runs.back().script = Script::Japanese;
+            runs.back().text.append(bytes);
+        } else {
+            runs.push_back({s, std::string(bytes)});
+        }
+    }
+    return runs;
+}
+
 } // namespace oap
