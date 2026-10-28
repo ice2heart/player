@@ -5186,6 +5186,18 @@ TEST_F(ScrobbleOutboxTest, AnAnswerThatComesAfterTheServerWasChangedStillClearsI
     EXPECT_EQ(outbox(), (std::vector<ScrobbleEntry>{{otherKey(), "x1", 1000}})) << "t1 left, x1 waits for its answer";
 }
 
+TEST_F(ScrobbleOutboxTest, AnAnswerAfterShutdownClearsItsEntryAndSendsNoMore) {
+    writeOutbox({{ourKey(), "t0", 500}, {ourKey(), "t5", 600}});
+    server.holdScrobbles = true;
+    start();
+    ASSERT_EQ(submissions().size(), 1u);
+    app->shutdown();
+    ASSERT_TRUE(server.answerScrobble()); // the front end lets the exit answer through (Subsonic::finish)
+    app->tick();
+    EXPECT_EQ(outbox(), (std::vector<ScrobbleEntry>{{ourKey(), "t5", 600}})) << "t0 is taken: not sent again at the next start";
+    EXPECT_EQ(submissions().size(), 1u) << "nothing is sent while leaving";
+}
+
 TEST_F(ScrobbleOutboxTest, AFinishedSyncSendsWhatIsWaiting) {
     writeOutbox({{ourKey(), "t7", 7000}});
     server.scrobbleError = MusicServer::Error::Unreachable;

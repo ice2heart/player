@@ -542,6 +542,23 @@ TEST(Subsonic, AScrobbleDoneGetsTheErrorOfTheAnswer) {
                                                             oap::MusicServer::Error::BadLogin}));
 }
 
+// finish() is the last call before exit: the scrobble the server took is reported to its callback (so the
+// outbox drops it), but no other callback runs, and nothing is delivered twice.
+TEST(Subsonic, FinishAnswersTheScrobblesOnly) {
+    Server server;
+    std::vector<oap::MusicServer::Error> errors;
+    int pings = 0;
+    server.subsonic->scrobble("s1", true, 5, [&](oap::MusicServer::Error e) { errors.push_back(e); });
+    server.subsonic->ping([&](Error, ServerInfo) { ++pings; });
+    server.http->answer(0, kOk, subsonicFixture("ping.json"));
+    server.http->answer(1, kOk, subsonicFixture("ping.json"));
+    server.subsonic->finish(std::chrono::milliseconds(0));
+    EXPECT_EQ(errors, (std::vector<oap::MusicServer::Error>{Error::None}));
+    EXPECT_EQ(pings, 0);
+    server.subsonic->poll();
+    EXPECT_EQ(errors.size(), 1u);
+}
+
 // ---- createPlaylist (queue.md, step 2.9)
 
 struct CreateResult {

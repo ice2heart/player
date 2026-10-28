@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -77,8 +78,9 @@ public:
     void scrobble(const std::string& trackId, bool submission, std::optional<std::int64_t> timeMs,
                   std::function<void(Error)> done) override;
     void poll() override;
-    // Before the program exits: HttpClient::finish(). Answers that come in meanwhile
-    // are not delivered (no poll() follows). A request after it is not sent.
+    // Before the program exits: HttpClient::finish(). The answers to scrobbles that come in meanwhile
+    // are delivered to their callbacks (the UI thread, no poll() follows); no other callback runs.
+    // A request after it is not sent.
     void finish(std::chrono::milliseconds deadline);
 
     static constexpr int kMaxPageSize = 500; // getAlbumList2 returns at most this many
@@ -113,6 +115,7 @@ private:
     std::shared_ptr<Inbox> inbox_ = std::make_shared<Inbox>();
     RequestId lastId_ = 0;
     std::unordered_map<RequestId, std::function<void(Reply)>> waiting_; // UI thread only
+    std::set<RequestId> scrobbleIds_;                                   // scrobbles waiting: finish() answers them
     enum class Known { NotYet, Asking, Yes, No };
     Known transcodeOffset_ = Known::NotYet; // whether a transcode can start later (timeOffset)
     int extensionErrors_ = 0;               // answers to getOpenSubsonicExtensions that were errors

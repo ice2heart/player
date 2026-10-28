@@ -99,7 +99,22 @@ Subsonic::~Subsonic() {
 }
 
 void Subsonic::finish(std::chrono::milliseconds deadline) {
-    if (http_) http_->finish(deadline);
+    if (!http_) return;
+    http_->finish(deadline);
+    // The answers to scrobbles reach their callbacks (the outbox drops what the server took); no other
+    // callback runs, the program is leaving.
+    std::vector<std::pair<RequestId, Reply>> batch;
+    {
+        std::lock_guard lock(inbox_->mutex);
+        batch.swap(inbox_->ready);
+    }
+    for (auto& [id, reply] : batch) {
+        auto it = waiting_.find(id);
+        if (it == waiting_.end() || !scrobbleIds_.count(id)) continue;
+        auto done = std::move(it->second);
+        waiting_.erase(it);
+        done(std::move(reply));
+    }
 }
 
 bool Subsonic::configured() const { return !config_.url.empty(); }
@@ -272,13 +287,15 @@ void Subsonic::scrobble(const std::string& trackId, bool submission, std::option
     if (!configured()) return;
     Params params = {{"id", trackId}, {"submission", submission ? "true" : "false"}};
     if (timeMs) params.emplace_back("time", std::to_string(*timeMs));
-    request(
+    const RequestId id = request(
         "scrobble", std::move(params),
         [](const std::string& body) { return Reply{subsonic::parseStatus(body), {}, false}; },
-        [done = std::move(done)](Reply reply) {
+        [this, id = lastId_ + 1, done = std::move(done)](Reply reply) {
+            scrobbleIds_.erase(id);
             if (reply.error != Error::None) std::fprintf(stderr, "server: scrobble failed: %s\n", errorName(reply.error));
             if (done) done(reply.error);
         });
+    scrobbleIds_.insert(id);
 }
 
 void Subsonic::askExtensions() {

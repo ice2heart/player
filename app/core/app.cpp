@@ -3610,7 +3610,7 @@ void App::saveScrobbles() {
 
 // One at a time, oldest first, with the time it was heard. Called whenever the server answers.
 void App::sendScrobbles() {
-    if (scrobbleOut_ || serverDown_ || !server_.configured()) return;
+    if (scrobbleOut_ || serverDown_ || shutDown_ || !server_.configured()) return;
     const std::string key = catalogueServerKey();
     if (key.empty()) return;
     const auto next = std::find_if(outbox_.begin(), outbox_.end(), [&](const ScrobbleEntry& e) { return e.server == key; });
