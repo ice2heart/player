@@ -84,6 +84,12 @@ TEST(FoldCase, YoIsYeTonosCapitalsFoldAndFinalSigmaIsSigma) {
     EXPECT_EQ(oap::foldCase(U'ς'), U'σ');
 }
 
+TEST(FoldCase, GreekDialytikaAndYWithDiaeresisFold) {
+    EXPECT_EQ(oap::foldCase(U'Ϊ'), U'ϊ');
+    EXPECT_EQ(oap::foldCase(U'Ϋ'), U'ϋ');
+    EXPECT_EQ(oap::foldCase(U'Ÿ'), U'ÿ');
+}
+
 TEST(Utf8, CodePointsRoundTripAndMalformedBytesStandForThemselves) {
     for (char32_t c : {U'a', U'é', U'Ж', U'漢', char32_t(0x1F600)}) {
         std::string s;
@@ -552,6 +558,12 @@ TEST(SpeechMarkup, ATagInATitleCannotInjectMarkup) {
 TEST(SpeechMarkup, MalformedBytesBecomeSpacesInMarkupAndStayInPlainText) {
     EXPECT_EQ(speechMarkup("a\xFF" "b Агата", {"ru"}).text, "a b <voice xml:lang=\"ru\">Агата</voice>");
     EXPECT_EQ(speechMarkup("a\xFF" "b", {"ru"}).text, "a\xFF" "b");
+}
+
+TEST(SpeechMarkup, OverlongSurrogateAndTooLargeSequencesBecomeOneSpaceInMarkup) {
+    EXPECT_EQ(speechMarkup("a\xC0\x80" "b Агата", {"ru"}).text, "a b <voice xml:lang=\"ru\">Агата</voice>");
+    EXPECT_EQ(speechMarkup("a\xED\xA0\x80" "b Агата", {"ru"}).text, "a b <voice xml:lang=\"ru\">Агата</voice>");
+    EXPECT_EQ(speechMarkup("a\xF4\x90\x80\x80" "b Агата", {"ru"}).text, "a b <voice xml:lang=\"ru\">Агата</voice>");
 }
 
 TEST(SpeechMarkup, ALatinWordTouchingAnotherScriptIsASeparateWord) {

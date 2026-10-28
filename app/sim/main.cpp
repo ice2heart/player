@@ -320,7 +320,18 @@ static void addSimFont(const std::string& requested, const ImFontConfig& config)
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"};
-    auto exists = [](const std::string& p) { std::error_code ec; return std::filesystem::is_regular_file(p, ec); };
+    // ImGui asserts on data that is not a font, so a candidate must start like one (TrueType, OpenType, collection).
+    auto exists = [](const std::string& p) {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(p, ec)) return false;
+        unsigned char head[4] = {};
+        std::FILE* f = std::fopen(p.c_str(), "rb");
+        if (!f) return false;
+        size_t n = std::fread(head, 1, 4, f);
+        std::fclose(f);
+        std::string magic(reinterpret_cast<char*>(head), n);
+        return magic == std::string("\0\1\0\0", 4) || magic == "OTTO" || magic == "true" || magic == "ttcf";
+    };
     if (!requested.empty() && !exists(requested)) std::fprintf(stderr, "sim: font %s not found\n", requested.c_str());
     auto font = pickFont(candidates, exists);
     if (font) {
@@ -328,7 +339,9 @@ static void addSimFont(const std::string& requested, const ImFontConfig& config)
         ImFontGlyphRangesBuilder builder;
         static const ImWchar latin[] = {0x0020, 0x017F, 0}; // Latin-1 and Extended-A
         static const ImWchar greek[] = {0x0370, 0x03FF, 0};
+        static const ImWchar hebrewArabic[] = {0x0590, 0x06FF, 0};
         builder.AddRanges(latin);
+        builder.AddRanges(hebrewArabic);
         builder.AddRanges(greek);
         builder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
         builder.AddRanges(io.Fonts->GetGlyphRangesJapanese());

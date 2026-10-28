@@ -50,7 +50,8 @@ char32_t foldCase(char32_t c) {
     if (c >= 0xC0 && c <= 0xDE && c != 0xD7) return c + 0x20; // À..Þ
     if ((c >= 0x100 && c <= 0x137 && c != 0x130 && c != 0x131) || (c >= 0x14A && c <= 0x177)) return c % 2 == 0 ? c + 1 : c; // Latin Extended-A
     if ((c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E)) return c % 2 == 1 ? c + 1 : c;
-    if (c >= 0x391 && c <= 0x3A9 && c != 0x3A2) return c + 0x20; // Greek
+    if (c == 0x178) return 0xFF; // Ÿ
+    if (c >= 0x391 && c <= 0x3AB && c != 0x3A2) return c + 0x20; // Greek, with Ϊ Ϋ
     if (c == 0x386) return 0x3AC;
     if (c >= 0x388 && c <= 0x38A) return c + 37;
     if (c == 0x38C) return 0x3CC; // Ό
@@ -147,9 +148,15 @@ int64_t parseIsoTime(const std::string& text) {
 
 namespace {
 
-// A byte that nextCodePoint could not decode: it stands for itself, as a single byte of 0x80 or more.
+// A stray byte, or a sequence that is not the shortest form of a code point, a surrogate or past U+10FFFF.
 bool isMalformed(std::string_view s, size_t begin, size_t end) {
-    return static_cast<unsigned char>(s[begin]) >= 0x80 && end - begin == 1;
+    size_t len = end - begin;
+    if (static_cast<unsigned char>(s[begin]) < 0x80) return false;
+    if (len == 1) return true;
+    size_t i = begin;
+    char32_t c = nextCodePoint(s.substr(0, end), i);
+    constexpr char32_t kShortest[] = {0, 0, 0x80, 0x800, 0x10000};
+    return c < kShortest[len] || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF);
 }
 
 // Unicode blocks the script of a letter is read from.
