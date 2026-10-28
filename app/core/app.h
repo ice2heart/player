@@ -181,8 +181,8 @@ private:
     bool resumeServerBook();                    // "Now playing" / Play with nothing loaded: false when `last_book` names none
     static bool isServerBookId(const std::string& id);
     const IndexItem* savedServerBook() const;   // `last_book` when it names a server book of this server
-    static Book serverBookOf(const std::string& ref, const std::string& title, const std::string& albumId,
-                             const std::vector<RemoteTrack>& tracks);
+    static Book serverBookOf(const std::string& ref, const std::string& title, const std::string& author,
+                             const std::string& albumId, const std::vector<RemoteTrack>& tracks);
     std::string audiobookFolder() const;
     void startScan();
     void syncDownloads();   // the pinned albums of the cache as Cached items (docs/streaming.md 4.8)
@@ -540,7 +540,9 @@ private:
     MusicServer::Stream newStream(size_t file); // from the server, with the length it lists
     void rememberPosition(); // in the state map only, written by saveOnExit()
     double place() const;    // where the loaded track is, open or not
-    std::string playerStatus() const;
+    std::string playerStatus() const;     // the title, then playerStatusBody()
+    std::string playerStatusBody() const; // track or chapter, time left, playing or paused, sleep timer
+    std::string playerIdentity() const;   // "Music player. Dune, by Weather. " for "Where am I?"
 
     // Power
     void setSleepTimer(int minutes, bool endOfChapter);

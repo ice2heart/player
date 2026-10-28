@@ -34,6 +34,7 @@ struct Book {
     std::optional<RemoteSource> source; // remote: where the list came from; none: it is not resumed
     // Remote, for the automatic cache (one per file; may be shorter, then unknown): the original
     // file's type (e.g. "flac") and size in bytes, and the artist of the list (an album's, may be empty).
+    // A server book's author is kept here too, for "Where am I?".
     std::vector<std::string> suffixes;
     std::vector<long long> sizes;
     std::string artist;

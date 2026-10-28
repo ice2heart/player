@@ -882,7 +882,7 @@ std::string App::nowPlayingSpeech() const {
 void App::whereAmI() {
     std::string downloading = download_ ? " " + downloadProgress() + "." : "";
     if (mode() == Mode::Player) {
-        say(playerStatus() + downloading);
+        say(playerIdentity() + playerStatusBody() + downloading);
         return;
     }
     std::string path;
@@ -2871,10 +2871,11 @@ bool App::isServerBookId(const std::string& id) {
 }
 
 // The chapters of a server book: the tracks of the album, under the item id as its path.
-Book App::serverBookOf(const std::string& ref, const std::string& title, const std::string& albumId,
-                       const std::vector<RemoteTrack>& tracks) {
+Book App::serverBookOf(const std::string& ref, const std::string& title, const std::string& author,
+                       const std::string& albumId, const std::vector<RemoteTrack>& tracks) {
     Book book;
     book.title = title;
+    book.artist = author;
     book.path = ref;
     book.remote = true;
     book.serverBook = true;
@@ -2914,14 +2915,14 @@ void App::openServerBook(const IndexItem& item) {
     CachedList cached = store.enabled() ? store.load(source) : CachedList{};
     std::vector<RemoteTrack> onDisk = completeTracks(store, source, cached);
     if (isWholeDownload(cached, onDisk)) {
-        Book book = serverBookOf(ref, item.title, albumId, onDisk);
+        Book book = serverBookOf(ref, item.title, item.artist, albumId, onDisk);
         auto [file, pos] = savedPlace(book);
         playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
         return;
     }
     say("Loading.");
     resumeScreen_ = screen; // leaving this screen drops the request (closeScreens())
-    resume_ = server_.albumTracks(albumId, [this, screen, ref, title = item.title, albumId](
+    resume_ = server_.albumTracks(albumId, [this, screen, ref, title = item.title, author = item.artist, albumId](
                                                MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
         resume_ = 0; // a new screen or sleep would have cancelled it: the user is still where they asked
         resumeScreen_ = 0;
@@ -2936,7 +2937,7 @@ void App::openServerBook(const IndexItem& item) {
             say("This book has no chapters on the server.");
             return;
         }
-        Book book = serverBookOf(ref, title, albumId, tracks);
+        Book book = serverBookOf(ref, title, author, albumId, tracks);
         auto [file, pos] = savedPlace(book);
         playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
     });
@@ -4318,10 +4319,32 @@ double App::place() const {
 
 std::string App::playerStatus() const {
     if (!book_) return "Nothing playing.";
+    return book_->title + ". " + playerStatusBody();
+}
+
+// What "Where am I?" says before the status in a player: the player, then what is playing. The music player
+// names the album and artist of the current entry (the queue's title names only its first album); the
+// book player the book and its author.
+std::string App::playerIdentity() const {
+    if (!book_) return "";
+    std::string album = book_->title, artist = book_->artist;
+    if (music_) {
+        const QueueEntry* entry = queue_.current();
+        album = entry ? entry->album : "";
+        artist = entry ? entry->artist : "";
+    }
+    std::string text = music_ ? "Music player. " : "Book player. ";
+    if (!album.empty()) text += album + (artist.empty() ? "" : ", by " + artist) + ". ";
+    else if (!artist.empty()) text += "By " + artist + ". ";
+    return text;
+}
+
+std::string App::playerStatusBody() const {
+    if (!book_) return "Nothing playing.";
     auto list = chapters();
     int cur = currentChapter();
     double pos = player_.position();
-    std::string text = book_->title + ". ";
+    std::string text;
     if (list.size() > 1)
         text += std::string(music_ ? "Track " : "Chapter ") + std::to_string(cur + 1) + " of " + std::to_string(list.size()) + ", " +
                 list[size_t(cur)].title + ". ";

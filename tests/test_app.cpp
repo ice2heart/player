@@ -1466,7 +1466,7 @@ TEST_F(AppTest, MusicTalksAboutTracksNotChapters) {
     open("Highway");
     player.pos = 100;
     hold(Button::PlayPause);
-    EXPECT_EQ(speech.last(), "Road Trip. Track 2 of 2, Highway. 8 minutes 20 seconds left in track. Playing.");
+    EXPECT_EQ(speech.last(), "Music player. Road Trip. Track 2 of 2, Highway. 8 minutes 20 seconds left in track. Playing.");
     hold(Button::Forward);
     EXPECT_EQ(speech.last(), "Last track.");
     press(Button::Ok);
@@ -2031,7 +2031,7 @@ TEST_F(AppTest, ARemoteTrackThatFailsToOpenTriesNoOtherAndKeepsWhatWasLoaded) {
     EXPECT_DOUBLE_EQ(player.pos, 20);
     EXPECT_FALSE(player.playing()) << "paused";
     hold(Button::PlayPause);
-    EXPECT_EQ(speech.last().rfind("Alpha. Chapter 1 of 2, Storm.", 0), 0u) << speech.last();
+    EXPECT_EQ(speech.last().rfind("Book player. Alpha. Chapter 1 of 2, Storm.", 0), 0u) << speech.last();
     expectNoUrlSpoken(speech);
 }
 
@@ -2234,6 +2234,52 @@ TEST_F(AppTest, ADropoutThatLastsEndsInServerNotReachable) {
     EXPECT_TRUE(player.playing());
 }
 
+// "Where am I?" in the music player: the player's name, then the album and artist of the current entry.
+TEST_F(AppTest, WhereAmIInAQueueOfTwoAlbumsNamesTheAlbumAndArtistOfTheCurrentTrack) {
+    start();
+    std::vector<RemoteTrack> mixed = {{"t1", "Storm Front", "Band", "Weather", 200, 1},
+                                      {"t2", "Blue", "Singer", "Ocean", 180, 1}};
+    ASSERT_TRUE(app->playRemote("Mix", mixed, 0)); // a list that is not an album: the queue's title is "Mix"
+    hold(Button::Forward);
+    player.pos = 0;
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Music player. Ocean, by Singer. Track 2 of 2, Blue. 10 minutes left in track. Playing.");
+    EXPECT_EQ(speech.last().find("Mix"), std::string::npos) << "the queue's title is not spoken";
+}
+
+TEST_F(AppTest, WhereAmIInTheMusicPlayerLeavesOutTheByWhenTheArtistIsEmpty) {
+    start();
+    std::vector<RemoteTrack> tracks = {{"t1", "Storm Front", "", "Weather", 200, 1}, {"t2", "Rain", "", "Weather", 180, 2}};
+    ASSERT_TRUE(app->playRemote("Weather", tracks, 0));
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last().rfind("Music player. Weather. Track 1 of 2, Storm Front.", 0), 0u) << speech.last();
+}
+
+TEST_F(AppTest, WhereAmIInTheMusicPlayerGivesTheArtistAloneWhenThereIsNoAlbum) {
+    start();
+    std::vector<RemoteTrack> tracks = {{"t1", "Storm Front", "Band", "", 200, 1}, {"t2", "Rain", "Band", "", 180, 2}};
+    ASSERT_TRUE(app->playRemote("", tracks, 0)); // no list name either
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last().rfind("Music player. By Band. Track 1 of 2, Storm Front.", 0), 0u) << speech.last();
+}
+
+TEST_F(AppTest, WhereAmIInTheMusicPlayerSaysNothingOfAlbumAndArtistWhenNeitherIsKnown) {
+    start();
+    std::vector<RemoteTrack> tracks = {{"t1", "Storm Front", "", "", 200, 1}, {"t2", "Rain", "", "", 180, 2}};
+    ASSERT_TRUE(app->playRemote("", tracks, 0));
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last().rfind("Music player. Track 1 of 2, Storm Front.", 0), 0u) << speech.last();
+}
+
+TEST_F(AppTest, WhereAmIInAMenuStillSpeaksThePathNotThePlayerName) {
+    playAlpha();
+    press(Button::Home); // the book plays on; the menu is Library
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last().find("Book player"), std::string::npos) << speech.last();
+    EXPECT_EQ(speech.last().find("Music player"), std::string::npos) << speech.last();
+    EXPECT_EQ(speech.last().rfind("Home, Library", 0), 0u) << speech.last();
+}
+
 // The player is closed until Play: it knows neither the place nor the length.
 TEST_F(AppTest, WhereAmIAfterAFailedRemoteTrackSaysNoTimeLeft) {
     start();
@@ -2242,7 +2288,7 @@ TEST_F(AppTest, WhereAmIAfterAFailedRemoteTrackSaysNoTimeLeft) {
     player.unopenable = {"fake://stream/t2"};
     hold(Button::Forward); // fails: Storm Front stays current, closed
     hold(Button::PlayPause);
-    EXPECT_EQ(speech.last(), "Weather. Track 1 of 3, Storm Front. Paused.");
+    EXPECT_EQ(speech.last(), "Music player. Weather, by Band. Track 1 of 3, Storm Front. Paused.");
     EXPECT_DOUBLE_EQ(app->nowPlaying().position, 42) << "where Play opens it";
 }
 
@@ -2268,7 +2314,7 @@ TEST_F(AppTest, NextAndPreviousRemoteTrackAndWhereAmIUseServerTitles) {
     EXPECT_EQ(player.file, "fake://stream/t2");
     player.pos = 100;
     hold(Button::PlayPause);
-    EXPECT_EQ(speech.last(), "Weather. Track 2 of 3, Rain. 8 minutes 20 seconds left in track. Playing.");
+    EXPECT_EQ(speech.last(), "Music player. Weather, by Band. Track 2 of 3, Rain. 8 minutes 20 seconds left in track. Playing.");
     player.pos = 1;
     hold(Button::Back);
     EXPECT_EQ(speech.last(), "Storm Front");
@@ -2649,7 +2695,7 @@ TEST_F(AsyncOpenTest, WhereAmIInThePlayerWhileATrackOpensSaysLoading) {
     playWeather();
     hold(Button::Forward);
     hold(Button::PlayPause);
-    EXPECT_EQ(speech.last(), "Weather. Track 2 of 3, Rain. Loading.");
+    EXPECT_EQ(speech.last(), "Music player. Weather, by Band. Track 2 of 3, Rain. Loading.");
     press(Button::Ok);   // Player menu
     press(Button::Home); // back to the player
     EXPECT_EQ(speech.last(), "Now playing. Weather, Rain, loading.");
@@ -8147,7 +8193,7 @@ TEST_F(ServerBookTest, OpeningABookShowsLoadingThenPlaysItAsChaptersAndSaysChapt
     EXPECT_TRUE(player.playing());
     player.pos = 5;
     hold(Button::PlayPause);
-    EXPECT_EQ(speech.last(), "Dune. Chapter 1 of 3, Storm Front. 9 minutes 55 seconds left in chapter. Playing.");
+    EXPECT_EQ(speech.last(), "Book player. Dune, by Band. Chapter 1 of 3, Storm Front. 9 minutes 55 seconds left in chapter. Playing.");
     hold(Button::Forward);
     EXPECT_EQ(speech.last(), "Rain");
     EXPECT_EQ(player.file, "fake://stream/t2");
