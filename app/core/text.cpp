@@ -663,7 +663,8 @@ void addScriptPiece(std::vector<Piece>& pieces, const ScriptRun& run, const Voic
     addPiece(pieces, "", std::move(latin));
 }
 
-// The kanji of a Japanese run have no reading, so they are named; the kana around them get
+// The kanji of a Japanese run are read by the `cmn` voice when it is installed (like Han with no
+// kana: as Chinese), else named once; `ja` reads them letter by letter. The kana around them get
 // the `ja` voice (or their transliteration).
 void addJapanesePieces(std::vector<Piece>& pieces, const ScriptRun& run, const VoiceSet& voices) {
     std::string stretch;
@@ -671,6 +672,12 @@ void addJapanesePieces(std::vector<Piece>& pieces, const ScriptRun& run, const V
     auto flush = [&] {
         if (stretch.empty()) return;
         ScriptRun part{Script::Japanese, stretch};
+        if (han && voices.count(voiceFor(Script::Han))) {
+            addPiece(pieces, voiceFor(Script::Han), stretch);
+            named = false;
+            stretch.clear();
+            return;
+        }
         bool readable = !han && (voices.count(voiceFor(Script::Japanese)) || !transliterate(part).empty());
         if (readable) {
             addScriptPiece(pieces, part, voices);

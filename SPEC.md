@@ -256,7 +256,7 @@ Requirements:
 - Names in other scripts (Cyrillic, Greek, Chinese, Japanese, Korean, Hebrew, Arabic) are spoken
   with that script's voice when it is installed, else transliterated into Latin letters
   (Cyrillic, Greek, kana, Hangul), else named once ("Chinese text", "Japanese text", ...),
-  never spelled letter by letter. Kanji have no reading, so they are always named. Details in
+  never spelled letter by letter. Kanji are read by the Chinese voice when it is installed, else named. Details in
   [docs/architecture.md](docs/architecture.md#5-speech-tts).
 - Pre-render frequent phrases ("Paused", "Playing", menu names) to a cache at first boot.
 - Speak numbers/times naturally ("3 hours 12 minutes left").

@@ -486,18 +486,39 @@ TEST(SpeechMarkup, HanWithoutChineseVoiceIsNamedOnce) {
     EXPECT_FALSE(m.ssml);
 }
 
-TEST(SpeechMarkup, KanjiOfAJapaneseRunAreNamedAndItsKanaGetTheJapaneseVoice) {
+TEST(SpeechMarkup, KanjiOfAJapaneseRunAreNamedAndItsKanaGetTheJapaneseVoiceWithoutChinese) {
     SpeechMarkup m = speechMarkup("Artist 東京タワー, 3 of 10", {"ja"});
     EXPECT_TRUE(m.ssml);
     EXPECT_EQ(m.text, "Artist Japanese text <voice xml:lang=\"ja\">タワー</voice>, 3 of 10");
 }
 
+TEST(SpeechMarkup, KanjiOfAJapaneseRunGetTheChineseVoiceAndItsKanaTheJapaneseVoice) {
+    SpeechMarkup m = speechMarkup("六三四プロジェクト", {"ja", "cmn"});
+    EXPECT_TRUE(m.ssml);
+    EXPECT_EQ(m.text, "<voice xml:lang=\"cmn\">六三四</voice> <voice xml:lang=\"ja\">プロジェクト</voice>");
+}
+
+TEST(SpeechMarkup, KanjiGetTheChineseVoiceAndKanaAreTransliteratedWithoutTheJapaneseVoice) {
+    EXPECT_EQ(speechMarkup("六三四プロジェクト", {"cmn"}).text,
+              "<voice xml:lang=\"cmn\">六三四</voice> purojekuto");
+}
+
 TEST(SpeechMarkup, KanjiBetweenKanaSplitsTheRunIntoThreeStretches) {
     EXPECT_EQ(speechMarkup("の東京の", {"ja"}).text,
               "<voice xml:lang=\"ja\">の</voice> Japanese text <voice xml:lang=\"ja\">の</voice>");
+    EXPECT_EQ(speechMarkup("の東京の", {"ja", "cmn"}).text,
+              "<voice xml:lang=\"ja\">の</voice> <voice xml:lang=\"cmn\">東京</voice> <voice xml:lang=\"ja\">の</voice>");
 }
 
-TEST(SpeechMarkup, KanjiOfAJapaneseRunAreNamedAndItsKanaTransliteratedWithoutTheJapaneseVoice) {
+TEST(SpeechMarkup, ArtistWithKanjiAndKanaHasNoNameWhenChineseIsInstalled) {
+    SpeechMarkup m = speechMarkup("六三四プロジェクト • 六三四プロジェクト & 増田俊郎, 3 albums", {"ja", "cmn"});
+    EXPECT_TRUE(m.ssml);
+    EXPECT_EQ(m.text.find("Japanese text"), std::string::npos) << m.text;
+    EXPECT_NE(m.text.find("<voice xml:lang=\"cmn\">増田俊郎</voice>, 3 albums"), std::string::npos) << m.text;
+    EXPECT_NE(m.text.find("&amp;"), std::string::npos) << m.text;
+}
+
+TEST(SpeechMarkup, KanjiAndKanaAreNamedAndTransliteratedWithNoVoices) {
     SpeechMarkup m = speechMarkup("東京タワー", kNoVoices);
     EXPECT_EQ(m.text, "Japanese text tawaa");
     EXPECT_FALSE(m.ssml);
@@ -509,8 +530,8 @@ TEST(SpeechMarkup, KanaWithoutJapaneseVoiceIsTransliterated) {
     EXPECT_FALSE(m.ssml);
 }
 
-TEST(SpeechMarkup, KanjiOnlyJapaneseRunIsNamedEvenWithTheJapaneseVoice) {
-    // Han with no kana is Han: Chinese. Kanji inside a Japanese run never reach the voice.
+TEST(SpeechMarkup, KanjiOfAJapaneseRunNeverReachTheJapaneseVoice) {
+    // `ja` reads each kanji as "Japanese letter": with no `cmn` they are named.
     EXPECT_EQ(speechMarkup("東京の", kNoVoices).text, "Japanese text no");
     EXPECT_EQ(speechMarkup("東京の", {"ja"}).text,
               "Japanese text <voice xml:lang=\"ja\">の</voice>");
@@ -585,4 +606,9 @@ TEST(SpeechMarkup, KanaWithNoReadingNextToKanjiAddsNoSecondName) {
     EXPECT_EQ(speechMarkup("東ｱ京", kNoVoices).text, "Japanese text");
     EXPECT_EQ(speechMarkup("ｱ", kNoVoices).text, "Japanese text");
     EXPECT_EQ(speechMarkup("東の京", kNoVoices).text, "Japanese text no Japanese text");
+}
+
+TEST(SpeechMarkup, KanaWithNoReadingIsNamedOnEachSideOfKanjiReadByTheChineseVoice) {
+    EXPECT_EQ(speechMarkup("ｱ東ｱ", {"cmn"}).text,
+              "Japanese text <voice xml:lang=\"cmn\">東</voice> Japanese text");
 }

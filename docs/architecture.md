@@ -290,9 +290,10 @@ Rules:
     Han, Hebrew, Arabic and Other give "".
   - **Named once:** "Chinese text", "Japanese text", "Korean text", "Hebrew text", "Arabic text",
     "Greek text", "Cyrillic text", "foreign text" (Other).
-  Kanji have no reading in any voice or table, so a Japanese run is split at them: each stretch of
-  kanji is named "Japanese text" (once, with a neighbouring kana stretch that has no reading), and
-  the kana stretches take the `ja` voice or their transliteration.
+  `ja` reads kanji as "Japanese letter" and there is no reading table, so a Japanese run is split at
+  its kanji: each stretch of kanji takes the `cmn` voice when it is installed (as Han without kana
+  does), else it is named "Japanese text" (once, with a neighbouring kana stretch that has no
+  reading); the kana stretches take the `ja` voice or their transliteration.
   Pieces of different scripts that touch get a space between them. When no run needs a voice element
   the result is the input, plain, with `ssml` false. Otherwise `ssml` is true, the XML characters
   `& < > " '` are escaped, a malformed UTF-8 byte becomes a space, and there is no `<speak>` root.
@@ -1229,7 +1230,7 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   list, and sync. The limits of phase 4 (one library) are listed under "Known limits after
   phase 4" there.
 - STT (Talk button): push-to-talk capture plus sherpa-onnx, Vosk or whisper.cpp.
-- Localisation of spoken strings; a choice of TTS voice. Kanji and Han text without the `cmn` voice are only named ("Japanese text", "Chinese text"): there is no reading table. Hebrew and Arabic need their voice, else they are named.
+- Localisation of spoken strings; a choice of TTS voice. Kanji and Han text are read by the `cmn` voice; without it they are only named ("Japanese text", "Chinese text"): there is no reading table. Hebrew and Arabic need their voice, else they are named.
 - Hardware abstraction (battery, headphone jack, Wi-Fi, Bluetooth, suspend): planned in [hal.md](hal.md).
 - Queue: the Previous queue is not kept across a restart; a restored queue does not cache tracks
   automatically until another list plays; Star / Unstar in the player's Options (streaming.md 2a.1);

@@ -52,8 +52,8 @@ std::vector<ScriptRun> scriptRuns(std::string_view text);
 // Spaces, digits and punctuation pass through unchanged; combining marks and letters of the script
 // that have no entry (half-width kana, lone jamo, ъ and ь) give nothing. A Latin run is returned
 // as it is. Han, Hebrew, Arabic and Other give an empty string: the caller names the script. So
-// does a Japanese run with any kanji in it (there is no reading table): the caller speaks that run
-// as "Japanese text" rather than a half-spoken name.
+// does a Japanese run with any kanji in it (there is no reading table): the caller speaks its kanji
+// with the `cmn` voice, else as "Japanese text", rather than a half-spoken name.
 std::string transliterate(const ScriptRun& run);
 
 // The eSpeak voices that are installed, as language codes: "ru", "el", "cmn", "ja", "ko", "he", "ar".
@@ -70,7 +70,8 @@ struct SpeechMarkup {
 // A run whose voice is missing is transliterated (plan B). A run that is neither is named once,
 // not letter by letter: "Cyrillic text", "Greek text", "Chinese text", "Japanese text",
 // "Korean text", "Hebrew text", "Arabic text", "foreign text" (any other script). The kanji of
-// a Japanese run are "Japanese text" and its kana take the `ja` voice or their transliteration.
+// a Japanese run take the `cmn` voice (as Han without kana does), else they are named "Japanese
+// text" once; its kana take the `ja` voice or their transliteration.
 // Latin runs stay in the engine's own voice. With no voice element, `text` is plain, unescaped
 // and `ssml` is false (all Latin text comes back as it is). Otherwise special XML characters are
 // escaped, a malformed UTF-8 byte becomes a space, and there is no <speak> root.

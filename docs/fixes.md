@@ -12,7 +12,7 @@ the work goes:
 | Note | Today | Kind | Where |
 |------|-------|------|-------|
 | Where am I (hold Play) should say the path | In a menu it speaks the path ("Music, Artists, Dune. ..."). In a player it speaks only the status (`playerStatus()`): no player name, no artist, and the title is the queue's (`book_->title`), which in a queue of several albums names only what was played first. | fix | 2.3 |
-| Japanese, Chinese, Cyrillic need transliteration when there is no TTS | Every front end calls `tts.start("en")`. eSpeak's English voice spells Cyrillic letter by letter ("a, ge, a, te...") and reads every Han character as "Chinese letter" and kana as "Japanese letter". eSpeak NG 1.52 has `ru`, `cmn`, `yue`, `ja`, `ko` voices, and `<voice xml:lang="ru">…</voice>` in SSML switches voice within one utterance and back. Kanji gets no reading from any voice. | fix, then discovery | 4.3–4.5, 1.3, 6.5–6.6 |
+| Japanese, Chinese, Cyrillic need transliteration when there is no TTS | Every front end calls `tts.start("en")`. eSpeak's English voice spells Cyrillic letter by letter ("a, ge, a, te...") and reads every Han character as "Chinese letter" and kana as "Japanese letter". eSpeak NG 1.52 has `ru`, `cmn`, `yue`, `ja`, `ko` voices, and `<voice xml:lang="ru">…</voice>` in SSML switches voice within one utterance and back. Kanji gets no Japanese reading from any voice (`cmn` reads it as Chinese). | fix, then discovery | 4.3–4.5, 1.3, 6.5–6.6 |
 | Sim (and core) must work with UTF-8 | Core sorts and groups by code point and folds case in one place (`text.cpp`: `foldCase`, `nextCodePoint`; Cyrillic and Greek included, ё is е and Ό Ύ Ώ and the final ς fold since 4.2). The sim uses Dear ImGui's default font (`AddFontDefault`), which has ASCII only: Cyrillic and CJK show as `?`. Tags in a legacy code page (cp1251 in ID3) are not checked. | fix, then discovery | 4.1–4.2, 1.4, 6.7 |
 | Not all artists | Music → Artists is built from the album artist of the albums in the index (`artistsMenu()`), never from track artists or the server's `getArtists`. The cause (1.1): the server's joined "A • B" string is taken as one artist. | discovery | 1.1, then 6.1 |
 | Play modes: random, repeat, repeat album | Shuffle (off · tracks · albums) and Repeat (off · all · track) are built (queue.md 2.6). Repeat album is missing. | fix | 2.2 |
@@ -212,8 +212,9 @@ This takes the scrobble part of the offline outbox of [streaming.md phase
     ん is "n" (しんぶん → "shinbun").
   - Hangul, Revised Romanization, computed from the syllable: "아이유" → "aiyu", "한국" → "hanguk".
   - Han needs a table of readings that is too big to write by hand: until 6.6 a Han run with
-    no voice, and the kanji of a Japanese run (eSpeak's `ja` reads kana, not kanji), are
-    spoken once by script ("Chinese text"), not letter by letter. Hebrew, Arabic and other
+    no voice are spoken once by script ("Chinese text"), not letter by letter. The kanji of
+    a Japanese run (eSpeak's `ja` reads kana, not kanji) take the `cmn` voice like Han without
+    kana; without `cmn` they are named once ("Japanese text"). Hebrew, Arabic and other
     scripts with no voice are spoken the same way ("Arabic text").
 - **`speechMarkup(text, voices)` is in `app/core/text.{h,cpp}` too:** it is plain string
   work, and `Tts` (`app/media/`, which links `oapcore` only) can call it without a new
@@ -333,13 +334,13 @@ Latin (plan B); a script with neither is named once, not spelled.
 | ✅ 4.2 | **One case fold** ([rules](#names-in-other-scripts)): `foldCase()` in `text.{h,cpp}`, used by `library.cpp` (then accents dropped) and `album_merge.cpp` (accents kept); both old copies go. | `test_album_merge.cpp`: "Ёлка" and "Елка" are one artist; "ΌΜΗΡΟΣ" and "όμηρος" one album (Ό and final ς); "Été" and "Ete" stay two. `test_library.cpp`: "Ёлка" still sorts with "Елка" and "Été" with "Ete". |
 | ✅ 4.3 | **Script runs** (`scriptRuns()`, [rules](#names-in-other-scripts)). | `test_text.cpp`: "Artist Агата Кристи, 3 of 10" gives Latin "Artist ", Cyrillic "Агата Кристи", Latin ", 3 of 10"; "Кино и Ко" one Cyrillic run; "Кино 1989" gives Cyrillic "Кино" and Latin " 1989"; "宇多田ヒカル" one Japanese run; "周杰伦" Han; a broken UTF-8 byte does not crash and stays in its run. |
 | ✅ 4.4 | **Transliteration (plan B)** (`transliterate()`, [rules](#names-in-other-scripts)): Cyrillic, Greek, kana and Hangul to Latin; any other script gives nothing (the caller names it). | `test_text.cpp`: "Агата Кристи" → "Agata Kristi", "Жуков" → "Zhukov", "Щербаков" → "Shcherbakov", "Ёлка" → "Yolka", "Їжак" → "Yizhak", "Ωμέγα" → "Omega", "ひらがな" → "hiragana", "カタカナ" → "katakana", "ラッキー" → "rakkii", "しんぶん" → "shinbun", "きょうと" → "kyouto", "아이유" → "aiyu", "한국" → "hanguk"; "周杰伦" gives nothing. |
-| ✅ 4.5 | **Each script with its voice, else transliterated.** `speechMarkup(text, voices)` in `app/core/text.{h,cpp}` builds the SSML: one `<voice xml:lang>` per run whose voice is installed (plan A), the transliteration for a run whose voice is not (plan B), "Chinese text" (and so on) for a run with neither; XML escaped; plain text when no markup is needed. `Tts` lists the installed voices at start and speaks with `espeakSSML` when the text has markup. | `test_text.cpp`, `speechMarkup`: Cyrillic with `ru` installed gives one `ru` voice element and the rest outside it, ", 3 of 10" included; without `ru` it gives "Agata Kristi" with no markup; Han without `cmn` gives "Chinese text"; the kanji of a Japanese run give "Japanese text" and its kana the `ja` voice; `&` and `<` in a name are escaped; all-Latin text is unchanged. |
+| ✅ 4.5 | **Each script with its voice, else transliterated.** `speechMarkup(text, voices)` in `app/core/text.{h,cpp}` builds the SSML: one `<voice xml:lang>` per run whose voice is installed (plan A), the transliteration for a run whose voice is not (plan B), "Chinese text" (and so on) for a run with neither; XML escaped; plain text when no markup is needed. `Tts` lists the installed voices at start and speaks with `espeakSSML` when the text has markup. | `test_text.cpp`, `speechMarkup`: Cyrillic with `ru` installed gives one `ru` voice element and the rest outside it, ", 3 of 10" included; without `ru` it gives "Agata Kristi" with no markup; Han without `cmn` gives "Chinese text"; the kanji of a Japanese run take the `cmn` voice and its kana the `ja` voice (or "purojekuto"-style transliteration without `ja`); without `cmn` the kanji give "Japanese text" once; `&` and `<` in a name are escaped; all-Latin text is unchanged. |
 | ✅ 4.6 | **Docs for phase 4 as built:** architecture.md (speech: voices per script, transliteration, the shared fold, the sim's font), SPEC. | – |
 
 **Device check (manual):** Music → Artists with Russian, Chinese, Japanese and Korean
 artists: each is spoken in its language within the English sentence, Left / Right jump to
 them, and the sim shows them. Remove the `ru` voice from the eSpeak data: "Агата Кристи"
-is spoken "Agata Kristi". A kanji name says "Japanese text" once.
+is spoken "Agata Kristi". A kanji name is read in Chinese (`cmn`), its kana in Japanese; without `cmn` it says "Japanese text" once.
 
 ## Phase 5: download quality and the cache
 
@@ -488,6 +489,6 @@ Test server (Navidrome, OpenSubsonic), 2026-10-28; `getArtists` and all of `getA
    built in or downloaded.
 5. **Tag encodings:** repair cp1251 / Shift-JIS mojibake or leave it (1.4).
 6. **Han without kana** is read as Chinese (`cmn`) (chosen). A Japanese name written only
-   in kanji is then read in Chinese until a kanji reading for `ja` is downloaded (6.5). For
+   in kanji, like the kanji inside a Japanese name with kana, is then read in Chinese until a kanji reading for `ja` is downloaded (6.5). For
    a library with Japanese music this can be most of its Japanese names; 1.3 counts them in
    the test library, and if they are many, a kanji reading moves ahead of the other voices.
