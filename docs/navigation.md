@@ -399,6 +399,13 @@ The Streaming entry on Home is named after `server.name` in `config.yaml`
 ("Server" when it is not set). Its lists come over the network, so they follow
 these rules too ([streaming.md](streaming.md) has the plan).
 
+**Several servers (planned, phase 1 of [audiobookshelf.md](audiobookshelf.md); today there is
+one).** Home gets one entry per server in `servers:`, in config order, between Music and
+Podcasts. Its name is the server's `name`; without one it is "Server" when only one server is
+set up, else "Server 1", "Server 2", ... by its place in the list. Each entry opens the menu
+of its own server, and its requests, Server status and "Loading" state belong to that
+server alone. All the rules below hold for every server.
+
 - **A list that loads from the network opens at once with one item, "Loading".**
   OK on it says "Still loading." Keys work meanwhile: Home leaves, and the late
   answer is dropped, so it is never spoken.
@@ -596,6 +603,10 @@ Music
   result is never spoken. A second press while it runs says "Still updating.". With
   no server set up it only rescans the files. A refresh that changed nothing writes
   nothing.
+  **With several servers (planned, phase 1)** it syncs every server and says "Updating the
+  library." and then "Library updated, 12 albums, 2 books." (a count of 0 is left out). A
+  server that fails adds its name and the error: "Music: server not reachable." When every
+  server fails it says only the errors.
 - **Server books are in Library**, after the local books, with the value "on the
   server" (spoken after the title). They are never in Music. They open as books:
   chapters are the tracks, and the place is kept and resumed like a local book. A book that is
@@ -605,6 +616,36 @@ Music
   its files at once, otherwise with the server down "Server not reachable." is said and Home stays.
 - **Streaming stays a separate Home entry.** It keeps its own lists as above, except
   Playlists, which is in Music.
+
+### Books server menu (phase 2, planned)
+
+An Audiobookshelf server ([audiobookshelf.md](audiobookshelf.md)) is a Books server. Its Home
+entry has this menu instead of the Streaming one; a Subsonic server keeps the Streaming menu.
+Nothing here is built yet.
+
+```
+<server name>
+├── Recently added     → <books>      newest first, one page of 500
+├── Books A to Z       → <books>      pages of 500
+├── Authors            → <author> → <books>
+├── Downloaded         (as in Streaming, only where a cache folder is set up)
+└── Server status      "Connected to Audiobookshelf 2.37.2." or the error
+
+<book> → Play book · Download book · <chapters>
+```
+
+- A book in these lists says its title and author ("Neuromancer, William Gibson").
+- **Play book** opens the book player at the book's place (or the start), like a book in
+  Library. OK on a chapter plays the book from that chapter. The chapters are the server's,
+  and a chapter can span files.
+- **Download book** behaves like Download album ("Downloading, 0 of 24 files."), counting
+  files, not chapters.
+- Library lists the books of every Books server after the local books, with the value "on the
+  server". Books of two servers are not merged.
+- All the rules of [Lists from the server](#lists-from-the-server) hold: Loading, errors, Try
+  again, and a list that is not rebuilt when you come back to it.
+- With no usable server the lists keep "No server set up" and "Server not supported". The help
+  for an unsupported type names both Subsonic and Audiobookshelf.
 
 ## Checklist for a new menu, item or program
 

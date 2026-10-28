@@ -672,9 +672,11 @@ still empty.
 
 ## Open questions
 
-1. Should more than one server be supported (`servers:` as a YAML list)? With a second
-   service type such as Audiobookshelf this becomes likely. The plan assumes one
-   for now, but the config and menu should not rule out more.
+1. Should more than one server be supported (`servers:` as a YAML list)? **Answered: yes.**
+   `servers:` is a list, each entry has its own `type` and its own Home entry, and the old
+   `server:` section is read as a list of one. See [audiobookshelf.md](audiobookshelf.md)
+   (phase 1 for several servers, phase 2 for Audiobookshelf). This plan still describes one
+   server.
 2. Should the password stay in plain text in `config.yaml` (mode 0600), or should
    the device keep only `t`/`s` (a token that never expires, so it is just as
    sensitive)? Navidrome API keys would be better once the server offers
