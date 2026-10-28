@@ -2,6 +2,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 namespace oap {
 
@@ -27,7 +28,7 @@ public:
     void load();
     bool save() const; // false when the store could not write it
     void clear() { values_.clear(); }
-    void clearExcept(const std::string& prefix); // keeps the keys starting with `prefix`
+    void clearExcept(const std::vector<std::string>& prefixes); // keeps the keys starting with any of `prefixes`
     void clearPrefix(const std::string& prefix); // removes the keys starting with `prefix`
 
     int getInt(const std::string& key, int fallback) const;
@@ -41,8 +42,28 @@ private:
     SettingsMap values_;
 };
 
-// The server section of config.yaml: a server is set up when it has a URL.
+// The server keys of config.yaml: the `servers:` list and the older single `server:` section.
+// Factory reset keeps both.
 constexpr const char* kServerPrefix = "server.";
+constexpr const char* kServersPrefix = "servers.";
+
+struct ServerConfig {
+    std::string type;            // "subsonic" (also when left out) or "audiobookshelf", lower case
+    std::string name;            // as set; empty when not set
+    std::string url, user;       // url without trailing slashes
+    std::string password;        // subsonic
+    std::string apiKey;          // audiobookshelf
+    std::string audiobookFolder; // subsonic
+    std::string library;         // audiobookshelf
+};
+
+// The servers set up, in order: the `servers:` list, else a lone `server:` section as a list of
+// one. An entry without a url is left out, and so is one with the same url and user as an
+// earlier entry (TrackCache::serverKey). Core prints nothing: a line for the user about what was
+// ignored (`server:` next to `servers:`, a repeated server) is added to `warnings` when given.
+std::vector<ServerConfig> serverConfigs(const Settings& config, std::vector<std::string>* warnings = nullptr);
+
+// A server is set up when serverConfigs() is not empty.
 bool serverConfigured(const Settings& config);
 
 // The "key<TAB>value" lines of state.tsv. Lines without a tab are skipped.

@@ -124,6 +124,39 @@ TEST_F(ConfigTest, AnAllDigitQuotedPasswordStaysAString) {
     EXPECT_EQ(flattenYaml(yaml).at("server.password"), "1234");
 }
 
+TEST_F(ConfigTest, AnAllDigitApiKeyStaysAQuotedString) {
+    std::string yaml = nestYaml({{"servers.0.api_key", "1234"}, {"servers.0.password", "5678"}, {"servers.0.url", "https://a"}});
+    EXPECT_NE(yaml.find("api_key: \"1234\""), std::string::npos) << yaml;
+    EXPECT_NE(yaml.find("password: \"5678\""), std::string::npos) << yaml;
+    auto values = flattenYaml(yaml);
+    EXPECT_EQ(values.at("servers.0.api_key"), "1234");
+    Settings config;
+    for (const auto& [k, v] : values) config.setString(k, v);
+    EXPECT_EQ(serverConfigs(config).at(0).apiKey, "1234");
+}
+
+TEST_F(ConfigTest, AServerEntryIsWrittenInTheDocumentedKeyOrder) {
+    SettingsMap values;
+    for (int i = 0; i < 2; ++i)
+        for (const char* k : {"library", "audiobook_folder", "api_key", "password", "user", "url", "name", "type"})
+            values["servers." + std::to_string(i) + "." + k] = std::string(k) + std::to_string(i);
+    values["speech.rate"] = "250";
+    std::string yaml = nestYaml(values);
+    EXPECT_NE(yaml.find("servers:\n  - type: \"type0\"\n    name: \"name0\"\n    url: \"url0\"\n    user: \"user0\"\n"
+                        "    password: \"password0\"\n    api_key: \"api_key0\"\n    audiobook_folder: \"audiobook_folder0\"\n"
+                        "    library: \"library0\"\n  - type: \"type1\""),
+              std::string::npos)
+        << yaml;
+    EXPECT_EQ(flattenYaml(yaml), values);
+}
+
+TEST_F(ConfigTest, TheHeaderNamesTheServersKeys) {
+    std::string yaml = nestYaml({});
+    for (const char* text : {"a servers: list, each entry with type (subsonic or audiobookshelf), name, url, user,",
+                             "password (quote it), api_key (quote it), audiobook_folder and library."})
+        EXPECT_NE(yaml.find(text), std::string::npos) << text;
+}
+
 TEST_F(ConfigTest, AMissingServerUrlMeansNotConfigured) {
     for (const char* yaml : {"volume: 70\n", "server:\n", "server:\n  url:\n  user: ice\n", "server:\n  url: ~\n",
                              "server:\n  url: \"\"\n"}) {

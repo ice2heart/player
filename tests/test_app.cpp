@@ -4749,6 +4749,9 @@ TEST_F(AppTest, RestartWritesTheState) {
 TEST_F(AppTest, FactoryResetKeepsTheServerAndForgetsThePlace) {
     settings.setString("server.url", "https://music.example");
     settings.setString("server.password", "1234");
+    settings.setString("servers.0.url", "https://books.example");
+    settings.setString("servers.0.api_key", "k3y");
+    settings.setInt("volume", 33);
     settings.setInt("speech.rate", 310);
     playAlpha();
     player.pos = 99;
@@ -4762,6 +4765,9 @@ TEST_F(AppTest, FactoryResetKeepsTheServerAndForgetsThePlace) {
     EXPECT_TRUE(speech.heard("Settings erased."));
     EXPECT_EQ(configFile.onDisk("server.url"), "https://music.example");
     EXPECT_EQ(configFile.onDisk("server.password"), "1234");
+    EXPECT_EQ(configFile.onDisk("servers.0.url"), "https://books.example");
+    EXPECT_EQ(configFile.onDisk("servers.0.api_key"), "k3y");
+    EXPECT_EQ(configFile.onDisk("volume"), "") << "the volume goes";
     EXPECT_EQ(configFile.onDisk("speech.rate"), "") << "user settings go";
     EXPECT_EQ(speech.rate, 220) << "the default applies at once";
     for (const auto& [key, value] : stateFile.file) EXPECT_NE(key.rfind("pos:", 0), 0u) << key;

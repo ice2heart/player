@@ -4715,7 +4715,7 @@ void App::restart(bool saveFirst) {
 // Clears what the user set and the state, but keeps the server: a blind user
 // must not lose a server someone else set up for them.
 void App::factoryReset() {
-    config_.clearExcept(kServerPrefix);
+    config_.clearExcept({kServerPrefix, kServersPrefix});
     state_.clear();
     saveConfig();
     saveState();

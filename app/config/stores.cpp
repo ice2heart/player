@@ -1,6 +1,7 @@
 #include "stores.h"
 
 #include "atomic_file.h"
+#include "core/settings.h"
 
 #include <yaml-cpp/yaml.h>
 
@@ -25,8 +26,20 @@ const char* const kKeyOrder[] = {
     "cache.limit_gb", "server.type",   "server.name",     "server.url",       "server.user", "server.password",
 };
 
-// Always quoted, so an all-digit password is never read as a number by anyone.
-constexpr const char* kPasswordKey = "server.password";
+// The order of the keys in an entry of the `servers:` list.
+const char* const kServerKeyOrder[] = {"type", "name", "url", "user", "password", "api_key", "audiobook_folder", "library"};
+
+// The last part of "servers.1.url": "url".
+std::string lastPart(const std::string& key) { return key.substr(key.rfind('.') + 1); }
+
+bool inServers(const std::string& key) { return key.rfind(kServersPrefix, 0) == 0; }
+
+// Always quoted, so an all-digit password or API key is never read as a number by anyone.
+bool isSecret(const std::string& key) {
+    if (key != "server.password" && key != "server.api_key" && !inServers(key)) return false;
+    std::string name = lastPart(key);
+    return name == "password" || name == "api_key";
+}
 
 const char* const kHeader =
     "# Open Audio Player settings. The player rewrites this file when a setting is\n"
@@ -35,7 +48,9 @@ const char* const kHeader =
     "#   buttons.long_press_ms, menu.wrap, power.auto_sleep_min, streaming.bitrate (kbps,\n"
     "#   0 for the original file), cache.limit_gb (gigabytes of automatically cached tracks,\n"
     "#   0 for none), and server: type, name, url, user, password (quote it),\n"
-    "#   audiobook_folder (the name of the server's music folder that holds audiobooks; you set it, the player never writes it).\n";
+    "#   audiobook_folder (the name of the server's music folder that holds audiobooks; you set it, the player never writes it).\n"
+    "#   Several servers: a servers: list, each entry with type (subsonic or audiobookshelf), name, url, user,\n"
+    "#   password (quote it), api_key (quote it), audiobook_folder and library. An old server: section still works.\n";
 
 void flatten(const YAML::Node& node, const std::string& key, SettingsMap& out) {
     auto child = [&key](const std::string& name) { return key.empty() ? name : key + "." + name; };
@@ -100,7 +115,7 @@ bool isPlainInteger(const std::string& v) {
 
 void emit(YAML::Emitter& out, const Tree& tree, const std::string& key) {
     if (tree.leaf) {
-        if (isPlainInteger(tree.value) && key != kPasswordKey) out << tree.value;
+        if (isPlainInteger(tree.value) && !isSecret(key)) out << tree.value;
         else out << YAML::DoubleQuoted << tree.value;
         return;
     }
@@ -124,6 +139,15 @@ size_t rank(const std::string& key) {
     return size_t(it - std::begin(kKeyOrder));
 }
 
+// Where a key sorts: its place in kKeyOrder, then for "servers.N.field" the place of the field,
+// so every entry is written in the same key order (the entries keep their own order).
+std::pair<size_t, size_t> sortKey(const std::string& key) {
+    if (!inServers(key)) return {rank(key), 0};
+    std::string field = lastPart(key);
+    auto it = std::find_if(std::begin(kServerKeyOrder), std::end(kServerKeyOrder), [&](const char* f) { return field == f; });
+    return {rank(key), size_t(it - std::begin(kServerKeyOrder))};
+}
+
 } // namespace
 
 SettingsMap flattenYaml(const std::string& text) {
@@ -138,7 +162,7 @@ SettingsMap flattenYaml(const std::string& text) {
 std::string nestYaml(const SettingsMap& values) {
     std::vector<std::pair<std::string, std::string>> ordered(values.begin(), values.end());
     std::stable_sort(ordered.begin(), ordered.end(),
-                     [](const auto& a, const auto& b) { return rank(a.first) < rank(b.first); });
+                     [](const auto& a, const auto& b) { return sortKey(a.first) < sortKey(b.first); });
     Tree root;
     for (const auto& [key, value] : ordered) insert(root, key, value);
     std::string body;
