@@ -566,7 +566,14 @@ The plan above is kept as it was written. Where the code differs, the code is ri
   `FfmpegTagReader` (which lowers FFmpeg's log level to errors) only for the rest. Items:
   `local:book:<path>` (a book per folder or loose file under the library root, titled by the
   folder), `local:album:<album artist or artist>\x1f<album>` for tagged music (an album in
-  several folders is one item) and `local:folder:<path>` for music without an album tag
+  several folders is one item; with no artist at all the id ends in `\x1f<folder>`, so such an
+  album is one per folder). Files of one album whose ids differ are then one item when the
+  album is the same with case and spaces folded and: the artist is the same and not empty, or
+  they share a folder and one artist is the other with more words ("Band feat. Guest"), or they
+  share a folder and one has no artist while the others there are one album. Two album artists
+  in one folder stay two albums. The joined item keeps the id of its part with the most tracks
+  that the index had (else the first id), the artist with the most tracks, the server
+  references of every part and their latest last-played time) and `local:folder:<path>` for music without an album tag
   (grouped by its folder under the music root). Lists are built when opened and are not
   refreshed live; until the first scan is done an empty Library or Music says "Scanning".
   `last_book` of a book the index does not know yet is looked up with `scanLibrary()`.

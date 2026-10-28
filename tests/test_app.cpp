@@ -1804,6 +1804,87 @@ TEST_F(AppTest, TwoFoldersTaggedAsOneAlbumGiveOneAlbum) {
     EXPECT_EQ(player.file, (music / "Big Album CD2" / "b.mp3").string());
 }
 
+// One album whose files have no album artist and a guest on one track, and an album tag spelled
+// with other case on another: one entry, under the artist with the most tracks.
+TEST_F(AppTest, TheFilesOfOneAlbumWithDifferentArtistsGiveOneAlbum) {
+    const char* files[] = {"01.mp3", "02.mp3", "03.mp3"};
+    const char* artists[] = {"Seatbelts", "Seatbelts feat. Mai Yamane", "seatbelts"};
+    const char* albums[] = {"Cowboy Bebop", "Cowboy Bebop", "COWBOY  BEBOP"};
+    for (int i = 0; i < 3; ++i) {
+        touch(music / "Bebop" / files[i]);
+        TrackTags t;
+        t.album = albums[i];
+        t.artist = artists[i]; // no album artist: the track artist stands in for it
+        t.track = i + 1;
+        tags.tags[music / "Bebop" / files[i]] = t;
+    }
+    start();
+    open("Music");
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Cowboy Bebop", "Lullaby", "Road Trip"}));
+    EXPECT_EQ(speech.last(), "Albums A to Z. Cowboy Bebop, 3 tracks, 1 of 3");
+    press(Button::Ok);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"01", "02", "03"})) << "every file, in order";
+    hold(Button::Home);
+    open("Music");
+    open("Artists");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Seatbelts", "Unknown artist"})) << "no artist of one guest track";
+}
+
+// The same album name by other artists in other folders is two albums; one artist's album in
+// two folders, spelled with other case, is one.
+TEST_F(AppTest, AnAlbumNameOfTwoArtistsIsTwoAlbumsAndOneArtistsSpellingsAreOne) {
+    auto tagged = [&](const fs::path& file, const std::string& albumArtist, const std::string& album) {
+        touch(file);
+        TrackTags t;
+        t.album = album;
+        t.albumArtist = albumArtist;
+        tags.tags[file] = t;
+    };
+    tagged(music / "A Hits" / "a.mp3", "Alpha", "Greatest Hits");
+    tagged(music / "B Hits" / "b.mp3", "Beta", "Greatest Hits");
+    tagged(music / "Live CD1" / "c.mp3", "The Band", "Live");
+    tagged(music / "Live CD2" / "d.mp3", "the band", "LIVE");
+    start();
+    open("Music");
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Greatest Hits", "Greatest Hits", "Live", "Lullaby", "Road Trip"}));
+    press(Button::Down);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Live, 2 tracks, 3 of 5");
+}
+
+// Albums with no artist at all are joined only through a folder: two folders tagged
+// "Greatest Hits" and nothing else are two albums.
+TEST_F(AppTest, AlbumsWithNoArtistInTwoFoldersAreTwoAlbums) {
+    for (const char* f : {"X/a.mp3", "Y/b.mp3"}) {
+        touch(music / f);
+        TrackTags t;
+        t.album = "Greatest Hits";
+        tags.tags[music / f] = t;
+    }
+    start();
+    open("Music");
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Greatest Hits", "Greatest Hits", "Lullaby", "Road Trip"}));
+}
+
+// One folder of singles: the same album name by two album artists is two albums.
+TEST_F(AppTest, TheSameAlbumNameOfTwoAlbumArtistsInOneFolderIsTwoAlbums) {
+    const std::pair<const char*, const char*> files[] = {{"a.mp3", "Alpha"}, {"b.mp3", "Beta"}};
+    for (const auto& [f, artist] : files) {
+        touch(music / "Singles" / f);
+        TrackTags t;
+        t.album = "Greatest Hits";
+        t.albumArtist = t.artist = artist;
+        tags.tags[music / "Singles" / f] = t;
+    }
+    start();
+    open("Music");
+    open("Albums A to Z");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Greatest Hits", "Greatest Hits", "Lullaby", "Road Trip"}));
+}
+
 TEST_F(AppTest, AFolderOfUntaggedFilesIsOneAlbumWithTheNameOfTheFolder) {
     touch(music / "Mix" / "disc 1" / "x.mp3");
     touch(music / "Mix" / "disc 2" / "y.mp3");
@@ -8442,6 +8523,69 @@ TEST_F(MergeTest, PlayAllPlaysTheAlbumsInTheOrderTheyAreListed) {
     open("Music");
     press(Button::Ok);
     EXPECT_EQ(player.file, (music / "Lullaby.mp3").string());
+}
+
+// A download's files are named by the server's track ids: Play all speaks its tracks by their titles,
+// as the album itself does, in every place a track is named.
+TEST_F(MergeTest, PlayAllSpeaksTheTitlesOfADownloadNotItsFileNames) {
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Accordion")); // listed first, so Play all starts on it
+    ASSERT_NO_FATAL_FAILURE(download("al2", "Weather", 2)); // listed last, after the local albums
+    start();
+    open("Music");
+    open("Play all");
+    ASSERT_EQ(player.file, downloadedFile("al1", 1));
+    EXPECT_EQ(speech.last(), "Now playing. All music, Song 1.");
+    hold(Button::Forward); // the next track
+    ASSERT_EQ(player.file, downloadedFile("al1", 2));
+    EXPECT_NE(speech.last().find("Song 2"), std::string::npos) << speech.last();
+    EXPECT_EQ(speech.last().find("al1-t"), std::string::npos) << speech.last();
+    EXPECT_EQ(app->nowPlaying().chapter, "Song 2");
+    player.atEnd = true; // the track ends: the next one
+    app->tick();
+    ASSERT_EQ(player.file, downloadedFile("al1", 3));
+    EXPECT_EQ(app->nowPlaying().chapter, "Song 3");
+    player.atEnd = true; // into the local albums, still named by their files
+    app->tick();
+    ASSERT_EQ(player.file, (music / "Lullaby.mp3").string());
+    EXPECT_EQ(app->nowPlaying().chapter, "Lullaby");
+    for (int i = 0; i < 3; ++i) { // Sunrise, Highway, then the second download
+        player.atEnd = true;
+        app->tick();
+    }
+    ASSERT_EQ(player.file, downloadedFile("al2", 1));
+    EXPECT_EQ(app->nowPlaying().chapter, "Song 1");
+    player.atEnd = true;
+    app->tick();
+    ASSERT_EQ(player.file, downloadedFile("al2", 2));
+    EXPECT_EQ(app->nowPlaying().chapter, "Song 2");
+}
+
+// A queue saved by an older Play all has a download's file name as its title: it is spoken by its title.
+TEST_F(MergeTest, ARestoredPlayAllQueueSpeaksTheTitleOfADownloadSavedByItsFileName) {
+    ASSERT_NO_FATAL_FAILURE(download("al1", "Accordion"));
+    start();
+    open("Music"); // the download is in the index
+    app->shutdown();
+    app.reset();
+    // Shuffled: Sunrise, al1-t1, al1-t2, and al1-t2 is current. Only the titles may change.
+    const std::string text = "oap-queue\t1\ntitle\tAll music\nshuffle\ttracks\nposition\t2\norder\t2\t0\t1\n"
+                             "L\t" + downloadedFile("al1", 1) + "\tal1-t1\tAccordion\t\n"
+                             "L\t" + downloadedFile("al1", 2) + "\tal1-t2\tAccordion\t\n"
+                             "L\t" + (roadTrip() / "01 - Sunrise.mp3").string() + "\tSunrise\tRoad Trip\t\n";
+    ASSERT_TRUE(diskFiles().writeAtomically(queueFile, text));
+    player = FakePlayer{};
+    speech.said.clear();
+    start();
+    ASSERT_EQ(labels().front(), "Now playing");
+    press(Button::Ok);
+    ASSERT_EQ(player.file, downloadedFile("al1", 2)) << "its place is kept";
+    EXPECT_EQ(speech.last(), "Now playing. All music, Song 2.");
+    hold(Button::Back); // the track before, in the shuffled order
+    ASSERT_EQ(player.file, downloadedFile("al1", 1));
+    EXPECT_EQ(app->nowPlaying().chapter, "Song 1");
+    hold(Button::Back);
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string()) << "the shuffled order is kept";
+    EXPECT_EQ(app->nowPlaying().chapter, "Sunrise");
 }
 
 // ---------------------------------------------------------------- Music tree (docs/streaming.md 4.9)

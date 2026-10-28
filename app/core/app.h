@@ -163,6 +163,7 @@ private:
     void saveQueue();
     // start(): the music queue of queue.tsv waits in the music player, closed, at its place; nothing plays.
     void restoreQueue();
+    void retitleDownloads(Queue& queue) const;
     void markPlayed(const std::string& itemId); // the album plays from Music: in memory until exit or sleep
     std::vector<MenuItem> homeMenu();
     std::vector<MenuItem> libraryMenu();

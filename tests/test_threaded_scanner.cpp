@@ -232,6 +232,105 @@ TEST_F(ThreadedScannerTest, ChangedFileIsReadAgainAndTheOthersAreNot) {
     EXPECT_EQ(second->front().tracks[0].size, 4);
 }
 
+// An album joined from files whose tags give different ids keeps its id when one of its files
+// changes and is read again (its own id would make it a new item and lose its play times).
+TEST_F(ThreadedScannerTest, AJoinedAlbumKeepsItsIdWhenAFileChanges) {
+    writeFile(music / "d" / "01.mp3", "a");
+    writeFile(music / "d" / "02.mp3", "b");
+    writeFile(music / "d" / "03.mp3", "c");
+    reader.tags[music / "d" / "01.mp3"] = album("Band", "Record", 1);
+    reader.tags[music / "d" / "02.mp3"] = album("Band", "Record", 2);
+    reader.tags[music / "d" / "03.mp3"] = album("Band feat. Zed", "Record", 3);
+    reader.tags[music / "d" / "03.mp3"].albumArtist.clear(); // a guest, no album artist
+    ThreadedScanner scanner(reader);
+    auto first = runScan(scanner, request());
+    ASSERT_TRUE(first);
+    ASSERT_EQ(first->size(), 1u) << "one album";
+    const std::string id = std::string("local:album:Band") + '\x1f' + "Record";
+    EXPECT_EQ(first->front().id, id);
+    EXPECT_EQ(first->front().artist, "Band") << "the artist with the most tracks";
+    EXPECT_EQ(first->front().tracks.size(), 3u);
+
+    // The previous index has the joined item under the guest's id (not the first one); a file of
+    // the album artist changes, is read again and gives the first id.
+    std::vector<IndexItem> previous = *first;
+    previous.front().id = std::string("local:album:Band feat. Zed") + '\x1f' + "Record";
+    writeFile(music / "d" / "01.mp3", "aa");
+    auto second = runScan(scanner, request(previous));
+    ASSERT_TRUE(second);
+    ASSERT_EQ(second->size(), 1u);
+    EXPECT_EQ(second->front().id, previous.front().id) << "the id the index has";
+    EXPECT_EQ(locations(second->front()), locations(first->front()));
+}
+
+// An index made before albums were joined has an album split in parts. The part with the most
+// tracks keeps its id (with its play history), not the first id; the joined item has the server
+// references of every part, the earliest firstSeen and the latest lastPlayed.
+class SplitAlbumTest : public ThreadedScannerTest {
+protected:
+    void SetUp() override {
+        ThreadedScannerTest::SetUp();
+        for (const char* f : {"01.mp3", "02.mp3", "03.mp3"}) writeFile(music / "d" / f);
+        reader.tags[music / "d" / "01.mp3"] = album("Zed", "Record", 1);
+        reader.tags[music / "d" / "02.mp3"] = album("Zed", "Record", 2);
+        reader.tags[music / "d" / "03.mp3"] = album("", "Record", 3); // no artist at all
+    }
+    // The parts as the old index has them: Zed's two tracks, and the one with no artist, whose
+    // id (the old one, without its folder) comes first. Their files are unchanged since: the
+    // tracks are those of `scanned`, so they are kept and go to these items.
+    std::vector<IndexItem> previous(const std::vector<IndexItem>& scanned) const {
+        auto track = [&](const char* file) {
+            for (const IndexItem& item : scanned)
+                for (const IndexTrack& t : item.tracks)
+                    if (t.location == (music / "d" / file).string()) return t;
+            ADD_FAILURE() << file;
+            return IndexTrack{};
+        };
+        IndexItem main, guest;
+        main.id = mainId;
+        guest.id = guestId;
+        for (IndexItem* item : {&main, &guest}) {
+            item->source = IndexItem::Source::Local;
+            item->kind = IndexItem::Kind::Music;
+            item->title = item->album = "Record";
+        }
+        main.artist = "Zed";
+        main.tracks = {track("01.mp3"), track("02.mp3")};
+        guest.tracks = {track("03.mp3")};
+        main.firstSeen = 2000, main.lastPlayed = 3000;
+        guest.firstSeen = 1000, guest.lastPlayed = 5000;
+        guest.seenOn = {"srv:album:1"};
+        return {main, guest};
+    }
+    const std::string mainId = std::string("local:album:Zed") + '\x1f' + "Record";
+    const std::string guestId = std::string("local:album:") + '\x1f' + "Record";
+};
+
+TEST_F(SplitAlbumTest, ThePartWithTheMostTracksKeepsItsId) {
+    ThreadedScanner scanner(reader);
+    ASSERT_LT(guestId, mainId);
+    auto fresh = runScan(scanner, request());
+    ASSERT_TRUE(fresh);
+    auto items = runScan(scanner, request(previous(*fresh)));
+    ASSERT_TRUE(items);
+    ASSERT_EQ(items->size(), 1u);
+    EXPECT_EQ(items->front().id, mainId);
+    EXPECT_EQ(items->front().artist, "Zed");
+    EXPECT_EQ(items->front().tracks.size(), 3u);
+}
+
+TEST_F(SplitAlbumTest, TheJoinedItemKeepsTheReferencesAndTimesOfEveryPart) {
+    ThreadedScanner scanner(reader);
+    auto fresh = runScan(scanner, request());
+    ASSERT_TRUE(fresh);
+    auto items = runScan(scanner, request(previous(*fresh)));
+    ASSERT_TRUE(items);
+    ASSERT_EQ(items->size(), 1u);
+    EXPECT_EQ(items->front().seenOn, (std::vector<std::string>{"srv:album:1"})) << "the server copy stays merged";
+    EXPECT_EQ(items->front().firstSeen, 1000);
+    EXPECT_EQ(items->front().lastPlayed, 5000);
+}
+
 TEST_F(ThreadedScannerTest, KeptTracksKeepTheirAlbumData) {
     writeFile(music / "d" / "01.mp3");
     TrackTags t = album("Band", "Record", 1);

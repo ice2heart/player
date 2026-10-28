@@ -47,6 +47,11 @@ struct Book {
     std::vector<Album> albums;
 };
 
+// Puts the files of the local Book `from` at the end of `into`, as one more album (titled `from.title`)
+// of a list that spans albums, like Play all. Its part titles go with its files: `into.titles` gets one per
+// file, an empty one where `from` has none (named by its file name), so titles stay with their files.
+void appendBook(Book& into, const Book& from);
+
 // Natural, case-insensitive order of names: runs of digits compare as numbers ("3" before
 // "10"). A total order. The order of the Library and Music lists.
 bool naturalLess(std::string_view a, std::string_view b);

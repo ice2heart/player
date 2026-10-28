@@ -55,6 +55,10 @@ public:
     bool restore(std::vector<QueueEntry> entries, std::vector<std::size_t> order, std::size_t position,
                  QueueShuffle shuffle, QueueRepeat repeat, bool edited);
 
+    // Gives the entry at `index` of the original order (index < size()) another title. Nothing else changes,
+    // not even revision(): for repairing a queue just read from a file, before anything is worked out from it.
+    void setTitle(std::size_t index, std::string title) { entries_[index].title = std::move(title); }
+
     // A copy cut to at most `limit` entries: a window of the play order around the current entry (as centred
     // as the ends allow), kept in the original order too. Shuffle, repeat and edited are kept.
     Queue around(std::size_t limit) const;

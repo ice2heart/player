@@ -1186,6 +1186,7 @@ void App::restoreQueue() {
     queueText_ = *text;
     std::optional<SavedQueue> saved = parseQueue(*text);
     if (!saved) return;
+    retitleDownloads(saved->queue);
     state_.clearPrefix(kLastStreamPrefix); // the older way of keeping a stream; the queue says more
     Book list;
     list.title = saved->title;
@@ -1195,6 +1196,31 @@ void App::restoreQueue() {
     fileIndex_ = queue_.position();
     reopenAt_ = saved->position; // closed: Play, or Now playing on Home, opens it there
     restoredQueue_ = true;
+}
+
+// An older Play all named a downloaded track by its file name, which is the server's track id, and a queue
+// saved then keeps that name. Such an entry (a local file whose title is its file name) gets the title the
+// index has for the download, if it has one; the rest of the queue is kept as it was.
+// Only the titles change: order, place, shuffle and repeat stay as they were read. A queue with no such entry
+// (any queue saved since) costs one pass over its entries.
+void App::retitleDownloads(Queue& queue) const {
+    if (cacheRoot_.empty()) return;
+    const std::string cache = (cacheRoot_ / "").string(); // with a separator: "cache2/x" is not in "cache"
+    std::vector<std::size_t> named; // original indexes of downloads named by their file names
+    const std::vector<QueueEntry>& entries = queue.originalEntries();
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        const QueueEntry& e = entries[i];
+        if (e.kind == QueueEntry::Kind::Local && e.path.starts_with(cache) && e.title == chapterTitle(e.path))
+            named.push_back(i);
+    }
+    if (named.empty()) return;
+    std::map<std::string, std::string> titles; // the location of a downloaded track: its title
+    for (const auto& [id, item] : index_.items())
+        if (item.source == IndexItem::Source::Cached)
+            for (const IndexTrack& t : item.tracks)
+                if (!t.title.empty()) titles[t.location] = t.title;
+    for (std::size_t i : named)
+        if (auto it = titles.find(queue.originalEntries()[i].path); it != titles.end()) queue.setTitle(i, it->second);
 }
 
 // Power off writes, and then the front end's shutdown() would write the same again.
@@ -1360,8 +1386,7 @@ std::vector<MenuItem> App::musicMenu() {
         if (m.primary->source == IndexItem::Source::Server) continue;
         Book b = bookOf(*m.primary);
         if (b.files.empty()) continue;
-        all.albums.push_back({all.files.size(), m.primary->title});
-        all.files.insert(all.files.end(), b.files.begin(), b.files.end());
+        appendBook(all, b); // a download's titles go with its files, which are named by the server's track ids
     }
     MenuItem playAll = action("Play all", [this, all] {
         // Only the server has albums (or the scan has not found the files yet): Play all never plays the server.

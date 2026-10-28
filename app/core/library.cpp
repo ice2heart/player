@@ -72,6 +72,14 @@ std::string nameGroup(std::string_view name) {
 
 // Natural, case-insensitive order: runs of digits compare as numbers ("3" before "10") and
 // letters compare folded. Names that fold equal fall back to their bytes, so the order is total.
+void appendBook(Book& into, const Book& from) {
+    into.albums.push_back({into.files.size(), from.title});
+    for (size_t i = 0; i < from.files.size(); ++i) {
+        into.files.push_back(from.files[i]);
+        into.titles.push_back(i < from.titles.size() ? from.titles[i] : std::string());
+    }
+}
+
 bool naturalLess(std::string_view a, std::string_view b) {
     size_t i = 0, j = 0;
     while (i < a.size() && j < b.size()) {

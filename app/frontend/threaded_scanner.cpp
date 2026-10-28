@@ -1,5 +1,6 @@
 #include "threaded_scanner.h"
 
+#include "core/album_merge.h"
 #include "core/library.h"
 
 #include <sys/stat.h>
@@ -8,6 +9,9 @@
 #include <limits>
 #include <exception>
 #include <map>
+#include <numeric>
+#include <optional>
+#include <set>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -54,6 +58,7 @@ public:
         for (const Book& folder : scanLibrary(request_.musicRoot, request_.skip)) {
             if (!addMusic(folder)) return std::nullopt;
         }
+        joinAlbums();
         std::vector<IndexItem> items;
         for (auto& [id, group] : groups_) {
             if (group.item.kind == IndexItem::Kind::Music) sortAlbum(group.item.tracks);
@@ -135,9 +140,16 @@ private:
     Group& groupFor(const Entry& e, const Book& folder) {
         std::string id = e.keptIn;
         if (id.empty()) {
-            if (e.tags && !e.tags->album.empty())
-                id = std::string(kLocalAlbumPrefix) + (e.tags->albumArtist.empty() ? e.tags->artist : e.tags->albumArtist) +
-                     kAlbumSeparator + e.tags->album;
+            if (e.tags && !e.tags->album.empty()) {
+                const std::string& artist = e.tags->albumArtist.empty() ? e.tags->artist : e.tags->albumArtist;
+                id = std::string(kLocalAlbumPrefix) + artist + kAlbumSeparator + e.tags->album;
+                // No artist names the album: it is the album of its folder (the album folder that
+                // scanLibrary() gives, or the folder of a loose file), not of every folder.
+                if (artist.empty()) {
+                    std::error_code ec;
+                    id += kAlbumSeparator + (fs::is_directory(folder.path, ec) ? folder.path : folder.path.parent_path()).string();
+                }
+            }
             else
                 id = std::string(kLocalFolderPrefix) + folder.path.string();
         }
@@ -157,6 +169,109 @@ private:
             group.item.kind = IndexItem::Kind::Music;
         }
         return group;
+    }
+
+    // The files of one album can give different ids: one with no album artist names its track
+    // artist ("Band feat. Guest" on one track of "Band"'s album), one has no artist at all, or one
+    // spells the artist or the album with other case or spaces. Music items named by an album tag
+    // are joined when, with case and spaces folded (artistKey()), the album is the same and
+    //  - the artist is the same and not empty (in any folders: CD1 and CD2), or
+    //  - they share a folder and one artist is the other followed by more words ("band" and
+    //    "band feat. guest"), or
+    //  - they share a folder and one has no artist, and the others with that album in that folder
+    //    are one album already.
+    // Two different artists in one folder ("Singles", the music root) stay apart, and so do albums
+    // with no artist in different folders. The rule reads only what the index keeps, so a rescan
+    // of kept files gives the same items.
+    // The joined item keeps the id from the index with the most tracks (else the first id), so
+    // the main album, not a guest's one-track part, keeps its id and play history; it has the
+    // artist with the most tracks, the server references of every part, the earliest firstSeen
+    // and the latest lastPlayed the index had for them.
+    void joinAlbums() {
+        std::vector<std::string> ids;
+        for (const auto& [id, group] : groups_)
+            if (group.item.kind == IndexItem::Kind::Music && !group.item.album.empty()) ids.push_back(id);
+        std::vector<size_t> parent(ids.size());
+        std::iota(parent.begin(), parent.end(), size_t(0));
+        auto root = [&](size_t i) {
+            while (parent[i] != i) i = parent[i] = parent[parent[i]];
+            return i;
+        };
+        auto join = [&](size_t i, size_t j) { parent[root(i)] = root(j); };
+        auto artistOf = [&](size_t i) { return artistKey(groups_.at(ids[i]).item.artist); };
+        auto variant = [](const std::string& a, const std::string& b) { // b is a with more words
+            return b.size() > a.size() && b.starts_with(a) && b[a.size()] == ' ';
+        };
+
+        std::map<std::string, size_t> byArtist;
+        std::map<std::string, std::vector<size_t>> byFolder; // folder + album -> parts
+        for (size_t i = 0; i < ids.size(); ++i) {
+            const IndexItem& item = groups_.at(ids[i]).item;
+            const std::string album = artistKey(item.album);
+            const std::string artist = artistOf(i);
+            if (!artist.empty()) {
+                auto [it, fresh] = byArtist.emplace(artist + kAlbumSeparator + album, i);
+                if (!fresh) join(i, it->second);
+            }
+            std::set<std::string> folders;
+            for (const IndexTrack& track : item.tracks)
+                folders.insert(fs::path(track.location).parent_path().string() + kAlbumSeparator + album);
+            for (const std::string& folder : folders) byFolder[folder].push_back(i);
+        }
+        for (const auto& [folder, parts] : byFolder)
+            for (size_t x = 0; x < parts.size(); ++x)
+                for (size_t y = x + 1; y < parts.size(); ++y) {
+                    const std::string a = artistOf(parts[x]), b = artistOf(parts[y]);
+                    if (!a.empty() && !b.empty() && (variant(a, b) || variant(b, a))) join(parts[x], parts[y]);
+                }
+        for (const auto& [folder, parts] : byFolder) {
+            std::set<size_t> named; // the albums of the parts with an artist
+            for (size_t i : parts)
+                if (!artistOf(i).empty()) named.insert(root(i));
+            if (named.size() != 1) continue;
+            for (size_t i : parts)
+                if (artistOf(i).empty()) join(i, *named.begin());
+        }
+
+        std::map<size_t, std::vector<size_t>> sets;
+        for (size_t i = 0; i < ids.size(); ++i) sets[root(i)].push_back(i); // each in id order
+        for (const auto& [r, members] : sets) {
+            if (members.size() < 2) continue;
+            auto tracksOf = [&](size_t i) { return groups_.at(ids[i]).item.tracks.size(); };
+            std::optional<size_t> keeper;
+            int64_t firstSeen = 0, lastPlayed = 0;
+            for (size_t i : members) {
+                auto old = previous_.find(ids[i]);
+                if (old == previous_.end()) continue;
+                if (!keeper || tracksOf(i) > tracksOf(*keeper)) keeper = i;
+                const IndexItem& before = *old->second;
+                if (before.firstSeen && (!firstSeen || before.firstSeen < firstSeen)) firstSeen = before.firstSeen;
+                lastPlayed = std::max(lastPlayed, before.lastPlayed);
+            }
+            if (!keeper) keeper = members.front();
+            IndexItem& item = groups_.at(ids[*keeper]).item;
+            std::map<std::string, size_t> tracksBy; // artist key -> tracks
+            for (size_t i : members) tracksBy[artistOf(i)] += tracksOf(i);
+            std::string artist = item.artist; // the keeper's spelling wins a tie
+            for (size_t i : members) {
+                const std::string& name = groups_.at(ids[i]).item.artist;
+                if (tracksBy[artistKey(name)] > tracksBy[artistKey(artist)]) artist = name;
+            }
+            for (size_t i : members) {
+                if (i == *keeper) continue;
+                IndexItem& part = groups_.at(ids[i]).item;
+                if (item.genre.empty()) item.genre = part.genre;
+                if (item.year == 0) item.year = part.year;
+                if (item.musicBrainzId.empty()) item.musicBrainzId = part.musicBrainzId;
+                for (const std::string& ref : part.seenOn)
+                    if (std::find(item.seenOn.begin(), item.seenOn.end(), ref) == item.seenOn.end()) item.seenOn.push_back(ref);
+                for (IndexTrack& track : part.tracks) item.tracks.push_back(std::move(track));
+                groups_.erase(ids[i]);
+            }
+            item.artist = artist;
+            item.firstSeen = firstSeen; // 0 unless parts were in the index: the index then keeps the earliest
+            item.lastPlayed = lastPlayed;
+        }
     }
 
     // By folder (CD2 before CD10), then by track number, files without one last, then by the
