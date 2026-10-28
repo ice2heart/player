@@ -19,13 +19,14 @@ class Servers {
 public:
     Servers() = default;
     Servers(Servers&&) = default;
-    Servers& operator=(Servers&&) = default;
+    // No move assignment: it would free the servers before the downloaders that point at them.
+    Servers& operator=(Servers&&) = delete;
 
     // One link per server this build can talk to, in config order. May be empty.
     const std::vector<ServerLink>& links() const { return links_; }
 
     // Just before exit: let every Subsonic server finish its requests (Subsonic::finish) for up to
-    // `deadline` in all. Blocks.
+    // `deadline` in all. Audiobookshelf has nothing to finish. Blocks.
     void finish(std::chrono::milliseconds deadline = kServerFinishDeadline);
 
 private:
@@ -36,7 +37,9 @@ private:
 };
 
 // The servers of config.yaml (serverConfigs()): a Subsonic server and an HttpDownloader for each
-// Subsonic entry when this build has network support (OAP_BUILD_NET, library oapnet). An entry this build cannot
+// Subsonic entry, and an Audiobookshelf and an HttpDownloader (its URL source is the stream URL) for each
+// audiobookshelf entry that has an api_key (without one: the line "servers: Audiobookshelf needs api_key" and
+// no link), when this build has network support (OAP_BUILD_NET, library oapnet). An entry this build cannot
 // use (another type, or no network support) gets no link and a line on stderr that says why; so does
 // anything serverConfigs() ignored. A link's name is the entry's `name`, else "Server" when only one entry is set
 // up, else "Server 1", "Server 2" by its place among the entries. Its key is TrackCache::serverKey(url, user).

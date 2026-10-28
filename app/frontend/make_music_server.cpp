@@ -2,6 +2,7 @@
 
 #include "core/track_cache.h"
 #ifdef OAP_HAVE_NET
+#include "net/audiobookshelf.h"
 #include "net/http_downloader.h"
 #include "net/subsonic.h"
 #endif
@@ -14,7 +15,8 @@ namespace oap {
 
 #ifdef OAP_HAVE_NET
 namespace {
-constexpr const char* kSubsonicType = "subsonic"; // ServerConfig::type
+constexpr const char* kSubsonicType = "subsonic";           // ServerConfig::type
+constexpr const char* kAudiobookshelfType = "audiobookshelf"; // ServerConfig::type
 }
 #endif
 
@@ -27,13 +29,26 @@ Servers makeServers(const Settings& config) {
 #ifdef OAP_HAVE_NET
     for (size_t i = 0; i < entries.size(); ++i) {
         const ServerConfig& entry = entries[i];
-        if (entry.type != kSubsonicType) {
+        if (entry.type == kAudiobookshelfType) {
+            if (entry.apiKey.empty()) {
+                std::fprintf(stderr, "servers: Audiobookshelf needs api_key\n");
+                continue;
+            }
+            auto audiobookshelf = std::make_unique<Audiobookshelf>(Audiobookshelf::configFrom(entry));
+            // The downloader asks the server for the URL (it holds the key: never printed). It is destroyed
+            // before the server (see the member order of Servers), so the pointer outlives every call.
+            Audiobookshelf* source = audiobookshelf.get();
+            out.servers_.push_back(std::move(audiobookshelf));
+            out.downloaders_.push_back(std::make_unique<HttpDownloader>(
+                [source](const std::string& trackId) { return source->stream(trackId, 0).url; }));
+        } else if (entry.type == kSubsonicType) {
+            Subsonic::Config subsonic = Subsonic::configFrom(entry);
+            out.servers_.push_back(std::make_unique<Subsonic>(subsonic));
+            out.downloaders_.push_back(std::make_unique<HttpDownloader>(Subsonic::downloadUrls(subsonic)));
+        } else {
             std::fprintf(stderr, "server: type '%s' is not supported; streaming is off\n", entry.type.c_str());
             continue;
         }
-        Subsonic::Config subsonic = Subsonic::configFrom(entry);
-        out.servers_.push_back(std::make_unique<Subsonic>(subsonic));
-        out.downloaders_.push_back(std::make_unique<HttpDownloader>(Subsonic::downloadUrls(subsonic)));
         std::string name = !entry.name.empty() ? entry.name
                            : entries.size() == 1 ? std::string("Server")
                                                  : "Server " + std::to_string(i + 1);

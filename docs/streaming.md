@@ -317,8 +317,8 @@ The plan above is kept as it was written. Where the code differs, the code is ri
 - **Albums and playlists** open on "Play album" or "Play playlist", then the tracks.
 - **A server type the player cannot use** (or any server in a build without
   `OAP_BUILD_NET`) gives one item, "Server not supported", instead of "No server set up".
-  OK says that the player streams only from Subsonic servers and only when built with
-  network support.
+  OK says that the player streams from Subsonic servers and from Audiobookshelf, and only
+  when built with network support.
 - **Lists from the server are not rebuilt** when the user comes back to them: they
   keep what has loaded.
 - **A remote track that fails** says "Cannot play Storm. Server not reachable." What

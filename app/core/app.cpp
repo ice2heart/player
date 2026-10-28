@@ -131,8 +131,8 @@ constexpr const char* kNoServerHelp =
     "config.yaml, then restart the player.";
 // Also what a build without network support says (OAP_BUILD_NET=OFF): core cannot tell the two apart.
 constexpr const char* kUnsupportedServerHelp =
-    "This player streams only from Subsonic servers, such as Navidrome, and only when it is built with network "
-    "support. Check the type in the server section of config.yaml.";
+    "This player streams from Subsonic servers, such as Navidrome, and from Audiobookshelf, and only when it is "
+    "built with network support. Check the type in the servers section of config.yaml.";
 
 enum Verbosity { Beginner = 0, Normal = 1, Expert = 2 };
 

@@ -3859,9 +3859,23 @@ TEST_F(StreamingTest, AServerThisPlayerCannotUseSaysSo) {
     EXPECT_EQ(labels(), (std::vector<std::string>{"Server not supported"}));
     press(Button::Ok);
     EXPECT_NE(speech.last().find("Subsonic"), std::string::npos) << speech.last();
+    EXPECT_NE(speech.last().find("Audiobookshelf"), std::string::npos) << "the help names both types: " << speech.last();
     // Also what a build without network support says: it must not blame the type alone.
     EXPECT_NE(speech.last().find("network support"), std::string::npos) << speech.last();
     EXPECT_EQ(speech.last().find("https://"), std::string::npos) << "the address is not spoken";
+}
+
+TEST_F(StreamingTest, ServerStatusOnABooksServerNamesAudiobookshelfAndItsVersion) {
+    server.catalogueKind = MusicServer::Catalogue::Books;
+    settings.setString("server.type", "audiobookshelf");
+    settings.setString("server.url", "https://books.example");
+    openServer();
+    open("Server status");
+    EXPECT_EQ(speech.last(), "Checking the server.");
+    ASSERT_EQ(server.lastRequest().kind, Kind::Ping);
+    ASSERT_TRUE(server.replyPing(server.lastRequest().id, {"Audiobookshelf", "2.37.2"}));
+    app->tick();
+    EXPECT_EQ(speech.last(), "Connected to Audiobookshelf 2.37.2.");
 }
 
 TEST_F(StreamingTest, AnEmptyListSaysWhyAndWhatToDo) {

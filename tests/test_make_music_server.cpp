@@ -1,7 +1,12 @@
 #include "core/track_cache.h"
 #include "frontend/make_music_server.h"
+#include "temp_dir.h"
 
 #include <gtest/gtest.h>
+
+#include <filesystem>
+#include <optional>
+#include <thread>
 
 using namespace oap;
 
@@ -16,6 +21,16 @@ void addServer(Settings& config, int index, const std::string& type, const std::
     config.setString(prefix + "url", url);
     config.setString(prefix + "user", user);
     config.setString(prefix + "password", "secret");
+}
+
+// One audiobookshelf entry; the key is left out when `apiKey` is empty.
+void addAudiobookshelf(Settings& config, int index, const std::string& url, const std::string& apiKey,
+                       const std::string& name = {}) {
+    const std::string prefix = "servers." + std::to_string(index) + ".";
+    config.setString(prefix + "type", "audiobookshelf");
+    if (!name.empty()) config.setString(prefix + "name", name);
+    config.setString(prefix + "url", url);
+    if (!apiKey.empty()) config.setString(prefix + "api_key", apiKey);
 }
 
 struct Made {
@@ -80,6 +95,82 @@ TEST(MakeServers, ALoneServerWithoutANameIsCalledServer) {
     EXPECT_EQ(made.servers.links()[0].name, "Server");
     EXPECT_EQ(made.servers.links()[0].key, TrackCache::serverKey("https://music.example.com", "alice"));
     EXPECT_EQ(made.err, "");
+#else
+    EXPECT_TRUE(made.servers.links().empty());
+#endif
+}
+
+TEST(MakeServers, AnAudiobookshelfEntryGivesABooksLinkWhoseDownloaderUsesTheStreamUrl) {
+    Settings config;
+    addAudiobookshelf(config, 0, "https://books.example.com/", "KEY123", "Books");
+    Made made = make(config);
+#ifdef OAP_TESTS_EXPECT_NET
+    ASSERT_EQ(made.servers.links().size(), 1u);
+    const ServerLink& link = made.servers.links()[0];
+    EXPECT_EQ(link.name, "Books");
+    EXPECT_EQ(link.config.type, "audiobookshelf");
+    EXPECT_EQ(link.server.catalogue(), MusicServer::Catalogue::Books);
+    EXPECT_TRUE(link.server.configured());
+    EXPECT_TRUE(link.downloader.configured());
+    EXPECT_EQ(link.server.stream("item1/42", 0).url, "https://books.example.com/api/items/item1/file/42?token=KEY123");
+    EXPECT_EQ(made.err, "") << "nothing is printed, least of all the key";
+    made.servers.finish(std::chrono::milliseconds(10)); // nothing to finish
+#else
+    EXPECT_TRUE(made.servers.links().empty());
+    EXPECT_NE(made.err.find("no network support"), std::string::npos) << made.err;
+#endif
+    EXPECT_EQ(made.err.find("KEY123"), std::string::npos);
+}
+
+// Nothing listens on port 1: a track id that has a stream URL is tried and found Unreachable; one without
+// (so no URL) is NotConfigured.
+TEST(MakeServers, TheDownloaderOfAnAudiobookshelfLinkFetchesFromTheStreamUrl) {
+    Settings config;
+    addAudiobookshelf(config, 0, "http://127.0.0.1:1", "KEY123");
+    Made made = make(config);
+#ifdef OAP_TESTS_EXPECT_NET
+    ASSERT_EQ(made.servers.links().size(), 1u);
+    Downloader& downloader = made.servers.links()[0].downloader;
+    const auto dest = (test::testTempDir() / "out.mp3").string();
+    auto download = [&](const std::string& trackId) {
+        std::optional<Downloader::Result> result;
+        downloader.download(trackId, dest, 0, {}, [&](Downloader::Result r) { result = r; });
+        for (int i = 0; i < 500 && !result; ++i) {
+            downloader.poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return result;
+    };
+    EXPECT_EQ(download("item1/42"), Downloader::Result::Unreachable);
+    EXPECT_EQ(download("no-slash"), Downloader::Result::NotConfigured);
+    std::filesystem::remove_all(test::testTempDir());
+#endif
+}
+
+TEST(MakeServers, AnAudiobookshelfEntryWithoutAnApiKeyGetsNoLinkAndSaysSo) {
+    Settings config;
+    addAudiobookshelf(config, 0, "https://books.example.com", "");
+    Made made = make(config);
+    EXPECT_TRUE(made.servers.links().empty());
+#ifdef OAP_TESTS_EXPECT_NET
+    EXPECT_EQ(made.err, "servers: Audiobookshelf needs api_key\n");
+#else
+    EXPECT_NE(made.err.find("no network support"), std::string::npos) << made.err;
+#endif
+}
+
+TEST(MakeServers, ASubsonicAndAnAudiobookshelfServerKeepTheirOwnLinks) {
+    Settings config;
+    addServer(config, 0, "subsonic", "https://music.example.com", "alice");
+    addAudiobookshelf(config, 1, "https://books.example.com", "KEY123");
+    Made made = make(config);
+#ifdef OAP_TESTS_EXPECT_NET
+    ASSERT_EQ(made.servers.links().size(), 2u);
+    EXPECT_EQ(made.servers.links()[0].server.catalogue(), MusicServer::Catalogue::Music);
+    EXPECT_EQ(made.servers.links()[1].server.catalogue(), MusicServer::Catalogue::Books);
+    EXPECT_EQ(made.servers.links()[1].name, "Server 2");
+    EXPECT_EQ(made.err, "");
+    made.servers.finish(std::chrono::milliseconds(10));
 #else
     EXPECT_TRUE(made.servers.links().empty());
 #endif
