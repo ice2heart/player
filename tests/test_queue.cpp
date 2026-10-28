@@ -112,7 +112,7 @@ TEST(Queue, ReplaceResetsShuffleRepeatAndEditedFlag) {
     Queue q = abcde();
     q.setShuffle(QueueShuffle::Tracks, seeded(1));
     q.setRepeat(QueueRepeat::All);
-    q.append(tracks({"f"}));
+    q.append(tracks({"f"}), kZero);
     ASSERT_TRUE(q.edited());
     q.replace(tracks({"x", "y"}));
     EXPECT_EQ(q.shuffle(), QueueShuffle::Off);
@@ -330,24 +330,127 @@ TEST(Queue, PlayNextOnAnEmptyQueueMakesTheFirstCurrent) {
 TEST(Queue, AppendPutsEntriesAtTheEndAndKeepsTheCurrentOne) {
     Queue q = abcde();
     q.setCurrent(3);
-    q.append(tracks({"x", "y"}));
+    q.append(tracks({"x", "y"}), kZero);
     EXPECT_EQ(order(q), "abcdexy");
     EXPECT_EQ(currentTitle(q), "d");
     EXPECT_TRUE(q.edited());
 }
 
-TEST(Queue, AppendWhenShuffledGoesToTheEndOfBothOrders) {
+TEST(Queue, AppendWithShuffleOffAsksForNoRandomNumber) {
+    Queue q = abcde();
+    int calls = 0;
+    q.append(tracks({"x", "y"}), [&](std::size_t) { return ++calls, std::size_t{0}; });
+    EXPECT_EQ(order(q), "abcdexy");
+    EXPECT_EQ(calls, 0);
+}
+
+// The numbers it is given, in turn; the bounds it was asked for are kept.
+struct Script {
+    std::vector<std::size_t> values;
+    std::vector<std::size_t> bounds{};
+    QueueRandom random() {
+        return [this](std::size_t bound) {
+            bounds.push_back(bound);
+            return values[(bounds.size() - 1) % values.size()];
+        };
+    }
+};
+
+TEST(Queue, AppendWithShuffleTracksMixesEachNewEntryIntoWhatHasNotPlayed) {
     Queue q = abcde();
     q.setShuffle(QueueShuffle::Tracks, kZero);
-    q.append(tracks({"x"}));
-    EXPECT_EQ(order(q), "acdebx");
+    ASSERT_EQ(order(q), "acdeb");
+    Script script{{2, 3}};
+    q.append(tracks({"x", "y"}), script.random());
+    EXPECT_EQ(order(q), "acdxyeb") << "not both at the end";
+    EXPECT_EQ(script.bounds, (std::vector<std::size_t>{5, 6})) << "a place before, between or after the 4, then 5 unplayed";
+    EXPECT_EQ(currentTitle(q), "a");
+    EXPECT_TRUE(q.edited());
     q.setShuffle(QueueShuffle::Off, kZero);
-    EXPECT_EQ(order(q), "abcdex");
+    EXPECT_EQ(order(q), "abcdexy") << "the original order has them at the end, in the order they were added";
+}
+
+TEST(Queue, AppendWithShuffleTracksCanGoRightAfterTheCurrentEntryOrToTheEndButNeverBeforeIt) {
+    Queue q = abcde();
+    q.setShuffle(QueueShuffle::Tracks, kZero);
+    q.setCurrent(2); // a c [d] e b
+    ASSERT_EQ(currentTitle(q), "d");
+    Script first{{0}};
+    q.append(tracks({"x"}), first.random());
+    EXPECT_EQ(order(q), "acdxeb");
+    EXPECT_EQ(currentTitle(q), "d");
+    EXPECT_EQ(q.position(), 2u);
+    EXPECT_EQ(first.bounds, (std::vector<std::size_t>{3})) << "2 unplayed entries, 3 places";
+    Script last{{3}};
+    q.append(tracks({"y"}), last.random());
+    EXPECT_EQ(order(q), "acdxeby") << "the last place is the end";
+    EXPECT_EQ(last.bounds, (std::vector<std::size_t>{4}));
+    EXPECT_EQ(currentTitle(q), "d");
+}
+
+TEST(Queue, AppendWithShuffleTracksToTheLastEntryPutsThemAfterIt) {
+    Queue q = abcde();
+    q.setShuffle(QueueShuffle::Tracks, kZero);
+    q.setCurrent(4);
+    Script script{{0}};
+    q.append(tracks({"x"}), script.random());
+    EXPECT_EQ(order(q), "acdebx");
+    EXPECT_EQ(script.bounds, (std::vector<std::size_t>{1}));
+}
+
+namespace {
+// A1 A2 B1 B2 C1, current A1, shuffled by albums with kZero: A1 A2 C1 B1 B2.
+Queue albumsShuffled() {
+    Queue q;
+    q.replace({local("A1", "A"), local("A2", "A"), local("B1", "B"), local("B2", "B"), local("C1", "C")});
+    q.setShuffle(QueueShuffle::Albums, kZero);
+    return q;
+}
+} // namespace
+
+TEST(Queue, AppendWithShuffleAlbumsKeepsEachAddedAlbumWholeAndBetweenTwoRuns) {
+    Queue q = albumsShuffled();
+    ASSERT_EQ(order(q), "A1A2C1B1B2");
+    Script script{{1, 3}};
+    q.append({local("D1", "D"), local("D2", "D"), local("E1", "E")}, script.random());
+    EXPECT_EQ(order(q), "A1A2C1D1D2B1B2E1");
+    EXPECT_EQ(script.bounds, (std::vector<std::size_t>{3, 4})) << "2 runs, then 3, to place the runs between";
+    q.setShuffle(QueueShuffle::Off, kZero);
+    EXPECT_EQ(order(q), "A1A2B1B2C1D1D2E1");
+}
+
+TEST(Queue, AppendWithShuffleAlbumsNeverSplitsTheRestOfTheCurrentAlbumOrAnotherRun) {
+    Queue q = albumsShuffled();
+    Script script{{0}};
+    q.append({local("D1", "D"), local("D2", "D")}, script.random());
+    EXPECT_EQ(order(q), "A1A2D1D2C1B1B2") << "the first place is after the rest of the current album";
+    EXPECT_EQ(currentTitle(q), "A1");
+    // Every place for a run of one: none is inside B1 B2.
+    for (std::size_t slot = 0; slot < 3; ++slot) {
+        Queue other = albumsShuffled();
+        Script one{{slot}};
+        other.append({local("D1", "D")}, one.random());
+        const std::string o = order(other);
+        EXPECT_NE(o.find("B1B2"), std::string::npos) << o;
+        EXPECT_NE(o.find("A1A2"), std::string::npos) << o;
+    }
+}
+
+TEST(Queue, PlayNextWithShuffleOnPutsTheEntriesRightAfterTheCurrentOneInOrder) {
+    for (QueueShuffle mode : {QueueShuffle::Tracks, QueueShuffle::Albums}) {
+        Queue q = abcde();
+        q.setShuffle(mode, kZero);
+        q.playNext(tracks({"x", "y"}));
+        EXPECT_EQ(order(q).substr(0, 3), "axy") << static_cast<int>(mode);
+        EXPECT_EQ(currentTitle(q), "a");
+        q.setShuffle(QueueShuffle::Off, kZero);
+        EXPECT_EQ(order(q), "axybcde") << "the original order has them after the current entry";
+    }
 }
 
 TEST(Queue, AddingNothingIsNotAnEdit) {
     Queue q = abcde();
-    q.append({});
+    q.append({}, kZero);
     q.playNext({});
     EXPECT_FALSE(q.edited());
 }
@@ -589,7 +692,7 @@ TEST(QueueRevision, EveryChangeGetsANewStampAndCopiesShareIt) {
     };
     q.replace(tracks({"a", "b", "c", "d"}));
     EXPECT_TRUE(changed()) << "replace";
-    q.append(tracks({"e"}));
+    q.append(tracks({"e"}), kZero);
     EXPECT_TRUE(changed()) << "append";
     q.playNext(tracks({"f"}));
     EXPECT_TRUE(changed()) << "playNext";
@@ -611,7 +714,7 @@ TEST(QueueRevision, EveryChangeGetsANewStampAndCopiesShareIt) {
     EXPECT_TRUE(changed()) << "restore";
     Queue copy = q;
     EXPECT_EQ(copy.revision(), q.revision());
-    q.append(tracks({"g"}));
+    q.append(tracks({"g"}), kZero);
     EXPECT_NE(copy.revision(), q.revision());
     EXPECT_FALSE(q.setCurrent(99));
     EXPECT_TRUE(changed()) << "append";

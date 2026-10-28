@@ -59,10 +59,13 @@ public:
     // as the ends allow), kept in the original order too. Shuffle, repeat and edited are kept.
     Queue around(std::size_t limit) const;
 
-    // Puts `entries` after the current entry (play order and original order) / at the end. Both count as
-    // edits. On an empty queue the first one becomes current.
+    // Puts `entries` after the current entry (play order and original order, in their own order, with any
+    // shuffle) / at the end of the original order. Both count as edits. On an empty queue the first one becomes
+    // current. With shuffle on, append() mixes the new entries into what has not played yet: tracks one by one
+    // to random places after the current entry; albums run by run (as setShuffle() cuts them), each whole and in
+    // order, to a random place between two runs. With shuffle off they go to the end of the play order.
     void playNext(const std::vector<QueueEntry>& entries);
-    void append(const std::vector<QueueEntry>& entries);
+    void append(const std::vector<QueueEntry>& entries, const QueueRandom& random);
 
     // Position is in the play order. Out of range: nothing happens and false is returned. Both are edits.
     // remove() of the current entry makes the next one current (the first, if it was the last);

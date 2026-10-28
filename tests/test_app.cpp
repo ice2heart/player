@@ -10510,6 +10510,22 @@ TEST_F(OptionsTest, PlayNextAndAddToQueueOnALocalAlbumPutTheTracksAfterTheCurren
     EXPECT_EQ(queue(), (std::vector<std::string>{"Lullaby", "Sunrise", "Highway", "Sunrise", "Highway"}));
 }
 
+TEST_F(OptionsTest, AddToQueueWithShuffleTracksMixesTheNewTracksIntoWhatHasNotPlayed) {
+    playRoadTrip(); // Sunrise, Highway
+    app->setRandom([](size_t) { return size_t(0); }); // each new track goes right after the current one
+    press(Button::Ok);
+    open("Shuffle");
+    open("tracks");
+    hold(Button::Home);
+    open("Music");
+    ASSERT_EQ(level().items[level().index].label, "Play all");
+    options("Add to queue");
+    EXPECT_EQ(speech.last(), "Added All music, 3 tracks. 5 in queue.") << "what is spoken is as before";
+    // The three new tracks (in the order of All music, Lullaby, Sunrise, Highway, the zeros turn it round) are
+    // not all after the old Highway, which had not played yet.
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Sunrise", "Highway", "Sunrise", "Lullaby", "Highway"}));
+}
+
 TEST_F(OptionsTest, PlayAllHasOptionsToo) {
     playRoadTrip();
     hold(Button::Home);

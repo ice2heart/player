@@ -2141,7 +2141,7 @@ void App::addToQueue(Selection selection, bool next) {
     const std::string added = "Added " + selectionText(selection.title, tracks) + ". ";
     auto put = [&](Queue& queue) {
         if (next) queue.playNext(selection.entries);
-        else queue.append(selection.entries);
+        else queue.append(selection.entries, random_);
         return queue.size();
     };
     if (book_ && music_) {

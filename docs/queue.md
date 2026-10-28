@@ -153,7 +153,7 @@ random generator is passed in, so tests choose the shuffle.
 | Play album / Play playlist / Play all | first item of the list | Replaces the queue with the whole list. |
 | Options → Play now | a track, album, playlist, artist | Replaces the queue with it and plays. |
 | Options → Play next | the same | Puts it after the current entry. |
-| Options → Add to queue | the same | Puts it at the end. |
+| Options → Add to queue | the same | Puts it at the end; with Shuffle on, mixes the new tracks into what has not played yet (tracks one by one, albums run by run). |
 
 - A remote album, playlist or artist is loaded first: "Loading.", then "Added
   Weather, 12 tracks. 30 in queue." Home while it loads drops the late answer.

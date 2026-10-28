@@ -24,6 +24,34 @@ bool inSameAlbum(const QueueEntry& a, const QueueEntry& b) {
     return !a.album.empty() && a.album == b.album;
 }
 
+// Entries that stay together when shuffled: one group per entry, or (albums) one per run of entries with the
+// same album name. `lead` is the run that goes on with the album named `before` (albums only, and only when
+// `before` is not empty): it is not a group, it plays first.
+struct Runs {
+    std::vector<std::size_t> lead;
+    std::vector<std::vector<std::size_t>> groups;
+};
+
+Runs cutRuns(const std::vector<QueueEntry>& entries, const std::vector<std::size_t>& items, std::string before,
+             bool albums) {
+    Runs runs;
+    bool inLead = albums;
+    for (const std::size_t item : items) {
+        const std::string& album = entries[item].album;
+        const bool same = albums && !album.empty() && album == before;
+        if (inLead && same) {
+            runs.lead.push_back(item);
+        } else if (same) {
+            runs.groups.back().push_back(item);
+        } else {
+            inLead = false;
+            runs.groups.push_back({item});
+        }
+        before = album;
+    }
+    return runs;
+}
+
 } // namespace
 
 void Queue::touch() { revision_ = ++lastRevision; }
@@ -106,7 +134,27 @@ void Queue::playNext(const std::vector<QueueEntry>& entries) {
     insertAt(order_[pos_] + 1, pos_ + 1, entries);
 }
 
-void Queue::append(const std::vector<QueueEntry>& entries) { insertAt(entries_.size(), order_.size(), entries); }
+void Queue::append(const std::vector<QueueEntry>& entries, const QueueRandom& random) {
+    const std::size_t old = entries_.size();
+    insertAt(old, order_.size(), entries); // the original order gets them at the end, whatever the shuffle
+    if (shuffle_ == QueueShuffle::Off || old == 0 || entries.empty()) return;
+    // The new entries are in the play order after everything. Mix them into what has not played yet (after the
+    // current entry): one by one (tracks), or run by run between the runs that are there (albums).
+    const bool albums = shuffle_ == QueueShuffle::Albums;
+    const auto firstUnplayed = order_.begin() + static_cast<std::ptrdiff_t>(pos_) + 1;
+    const std::vector<std::size_t> unplayed(firstUnplayed, order_.begin() + static_cast<std::ptrdiff_t>(old));
+    std::vector<std::size_t> added(order_.begin() + static_cast<std::ptrdiff_t>(old), order_.end());
+    Runs kept = cutRuns(entries_, unplayed, entries_[order_[pos_]].album, albums);
+    for (auto& run : cutRuns(entries_, added, "", albums).groups) {
+        // before the first run, between two, after the last
+        const std::size_t places = kept.groups.size() + 1;
+        const auto at = kept.groups.begin() + static_cast<std::ptrdiff_t>(random(places) % places);
+        kept.groups.insert(at, std::move(run));
+    }
+    order_.erase(firstUnplayed, order_.end());
+    order_.insert(order_.end(), kept.lead.begin(), kept.lead.end());
+    for (const auto& g : kept.groups) order_.insert(order_.end(), g.begin(), g.end());
+}
 
 bool Queue::remove(std::size_t position, bool* removedCurrent) {
     if (position >= order_.size()) return false;
@@ -225,21 +273,9 @@ void Queue::setShuffle(QueueShuffle mode, const QueueRandom& random) {
     // The run that goes on with the current entry's album stays first.
     const std::vector<std::size_t> tail(order_.begin() + static_cast<std::ptrdiff_t>(pos_) + 1, order_.end());
     order_.resize(pos_ + 1);
-    std::vector<std::vector<std::size_t>> groups;
-    bool inFirst = mode == QueueShuffle::Albums;
-    for (std::size_t k = 0; k < tail.size(); ++k) {
-        const std::string& album = entries_[tail[k]].album;
-        const std::string& before = entries_[k == 0 ? order_[pos_] : tail[k - 1]].album;
-        const bool sameAlbum = mode == QueueShuffle::Albums && !album.empty() && album == before;
-        if (inFirst && sameAlbum) {
-            order_.push_back(tail[k]); // the rest of the current album plays on
-        } else if (sameAlbum) {
-            groups.back().push_back(tail[k]);
-        } else {
-            inFirst = false;
-            groups.push_back({tail[k]});
-        }
-    }
+    Runs runs = cutRuns(entries_, tail, entries_[order_[pos_]].album, mode == QueueShuffle::Albums);
+    order_.insert(order_.end(), runs.lead.begin(), runs.lead.end());
+    auto& groups = runs.groups;
     shuffleWith(groups, random);
     for (const auto& g : groups) order_.insert(order_.end(), g.begin(), g.end());
 }

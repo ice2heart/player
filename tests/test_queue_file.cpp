@@ -43,7 +43,7 @@ Queue mixed() {
     q.replace({local("a"), remote("t2", "b"), local("c"), remote("t4", "d")}, 1);
     q.setShuffle(QueueShuffle::Tracks, [](std::size_t) { return std::size_t{0}; });
     q.setRepeat(QueueRepeat::All);
-    q.append({local("e")});
+    q.append({local("e")}, [](std::size_t) { return std::size_t{0}; });
     return q;
 }
 
