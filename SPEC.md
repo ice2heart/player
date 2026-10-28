@@ -1,6 +1,6 @@
 # Open Audio Player for Blind Users — Design Spec (Draft v0.1)
 
-> Status: **draft v0.2** · Last updated: 2026-10-21
+> Status: **draft v0.2** · Last updated: 2026-10-28
 > Software architecture as built: [docs/architecture.md](docs/architecture.md)
 > Working name: _TBD_ (placeholder: **OAP** — Open Audio Player)
 
@@ -351,7 +351,7 @@ Home
 │   ├── Recently played
 │   ├── Refresh library        ("Updating the library.", then the result or the error)
 │   └── <album> → tracks (Album info, where it plays from, is in its Options)
-├── Streaming                  (own music server; named after it; the last album or playlist resumes after a restart; docs/streaming.md)
+├── Streaming                  (own music server; named after it; docs/streaming.md. The music queue, local and server tracks mixed, resumes after a restart; docs/queue.md)
 ├── Bookmarks
 ├── Settings
 │   ├── Speech (voice, rate, pitch, verbosity)
@@ -377,9 +377,9 @@ Home
 | Back / Forward long or deep | previous / next chapter or track; announces chapter name |
 | Up / Down             | choose the step unit for Back / Forward; speaks it ("Track") |
 | Volume up / down      | content volume, held repeats; earcon pitch indicates level, edge sound at the limits |
-| Options               | actions for the playing track (Go to album, Album info; Star later); the book player says "No options" |
+| Options               | actions for the playing track (Go to album, Album info; Star later); the book player says "No options". On a list item: Play now, Play next, Add to queue |
 | Play long             | "Chapter 7 of 22, 'The Storm'. 14 minutes left in chapter, 6 hours 3 minutes left in book." |
-| OK                    | player menu: speed, bookmark add, sleep timer, chapters, info |
+| OK                    | player menu. Music: queue (list, move, remove, save as server playlist, clear), shuffle, repeat, go to first track, sleep timer. Book: chapters, sleep timer, info, speed, bookmark add |
 | Talk                  | voice command |
 
 ### 5.5 Onboarding (first boot)

@@ -1,16 +1,18 @@
 # Music queue, new buttons and separate players: plan
 
-> Status: **phase 1 is built** (steps 1.1 to 1.6: volume and Options buttons, the step unit, menus that jump,
-> separate music and book players); **phase 2, the queue, is a plan.** The rules it changes are in [navigation.md](navigation.md),
-> which is updated first (step 1.1), before any code. The code as it is now is described in
-> [architecture.md](architecture.md); streaming is in [streaming.md](streaming.md).
-> Last updated: 2026-10-27.
+> Status: **phases 1 and 2 are built** (phase 1, steps 1.1 to 1.6: volume and Options buttons, the step unit,
+> menus that jump, separate music and book players; phase 2, steps 2.1 to 2.10: the queue, Options, Shuffle and
+> Repeat, the Queue list, `queue.tsv`, Save as playlist). The rules are in [navigation.md](navigation.md), the code is
+> described in [architecture.md](architecture.md), streaming is in [streaming.md](streaming.md). Where the build
+> differs from the plan, see [Phase 2 as built](#phase-2-as-built). Star / Unstar is not built (streaming.md 2a.1).
+> Last updated: 2026-10-28.
 
-The device had no queue, and still has none. `App` holds one `book_`: the book, the local album or
-"Play all" list, or the album or playlist from the server. Choosing a track replaces it. Before
-phase 1, music and books shared one player and volume sat on Up / Down in the player; now they are
-two players (one `MediaPlayer`, the other parked) and volume has its own keys. An item still has no
-actions beyond OK.
+Before this plan the device had no queue. `App` held one `book_`: the book, the local album or
+"Play all" list, or the album or playlist from the server. Choosing a track replaced it. Music and books
+shared one player and volume sat on Up / Down in the player. Phase 1 made two players (one `MediaPlayer`, the
+other parked) and gave volume its own keys. Phase 2 gave the music player a queue; an item now has Options
+beyond OK. The text below keeps the plan's wording; what differs in the build is listed in
+[Phase 2 as built](#phase-2-as-built).
 
 This plan adds:
 
@@ -93,9 +95,8 @@ menus then **jump in long lists**:
   about the player (Queue, Shuffle, Repeat, Sleep timer). Options is about the
   playing track: Go to album, Album info, and Star / Unstar for a remote track. Album
   info moves to Options from the Player menu and from the end of an album's list (an
-  album in a list has it in its Options). Star is built in the Player menu in
-  [streaming.md phase 2a](streaming.md#phase-2a-stars); step 2.5 moves it to Options,
-  so it has one key. Go to artist comes later.
+  album in a list has it in its Options). Star is not built yet: streaming.md
+  [phase 2a](streaming.md#phase-2a-stars) builds it in Options, so it has one key. Go to artist comes later.
 - An item with no actions plays the edge sound and says "No options" (rule 9: every
   press of a key is heard).
 - An action that finishes a task (Play next, Add to queue) goes back by itself and
@@ -230,7 +231,7 @@ Queue
   queue, which is the undo; it shows in the Queue list of the next music queue. Removing the
   last entry does the same ("Removed Storm. The queue is empty.").
 - **Play next** on an entry puts it after the current entry ("Storm will play next.");
-  on the current entry it only says so. The list counts its own items: Save as playlist and
+  on the current entry nothing moves: the error sound and "Storm is the current entry.", and the Options stay. The list counts its own items: Save as playlist and
   Clear queue (and Previous queue) are items too, so a queue of 30 is "5 of 32".
 - Move, Remove and Play next come back to the Queue list by themselves, rebuilt, on the entry
   they acted on ("Removed Storm. 29 in queue.").
@@ -309,7 +310,7 @@ answers; the queue survives a restart and can be saved as a server playlist.
 | ✅ 2.7 | **The Queue list**, in place of "Tracks" in the music Player menu: opens on the current entry ("current"); OK plays an entry; Options on an entry: Play next, Move, Remove; Save as playlist (says "Not available yet." until 2.9); Previous queue; Clear queue behind Cancel. | Opens on the current entry and says "current". Move to 3 says "Moved to 3 of 30" and the order changes. Remove of the current entry makes the next one current, paused. Clear queue opens on Cancel. Move and Remove set the edited flag. |
 | ✅ 2.8 | **Keep the queue**: `queue.tsv` written on sleep and exit, when changed; read on start; `last_stream.*` read once, turned into a queue and removed; cut to 5000 entries around the current one. | Sleep, then restart: the same mixed, shuffled queue, current entry, position and repeat. Exit writes it; a second exit with no change writes nothing. Old `last_stream.*` keys become a queue and are removed. Nothing in `queue.tsv` contains a stream URL, a token (`t=`, `s=`) or the password. |
 | ✅ 2.9 | **Save as playlist**: `MusicServer::createPlaylist(name, trackIds, done)`, `Subsonic` `createPlaylist`, `FakeMusicServer`. Remote entries of the server set up now only, cached copies count as remote; name from the wall time. | Net tests: the URL has `name` and one `songId` per track, and no `p`. A mixed queue saves only the ids of the server set up now and says how many tracks were left out (local, and from another server). No remote entries: says why and sends nothing. An error is spoken and the queue is unchanged. |
-| 2.10 | **Docs for phase 2 as built:** architecture.md (queue, `queue.tsv`, server checks, Options), navigation.md where the build differs from 1.1, streaming.md (`last_stream` replaced), SPEC. | – |
+| ✅ 2.10 | **Docs for phase 2 as built:** architecture.md (queue, `queue.tsv`, server checks, Options), navigation.md where the build differs from 1.1, streaming.md (`last_stream` replaced), SPEC. | – |
 
 **Device check (manual), with a server set up:** add a local album and a server album
 to one queue with Options and hear them play in order. Pull the Wi-Fi during a server
@@ -318,6 +319,41 @@ the Wi-Fi is back the next server track plays without a key press. Shuffle album
 each album in order. Power off and on: the queue, current track and position are back.
 Save as playlist: the playlist is on the server with only its tracks, and the device
 says how many were left out.
+
+### Phase 2 as built
+
+Phase 2 is built as planned, with these differences. The code is described in
+[architecture.md](architecture.md), the rules in [navigation.md](navigation.md).
+
+- **Star is not built.** The music player's Options (`playerOptionsMenu()`) is Go to album and Album
+  info. streaming.md 2a.1 builds Star / Unstar there.
+- **`last_stream.*` is not migrated at start.** It is still read when there is no `queue.tsv`: "Now
+  playing" on Home and OK or Play run `resumeStream()` as before, and the queue that plays is saved in
+  `queue.tsv`. Any music queue that plays, and reading a `queue.tsv`, remove the old keys.
+- **Local music is resumed** after a restart, as part of the queue (the plan's Phase 1 text said it was
+  not). A restored queue is closed like a queue that ended: nothing plays and Play or "Now playing" opens
+  the current entry at its place.
+- **The Previous queue is not kept across a restart.** A restored queue does not cache tracks
+  automatically until another list plays (its `Book` has no server source).
+- **Save as playlist saves at most 150 tracks** (`MusicServer::kMaxPlaylistTracks`, the request is a GET with
+  one `songId` each). The rest are counted as not saved with the tracks of other sources. Names are made
+  from the wall time, with no renaming. It speaks "Saving." first.
+- **A track chosen from a list is tried while its server is marked down** (`Origin::Menu`): the user chose
+  it from what the server just listed. An open that works clears the mark. Entries reached by Next, a
+  track ending or Previous are skipped.
+- **Edges of the Album unit** play the edge sound and say "First album." or "Last album.".
+- **Spoken texts the plan did not give:** "End of queue. Press play to start again.", "Playing Weather."
+  for Play now, "Moved to 3 of 30." and "Not moved.", "Removed Storm. 29 in queue.", "Storm will play
+  next.", "Queue cleared.", and "Loading. Try again when it has started." for Play next, Move and Remove
+  while a track the user chose is still opening.
+- **Clear queue unloads the music player** and goes to Home. Removing the last entry does the same. A
+  parked book stays.
+- **Repeat all** wraps Left / Right and Previous on the first and last track too; with nothing playable
+  the queue ends with "End of queue" instead of going round. **Go to first track** is the first entry in
+  the play order.
+- **A cached copy of a track of a server that is marked down is skipped too** (it is still a remote entry).
+- **The Queue list counts its trailing items:** Save as playlist, Previous queue and Clear queue are items, so a
+  queue of 30 is "5 of 32".
 
 ### Later
 

@@ -5,7 +5,9 @@
 > [Phase 3 as built](#phase-3-as-built); one library of files and server, see
 > [Phase 4 as built](#phase-4-as-built)). Phases 2a and 5 are a plan. The code is described in [architecture.md](architecture.md), and the
 > rules for lists from the server are in [navigation.md](navigation.md#lists-from-the-server).
-> Last updated: 2026-10-27.
+> The music queue ([queue.md](queue.md) phase 2) changed some of it: tracks from any source play in one
+> queue, `queue.tsv` replaced `last_stream`, and a track that cannot play is skipped.
+> Last updated: 2026-10-28.
 > Target server: Navidrome 0.64 (Subsonic API 1.16.1, OpenSubsonic). Test server:
 > `https://navidrome.microserver`. The credentials are kept in `.env` (git ignores it) only so
 > they are at hand during development; the program does not read it.
@@ -126,8 +128,9 @@ The layering rules in CLAUDE.md still hold:
   A URL fits in it, but the chapter titles would be made from the URL. So `Book` gets
   an optional list of track titles (or `files` becomes a list of `{location, title}`).
   A streamed album is played like a local album (`music_ = true`): it says "track",
-  ends with "End of queue", saves no position and does not change `last_book`.
-- **A remote track that fails to open stops playback.** For a local book,
+  ends with "End of queue", saves no `pos:` and does not change `last_book` (its place is in `queue.tsv`, queue.md step 2.8).
+- **A remote track that fails to open stops playback.** (Only for a book now. The music queue skips
+  an entry that cannot play and marks a server that fails as down, queue.md steps 2.2 and 2.3.) For a local book,
   `App::loadFile` tries each following file until one opens. For streams that would
   block the UI for up to 10 s per track when the network is gone. So for remote
   tracks it says "Server not reachable" and stops after the first failure, and the
@@ -352,7 +355,7 @@ user, `album` or `playlist` and its id, title, track index and id, seconds), kep
 memory on pause and list change and written only on exit and sleep, like `last_book`.
 Whichever player played last resumes (queue.md step 1.5 changed this: opening a book no
 longer removes `last_stream.*`; `last_player` says which was last, and the other is
-"Continue" on Home). Local music changes neither. At boot nothing is asked of the server and
+"Continue" on Home). Local music changed neither then; `queue.tsv` resumes it too. At boot nothing is asked of the server and
 nothing plays: Home opens with "Now playing, Weather" first, and OK on it (or Play)
 says "Loading.", loads the list again, finds the track by its id (if it is gone, the
 track now at its index from its start, else the first track) and opens it at its
@@ -374,7 +377,7 @@ first. Break it into steps once that interface is decided.
 
 | # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
 |---|------|------|
-| 2a.1 | **Star / unstar** from the Player menu (it moves to Options with the queue, [queue.md](queue.md) step 2.5), and a **Starred** list in Streaming. Decide whether a track played from Starred is saved in `last_stream` (it has no album or playlist id; it needs a new `RemoteSource::Kind` that `resumeStream()` can load again). | Star and unstar call the server. Starred loads like the other lists (Loading, filled, error). An error is spoken. |
+| 2a.1 | **Star / unstar** in `App::playerOptionsMenu()` (the Options of the music player, "Options, <track>", next to Go to album and Album info; queue.md step 2.5 built that menu and left Star out; the Player menu never gets it), for a remote track of the server set up now, and a **Starred** list in Streaming. A track played from Starred is a queue entry like any other (it needs its album id only for Go to album), so it is saved in `queue.tsv` and nothing else is needed to resume it. | Star and unstar call the server. Starred loads like the other lists (Loading, filled, error). An error is spoken. Options in the player lists Star or Unstar for a remote track and neither for a local one. |
 
 ## Phase 3: local cache and downloads
 
@@ -596,8 +599,8 @@ The plan above is kept as it was written. Where the code differs, the code is ri
   "on the server", never in Music and never merged with a local or downloaded copy (a book
   that is on both is listed twice). The place is `pos:<server key>:album:<id>`, with no URL.
 - **Resume a server book.** `last_book` is the book's item id `<server key>:album:<id>` and is
-  set only once the book plays (a failed open changes nothing). `last_stream.*` stays (queue.md step 1.5:
-  the music player keeps its own place, and `last_player` says which player was last). A book that is whole on disk plays at once, with no "Loading." and
+  set only once the book plays (a failed open changes nothing). The music player keeps its own place
+  (first `last_stream.*`, now the queue in `queue.tsv`, queue.md step 2.8), and `last_player` says which player was last. A book that is whole on disk plays at once, with no "Loading." and
   also offline. Any other says "Loading." and asks the server; with it down "Server not
   reachable." is said and Home stays. Unlike a stream, a partly downloaded book does not fall
   back to the files on disk, since its chapter numbers would shift.
@@ -613,8 +616,8 @@ the item is removed and comes back under another id (a moved folder, a deleted a
 download) the album is not in Recently played any more. An album first seen while the clock
 was not set has no first-seen time and is left out of Recently added until a scan with a set clock
 fills it in. A downloaded album with no server item (the server is not reachable, or dropped
-the album) plays from Music as a local album: no scrobble, no read-ahead, and it is not resumed
-as `last_stream`. Refresh fetches the albums again only when the server's `getArtists`
+the album) plays from Music as a local album: no scrobble, no read-ahead, and it is resumed as local music
+from `queue.tsv`, not from the server. Refresh fetches the albums again only when the server's `getArtists`
 `lastModified` changed, so a server that does not bump it for an edit is not noticed until it
 does. A book that is both on the device and on the server is listed twice in Library. The destructor of the scanner joins its thread, so
 a read stuck on a hung mount can delay exit (the state and the play times are saved first). A download of a book that left the index is listed in

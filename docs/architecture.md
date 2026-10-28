@@ -2,8 +2,9 @@
 
 > Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end,
 > streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)),
-> plus phase 1 of [queue.md](queue.md): volume and Options buttons, the step unit, menus that jump, and separate music and book players.
-> Phase 2 of queue.md is being built: the music player plays a `Queue` (step 2.2) and skips what cannot play and checks a server that failed (step 2.3); Shuffle and Repeat are in the music Player menu (step 2.6); the Queue list (step 2.7) and the queue kept between restarts in `queue.tsv` (step 2.8) are built. Last updated: 2026-10-28.
+> plus phases 1 and 2 of [queue.md](queue.md): volume and Options buttons, the step unit, menus that jump, separate music and book players,
+> and the music queue (local and server tracks mixed, skipped when unavailable, a server that fails checked until it answers), Options (Play now, Play next, Add to queue, Go to album, Album info),
+> Shuffle and Repeat, the Queue list, the queue kept in `queue.tsv` and Save as playlist. Star is not built (streaming.md 2a.1). Last updated: 2026-10-28.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -102,6 +103,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/config/disk_text_files.h` | `DiskTextFiles`: the `TextFiles` of the real file system, for the cache manifests (`App` takes it with the cache root; without one the cache is off). |
 | `app/config/settings_files.{h,cpp}` | `SettingsFiles`: what a front end hands to `App` (both files, loaded). |
 | `app/core/queue.{h,cpp}` | `Queue`, the music queue (docs/queue.md), a plain class with no `App` and no I/O; `App` plays it (step 2.2). `QueueEntry` is a local track (path) or a remote one (server url + user, track id, length; never a password or stream URL), with title, album and artist. It keeps the entries in the original order and a play order (`playOrder()`, indexes into `originalEntries()`), the current position, `QueueShuffle` (off / tracks / albums), `QueueRepeat` (off / all / track) and `edited()` (set by `playNext`, `append`, `remove`, `move`; cleared by `replace`, which also resets shuffle and repeat). `advance()` is a track that ended (repeat track: `Repeated`), `next()` / `previous()` are the user moving (`Moved`, or `End`: past the last entry with repeat off, which makes the first entry current). `setShuffle(mode, random)` keeps what was played and the current entry and shuffles what follows (albums: runs of the same album name stay together); the `QueueRandom` is passed in. |
+| `app/core/queue_file.{h,cpp}` | `formatQueue()` / `parseQueue()`: the queue as the text of `queue.tsv` and back, with no I/O (`App` reads and writes the file through `TextFiles`). Section 9 has the format. |
 | `app/core/text.{h,cpp}` | Text for speech, such as `spokenDuration()`, and `parseIsoTime()` (an ISO 8601 time as seconds since 1970, 0 if it is not one; pure arithmetic, used for a server album's `created`). |
 | `app/core/album_merge.{h,cpp}` | Duplicates (4.8), plain functions on the index. `mergeAlbums(items)` groups the `Music` items that share a `seenOn` reference into `MergedAlbum`s (`primary`: local, else cached, else server; `items`; `onServer`): the merged view, computed when a menu is built, never stored. `sameAlbumByName(a, b)` is the name rule (same MusicBrainz album id, else artist + album + track count with case and spaces ignored, ASCII, Latin-1 and Cyrillic folded; unknown count or empty name never match); `linkByName(key, items)` gives the `AlbumLink`s (local or cached item, server reference) for items with no reference to that server, matched against server albums that no local item holds; `albumInfoText(merged)` is what Album info says. `trackCountOf()` is a server item's `trackCount`, else its tracks. |
 | `app/platform/audio_output.{h,cpp}` | `AudioOutput` interface and `open(name)`, which picks a built-in backend at run time (`--audio`). |
@@ -1084,6 +1086,10 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   `fake://stream/<id>?maxBitRate=<kbps>`, and with `saltUrls` differ on each call, as a
   real server's do; `scrobble()` calls are recorded in `scrobbles`). `FakeLibraryStore` keeps the index in memory and counts saves, `FakeTagReader` maps path to tags and counts reads, and `FakeLibraryScanner` records each `ScanRequest` and delivers only on `finish()` + `poll()`. `FakeDownloader` records each `download()` and finishes only when the test calls `finish(id, result)` (which writes `dest` for `Ok`, or a `.part` for a failure, if asked) or `progress()`, then on the next `poll()`; honours `cancel`. `FakePlayer` records the `Transcoded` of the last open.
   `test_fake_music_server.cpp` checks that contract.
+- `test_queue.cpp` tests `Queue` alone (order, shuffle, repeat, edits, `restore()`, `around()`) with a chosen random
+  generator; `test_queue_file.cpp` tests `formatQueue()` / `parseQueue()` (round trip, escapes, damaged files, no
+  stream URL or token). The queue in `App` (mixed play, skipping, server checks, Options, the Queue list, `queue.tsv`,
+  Save as playlist) is in `test_app.cpp`; `test_fake_music_server.cpp` and the net tests cover `createPlaylist`.
 - `test_config.cpp` tests YAML ⇄ dotted keys, `YamlStore` / `TsvStore` on real files
   (mode 0600, atomic replace, a broken file left alone) and `SettingsFiles`.
 - `test_app.cpp` drives `App` the way a user does, through `keyDown`/`keyUp`/`tick`
@@ -1125,5 +1131,8 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 - STT (Talk button): push-to-talk capture plus sherpa-onnx, Vosk or whisper.cpp.
 - Localisation of spoken strings; a choice of TTS voice.
 - Hardware abstraction (battery, headphone jack, Wi-Fi, Bluetooth, suspend): planned in [hal.md](hal.md).
-- Music: shuffle and repeat.
+- Queue: the Previous queue is not kept across a restart; a restored queue does not cache tracks
+  automatically until another list plays; Star / Unstar in the player's Options (streaming.md 2a.1);
+  Save as playlist saves at most 150 tracks (a GET request) and has no renaming until STT or a keyboard;
+  play queue sync with the server and offline playlists are later (queue.md "Later").
 - The `AudioStream` mutex in the audio callback could become a lock-free ring.

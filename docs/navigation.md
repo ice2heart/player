@@ -1,12 +1,12 @@
 # Navigation guidelines
 
-> Status: the parts of this contract that [queue.md](queue.md) phase 1 covers are **built**: the
-> volume and Options buttons (Options only says "No options" until phase 2), the step unit,
-> Left / Right in menus, settings changed only in their list, and the two players. The
-> **queue** parts are the target of phase 2 and are **not built**: the queue and the Queue list,
-> Shuffle and Repeat, the actions behind Options, Save as playlist, and the saved queue (see
-> [The queue](#the-queue)). Where the build differs from the text, a note says so;
-> [architecture.md](architecture.md) describes the code.
+> Status: the parts of this contract that [queue.md](queue.md) phases 1 and 2 cover are **built**: the
+> volume and Options buttons, the step unit, Left / Right in menus, settings changed only in
+> their list, the two players, the queue and the Queue list, Shuffle and Repeat, the actions
+> behind Options, Save as playlist and the saved queue (see [The queue](#the-queue)). Star /
+> Unstar in the player's Options is **not built** ([streaming.md](streaming.md) 2a.1). Where the
+> build differs from the text, a note says so; [architecture.md](architecture.md) describes the
+> code. Last updated: 2026-10-28.
 
 Users can't see the menu, so they learn it from what each key does. A key that
 does one thing in one menu and something else in the next menu breaks that.
@@ -171,10 +171,10 @@ edge sound plays at the first and last unit; holding Up or Down does not jump.
 - The unit is kept per player and saved in `state.tsv` (`unit.music`, `unit.book`),
   written on sleep and exit like the rest of the state, so it is the same after a wake
   or a restart.
-- Until the queue exists, the Album unit moves within the loaded list. Only Play all spans
-  albums (it marks where each starts, and the unit moves to the first track of the previous
-  / next one, speaking its title); every other list, an artist's albums included, is one
-  album, where the unit plays the edge sound and says "First album." or "Last album."
+- The Album unit moves to the first track of the previous / next album of the queue: a run of
+  entries with the same album name in the play order. It speaks the album ("Dune"). A queue
+  with no other album in that direction plays the edge sound and says "First album." or
+  "Last album."
 
 ### Left and Right in menus
 
@@ -218,9 +218,9 @@ instead (and while a book plays they leave it playing and keep the queue for Con
   about the player (Queue, Shuffle, Repeat, Sleep timer). Options is about the
   playing track: Go to album, Album info, and Star / Unstar for a remote track. Album
   info moves to Options from the Player menu and from the end of an album's list (an
-  album in a list has it in its Options). Star is built in the Player menu in
-  [streaming.md phase 2a](streaming.md#phase-2a-stars) and moves to Options in
-  queue.md step 2.5, so it has one key. Go to artist comes later.
+  album in a list has it in its Options). Star / Unstar is not built yet: streaming.md
+  [phase 2a](streaming.md#phase-2a-stars) builds it in the player's Options, so it has one key
+  and never sits in the Player menu. Go to artist comes later.
 - An item with no actions plays the edge sound and says "No options" (rule 9: every
   press of a key is heard). So does Options in a player with nothing loaded.
 - **Play now** is an action that finishes a task: it starts playback, goes back by
@@ -239,10 +239,11 @@ instead (and while a book plays they leave it playing and keep the queue for Con
   position kept per book and `last_book`. Podcasts will use the book player.
 - They share one `MediaPlayer`. Starting one pauses the other and keeps its place (in
   memory), so going back to it resumes where it stopped.
-- **After a restart** a book resumes from `last_book` and the music player from the album
-  or playlist of the server that played last (`last_stream.*`); `last_player` in
-  `state.tsv` says which was last. **Local music is not resumed** across a restart, and a
-  parked place is kept only in memory: the saved queue in phase 2 fixes local music.
+- **After a restart** a book resumes from `last_book` and the music player from the saved queue
+  (`queue.tsv`, local and server tracks); `last_player` in `state.tsv` says which was last.
+  The parked player is kept across a restart the same way: the book by `last_book`, the music
+  queue in `queue.tsv`. An older version's `last_stream.*` is still read when there is no saved
+  queue (see [architecture.md](architecture.md#9-persistence)).
 - Each is its own program: `Screen::Kind::MusicPlayer` and `Screen::Kind::BookPlayer`,
   each with its own Player menu.
 - **Home:** "Now playing, <album or book>" for the player used last, and "Continue,
@@ -301,12 +302,24 @@ Player menu (music player)
 - The queue is saved on sleep and exit and is back after a restart; nothing plays until
   the user chooses it.
 
-**As built (phase 1):** the music player holds one list (an album, a playlist, or Play
-all), its Player menu is Queue · Shuffle · Repeat · Go to first track · Sleep timer (steps 2.6 and 2.7), Options
-in the music player is Go to album · Album info (step 2.5; Star comes with streaming.md 2a.1), and the Queue list works as above
-(step 2.7), Save as playlist works (step 2.9: "Saving.", then "Saved Queue, 27 October 14:05." and how many tracks
-were not saved; at most 150 tracks go in one playlist, the rest are counted as not saved), and the queue is kept
-between restarts (step 2.8). OK on a track plays from there to the end of its list.
+**As built (phase 2):** the music player's Player menu is Queue · Shuffle · Repeat · Go to first track ·
+Sleep timer, Options in the music player is Go to album · Album info (Star comes with streaming.md
+2a.1), and the Queue list works as above. Where the build differs from the text above:
+
+- Play now says "Playing Weather." once the track opens. "End of queue. Press play to start
+  again." is the whole message.
+- Move says "Moved to 3 of 30." and "Not moved." for the entry's own place. Play next on the current
+  entry plays the error sound, says "Storm is the current entry." and leaves the Options open; on another
+  entry it says "Storm will play next." Removing the last entry says "Removed
+  Storm. The queue is empty." and unloads like Clear queue. While a track you chose is still opening,
+  Play next, Move and Remove say "Loading. Try again when it has started."
+- Save as playlist says "Saving." first, then "Saved Queue, 27 October 14:05." and how many tracks were not
+  saved. At most 150 tracks go in one playlist (the request is a GET); the rest are counted as not saved.
+- A track you choose from a list the server just gave (OK in a menu) is tried even while the server is
+  marked down; the entries that follow it are skipped until a ping answers. Cached copies of a track of a
+  server that is marked down are skipped too.
+- The queue file keeps up to 5000 entries around the current one. The Previous queue is not kept
+  across a restart. A restored queue does not cache tracks automatically until another list plays.
 
 ## Lists
 
