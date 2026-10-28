@@ -209,6 +209,59 @@ private:
                     std::vector<std::pair<int, std::string>> options, int fallback,
                     std::function<void(int)> onChange = {});
 
+    // Options on a menu item (docs/queue.md, "Filling it"): Play now, Play next, Add to queue.
+    // A Selection is what they act on: the tracks as queue entries, and the list they came from.
+    struct Selection {
+        std::string title; // what is spoken: "Added Weather, 12 tracks."
+        Book list;         // the list the queue is called after (book_ when it plays)
+        std::vector<QueueEntry> entries;
+        std::string playedId; // Music: the index item Play now marks as played
+    };
+    enum class QueueAction { PlayNow, PlayNext, AddToQueue };
+    // What Options was pressed on. Local things and tracks the list already holds are Ready; an album,
+    // playlist or artist of the server has to be loaded first.
+    struct Pick {
+        enum class Kind { Ready, Album, Playlist, Artist };
+        Kind kind = Kind::Ready;
+        std::string title, artist, id, playedId; // remote: what to load
+        std::function<Selection()> make;        // Ready
+    };
+    // The load an action waits for. It belongs to the Options screen: leaving that screen, sleep and power
+    // off cancel it, so a late answer changes nothing and says nothing.
+    struct Loading {
+        std::uint64_t screen = 0; // 0: none
+        MusicServer::RequestId request = 0;
+        Pick pick;
+        QueueAction action = QueueAction::PlayNow;
+        std::vector<RemoteAlbum> albums; // an artist: its albums, whose tracks are fetched one by one
+        size_t next = 0;
+        std::vector<RemoteTrack> tracks;
+    };
+    void openOptions();                              // the Options button
+    MenuItem withOptions(MenuItem item, Pick pick);  // `item` gets the Options of `pick`
+    std::vector<MenuItem> optionsMenu(const Pick& pick);
+    static Pick localTrackPick(const Book& album, size_t track, const std::string& playedId);
+    static Pick localAlbumPick(const Book& album, const std::string& playedId);
+    Pick remotePick(Pick::Kind kind, const std::string& id, const std::string& title, const std::string& artist,
+                    const std::string& playedId = {});
+    Selection remoteSelection(const std::string& title, const std::vector<RemoteTrack>& tracks,
+                              std::optional<RemoteSource> source, const std::string& artist, bool ofAlbum) const;
+    void choose(const Pick& pick, QueueAction action);
+    void requestNextAlbum();
+    void onPickLoaded(std::uint64_t screen, MusicServer::Error error, std::vector<RemoteTrack> tracks);
+    void onArtistAlbums(std::uint64_t screen, MusicServer::Error error, std::vector<RemoteAlbum> albums);
+    void failLoading(MusicServer::Error error);
+    void cancelLoading();
+    void perform(Selection selection, QueueAction action); // goes back to the list, then does it and says so
+    void playNow(Selection selection);
+    void addToQueue(Selection selection, bool next);
+    // Remote tracks as a list (Book) and as queue entries; `ofAlbum`: all are of the album called `title`.
+    static Book remoteBook(const std::string& title, const std::vector<RemoteTrack>& tracks,
+                           std::optional<RemoteSource> source, const std::string& artist);
+    std::vector<QueueEntry> remoteEntries(const std::string& title, const std::vector<RemoteTrack>& tracks, bool ofAlbum,
+                                          const std::string& artist) const;
+    bool queuedFrom(const RemoteSource& source) const; // a track of that downloaded list is in the music queue
+
     // Lists loaded from the server (docs/streaming.md). A list opens at once with
     // "Loading" and is filled when the answer comes. The answer finds its screen
     // by id; leaving the screen cancels the request, so a late answer never runs.
@@ -490,6 +543,7 @@ private:
     std::uint64_t pingScreen_ = 0;                    // the screen it was asked from
     std::uint64_t resumeScreen_ = 0;    // the Library screen a server book loads for (resume_), 0: none or not tied to a screen
     MusicServer::RequestId resume_ = 0; // resumeStream(): the list being loaded, 0 when none; a new screen cancels it
+    Loading loading_;
     std::optional<Download> download_;
     std::deque<AutoCache> autoQueue_;
     std::optional<AutoCache> autoJob_; // the transfer in flight, if autoRequest_ != 0

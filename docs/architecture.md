@@ -424,6 +424,8 @@ struct MenuItem {
     std::function<std::vector<MenuItem>()> submenu;  // built when opened (fresh data)
     std::function<size_t()> selected;                // submenu opens on this entry
     ListOrder submenuOrder;                          // how the submenu's list is sorted (see below)
+    std::function<std::vector<MenuItem>()> options;  // built when Options is pressed: "Options, <label>"; none: "No options"
+    std::string okHint;                              // Beginner hint: what OK does ("play"); empty: open / select
     std::function<void()> action;                    // leaf
 };
 ```
@@ -440,6 +442,15 @@ set by the item that opens the list (`MenuItem::submenuOrder`) or by `openRemote
 a list that is not marked jumps by 10. The letter comes from `nameGroup()`
 (`library.h`); the status rows of a list from the server and "Unknown artist" are
 groups of their own with no spoken letter. The item types are listed in [navigation.md](navigation.md).
+
+**Options (step 2.4).** `App::openOptions()` opens `item.options` as the screen "Options, <label>".
+Lists attach it with `withOptions(item, Pick)`. A `Pick` is either Ready (`make()` builds a
+`Selection`: the list `Book` and the `QueueEntry`s) or a remote album, playlist or artist that
+`choose()` loads first (`loading_`, tied to the Options screen id: leaving it, sleep and power off
+cancel the request, so a late answer does nothing). `perform()` pops the Options screen, then
+`playNow()` (replaces the queue, says "Playing X." once it opens) or `addToQueue()` (queue edit; with
+no music queue loaded a closed queue is made, like one that ended: `reopenAt_` set, Play opens it; while a book
+plays the queue is parked for Continue). `queuedFrom()` keeps a downloaded list that is in the queue from being deleted.
 
 The spoken form of an item is `label[, value][, i of n][. hint]`. The position
 ("i of n") is left out at Expert verbosity, and the hint ("Press OK to open")

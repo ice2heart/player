@@ -27,6 +27,11 @@ struct MenuItem {
     ListOrder submenuOrder = ListOrder::None;       // submenu: how its list is sorted
     bool unlettered = false; // in a list sorted by name: a group of its own, spoken with no letter
     std::function<void()> action;
+    // Options on the item (docs/navigation.md): the actions that open as "Options, <label>", built
+    // when the button is pressed. None: Options says "No options".
+    std::function<std::vector<MenuItem>()> options;
+    // What OK does, for the Beginner hint ("play"). Empty: "open" for a submenu, "select" for an action.
+    std::string okHint;
 };
 
 // One entry of the screen stack: a spoken list, or a program such as a player (the

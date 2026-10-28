@@ -9694,3 +9694,517 @@ TEST_F(UnavailableTest, NoPingsWhileTheDeviceSleeps) {
     idle(10min);
     EXPECT_EQ(pings(), 0);
 }
+
+// ---------------------------------------------------------------- Options: Play now, Play next, Add to queue
+
+class OptionsTest : public MusicTreeTest {
+protected:
+    void SetUp() override {
+        MusicTreeTest::SetUp();
+        player.holdStreams = true;
+    }
+    template <class T> void answer(std::vector<T> items) {
+        ASSERT_TRUE(server.reply(server.lastRequest().id, std::move(items)));
+        app->tick();
+    }
+    void finishOpen() {
+        ASSERT_TRUE(player.finishOpen()) << "no open pending";
+        app->tick();
+    }
+    // Options on the selected item, then `label` on the Options screen.
+    void options(const std::string& label) {
+        press(Button::Options);
+        ASSERT_EQ(level().title.rfind("Options, ", 0), 0u) << level().title;
+        open(label);
+    }
+    // Home > Music > Albums A to Z > Road Trip, on its first track.
+    void openRoadTrip() {
+        start();
+        open("Music");
+        open("Albums A to Z");
+        open("Road Trip");
+    }
+    // Plays Road Trip from Sunrise: the queue is Sunrise, Highway.
+    void playRoadTrip() {
+        openRoadTrip();
+        open("Sunrise");
+        ASSERT_EQ(app->mode(), App::Mode::Player);
+    }
+    // Home > Server > Recently added, with Weather in it (on it).
+    void openServerAlbums() {
+        open("Server");
+        open("Recently added");
+        answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    }
+    // ... > Weather, with its tracks.
+    void openWeather() {
+        openServerAlbums();
+        open("Weather");
+        answer(weather());
+    }
+    // The titles of the queue, from the Tracks list of the Player menu; ends at Home.
+    std::vector<std::string> queue() {
+        hold(Button::Home);
+        open("Now playing");
+        press(Button::Ok);
+        open("Tracks");
+        std::vector<std::string> out = labels();
+        hold(Button::Home);
+        return out;
+    }
+};
+
+TEST_F(OptionsTest, OptionsOnALocalTrackOpensItsActionsAndPlayNowReplacesTheQueue) {
+    openRoadTrip();
+    press(Button::Down);
+    press(Button::Options);
+    EXPECT_EQ(speech.last(), "Options, Highway. Play now, 1 of 3");
+    EXPECT_EQ(sounds.last(), Earcon::Open);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play now", "Play next", "Add to queue"}));
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Playing Highway.");
+    EXPECT_NE(std::find(sounds.played.rbegin(), sounds.played.rbegin() + 3, Earcon::Close), sounds.played.rbegin() + 3)
+        << "the Options screen is left with the close sound";
+    EXPECT_EQ(level().title, "Road Trip") << "back in the list by itself";
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Highway"}));
+}
+
+TEST_F(OptionsTest, PlayNextOnALocalTrackPutsItAfterTheCurrentEntry) {
+    playRoadTrip();
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    while (level().items[level().index].label != "Lullaby") press(Button::Down); // a loose track
+    options("Play next");
+    EXPECT_EQ(speech.last(), "Added Lullaby. 3 in queue.");
+    EXPECT_EQ(level().title, "Albums A to Z");
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Sunrise", "Lullaby", "Highway"}));
+}
+
+TEST_F(OptionsTest, AddToQueueOnALocalTrackPutsItAtTheEnd) {
+    playRoadTrip();
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    open("Road Trip");
+    press(Button::Options);
+    options("Add to queue");
+    EXPECT_EQ(speech.last(), "Added Sunrise. 3 in queue.");
+    EXPECT_EQ(level().title, "Road Trip");
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Sunrise", "Highway", "Sunrise"}));
+    EXPECT_TRUE(player.playing()) << "what plays goes on";
+}
+
+TEST_F(OptionsTest, PlayNowOnALocalAlbumReplacesTheQueueWithAllItsTracks) {
+    playRoadTrip();
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    while (level().items[level().index].label != "Road Trip") press(Button::Down);
+    press(Button::Options);
+    EXPECT_EQ(speech.last(), "Options, Road Trip. Play now, 1 of 3");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Playing Road Trip.");
+    EXPECT_EQ(level().title, "Albums A to Z");
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Sunrise", "Highway"}));
+}
+
+TEST_F(OptionsTest, PlayNextAndAddToQueueOnALocalAlbumPutTheTracksAfterTheCurrentOrAtTheEnd) {
+    start();
+    open("Music");
+    open("Albums A to Z");
+    while (level().items[level().index].label != "Lullaby") press(Button::Down);
+    press(Button::Ok); // Lullaby plays
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    while (level().items[level().index].label != "Road Trip") press(Button::Down);
+    options("Play next");
+    EXPECT_EQ(speech.last(), "Added Road Trip, 2 tracks. 3 in queue.");
+    EXPECT_EQ(level().title, "Albums A to Z");
+    options("Add to queue");
+    EXPECT_EQ(speech.last(), "Added Road Trip, 2 tracks. 5 in queue.");
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Lullaby", "Sunrise", "Highway", "Sunrise", "Highway"}));
+}
+
+TEST_F(OptionsTest, PlayAllHasOptionsToo) {
+    playRoadTrip();
+    hold(Button::Home);
+    open("Music");
+    ASSERT_EQ(level().items[level().index].label, "Play all");
+    options("Add to queue");
+    EXPECT_EQ(speech.last(), "Added All music, 3 tracks. 5 in queue.");
+    EXPECT_EQ(level().title, "Music");
+}
+
+TEST_F(OptionsTest, ARemoteTrackIsPlayedNowPlayedNextAndAddedAlone) {
+    playRoadTrip();
+    hold(Button::Home);
+    openWeather();
+    while (level().items[level().index].label != "Rain") press(Button::Down);
+    options("Play next");
+    EXPECT_EQ(speech.last(), "Added Rain. 3 in queue.");
+    EXPECT_EQ(level().title, "Weather");
+    while (level().items[level().index].label != "Sunshine") press(Button::Down);
+    options("Add to queue");
+    EXPECT_EQ(speech.last(), "Added Sunshine. 4 in queue.");
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Sunrise", "Rain", "Highway", "Sunshine"}));
+    hold(Button::Home);
+    openWeather();
+    while (level().items[level().index].label != "Sunshine") press(Button::Down);
+    options("Play now");
+    EXPECT_EQ(speech.last(), "Loading.");
+    EXPECT_EQ(level().title, "Weather") << "back in the list at once";
+    finishOpen();
+    EXPECT_EQ(speech.last(), "Playing Sunshine.");
+    EXPECT_EQ(player.file, "fake://stream/t3");
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Sunshine"}));
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(OptionsTest, ARemoteAlbumIsLoadedFirstThenAddedWithTheCounts) {
+    playRoadTrip();
+    hold(Button::Home);
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    options("Add to queue");
+    EXPECT_EQ(speech.last(), "Loading.");
+    EXPECT_EQ(level().title, "Options, Weather") << "waits on the Options screen";
+    EXPECT_EQ(server.lastRequest().kind, Kind::AlbumTracks);
+    EXPECT_EQ(server.lastRequest().arg, "al1");
+    answer(weather());
+    EXPECT_EQ(speech.last(), "Added Weather, 3 tracks. 5 in queue.");
+    EXPECT_EQ(level().title, "Recently added");
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Sunrise", "Highway", "Storm Front", "Rain", "Sunshine"}));
+}
+
+TEST_F(OptionsTest, PlayNextAndPlayNowOnARemoteAlbum) {
+    playRoadTrip();
+    hold(Button::Home);
+    openServerAlbums();
+    options("Play next");
+    answer(weather());
+    EXPECT_EQ(speech.last(), "Added Weather, 3 tracks. 5 in queue.");
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Sunrise", "Storm Front", "Rain", "Sunshine", "Highway"}));
+    hold(Button::Home);
+    openServerAlbums();
+    options("Play now");
+    answer(weather());
+    EXPECT_EQ(speech.last(), "Loading.");
+    finishOpen();
+    EXPECT_EQ(speech.last(), "Playing Weather.");
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_EQ(level().title, "Recently added");
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Storm Front", "Rain", "Sunshine"}));
+}
+
+TEST_F(OptionsTest, ARemotePlaylistIsAddedWithItsTracks) {
+    playRoadTrip();
+    hold(Button::Home);
+    open("Server");
+    open("Playlists");
+    answer(std::vector<RemotePlaylist>{{"p1", "Road songs", 3}});
+    options("Add to queue");
+    EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+    EXPECT_EQ(server.lastRequest().arg, "p1");
+    answer(weather());
+    EXPECT_EQ(speech.last(), "Added Road songs, 3 tracks. 5 in queue.");
+    EXPECT_EQ(level().title, "Playlists");
+}
+
+TEST_F(OptionsTest, ARemoteArtistLoadsItsAlbumsThenTheirTracks) {
+    playRoadTrip();
+    hold(Button::Home);
+    open("Server");
+    open("Artists");
+    answer(std::vector<RemoteArtist>{{"ar1", "Band", 2}});
+    options("Add to queue");
+    EXPECT_EQ(server.lastRequest().kind, Kind::ArtistAlbums);
+    EXPECT_EQ(server.lastRequest().arg, "ar1");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}, {"al2", "Storm", "Band", 1}});
+    EXPECT_EQ(server.lastRequest().arg, "al1");
+    EXPECT_EQ(level().title, "Options, Band") << "still loading";
+    answer(weather());
+    EXPECT_EQ(server.lastRequest().arg, "al2");
+    answer(std::vector<RemoteTrack>{{"t9", "Thunder", "Band", "Storm", 100, 1}});
+    EXPECT_EQ(speech.last(), "Added Band, 4 tracks. 6 in queue.");
+    EXPECT_EQ(level().title, "Artists");
+}
+
+TEST_F(OptionsTest, HomeWhileARemoteAlbumLoadsAddsNothingAndSaysNothing) {
+    playRoadTrip();
+    hold(Button::Home);
+    openServerAlbums();
+    options("Add to queue");
+    auto id = server.lastRequest().id;
+    press(Button::Home); // leaves the Options screen
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), id), server.cancelled.end());
+    EXPECT_FALSE(server.reply(id, weather())) << "the answer is dropped";
+    speech.said.clear();
+    app->tick();
+    EXPECT_TRUE(speech.said.empty());
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Sunrise", "Highway"}));
+}
+
+TEST_F(OptionsTest, HoldingHomeWhileAnArtistLoadsDropsTheLaterAlbumsToo) {
+    playRoadTrip();
+    hold(Button::Home);
+    open("Server");
+    open("Artists");
+    answer(std::vector<RemoteArtist>{{"ar1", "Band", 2}});
+    options("Play next");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    auto id = server.lastRequest().id;
+    hold(Button::Home);
+    EXPECT_FALSE(server.reply(id, weather()));
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Sunrise", "Highway"}));
+}
+
+TEST_F(OptionsTest, PlayNextWithNothingLoadedMakesAQueuePausedAtItsFirstEntry) {
+    start();
+    open("Music");
+    open("Albums A to Z");
+    while (level().items[level().index].label != "Road Trip") press(Button::Down);
+    options("Play next");
+    EXPECT_EQ(speech.last(), "Added Road Trip, 2 tracks. Press play.");
+    EXPECT_EQ(level().title, "Albums A to Z");
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(app->nowPlaying().title, "Road Trip");
+    press(Button::PlayPause);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+}
+
+TEST_F(OptionsTest, AddToQueueWithNothingLoadedOpensNoStreamUntilPlay) {
+    start();
+    openWeather();
+    while (level().items[level().index].label != "Rain") press(Button::Down);
+    options("Add to queue");
+    EXPECT_EQ(speech.last(), "Added Rain. Press play.");
+    EXPECT_FALSE(player.isOpen());
+    EXPECT_FALSE(player.opening());
+    press(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Loading.");
+    finishOpen();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(OptionsTest, AnAudiobookKeepsPlayingWhileTracksAreAddedAndTheyWaitForContinue) {
+    playAlpha();
+    ASSERT_TRUE(player.playing());
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    while (level().items[level().index].label != "Road Trip") press(Button::Down);
+    options("Add to queue");
+    EXPECT_EQ(speech.last(), "Added Road Trip, 2 tracks. 2 in queue.");
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(player.file, alphaFile(1)) << "the book goes on";
+    hold(Button::Home);
+    open("Continue");
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    EXPECT_EQ(app->nowPlaying().chapterCount, 2);
+}
+
+TEST_F(OptionsTest, TracksAddedWhileABookPlaysJoinTheQueueThatWaits) {
+    playAlpha();
+    for (const char* action : {"Add to queue", "Play next"}) {
+        hold(Button::Home);
+        open("Music");
+        open("Albums A to Z");
+        while (level().items[level().index].label != "Road Trip") press(Button::Down);
+        options(action);
+    }
+    EXPECT_EQ(speech.last(), "Added Road Trip, 2 tracks. 4 in queue.");
+    hold(Button::Home);
+    open("Continue");
+    EXPECT_EQ(app->nowPlaying().chapterCount, 4);
+}
+
+TEST_F(OptionsTest, APlaylistPlayedNowIsResumedAsAPlaylistAfterARestart) {
+    start();
+    open("Server");
+    open("Playlists");
+    answer(std::vector<RemotePlaylist>{{"p1", "Road songs", 3}});
+    options("Play now");
+    answer(weather());
+    finishOpen();
+    app->shutdown();
+    EXPECT_EQ(stateFile.onDisk("last_stream.kind"), "playlist");
+    EXPECT_EQ(stateFile.onDisk("last_stream.id"), "p1");
+}
+
+TEST_F(OptionsTest, AScreenOpenedOverTheOptionsWhileAnAlbumLoadsDropsTheAnswer) {
+    state.setString("last_stream.server", "https://music.example");
+    state.setString("last_stream.user", "ice");
+    state.setString("last_stream.kind", "album");
+    state.setString("last_stream.id", "al1");
+    state.setString("last_stream.title", "Weather");
+    state.setString("last_stream.track", "0");
+    state.setString("last_stream.track_id", "t1");
+    state.setString("last_stream.pos", "0.0");
+    start();
+    openServerAlbums();
+    options("Add to queue");
+    auto add = server.lastRequest().id;
+    press(Button::PlayPause); // resumes Weather: its player opens over the Options screen
+    answer(weather());
+    finishOpen();
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_FALSE(server.reply(add, weather())) << "cancelled";
+    speech.said.clear();
+    app->tick();
+    EXPECT_TRUE(speech.said.empty());
+}
+
+TEST_F(OptionsTest, ALoadThatFailsSaysSoAndStaysOnTheOptions) {
+    playRoadTrip();
+    hold(Button::Home);
+    openServerAlbums();
+    options("Add to queue");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(level().title, "Options, Weather");
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Sunrise", "Highway"}));
+}
+
+TEST_F(OptionsTest, AnAlbumWithNoTracksAddsNothing) {
+    playRoadTrip();
+    hold(Button::Home);
+    openServerAlbums();
+    options("Play now");
+    answer(std::vector<RemoteTrack>{});
+    EXPECT_EQ(speech.last(), "Weather has no tracks.");
+    EXPECT_EQ(level().title, "Options, Weather");
+    EXPECT_TRUE(player.playing()) << "what played goes on";
+}
+
+TEST_F(OptionsTest, ChoosingAnotherActionWhileLoadingCancelsTheFirstRequest) {
+    playRoadTrip();
+    hold(Button::Home);
+    openServerAlbums();
+    options("Add to queue");
+    auto first = server.lastRequest().id;
+    press(Button::Up);
+    press(Button::Ok); // Play next
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), first), server.cancelled.end());
+    answer(weather());
+    EXPECT_EQ(queue(), (std::vector<std::string>{"Sunrise", "Storm Front", "Rain", "Sunshine", "Highway"}));
+}
+
+TEST_F(OptionsTest, SleepWhileAnAlbumLoadsDropsTheAnswer) {
+    playRoadTrip();
+    hold(Button::Home);
+    openServerAlbums();
+    options("Add to queue");
+    auto id = server.lastRequest().id;
+    press(Button::Power);
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_FALSE(server.reply(id, weather())) << "cancelled";
+}
+
+TEST_F(OptionsTest, ItemsWithoutActionsStillSayNoOptions) {
+    start();
+    press(Button::Options);
+    EXPECT_EQ(speech.last(), "No options.");
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(level().title, "Home");
+    openRoadTrip();
+    press(Button::Options);
+    ASSERT_EQ(level().title, "Options, Sunrise");
+    press(Button::Options);
+    EXPECT_EQ(speech.last(), "No options.") << "no second level";
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(level().title, "Options, Sunrise");
+}
+
+TEST_F(OptionsTest, OptionsInThePlayerStillSayNoOptions) {
+    playRoadTrip();
+    press(Button::Options);
+    EXPECT_EQ(speech.last(), "No options.");
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+}
+
+TEST_F(OptionsTest, TheBeginnerHintNamesOptions) {
+    settings.setInt("verbosity", 0);
+    openRoadTrip();
+    EXPECT_EQ(speech.last(), "Road Trip. Sunrise, 1 of 3. Press OK to play, Options for more.");
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    while (level().items[level().index].label != "Road Trip") press(Button::Down);
+    press(Button::Up);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Road Trip, 2 tracks, 2 of 2. Press OK to open, Options for more.");
+    hold(Button::Home);
+    open("Music");
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "Artists, 2 of 7. Press OK to open.") << "no options, no mention";
+}
+
+TEST_F(OptionsTest, ARemoteTrackAndAlbumHaveTheHintToo) {
+    settings.setInt("verbosity", 0);
+    start();
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
+    EXPECT_EQ(speech.last(), "Weather, Band, 1 of 1. Press OK to open, Options for more.");
+    press(Button::Ok);
+    answer(weather());
+    while (level().items[level().index].label != "Rain") press(Button::Down);
+    EXPECT_EQ(speech.last(), "Rain, 4 of 5. Press OK to play, Options for more.");
+}
+
+TEST_F(OptionsTest, AServerOnlyAlbumInMusicHasOptionsToo) {
+    start();
+    sync({album("al1", "Weather")});
+    open("Music");
+    open("Albums A to Z");
+    while (level().items[level().index].label != "Weather") press(Button::Down);
+    options("Add to queue");
+    EXPECT_EQ(server.lastRequest().arg, "al1");
+    answer(weather());
+    EXPECT_EQ(speech.last(), "Added Weather, 3 tracks. Press play.");
+    EXPECT_EQ(level().title, "Albums A to Z");
+}
+
+TEST_F(OptionsTest, ADownloadedTrackInTheQueueProtectsItsListFromDeletion) {
+    download("al9", "Weather", 3);
+    start();
+    open("Server");
+    open("Recently added");
+    answer(std::vector<RemoteAlbum>{{"al9", "Weather", "Band", 3}});
+    options("Add to queue");
+    answer(std::vector<RemoteTrack>{{"al9-t1", "Song 1", "Band", "Weather", 100, 1}});
+    hold(Button::Home);
+    open("Server");
+    open("Downloaded");
+    open("Weather");
+    open("Delete download");
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Cannot delete Weather while it is loaded in the player. Play something else first.");
+    EXPECT_TRUE(fs::exists(downloadedFile("al9", 1)));
+}
+
+TEST_F(OptionsTest, PlayNowOnAnAlbumOfMusicMarksItAsPlayed) {
+    openRoadTrip();
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    while (level().items[level().index].label != "Road Trip") press(Button::Down);
+    options("Play now");
+    hold(Button::Home);
+    open("Music");
+    open("Recently played");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Road Trip"}));
+}

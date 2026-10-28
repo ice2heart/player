@@ -204,9 +204,13 @@ Settings no longer change in place with Left / Right (rule 6). Left / Right in m
 
 ### Options
 
-**As built (phase 1):** the Options button exists and works on every screen, but no item has
-actions yet, so it always plays the edge sound and says "No options". The rest of this
-section is the target of queue.md phase 2.
+**As built (step 2.4):** Options on a menu item opens "Options, <item>" with Play now, Play next
+and Add to queue, on local tracks, local albums and Play all, and on remote tracks, albums,
+playlists and artists. Every other item, and Options in a player, still plays the edge sound and
+says "No options"; the player's Options (Go to album, Album info, Star) is step 2.5. A remote
+album, playlist or artist is loaded first ("Loading."); Play now says "Playing Weather." and the
+other two "Added Weather, 12 tracks. 30 in queue."; with no music queue loaded they say "Press play."
+instead (and while a book plays they leave it playing and keep the queue for Continue).
 
 - **Options on a menu item** opens "Options, Weather": a short list of what can be done
   with that item. **Options in a player** gives the actions for the playing track.
