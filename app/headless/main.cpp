@@ -223,6 +223,7 @@ int main(int argc, char** argv) {
     }
 
     app.shutdown();
+    finishMusicServer(*server);
     output->stop();
     return 0;
 }

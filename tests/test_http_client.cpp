@@ -269,6 +269,74 @@ TEST(HttpClient, DestructorDoesNotWaitForAStuckRequest) {
     EXPECT_FALSE(outcome.done());
 }
 
+TEST(HttpClient, FinishSendsARequestQueuedJustBefore) {
+    LocalServer server(httpResponse(200, "ok"));
+    HttpClient client;
+    Outcome outcome;
+    client.get(1, server.url("/rest/scrobble"), outcome.handler());
+    auto start = Clock::now();
+    client.finish(kPatience); // no waiting for the worker first
+    EXPECT_TRUE(server.requestSeen());
+    ASSERT_TRUE(outcome.done()); // the answer was handled before finish() returned
+    EXPECT_EQ(outcome.response->body, "ok");
+    EXPECT_LT(Clock::now() - start, 2s); // it returns when all is answered, not at the deadline
+}
+
+TEST(HttpClient, FinishReturnsAtTheDeadlineWhenTheServerNeverAnswers) {
+    LocalServer server("", /*hold=*/true);
+    HttpClient client;
+    Outcome outcome;
+    client.get(1, server.url(), outcome.handler());
+    ASSERT_TRUE(waitFor([&] { return server.requestSeen(); }));
+    constexpr auto kShort = 300ms;
+    auto start = Clock::now();
+    client.finish(kShort);
+    auto took = Clock::now() - start;
+    EXPECT_GE(took, kShort);
+    EXPECT_LT(took, 2s);
+    EXPECT_FALSE(outcome.done());
+}
+
+TEST(HttpClient, ARequestAfterFinishIsNotSent) {
+    LocalServer server(httpResponse(200, "ok"));
+    HttpClient client;
+    client.finish(100ms);
+    Outcome outcome;
+    client.get(1, server.url(), outcome.handler());
+    std::this_thread::sleep_for(200ms);
+    EXPECT_FALSE(server.requestSeen());
+    EXPECT_FALSE(outcome.done());
+}
+
+TEST(HttpClient, ARequestWhileFinishWaitsIsNotSent) {
+    LocalServer held("", /*hold=*/true);
+    LocalServer late(httpResponse(200, "ok"));
+    HttpClient client;
+    Outcome first, second;
+    client.get(1, held.url(), first.handler());
+    ASSERT_TRUE(waitFor([&] { return held.requestSeen(); }));
+    std::thread finisher([&] { client.finish(1s); }); // waits for the held request
+    std::this_thread::sleep_for(300ms); // room for finish() to start waiting
+    client.get(2, late.url(), second.handler());
+    finisher.join();
+    EXPECT_FALSE(late.requestSeen());
+    EXPECT_FALSE(second.done());
+}
+
+TEST(SubsonicOverHttp, FinishSendsAScrobbleQueuedJustBefore) {
+    LocalServer server(httpResponse(200, oap::test::subsonicFixture("ping.json")));
+    oap::Subsonic::Config config;
+    config.url = server.url("/music");
+    config.user = "ice";
+    config.password = "sesame";
+    oap::Subsonic subsonic(config);
+    subsonic.scrobble("track-7", true);
+    subsonic.finish(kPatience);
+    EXPECT_TRUE(server.requestSeen());
+    EXPECT_NE(server.requestLine().find("/music/rest/scrobble?"), std::string::npos) << server.requestLine();
+    EXPECT_NE(server.requestLine().find("id=track-7"), std::string::npos) << server.requestLine();
+}
+
 TEST(SubsonicOverHttp, PingThroughALocalServer) {
     LocalServer server(httpResponse(200, oap::test::subsonicFixture("ping.json")));
     oap::Subsonic::Config config;

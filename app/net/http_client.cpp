@@ -57,16 +57,30 @@ HttpClient::~HttpClient() {
         stop_ = true;
     }
     curl_multi_wakeup(multiOf(multi_));
-    worker_.join();
+    if (worker_.joinable()) worker_.join();
     curl_multi_cleanup(multiOf(multi_));
 }
 
 void HttpClient::get(Id id, std::string url, Handler handler) {
     {
         std::lock_guard lock(mutex_);
+        if (finishing_) return; // too late: nothing is sent
         queue_.push_back({id, std::move(url), std::move(handler)});
     }
     curl_multi_wakeup(multiOf(multi_));
+}
+
+void HttpClient::finish(std::chrono::milliseconds deadline) {
+    std::unique_lock lock(mutex_);
+    finishing_ = true;
+    lock.unlock();
+    curl_multi_wakeup(multiOf(multi_));
+    lock.lock();
+    exitedChanged_.wait_for(lock, deadline, [this] { return exited_; });
+    stop_ = true; // whatever is left is aborted
+    lock.unlock();
+    curl_multi_wakeup(multiOf(multi_));
+    if (worker_.joinable()) worker_.join();
 }
 
 void HttpClient::cancel(Id id) {
@@ -143,6 +157,7 @@ void HttpClient::run() {
             if (stop_) break;
             jobs.swap(queue_);
             cancels.swap(cancels_);
+            if (finishing_ && jobs.empty() && active.empty()) break; // everything is answered
         }
         for (Id id : cancels) drop(id);
         for (Job& job : jobs) start(job);
@@ -165,12 +180,21 @@ void HttpClient::run() {
             drop(id); // invalidates msg and transfer
             handler(std::move(response));
         }
+        {
+            std::lock_guard lock(mutex_);
+            if (finishing_ && active.empty() && queue_.empty()) continue; // the last answer is in: leave, do not sleep
+        }
         curl_multi_poll(multi, nullptr, 0, kIdleWaitMs, nullptr);
     }
     for (auto& [id, transfer] : active) {
         curl_multi_remove_handle(multi, transfer->easy);
         curl_easy_cleanup(transfer->easy);
     }
+    {
+        std::lock_guard lock(mutex_);
+        exited_ = true;
+    }
+    exitedChanged_.notify_all();
 }
 
 } // namespace oap

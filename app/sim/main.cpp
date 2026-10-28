@@ -477,6 +477,7 @@ int main(int argc, char** argv) {
     }
 
     app.shutdown();
+    finishMusicServer(*server);
     ImGui_ImplSDLRenderer2_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();

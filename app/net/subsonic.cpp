@@ -98,6 +98,10 @@ Subsonic::~Subsonic() {
     http_.reset(); // stop the HTTP thread first: its handlers hold the inbox
 }
 
+void Subsonic::finish(std::chrono::milliseconds deadline) {
+    if (http_) http_->finish(deadline);
+}
+
 bool Subsonic::configured() const { return !config_.url.empty(); }
 
 std::string Subsonic::buildUrl(const Config& config, const std::string& salt, const std::string& method,

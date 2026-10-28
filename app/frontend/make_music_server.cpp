@@ -28,6 +28,15 @@ std::unique_ptr<MusicServer> makeMusicServer(const Settings& config) {
     return std::make_unique<NoMusicServer>();
 }
 
+void finishMusicServer(MusicServer& server, std::chrono::milliseconds deadline) {
+#ifdef OAP_HAVE_NET
+    if (auto* subsonic = dynamic_cast<Subsonic*>(&server)) subsonic->finish(deadline);
+#else
+    (void)server;
+    (void)deadline;
+#endif
+}
+
 std::unique_ptr<Downloader> makeDownloader(const Settings& config) {
 #ifdef OAP_HAVE_NET
     if (Subsonic::handles(config))

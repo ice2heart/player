@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -31,11 +32,16 @@ public:
     // already in may still reach the handler, so callers that must not see it
     // (Subsonic) check for themselves.
     virtual void cancel(Id id) = 0;
+    // Before the program exits: send no new request and give the queued and
+    // running ones up to `deadline` to finish, then abort the rest. Nothing is
+    // sent after it. Blocks the caller; the default (a fake) does nothing.
+    virtual void finish(std::chrono::milliseconds deadline) { (void)deadline; }
 };
 
 // libcurl on one worker thread (curl multi, so several requests run at once).
 // The destructor aborts what is in flight and returns at once: it never waits
-// for a stuck socket. Handlers of requests that did not finish are not called.
+// for a stuck socket. finish() is the polite way out: it waits, up to a deadline.
+// Handlers of requests that did not finish are not called.
 class HttpClient : public Http {
 public:
     struct Options {
@@ -53,6 +59,11 @@ public:
 
     void get(Id id, std::string url, Handler handler) override;
     void cancel(Id id) override;
+    // Rejects new get()s (their handlers never run), waits until the queued and
+    // running requests are answered (their handlers run) or `deadline` has passed,
+    // then aborts what is left and stops the worker. The destructor is still safe after it.
+    // Call it once, from one thread, never from a handler.
+    void finish(std::chrono::milliseconds deadline) override;
 
 private:
     struct Job {
@@ -68,7 +79,10 @@ private:
     std::mutex mutex_; // guards the three below
     std::deque<Job> queue_;
     std::vector<Id> cancels_;
-    bool stop_ = false;
+    bool stop_ = false;      // abort everything and leave
+    bool finishing_ = false; // no new requests; leave when nothing is left
+    bool exited_ = false;    // the worker is done
+    std::condition_variable exitedChanged_;
 
     std::thread worker_;
 };

@@ -3,6 +3,7 @@
 #include "core/services.h"
 #include "net/http_client.h"
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -75,6 +76,9 @@ public:
     // A failure is only logged to stderr, by its kind: never the URL.
     void scrobble(const std::string& trackId, bool submission) override;
     void poll() override;
+    // Before the program exits: HttpClient::finish(). Answers that come in meanwhile
+    // are not delivered (no poll() follows). A request after it is not sent.
+    void finish(std::chrono::milliseconds deadline);
 
     static constexpr int kMaxPageSize = 500; // getAlbumList2 returns at most this many
     static constexpr const char* kTranscodeFormat = "mp3";
