@@ -77,7 +77,8 @@ and link the rule; where a table and a section disagree, the section is right.
   two runs of what has not played yet. The random generator is passed in, as for
   `setShuffle()`.
 - **Play next stays in order:** the user asked for those entries next, so they go right
-  after the current entry in their own order, with any Shuffle.
+  after the current entry in their own order, with any Shuffle, and a later Add to queue
+  mixes its entries in after them (until they have played).
 - The original order gets the new entries at the end (Add to queue) or after the current
   entry (Play next), as now, so turning Shuffle off gives the order they were added in.
 - With Shuffle off nothing changes.

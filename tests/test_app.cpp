@@ -5188,6 +5188,78 @@ TEST_F(DownloadOptionsTest, AnAlbumWholeOnTheDeviceHasNoDownloadInOptions) {
     EXPECT_EQ(labels().back(), "Download album") << "another album still has it";
 }
 
+TEST_F(DownloadOptionsTest, AnAlbumWhoseDownloadFailedOnTheLastTrackIsNotWhole) {
+    openAlbum();
+    startDownload();
+    finishLast();
+    finishLast();
+    finishLast(Result::Unreachable, false);
+    ASSERT_EQ(speech.last(), "Cannot download Sunshine. Server not reachable.");
+    hold(Button::Home);
+    openAlbumOptions(true);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play now", "Play next", "Add to queue", "Download album"}))
+        << "two of three tracks are on the disk: Download is still offered";
+    app.reset(); // and after a restart too
+    openAlbumOptions();
+    EXPECT_EQ(labels().back(), "Download album");
+}
+
+TEST_F(DownloadOptionsTest, APlaylistWhoseDownloadFailedLoadsFromTheServerInMusicPlaylists) {
+    openPlaylistOptions();
+    open("Download playlist");
+    answer(sized());
+    finishLast();
+    finishLast(Result::Unreachable, false);
+    hold(Button::Home);
+    open("Music");
+    open("Playlists");
+    open("Road");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Loading"})) << "not played from the one track on the disk";
+    EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+}
+
+TEST_F(DownloadOptionsTest, ADownloadThatFailsBeforeAnyTrackArrivesLeavesTheListNotWhole) {
+    seedWeather(store(), {{"t1", true}}); // what an earlier download left: one track, pinned
+    openAlbum();
+    startDownload();
+    finishLast(Result::Unreachable, false);
+    hold(Button::Home);
+    openAlbumOptions(true);
+    EXPECT_EQ(labels().back(), "Download album") << "the one track on the disk is not the album";
+}
+
+TEST_F(DownloadOptionsTest, AFailedDownloadGoneOnWithEndsWhole) {
+    openAlbum();
+    startDownload();
+    finishLast();
+    finishLast(Result::Unreachable, false);
+    open("Download album"); // goes on with what is missing
+    finishLast();
+    finishLast();
+    ASSERT_EQ(speech.last(), "Download finished, Weather.");
+    hold(Button::Home);
+    openAlbumOptions(true);
+    EXPECT_EQ(labels().size(), 3u) << "whole now: no Download";
+}
+
+TEST_F(DownloadOptionsTest, ADownloadWithNothingLeftToFetchEndsAnUnfinishedMarkWithoutFetching) {
+    openAlbum();
+    startDownload();
+    finishLast();
+    finishLast();
+    finishLast();
+    TrackCache c = store();
+    CachedList list = c.load(albumSource("al1"));
+    ASSERT_EQ(list.tracks.size(), 3u);
+    for (CachedTrack& t : list.tracks) t.changed = kPartialMark; // the app was stopped before the mark was cleared
+    ASSERT_TRUE(c.save(list));
+    app.reset();
+    openAlbum();
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Already downloaded.");
+    for (const CachedTrack& t : c.load(albumSource("al1")).tracks) EXPECT_EQ(t.changed, "") << t.id;
+}
+
 TEST_F(DownloadOptionsTest, OkLoadsTheTracksThenStartsTheDownloadAndGoesBack) {
     openAlbumOptions();
     open("Download album");
@@ -6307,6 +6379,21 @@ TEST_F(MusicPlaylistsTest, WithTheServerDownADownloadedPlaylistPlaysFromItsFiles
     EXPECT_FALSE(anyStreamOpened());
     EXPECT_EQ(server.requests.size(), asked) << "the server is never asked";
     EXPECT_FALSE(spokeUnreachable());
+}
+
+TEST_F(MusicPlaylistsTest, WithTheServerDownThePlayNowOfADownloadedPlaylistPlaysFromItsFilesWithoutLoading) {
+    RemoteSource pl = seedRoad();
+    indexPlaylist("p1", "Road Trip", 2);
+    openPlaylists();
+    speech.said.clear();
+    const size_t asked = server.requests.size();
+    press(Button::Options);
+    open("Play now");
+    EXPECT_FALSE(speech.heard("Loading."));
+    EXPECT_EQ(server.requests.size(), asked) << "the server is never asked";
+    EXPECT_EQ(player.file, fileOf(pl, "t1"));
+    EXPECT_FALSE(anyStreamOpened());
+    EXPECT_TRUE(speech.heard("Playing Road Trip."));
 }
 
 TEST_F(MusicPlaylistsTest, WithTheServerDownAPlaylistThatIsNotDownloadedOffersTryAgainAndDownloaded) {
@@ -10866,8 +10953,7 @@ TEST_F(OptionsTest, ADownloadedTrackInTheQueueProtectsItsListFromDeletion) {
     open("Server");
     open("Recently added");
     answer(std::vector<RemoteAlbum>{{"al9", "Weather", "Band", 3}});
-    options("Add to queue");
-    answer(std::vector<RemoteTrack>{{"al9-t1", "Song 1", "Band", "Weather", 100, 1}});
+    options("Add to queue"); // whole on the disk: its tracks come from there, with no question to the server
     hold(Button::Home);
     open("Server");
     open("Downloaded");
@@ -11334,6 +11420,40 @@ TEST_F(ShuffleRepeatTest, RepeatAlbumStillMovesWithRightAndTheAlbumMovedToRepeat
     EXPECT_EQ(player.file, highway());
     trackEnds();
     EXPECT_EQ(player.file, sunrise()) << "Three repeats, One does not come back";
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAlbumDoesNotLeaveTheAlbumForATrackThatIsGone) {
+    play({localEntry(alphaFile(1), "Storm", "One"), localEntry("/nowhere/gone.mp3", "Calm", "One"),
+          localEntry(sunrise(), "Sunrise", "Three")},
+         0);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "album"));
+    trackEnds();
+    EXPECT_EQ(player.file, alphaFile(1)) << "Calm is gone: Storm is the album's next, not Sunrise of Three";
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAlbumWrapsToTheAlbumsFirstWhenItsLastTrackIsGone) {
+    play({localEntry(alphaFile(1), "Storm", "One"), localEntry(alphaFile(2), "Calm", "One"),
+          localEntry("/nowhere/gone.mp3", "Lost", "One"), localEntry(sunrise(), "Sunrise", "Three")},
+         1);
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "album"));
+    trackEnds();
+    EXPECT_EQ(player.file, alphaFile(1)) << "Lost is gone and is the last of One: Storm, not Sunrise or the end";
+    EXPECT_FALSE(speech.heard("End of queue. Press play to start again."));
+}
+
+TEST_F(ShuffleRepeatTest, RepeatAlbumGoesOnInTheAlbumWhenAServerTrackDoesNotOpenAtTheEndOfATrack) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed",
+                               {localEntry(alphaFile(1), "Storm", "One"), localEntry(alphaFile(2), "Calm", "One"),
+                                remoteEntry("t3", "Rain", "One"), localEntry(sunrise(), "Sunrise", "Three")},
+                               1));
+    ASSERT_NO_FATAL_FAILURE(choose("Repeat", "album"));
+    player.unopenable = {"fake://stream/t3"};
+    trackEnds();
+    finishOpen();
+    EXPECT_EQ(player.file, alphaFile(1)) << "Rain does not open and is the last of One: Storm, not Sunrise of Three";
+    EXPECT_TRUE(player.playing());
 }
 
 TEST_F(ShuffleRepeatTest, PingsGoOnForAServerTrackBehindTheCurrentOneWithRepeatAlbum) {

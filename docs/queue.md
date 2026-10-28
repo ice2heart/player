@@ -345,13 +345,16 @@ Phase 2 is built as planned, with these differences. The code is described in
 - **Repeat album (fixes.md 2.2).** The list is off · all · album · track. Repeat album repeats the album of the
   current track: the entries with the same `albumId`, else the same album name (an entry with neither is an
   album of its own and repeats like Repeat track). When an entry of it ends, the next entry of the same album in
-  the play order plays, others skipped; after the last, the first. `queue.tsv` writes `repeat\talbum`, which an
+  the play order plays, others skipped; after the last, the first. An entry of the album that cannot play is
+  skipped within the album (`Queue::albumRing()`, `albumNext()`): the next entry tried is the album's, never one
+  of another album; if none of it plays the usual stop applies. `queue.tsv` writes `repeat\talbum`, which an
   older build reads as off.
 - **Add to queue follows Shuffle (fixes.md 2.7).** With Shuffle on, `Queue::append(entries, random)` mixes the
   new entries into what has not played yet (tracks one by one; albums run by run, cut as `setShuffle()` cuts
   them), and the original order gets them at the end. Play next keeps its entries in order right after the
-  current one. Entries put there by Play next count as not played yet, so Add to queue can place new entries
-  before them. What is spoken is unchanged.
+  current one. Entries put there by Play next stay next: Add to queue mixes the new entries into what comes after
+  them (`Queue` counts them in `held_` until they play or the position is changed by hand; not kept across a
+  restart). What is spoken is unchanged.
 - **Save as playlist adds the playlist to the index (fixes.md 2.4)** at once, so it shows in Music → Playlists
   without a sync.
 - **Edges of the Album unit** play the edge sound and say "First album." or "Last album.".

@@ -448,6 +448,42 @@ TEST(Queue, PlayNextWithShuffleOnPutsTheEntriesRightAfterTheCurrentOneInOrder) {
     }
 }
 
+TEST(Queue, AppendWithShuffleKeepsTheEntriesOfPlayNextNext) {
+    for (QueueShuffle mode : {QueueShuffle::Tracks, QueueShuffle::Albums}) {
+        Queue q = abcde();
+        q.setShuffle(mode, kZero); // a ... : kZero would put the new entries first among the unplayed
+        q.playNext(tracks({"x", "y"}));
+        q.append(tracks({"p"}), kZero);
+        EXPECT_EQ(order(q).substr(0, 4), "axyp") << "p goes after what Play next put there, not before it";
+        q.playNext(tracks({"z"}));
+        EXPECT_EQ(order(q).substr(0, 4), "azxy") << "a second Play next goes before the first";
+        q.append(tracks({"q"}), kZero);
+        EXPECT_EQ(order(q).substr(0, 5), "azxyq");
+    }
+}
+
+TEST(Queue, AppendWithShuffleKeepsTheRestOfPlayNextNextAfterOneOfThemStartedPlaying) {
+    Queue q = abcde();
+    q.setShuffle(QueueShuffle::Tracks, kZero);
+    q.playNext(tracks({"x", "y"}));
+    EXPECT_EQ(q.advance(), Queue::Step::Moved); // x
+    q.append(tracks({"p"}), kZero);
+    EXPECT_EQ(order(q).substr(0, 4), "axyp") << "y was asked for next and is still next";
+}
+
+TEST(Queue, AppendWithShuffleMixesIntoTheRestOnceThePlayNextEntriesPlayed) {
+    Queue q = abcde();
+    q.setShuffle(QueueShuffle::Tracks, kZero);
+    q.playNext(tracks({"x"}));
+    EXPECT_EQ(q.advance(), Queue::Step::Moved); // x
+    q.append(tracks({"p"}), kZero);
+    EXPECT_EQ(order(q).substr(0, 3), "axp") << "nothing of Play next is left: p can go right after x";
+    q.playNext(tracks({"y"}));
+    q.setCurrent(0);
+    q.append(tracks({"r"}), kZero);
+    EXPECT_EQ(order(q).substr(0, 2), "ar") << "moving by hand drops the hold: r is mixed in right after a";
+}
+
 TEST(Queue, AddingNothingIsNotAnEdit) {
     Queue q = abcde();
     q.append({}, kZero);

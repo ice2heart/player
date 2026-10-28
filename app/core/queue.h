@@ -84,6 +84,11 @@ public:
     // (or first) with repeat album, the first with repeat all past the last entry, none at the end of the queue
     // (and when empty).
     std::optional<std::size_t> upcoming() const;
+    // Repeat album: the entries of the album of the entry at `position` (position < size()), in the order they
+    // play, starting with it and wrapping at the end of the play order; each once.
+    std::vector<std::size_t> albumRing(std::size_t position) const;
+    // The entry after `position` in that ring (`position` itself for an album of one).
+    std::size_t albumNext(std::size_t position) const;
     // Makes the entry at `position` current (not an edit). False if out of range.
     bool setCurrent(std::size_t position);
 
@@ -121,6 +126,7 @@ public:
 
 private:
     void touch();
+    void moveTo(std::size_t position);
     // Repeat album: the position, after `pos_` in the play order and wrapping, of the next entry of the current
     // entry's album; `pos_` itself when the album is the current entry alone.
     std::size_t albumUpcoming() const;
@@ -132,6 +138,9 @@ private:
     QueueShuffle shuffle_ = QueueShuffle::Off;
     QueueRepeat repeat_ = QueueRepeat::Off;
     bool edited_ = false;
+    // How many entries right after the current one came from playNext() and have not played: append() leaves
+    // them next. Not kept across a restart.
+    std::size_t held_ = 0;
     std::uint64_t revision_ = 0;
 };
 

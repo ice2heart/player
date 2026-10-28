@@ -1842,10 +1842,12 @@ constexpr const char* kDownloadPlaylist = "Download playlist";
 bool sameList(const RemoteSource& a, const RemoteSource& b) { return a.kind == b.kind && a.id == b.id; }
 
 // A list the user downloaded whole: every manifest track pinned and complete on disk (`onDisk` are the
-// complete ones). It plays from the disk at once, with no question to the server.
+// complete ones), and its download over (a failed or cut-short one has only the tracks that arrived).
+// It plays from the disk at once, with no question to the server.
 bool isWholeDownload(const CachedList& list, const std::vector<RemoteTrack>& onDisk) {
     return !list.tracks.empty() && onDisk.size() == list.tracks.size() &&
-           std::all_of(list.tracks.begin(), list.tracks.end(), [](const CachedTrack& t) { return t.pinned; });
+           std::all_of(list.tracks.begin(), list.tracks.end(),
+                       [](const CachedTrack& t) { return t.pinned && t.changed != kPartialMark; });
 }
 // "Weather, 12 tracks": a single track is named alone.
 std::string selectionText(const std::string& title, size_t tracks) {
@@ -2009,6 +2011,17 @@ void App::choose(const Pick& pick, QueueAction action) {
     }
     const std::uint64_t screen = screens_.back().id;
     loading_ = Loading{screen, 0, pick, action, {}, 0, {}};
+    // A list that is whole on the disk needs no question to the server (it may be down, or the list gone from it).
+    if (action != QueueAction::Download && (pick.kind == Pick::Kind::Album || pick.kind == Pick::Kind::Playlist)) {
+        const TrackCache& store = trackCache();
+        const RemoteSource source = sourceOf(pick);
+        const CachedList cached = store.enabled() ? store.load(source) : CachedList{};
+        std::vector<RemoteTrack> onDisk = completeTracks(store, source, cached);
+        if (isWholeDownload(cached, onDisk)) {
+            onPickLoaded(screen, MusicServer::Error::None, std::move(onDisk));
+            return;
+        }
+    }
     say("Loading.");
     switch (pick.kind) {
     case Pick::Kind::Album:
@@ -3296,12 +3309,19 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
     // nothing that plays ends instead of going round for ever.
     const bool wraps = music_ && origin != Origin::Menu && queue_.repeat() == QueueRepeat::All && trackCount() > 0;
     if (wraps) file %= trackCount();
+    // With Repeat album, at the end of a track, the entries to try are those of the album (Repeat album plays
+    // only that album): the ring from `file`, each once. Other ways to a track move through the play order.
+    const bool inAlbum = music_ && origin == Origin::Next && queue_.repeat() == QueueRepeat::Album && file < trackCount();
+    std::vector<size_t> ring;
+    if (inAlbum) ring = queue_.albumRing(file);
     const size_t startFile = file;
     const double startPosition = position;
     // (`skipped` may hold entries already tried by the call that went on after a failure.)
-    const size_t end = wraps ? startFile + trackCount() - std::min(skipped.count, trackCount()) : trackCount();
-    for (size_t step = startFile; step < end; ++step, position = 0) {
-        file = wraps ? step % trackCount() : step;
+    const size_t end = inAlbum  ? ring.size() - std::min(skipped.count, ring.size())
+                       : wraps ? startFile + trackCount() - std::min(skipped.count, trackCount())
+                               : trackCount();
+    for (size_t step = inAlbum ? 0 : startFile; step < end; ++step, position = 0) {
+        file = inAlbum ? ring[step] : wraps ? step % trackCount() : step;
         // A music queue skips what cannot play; the run is said once, when one plays.
         if (music_)
             if (Availability why = availability(file, origin); why != Availability::Yes) {
@@ -3423,7 +3443,9 @@ void App::continueAfterFailure(size_t file, const std::string& title) {
     skipped.firstTitle = title;
     skipped.count = 1;
     skipped.serverDown = true;
-    openFile(file + 1, 0, true, Origin::Next, {}, {}, skipped);
+    // (Repeat album: the album's next entry, not the next one of the play order.)
+    const bool inAlbum = queue_.repeat() == QueueRepeat::Album && file < trackCount();
+    openFile(inAlbum ? queue_.albumNext(file) : file + 1, 0, true, Origin::Next, {}, {}, skipped);
 }
 
 void App::onOpened(bool autoplay, Origin origin, const Then& opened) {
@@ -4100,6 +4122,16 @@ std::pair<bool, std::vector<CachedTrack>> followServerOrder(CachedList& cached, 
 }
 } // namespace
 
+// Sets `changed` of every track of the manifest; true if one was different.
+bool App::markTracks(CachedList& cached, const char* mark) {
+    bool changed = false;
+    for (CachedTrack& t : cached.tracks) {
+        changed = changed || t.changed != mark;
+        t.changed = mark;
+    }
+    return changed;
+}
+
 void App::deleteDropped(const RemoteSource& source, const std::vector<CachedTrack>& dropped) {
     const TrackCache& store = trackCache();
     for (const CachedTrack& t : dropped) {
@@ -4139,11 +4171,12 @@ bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, co
         cached.artist = update.artist;
     }
     std::string fileName = downloadFileName(track);
-    CachedTrack entry{track.id, fileName, track.title, track.duration, "", update.pinned,
+    CachedTrack entry{track.id, fileName, track.title, track.duration, update.order ? kPartialMark : "", update.pinned,
                       update.playedAt >= kEarliestPlayTime ? update.playedAt : 0};
     auto old = std::find_if(cached.tracks.begin(), cached.tracks.end(), [&](const CachedTrack& t) { return t.id == track.id; });
     if (old != cached.tracks.end()) {
         entry.pinned = entry.pinned || old->pinned;
+        if (!update.order) entry.changed = old->changed; // a play or the automatic cache does not end a download
         if (entry.lastPlayed == 0) entry.lastPlayed = old->lastPlayed;
         *old = entry;
     } else {
@@ -4200,6 +4233,8 @@ void App::startDownload(const std::string& title, const std::string& artist, con
     cached.name = title;
     cached.artist = artist;
     auto [reordered, dropped] = followServerOrder(cached, job.order);
+    // Nothing to fetch: what is here is the whole list, whatever an earlier try left marked.
+    if (job.todo.empty()) pinned = markTracks(cached, "") || pinned;
     if ((pinned || reordered || !dropped.empty()) && !store.save(cached)) {
         earcons_.play(Earcon::Error);
         say("Cannot write the download.");
@@ -4216,6 +4251,12 @@ void App::startDownload(const std::string& title, const std::string& artist, con
     if (needed > 0 && room && *room < needed) {
         earcons_.play(Earcon::Error);
         say("Not enough space.");
+        return;
+    }
+    // From here on the manifest says the list is not whole until the last track is in.
+    if (markTracks(cached, kPartialMark) && !store.save(cached)) {
+        earcons_.play(Earcon::Error);
+        say("Cannot write the download.");
         return;
     }
     pauseAutoCache(); // an explicit download goes first
@@ -4268,6 +4309,9 @@ void App::failDownload(const RemoteTrack& track, size_t number, const std::strin
 // Over something that plays an earcon is enough; otherwise it is said.
 void App::finishDownload() {
     std::string title = download_->title;
+    const TrackCache& store = trackCache();
+    CachedList cached = store.load(download_->source);
+    if (markTracks(cached, "")) store.save(cached); // (unsaved, the list stays partial: the server is asked)
     download_.reset();
     if (sleeping_) return;
     if (player_.playing()) earcons_.play(Earcon::Open);

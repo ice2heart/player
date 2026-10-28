@@ -533,6 +533,7 @@ private:
         std::int64_t playedAt = 0;  // wall time of the play that caused it, 0: none
         const std::vector<std::string>* order = nullptr; // a download: the list's order on the server
     };
+    static bool markTracks(CachedList& cached, const char* mark);
     bool addToManifest(const RemoteSource& source, const RemoteTrack& track, const ManifestUpdate& update);
     void forgetCached(const std::string& id, const std::filesystem::path& file); // its file is gone: the index finds another copy, if any
     std::filesystem::path failedPart_; // the .part of the explicit download that failed last: OK on Download continues it, so a trim leaves it

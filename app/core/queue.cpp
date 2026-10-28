@@ -56,6 +56,13 @@ Runs cutRuns(const std::vector<QueueEntry>& entries, const std::vector<std::size
 
 void Queue::touch() { revision_ = ++lastRevision; }
 
+// Makes `position` current. The entries of Play next are the ones right after the current entry: stepping onto
+// one of them leaves the rest of them still next; any other move lets them go.
+void Queue::moveTo(std::size_t position) {
+    if (position != pos_) held_ = position > pos_ && position - pos_ <= held_ ? held_ - (position - pos_) : 0;
+    pos_ = position;
+}
+
 void Queue::replace(std::vector<QueueEntry> entries, std::size_t start) {
     entries_ = std::move(entries);
     order_.resize(entries_.size());
@@ -64,6 +71,7 @@ void Queue::replace(std::vector<QueueEntry> entries, std::size_t start) {
     shuffle_ = QueueShuffle::Off;
     repeat_ = QueueRepeat::Off;
     edited_ = false;
+    held_ = 0;
     touch();
 }
 
@@ -92,6 +100,7 @@ bool Queue::restore(std::vector<QueueEntry> entries, std::vector<std::size_t> or
     pos_ = valid && position < entries_.size() ? position : 0;
     repeat_ = repeat;
     edited_ = edited;
+    held_ = 0;
     touch();
     return valid;
 }
@@ -132,6 +141,7 @@ void Queue::insertAt(std::size_t originalIndex, std::size_t orderPos, const std:
 void Queue::playNext(const std::vector<QueueEntry>& entries) {
     if (empty()) return insertAt(0, 0, entries);
     insertAt(order_[pos_] + 1, pos_ + 1, entries);
+    held_ += entries.size(); // after insertAt(): it is the same run of entries right after the current one
 }
 
 void Queue::append(const std::vector<QueueEntry>& entries, const QueueRandom& random) {
@@ -141,10 +151,12 @@ void Queue::append(const std::vector<QueueEntry>& entries, const QueueRandom& ra
     // The new entries are in the play order after everything. Mix them into what has not played yet (after the
     // current entry): one by one (tracks), or run by run between the runs that are there (albums).
     const bool albums = shuffle_ == QueueShuffle::Albums;
-    const auto firstUnplayed = order_.begin() + static_cast<std::ptrdiff_t>(pos_) + 1;
+    // The entries of Play next stay where they are: they were asked for next.
+    const std::size_t held = std::min(held_, old - pos_ - 1);
+    const auto firstUnplayed = order_.begin() + static_cast<std::ptrdiff_t>(pos_ + held) + 1;
     const std::vector<std::size_t> unplayed(firstUnplayed, order_.begin() + static_cast<std::ptrdiff_t>(old));
     std::vector<std::size_t> added(order_.begin() + static_cast<std::ptrdiff_t>(old), order_.end());
-    Runs kept = cutRuns(entries_, unplayed, entries_[order_[pos_]].album, albums);
+    Runs kept = cutRuns(entries_, unplayed, entries_[order_[pos_ + held]].album, albums);
     for (auto& run : cutRuns(entries_, added, "", albums).groups) {
         // before the first run, between two, after the last
         const std::size_t places = kept.groups.size() + 1;
@@ -166,6 +178,7 @@ bool Queue::remove(std::size_t position, bool* removedCurrent) {
         if (i > index) --i;
     if (position < pos_) --pos_;
     if (pos_ >= order_.size()) pos_ = 0; // the last was current: the next is the first
+    held_ = 0;
     if (order_.empty()) shuffle_ = QueueShuffle::Off; // nothing to be shuffled
     edited_ = true;
     touch();
@@ -180,6 +193,7 @@ bool Queue::move(std::size_t from, std::size_t to) {
     order_.erase(order_.begin() + static_cast<std::ptrdiff_t>(from));
     order_.insert(order_.begin() + static_cast<std::ptrdiff_t>(to), moved);
     pos_ = static_cast<std::size_t>(std::find(order_.begin(), order_.end(), currentIndex) - order_.begin());
+    held_ = 0;
     if (shuffle_ == QueueShuffle::Off) {
         // The original order follows the play order: move the one entry, then order_ is 0, 1, 2 ... again.
         QueueEntry entry = std::move(entries_[from]);
@@ -192,14 +206,22 @@ bool Queue::move(std::size_t from, std::size_t to) {
     return true;
 }
 
-std::size_t Queue::albumUpcoming() const {
-    const QueueEntry& current = entries_[order_[pos_]];
+std::size_t Queue::albumNext(std::size_t position) const {
+    const QueueEntry& current = entries_[order_[position]];
     const std::size_t n = order_.size();
     for (std::size_t step = 1; step < n; ++step) {
-        const std::size_t p = (pos_ + step) % n; // after the last entry the scan goes on from the first
+        const std::size_t p = (position + step) % n; // after the last entry the scan goes on from the first
         if (inSameAlbum(current, entries_[order_[p]])) return p;
     }
-    return pos_;
+    return position;
+}
+
+std::size_t Queue::albumUpcoming() const { return albumNext(pos_); }
+
+std::vector<std::size_t> Queue::albumRing(std::size_t position) const {
+    std::vector<std::size_t> ring{position};
+    for (std::size_t p = albumNext(position); p != position; p = albumNext(p)) ring.push_back(p);
+    return ring;
 }
 
 Queue::Step Queue::advance() {
@@ -208,7 +230,7 @@ Queue::Step Queue::advance() {
     if (repeat_ == QueueRepeat::Album) {
         const std::size_t to = albumUpcoming();
         if (to == pos_) return Step::Repeated;
-        pos_ = to;
+        moveTo(to);
         touch();
         return Step::Moved;
     }
@@ -218,25 +240,25 @@ Queue::Step Queue::advance() {
 Queue::Step Queue::next() {
     touch();
     if (pos_ + 1 < order_.size()) {
-        ++pos_;
+        moveTo(pos_ + 1);
         return Step::Moved;
     }
     if (repeat_ == QueueRepeat::All && !empty()) {
-        pos_ = 0;
+        moveTo(0);
         return Step::Moved;
     }
-    pos_ = 0;
+    moveTo(0);
     return Step::End;
 }
 
 Queue::Step Queue::previous() {
     touch();
     if (pos_ > 0) {
-        --pos_;
+        moveTo(pos_ - 1);
         return Step::Moved;
     }
     if (repeat_ == QueueRepeat::All && !empty()) {
-        pos_ = order_.size() - 1;
+        moveTo(order_.size() - 1);
         return Step::Moved;
     }
     return Step::End;
@@ -253,7 +275,7 @@ std::optional<std::size_t> Queue::upcoming() const {
 
 bool Queue::setCurrent(std::size_t position) {
     if (position >= order_.size()) return false;
-    pos_ = position;
+    moveTo(position);
     touch();
     return true;
 }
@@ -261,6 +283,7 @@ bool Queue::setCurrent(std::size_t position) {
 void Queue::setShuffle(QueueShuffle mode, const QueueRandom& random) {
     if (empty()) return; // nothing to shuffle; a new queue starts with shuffle off
     touch();
+    held_ = 0;
     shuffle_ = mode;
     if (mode == QueueShuffle::Off) {
         const std::size_t current = order_[pos_];

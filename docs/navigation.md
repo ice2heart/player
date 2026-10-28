@@ -309,7 +309,8 @@ that touch navigation:
   ends, the next entry of the same album in play order plays, skipping the entries of other
   albums; after the album's last entry, its first. With Shuffle off or Shuffle albums the
   album is one run and nothing is skipped; with Shuffle tracks its entries are apart in the
-  play order and play in that shuffled order, the others skipped. Left / Right, a deep press
+  play order and play in that shuffled order, the others skipped. An entry of the album that
+  cannot play is skipped within the album, never for a track of another one. Left / Right, a deep press
   and Next / Previous still move through the play order, other albums included, and the album
   of the track moved to is then the one that repeats. The spoken value is "album"; the saved
   queue keeps it, and an older build reads it as off.
@@ -321,8 +322,8 @@ that touch navigation:
   entry, in their own order, with any Shuffle. Turning Shuffle off gives the original order,
   with Add to queue's entries at the end and Play next's after the current entry. With
   Shuffle off nothing changes. What is spoken does not change ("Added Weather, 12 tracks. 30
-  in queue."). Entries put there by Play next count as not played yet, so Add to queue can
-  place new entries before them.
+  in queue."). Entries put there by Play next stay next: Add to queue mixes its entries into what
+  comes after them.
 - At the end of the queue: "End of queue", paused at the first entry, unless Repeat is on.
 - **An entry that cannot play is skipped**: "Storm, source unavailable." (a run: "3
   tracks, source unavailable."). A server that fails is marked down and checked in the

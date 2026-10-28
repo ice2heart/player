@@ -20,10 +20,15 @@ struct CachedTrack {
     std::string file;         // file name inside the list's folder, never a path
     std::string title;
     double duration = 0;      // seconds
-    std::string changed;      // reserved column of the format, always empty: nothing compares a download with the server
+    std::string changed;      // column of the format: empty, or kPartialMark for a track of a download that has not finished
     bool pinned = false;      // a download the user asked for; the automatic cache evicts only unpinned tracks
     int64_t lastPlayed = 0;   // wall time (seconds since 1970) it last played, 0: never; for eviction
 };
+
+// The mark in `CachedTrack::changed` of the tracks of a download the user asked for that is not over (running, failed
+// or cut short): the manifest holds only the tracks that arrived, so it cannot tell the list is not whole. A
+// finished download has no mark.
+inline constexpr const char* kPartialMark = "partial";
 
 // Wall times before this (2020-01-01 UTC) are a clock that was never set (a Pi without an RTC
 // before NTP): they are not recorded as a play, so a wrong clock cannot pin or doom a track.

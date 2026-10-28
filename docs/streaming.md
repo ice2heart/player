@@ -434,7 +434,7 @@ The plan above is kept as it was written. Where the code differs, the code is ri
   explicit download that failed last is kept in this session (OK on Download goes on from
   it); after a restart it is an abandoned `.part` like the others.
 - **Resume after a restart.** A download that is whole (every manifest track pinned and
-  complete on disk, the saved track among them) plays at once, with no question to the
+  complete on disk, its download over (no `partial` mark), the saved track among them) plays at once, with no question to the
   server and no "Loading.". Anything else asks the server first, so a partly cached album
   loses no tracks. If that fails, the tracks on disk play (the saved track and place if
   it is among them, else the first), and nothing is spoken but the usual "Now playing";
@@ -474,9 +474,9 @@ Known limits after phase 3: there is no Wi-Fi-only check (decided: not now, the 
 has only Wi-Fi). A server that sends no `Content-Length` and a stale listed size can
 leave a file of the wrong size. Re-downloading a list deletes the file of a dropped
 track even if the player has it open (harmless on POSIX, the open file stays readable).
-Scrobbles made offline are lost. The manifest's `changed` column is reserved and
-always empty (the track data has no changed time), so a track changed on the server is not
-fetched again; phase 4 sync may fill it.
+Scrobbles made offline are lost. The manifest's `changed` column holds no changed time
+(the track data has none), so a track changed on the server is not fetched again; since
+fixes.md 2.6 it is empty or `partial`, the mark of a download that is not over.
 
 ## Phase 4: one library (local files and server)
 
