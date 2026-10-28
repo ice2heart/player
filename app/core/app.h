@@ -286,6 +286,16 @@ private:
     void onArtistAlbums(std::uint64_t screen, MusicServer::Error error, std::vector<RemoteAlbum> albums);
     void failLoading(MusicServer::Error error);
     void cancelLoading();
+    // Save as playlist (queue.md, step 2.9): the request that is out, and the Queue list it was asked from.
+    struct Saving {
+        std::uint64_t screen = 0; // 0: none
+        MusicServer::RequestId request = 0;
+        std::string name;      // "Queue, 27 October 14:05"
+        size_t notSaved = 0;   // entries left out
+    };
+    void saveAsPlaylist();
+    void cancelSaving();
+    bool ofServerNow(const QueueEntry& entry) const; // a track of the server that is set up now
     void perform(Selection selection, QueueAction action); // goes back to the list, then does it and says so
     void playNow(Selection selection);
     void addToQueue(Selection selection, bool next);
@@ -589,6 +599,7 @@ private:
     std::uint64_t resumeScreen_ = 0;    // the Library screen a server book loads for (resume_), 0: none or not tied to a screen
     MusicServer::RequestId resume_ = 0; // resumeStream(): the list being loaded, 0 when none; a new screen cancels it
     Loading loading_;
+    Saving saving_;
     std::optional<Download> download_;
     std::deque<AutoCache> autoQueue_;
     std::optional<AutoCache> autoJob_; // the transfer in flight, if autoRequest_ != 0

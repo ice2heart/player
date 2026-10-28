@@ -88,6 +88,51 @@ TEST(FakeMusicServer, RecordsEachRequestWithItsArguments) {
     EXPECT_EQ(server.pendingCount(), 3u);
 }
 
+TEST(FakeMusicServer, CreatePlaylistRecordsNameAndIdsAndAnswersOnlyFromPoll) {
+    FakeMusicServer server;
+    std::vector<Server::Error> done;
+    auto id = server.createPlaylist("Queue, 1 May 10:00", {"a", "b"}, [&](Server::Error e) { done.push_back(e); });
+    ASSERT_EQ(server.requests.size(), 1u);
+    EXPECT_EQ(server.lastRequest().id, id);
+    EXPECT_EQ(server.lastRequest().kind, Kind::CreatePlaylist);
+    EXPECT_EQ(server.lastRequest().arg, "Queue, 1 May 10:00");
+    EXPECT_EQ(server.lastRequest().trackIds, (std::vector<std::string>{"a", "b"}));
+    EXPECT_TRUE(server.replyCreated(id));
+    EXPECT_TRUE(done.empty()) << "delivered by poll()";
+    server.poll();
+    EXPECT_EQ(done, std::vector<Server::Error>{Server::Error::None});
+    EXPECT_FALSE(server.replyCreated(id)) << "already answered";
+
+    auto failing = server.createPlaylist("x", {"a"}, [&](Server::Error e) { done.push_back(e); });
+    EXPECT_TRUE(server.fail(failing, Server::Error::Unreachable));
+    server.poll();
+    EXPECT_EQ(done.back(), Server::Error::Unreachable);
+
+    auto cancelled = server.createPlaylist("y", {"a"}, [&](Server::Error e) { done.push_back(e); });
+    server.cancel(cancelled);
+    EXPECT_FALSE(server.replyCreated(cancelled));
+    server.poll();
+    EXPECT_EQ(done.size(), 2u);
+}
+
+TEST(FakeMusicServer, CreatePlaylistWithTooManyTracksFailsAsTheRealServerDoes) {
+    FakeMusicServer server;
+    std::vector<Server::Error> done;
+    server.createPlaylist("x", std::vector<std::string>(Server::kMaxPlaylistTracks + 1, "a"),
+                          [&](Server::Error e) { done.push_back(e); });
+    server.poll();
+    EXPECT_EQ(done, std::vector<Server::Error>{Server::Error::Server});
+}
+
+TEST(FakeMusicServer, CreatePlaylistWithoutAServerAnswersNotConfigured) {
+    FakeMusicServer server;
+    server.isConfigured = false;
+    std::vector<Server::Error> done;
+    server.createPlaylist("x", {"a"}, [&](Server::Error e) { done.push_back(e); });
+    server.poll();
+    EXPECT_EQ(done, std::vector<Server::Error>{Server::Error::NotConfigured});
+}
+
 TEST(FakeMusicServer, IdsAreUniqueAndNeverZero) {
     FakeMusicServer server;
     auto ignore = [](auto...) {};

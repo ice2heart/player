@@ -43,6 +43,7 @@ interface, with no change to `App`.
 | Search | `search3?query=` | Needs text input (STT), so it comes later. |
 | Audio | `stream?id=` | Without `format`, the original file is sent (FLAC on the test server). **FFmpeg opens the URL as it is**: `ffprobe` read the format and the duration. Seeking uses HTTP Range. With `format=mp3&maxBitRate=128` it is a transcode: `Accept-Ranges: none`, no length, and a Range header is ignored; `timeOffset=<s>` (extension `transcodeOffset`) starts it later. FFmpeg reports its end as a read error. |
 | Original file | `download?id=` | For the cache (phase 3). |
+| Save a queue | `createPlaylist?name=&songId=&songId=...` | One `songId` per track, in play order (queue.md step 2.9). A GET, so at most 150 tracks; `App` says how many it left out. |
 | Played | `scrobble?id=&submission=` | For server play counts and "recent". |
 | Position | `createBookmark` / `getBookmarks`, `savePlayQueue` / `getPlayQueue` | For audiobook and queue sync (phase 5). |
 

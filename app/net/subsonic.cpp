@@ -224,6 +224,22 @@ MusicServer::RequestId Subsonic::playlistTracks(std::string playlistId, Done<Rem
     return list<RemoteTrack>("getPlaylist", {{"id", std::move(playlistId)}}, subsonic::parsePlaylist, std::move(done));
 }
 
+MusicServer::RequestId Subsonic::createPlaylist(std::string name, std::vector<std::string> trackIds,
+                                                std::function<void(Error)> done) {
+    if (configured() && trackIds.size() > kMaxPlaylistTracks) { // the URL would be too long: say so, send nothing
+        RequestId id = ++lastId_;
+        waiting_.emplace(id, [done = std::move(done)](Reply) { done(Error::Server); });
+        std::lock_guard lock(inbox_->mutex);
+        inbox_->ready.emplace_back(id, Reply{Error::Server, {}, false});
+        return id;
+    }
+    Params params = {{"name", std::move(name)}};
+    for (std::string& trackId : trackIds) params.emplace_back("songId", std::move(trackId));
+    return request(
+        "createPlaylist", params, [](const std::string& body) { return Reply{subsonic::parseStatus(body), {}, false}; },
+        [done = std::move(done)](Reply reply) { done(reply.error); });
+}
+
 void Subsonic::cancel(RequestId id) {
     if (waiting_.erase(id)) http_->cancel(id);
 }

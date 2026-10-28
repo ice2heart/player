@@ -520,6 +520,111 @@ TEST(Subsonic, ScrobbleSaysNowPlayingOrPlayed) {
     EXPECT_EQ(server.http->url(1), kBase + "scrobble" + kAuth + "&id=s1&submission=true");
 }
 
+// ---- createPlaylist (queue.md, step 2.9)
+
+struct CreateResult {
+    int calls = 0;
+    Error error = Error::None;
+    std::function<void(Error)> callback() {
+        return [this](Error e) { ++calls, error = e; };
+    }
+};
+
+TEST(Subsonic, CreatePlaylistSendsTheNameAndOneSongIdPerTrackWithTokenAuthAndNoPassword) {
+    Server server;
+    CreateResult result;
+    server.subsonic->createPlaylist("Queue, 27 October 14:05", {"t1", "t3", "t2"}, result.callback());
+    ASSERT_EQ(server.http->calls.size(), 1u);
+    EXPECT_EQ(server.http->url(0), kBase + "createPlaylist" + kAuth +
+                                       "&name=Queue%2C%2027%20October%2014%3A05&songId=t1&songId=t3&songId=t2");
+    EXPECT_EQ(param(server.http->url(0), "p"), "<missing>") << "never the password";
+    EXPECT_EQ(result.calls, 0) << "the callback runs from poll()";
+    server.http->answer(0, kOk, subsonicFixture("ping.json"));
+    server.subsonic->poll();
+    EXPECT_EQ(result.calls, 1);
+    EXPECT_EQ(result.error, Error::None);
+}
+
+TEST(Subsonic, CreatePlaylistEncodesIdsThatHoldSpecialCharacters) {
+    Server server;
+    CreateResult result;
+    server.subsonic->createPlaylist("a&b", {"x&y", "z=1"}, result.callback());
+    EXPECT_EQ(param(server.http->url(0), "name"), "a%26b");
+    EXPECT_NE(server.http->url(0).find("&songId=x%26y&songId=z%3D1"), std::string::npos);
+}
+
+TEST(Subsonic, CreatePlaylistMapsFailuresToErrors) {
+    Server server;
+    CreateResult unreachable, login, broken;
+    server.subsonic->createPlaylist("q", {"t1"}, unreachable.callback());
+    server.subsonic->createPlaylist("q", {"t1"}, login.callback());
+    server.subsonic->createPlaylist("q", {"t1"}, broken.callback());
+    server.http->unreachable(0);
+    server.http->answer(1, kOk, subsonicFixture("error_40_wrong_login.json"));
+    server.http->answer(2, 500, subsonicFixture("not_json.html"));
+    server.subsonic->poll();
+    EXPECT_EQ(unreachable.error, Error::Unreachable);
+    EXPECT_EQ(login.error, Error::BadLogin);
+    EXPECT_EQ(broken.error, Error::Server);
+    EXPECT_EQ(unreachable.calls + login.calls + broken.calls, 3);
+}
+
+TEST(Subsonic, CreatePlaylistLogsNothingNotEvenAFailure) {
+    Server server;
+    CreateResult result;
+    server.subsonic->createPlaylist("q", {"t1"}, result.callback());
+    server.http->unreachable(0);
+    testing::internal::CaptureStderr();
+    testing::internal::CaptureStdout();
+    server.subsonic->poll();
+    EXPECT_EQ(testing::internal::GetCapturedStderr(), "") << "the URL holds the token";
+    EXPECT_EQ(testing::internal::GetCapturedStdout(), "");
+}
+
+TEST(Subsonic, CreatePlaylistWithoutAServerIsNotConfiguredAndSendsNothing) {
+    Server server(config(""));
+    CreateResult result;
+    server.subsonic->createPlaylist("q", {"t1"}, result.callback());
+    server.subsonic->poll();
+    EXPECT_EQ(result.error, Error::NotConfigured);
+    EXPECT_EQ(result.calls, 1);
+    EXPECT_TRUE(server.http->calls.empty());
+}
+
+TEST(Subsonic, CreatePlaylistWithTooManyTracksSendsNothingAndFails) {
+    Server server;
+    CreateResult result;
+    std::vector<std::string> ids(Subsonic::kMaxPlaylistTracks + 1, "t1");
+    server.subsonic->createPlaylist("q", ids, result.callback());
+    EXPECT_TRUE(server.http->calls.empty()) << "the URL would be too long";
+    server.subsonic->poll();
+    EXPECT_EQ(result.error, Error::Server);
+    EXPECT_EQ(result.calls, 1);
+    CreateResult exact;
+    ids.pop_back();
+    server.subsonic->createPlaylist("q", ids, exact.callback());
+    EXPECT_EQ(server.http->calls.size(), 1u) << "exactly the limit is sent";
+}
+
+TEST(Subsonic, CreatePlaylistWithTooManyTracksButNoServerIsNotConfigured) {
+    Server server(config(""));
+    CreateResult result;
+    server.subsonic->createPlaylist("q", std::vector<std::string>(Subsonic::kMaxPlaylistTracks + 1, "t1"), result.callback());
+    server.subsonic->poll();
+    EXPECT_EQ(result.error, Error::NotConfigured);
+}
+
+TEST(Subsonic, ACancelledCreatePlaylistNeverCallsBack) {
+    Server server;
+    CreateResult result;
+    auto id = server.subsonic->createPlaylist("q", {"t1"}, result.callback());
+    server.subsonic->cancel(id);
+    server.http->answer(0, kOk, subsonicFixture("ping.json"));
+    server.subsonic->poll();
+    EXPECT_EQ(result.calls, 0);
+    EXPECT_EQ(server.http->cancelled, std::vector<oap::Http::Id>{id});
+}
+
 TEST(Subsonic, NoScrobbleWithoutAServer) {
     Server server(config(""));
     server.subsonic->scrobble("s1", true);

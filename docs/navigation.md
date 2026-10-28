@@ -304,8 +304,9 @@ Player menu (music player)
 **As built (phase 1):** the music player holds one list (an album, a playlist, or Play
 all), its Player menu is Queue · Shuffle · Repeat · Go to first track · Sleep timer (steps 2.6 and 2.7), Options
 in the music player is Go to album · Album info (step 2.5; Star comes with streaming.md 2a.1), and the Queue list works as above
-(step 2.7) except Save as playlist, which says "Not available yet." until step 2.9, and the queue is not kept
-between restarts yet (step 2.8). OK on a track plays from there to the end of its list.
+(step 2.7), Save as playlist works (step 2.9: "Saving.", then "Saved Queue, 27 October 14:05." and how many tracks
+were not saved; at most 150 tracks go in one playlist, the rest are counted as not saved), and the queue is kept
+between restarts (step 2.8). OK on a track plays from there to the end of its list.
 
 ## Lists
 

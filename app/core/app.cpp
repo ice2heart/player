@@ -922,6 +922,7 @@ void App::closeScreens(size_t keep) {
         if (ping_ && pingScreen_ == id) server_.cancel(std::exchange(ping_, 0));
         if (resume_ && resumeScreen_ == id) cancelResume(); // a server book still loading for this screen
         if (loading_.screen == id) cancelLoading();         // an album Options is loading for
+        if (saving_.screen == id) cancelSaving();           // Save as playlist is waiting for the server
         bool drop = pendingOpen_ && pendingOpen_->screen == id;
         screens_.pop_back();
         if (drop) dropPendingOpen(); // after the pop: it may close more screens (leaveEmptyPlayer())
@@ -2566,7 +2567,7 @@ std::vector<MenuItem> App::queueMenu() {
         entry.options = [this, i] { return queueEntryOptions(i); };
         items.push_back(std::move(entry));
     }
-    items.push_back(action("Save as playlist", [this] { say("Not available yet."); })); // queue.md step 2.9
+    items.push_back(action("Save as playlist", [this] { saveAsPlaylist(); }));
     if (previous_) {
         MenuItem previous = action("Previous queue", [this] { restorePrevious(); });
         previous.value = [n = previous_->queue.size()] { return countValue(n, "track"); };
@@ -2580,6 +2581,52 @@ std::vector<MenuItem> App::queueMenu() {
         };
     }));
     return items;
+}
+
+namespace {
+// "Queue, 27 October 14:05": English month names whatever the locale, the day without a leading zero.
+std::string queuePlaylistName(std::time_t when) {
+    static const char* const months[] = {"January", "February", "March",     "April",   "May",      "June",
+                                         "July",    "August",   "September", "October", "November", "December"};
+    std::tm t{};
+    localtime_r(&when, &t);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "%02d:%02d", t.tm_hour, t.tm_min);
+    return "Queue, " + std::to_string(t.tm_mday) + " " + months[t.tm_mon % 12] + " " + buf;
+}
+} // namespace
+
+// Saves the tracks of the server set up now, in play order, as a playlist on it. The queue is not touched,
+// whatever the answer is; the answer is spoken on the Queue list it was asked from, and dropped if the
+// user has left it (closeScreens(), sleep, power off).
+void App::saveAsPlaylist() {
+    if (saving_.request) return say("Saving.");
+    std::vector<std::string> ids;
+    for (size_t i = 0; i < queue_.size(); ++i)
+        if (ofServerNow(queue_.at(i))) ids.push_back(queue_.at(i).trackId);
+    if (ids.empty()) {
+        earcons_.play(Earcon::Error);
+        return say("Only tracks from the server can be saved.");
+    }
+    ids.resize(std::min(ids.size(), MusicServer::kMaxPlaylistTracks)); // the rest would not fit in the request
+    const std::uint64_t screen = screens_.back().id;
+    saving_ = Saving{screen, 0, queuePlaylistName(clock_.wallTime()), queue_.size() - ids.size()};
+    say("Saving.");
+    saving_.request = server_.createPlaylist(saving_.name, std::move(ids), [this](MusicServer::Error error) { // never runs once cancelSaving() has cancelled it
+        const Saving done = std::exchange(saving_, Saving{});
+        tts_.stop(); // "Saving." is over
+        if (error != MusicServer::Error::None) {
+            earcons_.play(Earcon::Error);
+            return say(errorText(error) + ".");
+        }
+        earcons_.play(Earcon::Close);
+        say("Saved " + done.name + "." + (done.notSaved ? " " + countValue(done.notSaved, "track") + " not saved." : ""));
+    });
+}
+
+void App::cancelSaving() {
+    if (saving_.request) server_.cancel(saving_.request);
+    saving_ = Saving{};
 }
 
 // `position` is in the play order. The Queue list under these Options is built from the queue as it is
@@ -3193,10 +3240,14 @@ App::Availability App::availability(size_t i, Origin origin) const {
         std::error_code ec;
         return std::filesystem::exists(e.path, ec) ? Availability::Yes : Availability::Gone;
     }
-    if (!server_.configured() || e.serverUrl != serverIdentity(config_.getString(kServerUrl)) ||
-        e.user != config_.getString(kServerUser))
-        return Availability::Gone;
+    if (!ofServerNow(e)) return Availability::Gone;
     return serverDown_ && origin != Origin::Menu ? Availability::ServerDown : Availability::Yes;
+}
+
+// A remote entry of the server in the config: the same address and user (a cached copy of it is too).
+bool App::ofServerNow(const QueueEntry& e) const {
+    return e.kind == QueueEntry::Kind::Remote && server_.configured() &&
+           e.serverUrl == serverIdentity(config_.getString(kServerUrl)) && e.user == config_.getString(kServerUser);
 }
 
 void App::addSkipped(SkippedRun& skipped, size_t file, Availability why) {
@@ -4304,6 +4355,7 @@ void App::setSleepTimer(int minutes, bool endOfChapter) {
 void App::sleep(const std::string& announcement) {
     cancelResume();
     cancelLoading();
+    cancelSaving();
     cancelMarkPing();
     dropPendingOpen(); // nothing may start playing while the device sleeps
     pause(false);
@@ -4333,6 +4385,7 @@ void App::wake() {
 void App::powerOff() {
     cancelResume(); // the front end ticks on while "Goodbye" is spoken
     cancelLoading();
+    cancelSaving();
     cancelMarkPing(); // Play's answer must not start the music
     dropPendingOpen(); // nothing may start playing while the device shuts down
     pause(false);

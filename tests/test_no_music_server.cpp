@@ -44,6 +44,16 @@ TEST(NoMusicServer, EveryRequestFinishesWithNotConfiguredOnTheNextPoll) {
     EXPECT_EQ(errors.size(), 8u) << "each callback runs once";
 }
 
+TEST(NoMusicServer, CreatePlaylistAnswersNotConfiguredAndSendsNothing) {
+    NoMusicServer server;
+    std::vector<Error> got;
+    auto id = server.createPlaylist("Queue", {"a"}, [&](Error e) { got.push_back(e); });
+    EXPECT_NE(id, 0u);
+    EXPECT_TRUE(got.empty()) << "answered from poll()";
+    server.poll();
+    EXPECT_EQ(got, std::vector<Error>{Error::NotConfigured});
+}
+
 TEST(NoMusicServer, ACancelledRequestNeverCallsBack) {
     NoMusicServer server;
     int calls = 0;

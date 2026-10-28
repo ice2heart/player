@@ -327,14 +327,15 @@ private:
 // scrobble() is recorded in `scrobbles`, in order (nothing comes back from it).
 class FakeMusicServer : public MusicServer {
 public:
-    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Playlists, PlaylistTracks };
+    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Playlists, PlaylistTracks, CreatePlaylist };
     struct Request {
         RequestId id = 0;
         Kind kind = Kind::Ping;
-        std::string arg; // listType, artist, album or playlist id; empty otherwise
+        std::string arg; // listType, artist, album or playlist id, the name of a new playlist; empty otherwise
         int offset = 0;  // Albums only
         int size = 0;    // Albums only
         std::string folder; // Albums only: the musicFolderId, empty for all
+        std::vector<std::string> trackIds; // CreatePlaylist only
     };
 
     bool configured() const override { return isConfigured; }
@@ -357,6 +358,12 @@ public:
     RequestId playlists(Done<RemotePlaylist> done) override { return add(std::move(done), Kind::Playlists); }
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override {
         return add(std::move(done), Kind::PlaylistTracks, std::move(playlistId));
+    }
+    RequestId createPlaylist(std::string name, std::vector<std::string> trackIds, std::function<void(Error)> done) override {
+        RequestId id = add(std::move(done), Kind::CreatePlaylist, std::move(name));
+        requests.back().trackIds = std::move(trackIds);
+        if (requests.back().trackIds.size() > kMaxPlaylistTracks && isConfigured) fail(id, Error::Server); // as Subsonic
+        return id;
     }
     void cancel(RequestId id) override {
         cancelled.push_back(id); // poll() skips it, even if answered or polled right now
@@ -409,6 +416,16 @@ public:
         pending_.erase(it);
         return true;
     }
+    // Answer a createPlaylist: it worked.
+    bool replyCreated(RequestId id) {
+        auto it = pending_.find(id);
+        if (it == pending_.end()) return false;
+        auto* done = std::get_if<CreateDone>(&it->second);
+        if (!done) throw std::logic_error("FakeMusicServer::replyCreated: not a createPlaylist");
+        ready_.emplace_back(id, [cb = std::move(*done)] { cb(Error::None); });
+        pending_.erase(it);
+        return true;
+    }
     bool replyVersion(RequestId id, std::string version) {
         auto it = pending_.find(id);
         if (it == pending_.end()) return false;
@@ -451,13 +468,14 @@ public:
 private:
     using PingDone = std::function<void(Error, ServerInfo)>;
     using VersionDone = std::function<void(Error, std::string)>;
+    using CreateDone = std::function<void(Error)>;
     using Callback =
-        std::variant<PingDone, VersionDone, Done<RemoteAlbum>, Done<RemoteFolder>, Done<RemoteArtist>, Done<RemoteTrack>,
+        std::variant<PingDone, VersionDone, CreateDone, Done<RemoteAlbum>, Done<RemoteFolder>, Done<RemoteArtist>, Done<RemoteTrack>,
                  Done<RemotePlaylist>>;
 
     template <class F> RequestId add(F done, Kind kind, std::string arg = {}, int offset = 0, int size = 0, std::string folder = {}) {
         RequestId id = ++lastId_;
-        requests.push_back({id, kind, std::move(arg), offset, size, std::move(folder)});
+        requests.push_back({id, kind, std::move(arg), offset, size, std::move(folder), {}});
         if (isConfigured)
             pending_.emplace(id, Callback(std::in_place_type<F>, std::move(done)));
         else
@@ -480,6 +498,9 @@ private:
     }
     static std::function<void()> failure(VersionDone cb, Error error) {
         return [cb = std::move(cb), error] { cb(error, {}); };
+    }
+    static std::function<void()> failure(CreateDone cb, Error error) {
+        return [cb = std::move(cb), error] { cb(error); };
     }
     template <class T> static std::function<void()> failure(Done<T> cb, Error error) {
         return [cb = std::move(cb), error] { cb(error, {}, false); };

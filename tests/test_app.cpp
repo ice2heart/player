@@ -10903,13 +10903,232 @@ TEST_F(QueueListTest, TheListEndsWithSaveAsPlaylistAndClearQueueAndPreviousQueue
     EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T2"}));
 }
 
-TEST_F(QueueListTest, SaveAsPlaylistSaysItIsNotAvailableYet) {
-    play(tracks(3));
-    ASSERT_NO_FATAL_FAILURE(openQueue());
-    open("Save as playlist");
-    EXPECT_EQ(speech.last(), "Not available yet.");
+// ---- Save as playlist (queue.md, step 2.9)
+
+class SavePlaylistTest : public QueueListTest {
+protected:
+    // 27 October 14:05 of the local time zone: the name does not depend on where the test runs.
+    static std::time_t at(int day, int month, int hour, int minute) {
+        std::tm t{};
+        t.tm_year = 2026 - 1900;
+        t.tm_mon = month - 1;
+        t.tm_mday = day;
+        t.tm_hour = hour;
+        t.tm_min = minute;
+        t.tm_isdst = -1;
+        return std::mktime(&t);
+    }
+    void SetUp() override {
+        QueueListTest::SetUp();
+        clock.setWallTime(at(27, 10, 14, 5));
+    }
+    size_t creates() const {
+        return size_t(std::count_if(server.requests.begin(), server.requests.end(),
+                                    [](const FakeMusicServer::Request& r) { return r.kind == FakeMusicServer::Kind::CreatePlaylist; }));
+    }
+    // The createPlaylist App sent last.
+    const FakeMusicServer::Request& created() const {
+        const auto& r = server.lastRequest();
+        EXPECT_EQ(r.kind, FakeMusicServer::Kind::CreatePlaylist);
+        return r;
+    }
+    void save() {
+        ASSERT_NO_FATAL_FAILURE(openQueue());
+        open("Save as playlist");
+    }
+    // The server says the playlist is made.
+    void answer() {
+        ASSERT_TRUE(server.replyCreated(created().id));
+        app->tick();
+    }
+    // A Home press ends the wait; the answer that comes later says nothing.
+    void expectLateAnswerDropped() {
+        const auto before = speech.said.size();
+        EXPECT_FALSE(server.replyCreated(created().id)) << "cancelled: the server object drops it";
+        app->tick();
+        EXPECT_EQ(speech.said.size(), before);
+    }
+};
+
+TEST_F(SavePlaylistTest, SendsTheServerTracksInPlayOrderAndSaysItSavedThem) {
+    play(tracks(4));
+    ASSERT_NO_FATAL_FAILURE(optionsOn("T4", "Play next")); // T1 T4 T2 T3
+    ASSERT_NO_FATAL_FAILURE(save());
+    EXPECT_EQ(speech.last(), "Saving.");
+    EXPECT_EQ(created().arg, "Queue, 27 October 14:05");
+    EXPECT_EQ(created().trackIds, (std::vector<std::string>{"t1", "t4", "t2", "t3"}));
+    ASSERT_NO_FATAL_FAILURE(answer());
+    EXPECT_EQ(speech.last(), "Saved Queue, 27 October 14:05.");
+    EXPECT_EQ(sounds.last(), Earcon::Close);
     EXPECT_EQ(level().title, "Queue");
-    EXPECT_EQ(listRequests(), 0u) << "nothing is sent yet";
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T4", "T2", "T3"}));
+}
+
+TEST_F(SavePlaylistTest, SendsTheIdsInThePlayOrderOfAShuffledQueue) {
+    play(tracks(6));
+    ASSERT_NO_FATAL_FAILURE(shuffleTracks());
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    std::vector<std::string> ids;
+    for (const std::string& title : queueEntries()) ids.push_back("t" + title.substr(1));
+    ASSERT_NE(ids, (std::vector<std::string>{"t1", "t2", "t3", "t4", "t5", "t6"})) << "the shuffle changed the order";
+    open("Save as playlist");
+    EXPECT_EQ(created().trackIds, ids);
+}
+
+TEST_F(SavePlaylistTest, TheNameComesFromTheWallTimeInEnglishWithoutAZeroOnTheDay) {
+    clock.setWallTime(at(3, 1, 9, 7));
+    play(tracks(2));
+    ASSERT_NO_FATAL_FAILURE(save());
+    EXPECT_EQ(created().arg, "Queue, 3 January 09:07");
+    ASSERT_NO_FATAL_FAILURE(answer());
+    EXPECT_EQ(speech.last(), "Saved Queue, 3 January 09:07.");
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(SavePlaylistTest, SavesOnlyTheTracksOfTheServerSetUpNowAndSaysHowManyWereLeftOut) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), remoteEntry("t2", "Rain"),
+                                         ofServer("https://other.example", "ann", "x3", "Fog"),
+                                         ofServer("https://music.example", "bob", "x4", "Mist"),
+                                         remoteEntry("t5", "Dusk"), localEntry(alphaFile(2), "Calm")}));
+    ASSERT_NO_FATAL_FAILURE(save());
+    EXPECT_EQ(created().trackIds, (std::vector<std::string>{"t2", "t5"})) << "local, another server and another user stay out";
+    ASSERT_NO_FATAL_FAILURE(answer());
+    EXPECT_EQ(speech.last(), "Saved Queue, 27 October 14:05. 4 tracks not saved.");
+}
+
+TEST_F(SavePlaylistTest, OneTrackLeftOutIsSpokenInTheSingular) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), remoteEntry("t2", "Rain")}));
+    ASSERT_NO_FATAL_FAILURE(save());
+    ASSERT_NO_FATAL_FAILURE(answer());
+    EXPECT_EQ(speech.last(), "Saved Queue, 27 October 14:05. 1 track not saved.");
+}
+
+TEST_F(SavePlaylistTest, ATrackThatPlaysFromACachedCopyIsStillSaved) {
+    cache = base / "cache";
+    TrackCache store(diskFiles(), cache, "https://music.example", "ann");
+    fs::create_directories(store.listFolder(albumSource("mixed")));
+    touch(store.listFolder(albumSource("mixed")) / "t1.mp3");
+    ASSERT_TRUE(store.save(cachedAlbum("mixed", {{"t1", "t1.mp3", "t1", 100, "", true, 0}})));
+    play(tracks(2));
+    ASSERT_NE(player.file, "fake://stream/t1") << "the first track plays from its file";
+    ASSERT_NO_FATAL_FAILURE(save());
+    EXPECT_EQ(created().trackIds, (std::vector<std::string>{"t1", "t2"}));
+    ASSERT_NO_FATAL_FAILURE(answer());
+    EXPECT_EQ(speech.last(), "Saved Queue, 27 October 14:05.") << "nothing left out";
+}
+
+TEST_F(SavePlaylistTest, WithNoTrackOfTheServerItSaysWhyAndSendsNothing) {
+    start_();
+    ASSERT_TRUE(app->playQueue("Local", {localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm"),
+                                         ofServer("https://other.example", "ann", "x3", "Fog")}));
+    ASSERT_NO_FATAL_FAILURE(save());
+    EXPECT_EQ(speech.last(), "Only tracks from the server can be saved.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(creates(), 0u);
+    EXPECT_EQ(level().title, "Queue");
+}
+
+TEST_F(SavePlaylistTest, WithNoServerSetUpItSaysWhyAndSendsNothing) {
+    play(tracks(3));
+    server.isConfigured = false;
+    ASSERT_NO_FATAL_FAILURE(save());
+    EXPECT_EQ(speech.last(), "Only tracks from the server can be saved.");
+    EXPECT_EQ(creates(), 0u);
+}
+
+TEST_F(SavePlaylistTest, AnErrorIsSpokenAndTheQueueStaysAsItWas) {
+    play(tracks(3), 1);
+    ASSERT_NO_FATAL_FAILURE(save());
+    ASSERT_TRUE(server.fail(created().id, MusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    EXPECT_EQ(level().title, "Queue");
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T2", "T3"}));
+    EXPECT_EQ(app->nowPlaying().chapter, "T2");
+    EXPECT_TRUE(player.playing());
+    expectNoPrevious(); // the queue was not edited
+}
+
+TEST_F(SavePlaylistTest, AWrongLoginIsSpokenAsSuch) {
+    play(tracks(2));
+    ASSERT_NO_FATAL_FAILURE(save());
+    ASSERT_TRUE(server.fail(created().id, MusicServer::Error::BadLogin));
+    app->tick();
+    EXPECT_EQ(speech.last(), "Wrong user name or password.");
+}
+
+TEST_F(SavePlaylistTest, SavingTheQueueDoesNotChangeIt) {
+    play(tracks(3), 1);
+    ASSERT_NO_FATAL_FAILURE(save());
+    ASSERT_NO_FATAL_FAILURE(answer());
+    EXPECT_EQ(queueEntries(), (std::vector<std::string>{"T1", "T2", "T3"}));
+    EXPECT_EQ(app->nowPlaying().chapter, "T2");
+    expectNoPrevious();
+}
+
+TEST_F(SavePlaylistTest, PressingItAgainWhileSavingSendsOnlyOneRequest) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(save());
+    open("Save as playlist");
+    EXPECT_EQ(creates(), 1u);
+    EXPECT_EQ(speech.last(), "Saving.");
+    ASSERT_NO_FATAL_FAILURE(answer());
+    EXPECT_EQ(speech.last(), "Saved Queue, 27 October 14:05.");
+}
+
+TEST_F(SavePlaylistTest, ASecondSaveAfterTheAnswerIsSentAgain) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(save());
+    ASSERT_NO_FATAL_FAILURE(answer());
+    open("Save as playlist");
+    EXPECT_EQ(creates(), 2u);
+}
+
+TEST_F(SavePlaylistTest, HomeWhileSavingDropsTheLateAnswer) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(save());
+    press(Button::Home);
+    expectLateAnswerDropped();
+    EXPECT_FALSE(speech.heard("Saved Queue, 27 October 14:05."));
+}
+
+TEST_F(SavePlaylistTest, SleepWhileSavingDropsTheLateAnswer) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(save());
+    press(Button::Power);
+    expectLateAnswerDropped();
+}
+
+TEST_F(SavePlaylistTest, PowerOffWhileSavingDropsTheLateAnswer) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(save());
+    hold(Button::Power);
+    open("Power off");
+    ASSERT_TRUE(app->quitRequested());
+    expectLateAnswerDropped();
+}
+
+TEST_F(SavePlaylistTest, ALeftAndReopenedQueueListIsNotSpokenTo) {
+    play(tracks(3));
+    ASSERT_NO_FATAL_FAILURE(save());
+    const auto id = created().id;
+    press(Button::Back); // the Player menu
+    ASSERT_NO_FATAL_FAILURE(openQueue());
+    EXPECT_FALSE(server.replyCreated(id));
+    app->tick();
+    EXPECT_NE(speech.last(), "Saved Queue, 27 October 14:05.");
+}
+
+TEST_F(SavePlaylistTest, AQueueLongerThanARequestHoldsSavesTheFirstTracksAndSaysHowManyWereLeftOut) {
+    play(tracks(MusicServer::kMaxPlaylistTracks + 2));
+    ASSERT_NO_FATAL_FAILURE(save());
+    ASSERT_EQ(created().trackIds.size(), MusicServer::kMaxPlaylistTracks);
+    EXPECT_EQ(created().trackIds.back(), "t" + std::to_string(MusicServer::kMaxPlaylistTracks));
+    ASSERT_NO_FATAL_FAILURE(answer());
+    EXPECT_EQ(speech.last(), "Saved Queue, 27 October 14:05. 2 tracks not saved.");
 }
 
 TEST_F(QueueListTest, PlayNextPutsAnEntryRightAfterTheCurrentOne) {

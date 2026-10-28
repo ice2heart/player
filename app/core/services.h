@@ -333,6 +333,14 @@ public:
     virtual RequestId albumTracks(std::string albumId, Done<RemoteTrack> done) = 0;
     virtual RequestId playlists(Done<RemotePlaylist> done) = 0;
     virtual RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) = 0;
+    // A request carries every track id in its URL, so a server or proxy may refuse a very long one:
+    // a caller sends at most this many (App says how many tracks it left out).
+    static constexpr std::size_t kMaxPlaylistTracks = 150;
+    // Makes a new playlist `name` with `trackIds` in that order (Subsonic: createPlaylist). `done` gets
+    // None, or why it failed. Not configured: NotConfigured. More than kMaxPlaylistTracks ids are not
+    // sent: the answer is Error::Server.
+    virtual RequestId createPlaylist(std::string name, std::vector<std::string> trackIds,
+                                     std::function<void(Error)> done) = 0;
     virtual void cancel(RequestId id) = 0; // its callback will not run; unknown ids are ignored
     // The stream of a track: the original file with `maxBitRate` 0, else a
     // transcode to at most that many kbit/s. Empty URLs when not configured.
