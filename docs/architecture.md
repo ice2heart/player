@@ -1120,7 +1120,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   existing regular file of: the `--font` path, `/System/Library/Fonts/Supplemental/Arial Unicode.ttf` (macOS),
   `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`, `/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`.
   ImGui 1.91 bakes a static atlas, so the glyph ranges are named: Latin-1 and Extended-A, Greek,
-  Cyrillic, Japanese, Chinese simplified common and Korean. A font draws only the ranges it has
+  Cyrillic, Hebrew, Arabic, Japanese, Chinese simplified common and Korean. A font draws only the ranges it has
   (DejaVu has no CJK). A `--font` path that does not exist prints `sim: font PATH not found` and the
   next candidate is tried; a file that is not a font prints `sim: cannot load font PATH` and the next
   is tried. With none left it prints `sim: no font with Cyrillic and CJK found; use --font` and uses
