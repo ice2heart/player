@@ -14,7 +14,7 @@ the work goes:
 | Where am I (hold Play) should say the path | In a menu it speaks the path ("Music, Artists, Dune. ..."). In a player it speaks only the status (`playerStatus()`): no player name, no artist, and the title is the queue's (`book_->title`), which in a queue of several albums names only what was played first. | fix | 2.3 |
 | Japanese, Chinese, Cyrillic need transliteration when there is no TTS | Every front end calls `tts.start("en")`. eSpeak's English voice spells Cyrillic letter by letter ("a, ge, a, te...") and reads every Han character as "Chinese letter" and kana as "Japanese letter". eSpeak NG 1.52 has `ru`, `cmn`, `yue`, `ja`, `ko` voices, and `<voice xml:lang="ru">…</voice>` in SSML switches voice within one utterance and back. Kanji gets no reading from any voice. | fix, then discovery | 4.3–4.5, 1.3, 6.5–6.6 |
 | Sim (and core) must work with UTF-8 | Core sorts and groups by code point (`library.cpp`: `nextCodePoint`, `fold`, Cyrillic and Greek included). The sim uses Dear ImGui's default font (`AddFontDefault`), which has ASCII only: Cyrillic and CJK show as `?`. `album_merge.cpp` has its own copy of the case fold (Latin-1, Extended-A, Greek, Cyrillic: "АГАТА КРИСТИ" and "Агата Кристи" are already one artist), but the copies differ: the sort folds ё to е, the keys do not, so "Ёлка" and "Елка" are two artists; neither folds Ό Ύ Ώ or the final ς. Tags in a legacy code page (cp1251 in ID3) are not checked. | fix, then discovery | 4.1–4.2, 1.4, 6.7 |
-| Not all artists | Music → Artists is built from the album artist of the albums in the index (`artistsMenu()`), never from track artists or the server's `getArtists`. The cause is not known yet (see 1.1). | discovery | 1.1, then 6.1 |
+| Not all artists | Music → Artists is built from the album artist of the albums in the index (`artistsMenu()`), never from track artists or the server's `getArtists`. The cause (1.1): the server's joined "A • B" string is taken as one artist. | discovery | 1.1, then 6.1 |
 | Play modes: random, repeat, repeat album | Shuffle (off · tracks · albums) and Repeat (off · all · track) are built (queue.md 2.6). Repeat album is missing. | fix | 2.2 |
 | (added) Shuffle does not work after the queue is added to | `Queue::append()` and `playNext()` (`insertAt()`) put the new entries into the play order in their own order, at the end or after the current entry. Only `setShuffle()` shuffles, when it is chosen. With Shuffle on, an album added with Add to queue plays in order after everything else. | fix | 2.7 |
 | Deep press Down to jump lines? Jog dial? | Only Left / Right have a deep stage. Left / Right in menus already jump by letter or by 10, and holding Up / Down goes to the first or last item. No rotary input exists. A hardware decision. | discovery | 1.7, then 6.4 |
@@ -269,7 +269,7 @@ throw-away scripts stay out of the repo (the scratch folder), tools worth keepin
 
 | # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
 |---|------|------|
-| 1.1 | **Missing artists.** Compare the test server's `getArtists` (and each album's OpenSubsonic `artists` / `displayArtist` in `getAlbumList2`) with the artists the index gives (`artistsMenu()` over `mergeAlbums`). Check the hypotheses: an artist only on tracks (featured), an album with several artists whose `artist` is one joined string ("A • B"), compilations without an album artist split per track, a sync that stopped early (`kCatalogueLimit`, an empty page with `more`), local albums without an album tag under "Unknown artist". Credentials from `.env`; never print or write the token or the password. Write the counts, the missing names (a sample) and the cause. | – |
+| ✅ 1.1 | **Missing artists.** Compare the test server's `getArtists` (and each album's OpenSubsonic `artists` / `displayArtist` in `getAlbumList2`) with the artists the index gives (`artistsMenu()` over `mergeAlbums`). Check the hypotheses: an artist only on tracks (featured), an album with several artists whose `artist` is one joined string ("A • B"), compilations without an album artist split per track, a sync that stopped early (`kCatalogueLimit`, an empty page with `more`), local albums without an album tag under "Unknown artist". Credentials from `.env`; never print or write the token or the password. Write the counts, the missing names (a sample) and the cause. | – |
 | 1.2 | **Scrobbles at exit and "now playing".** Measure on the test server: is a scrobble queued just before exit lost (expected yes, 3.1 fixes it); does Navidrome's "now playing" stay after the app closes, and for how long; does Navidrome accept `time=` on a late submission and list it at that time; is the same track with the same `time=` sent twice counted twice (3.2 can resend). Decide whether exit should send anything more. | – |
 | 1.3 | **Voices to download, and Han transliteration.** On the Pi image (Debian `espeak-ng-data`): which voices are installed, and how long a voice switch inside one utterance takes on a Pi Zero 2 W. Voices that can be downloaded (plan A): eSpeak data for one language, Piper voices per language (can the Pi Zero 2 W run one next to playback?), a kanji reading for Japanese (kakasi / a kanji→kana dictionary). Transliteration of Han (plan B): a Han→pinyin table (Unihan `kMandarin`) and ICU Any-Latin. For each: size, licence, quality on 20 real artist and album names, where it would be downloaded from, how it is checked (hash). Count the Japanese names written in kanji only in the test library (open question 6: they are read in Chinese). Suggest the format of a downloaded voice and the Languages list. | – |
 | 1.4 | **Tag encodings.** With FFmpeg's tag reading (`tag_reader.cpp`): what comes out of ID3v1 and ID3v2 tags written in cp1251 and Shift-JIS but marked Latin-1 (mojibake such as "Àãàòà Êðèñòè"), and of a file name in a non-UTF-8 encoding. Make sample files in the scratch folder. Suggest a repair (detect and re-decode) or none. | – |
@@ -368,7 +368,7 @@ fills in the Step and Tests cells, or drops the step.
 
 | # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
 |---|------|------|
-| 6.1 | **All artists** in Music → Artists, from the cause found in 1.1 (for example the album's `artists` list, track artists, or a sync that goes to the end). | From 1.1. |
+| 6.1 | **All artists** in Music → Artists, from the cause found in 1.1: the album's OpenSubsonic `artists` list (see [Findings](#11-missing-artists)). | From 1.1. |
 | 6.2 | **Background tasks**, as chosen in 1.5 (open question 2). | From 1.5. |
 | 6.3 | **Cache from the stream** without a second fetch, if 1.6 shows it can work. | From 1.6. |
 | 6.4 | **Jog dial or deep Up / Down**, as chosen in 1.7 (open question 3); navigation.md first. | From 1.7. |
@@ -400,6 +400,51 @@ Filled in by phase 1. Facts checked while writing this plan (2026-10-28):
   `onPickLoaded()`).
 - macOS 26 has `/System/Library/Fonts/Supplemental/Arial Unicode.ttf` but no
   `/System/Library/Fonts/PingFang.ttc`. The sim uses ImGui 1.91.8 (static font atlas).
+
+### 1.1 Missing artists
+
+Test server (Navidrome, OpenSubsonic), 2026-10-28; `getArtists` and all of `getAlbumList2`
+(`alphabeticalByName`), compared with `artistsMenu()` as the code builds it (the album's
+`artist` string, folded by `artistKey`).
+
+- **Counts.** `getArtists`: 50 entries, 49 after `artistKey` (the server has both "Korn" and
+  " Korn" with a leading space). The index: 171 albums in one page, 49 artists, none "Unknown
+  artist". 44 are the same on both sides. **5 server artists are missing**, and the index has
+  **5 names the server does not have** (joined strings).
+- **Missing:** シートベルツ, 六三四プロジェクト, 増田俊郎, Kenji Kawai, T.M. Revolution. Each is
+  in the `artists` list of an album in `getAlbumList2` and has `albumCount` 1 to 3 in
+  `getArtists`.
+- **Invented in the index:** "菅野よう子 • シートベルツ", "六三四プロジェクト • 六三四プロジェクト &
+  増田俊郎", "川井憲次 • Kenji Kawai", "T.M.Revolution • T.M. Revolution", "Korn •  Korn".
+  8 of 171 albums are filed under them (Cowboy Bebop 2, Naruto 3, Innocence, The Force, Korn).
+  Korn, 川井憲次 and T.M.Revolution do exist as artists from their other albums, but those 3
+  albums are not in their lists.
+- **Cause: the joined multi-artist string.** `RemoteAlbum` keeps only `artist`, which is
+  OpenSubsonic's `displayArtist`: the server joins the album's artists with " • ", and the
+  index treats it as one name. The same albums carry `artists` (id and name of each), which the
+  client does not parse; `artistId` is only the first.
+- **Refuted or not seen:** a sync that stopped early (171 albums, a page of 500 is not full,
+  `kCatalogueLimit` is 200000; the paging stops on a short page, an empty page or the limit,
+  which is an error, not a silent stop); compilations without an album artist (the one
+  compilation has "Various Artists" as its album artist, which is in `getArtists`; the other
+  albums all have an `artist`); artists only on tracks (every `getArtists` name is in some
+  album's `artists`; Navidrome's `getArtists` lists album artists only, so a track-only
+  featured artist is not on the server's list either and this comparison cannot show one: that
+  needs `getSong` per track, not done). Local albums without an album tag: the test server has
+  no local library here; by the code they go under "Unknown artist" (last, `unlettered`) by
+  design, not a bug.
+- **Decision for 6.1:** parse the album's OpenSubsonic `artists` (names, in order) into
+  `RemoteAlbum`, store them with the index item and let `artistsMenu()` list an album under
+  each of them: fold each name with `artistKey`, count the album once per distinct key and
+  skip empty keys ("Korn" and " Korn" are one). The list belongs to the server item, so a
+  merged entry whose primary is a local item takes the names from its server item; a local
+  album with several artists in its tag keeps one name (not changed here). `artist` stays the
+  display string for the album's info; with no `artists` from the server (plain Subsonic, old
+  Navidrome) the list is the one `artist`. The index schema gets the list (a migration, 6.1).
+  Names that differ only by spacing (" Korn") are already one by `artistKey`;
+  "T.M.Revolution" and "T.M. Revolution" stay two (they are two artists on the server).
+  Track-only (featured) artists are left out of 6.1: the server's own artist list does not
+  have them, and finding them needs a call per track.
 
 ## Decisions
 
