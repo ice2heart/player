@@ -240,7 +240,7 @@ instead (and while a book plays they leave it playing and keep the queue for Con
   album or playlist of the server, in Music and in Streaming, after Add to queue. It is
   offered only where it can work (a cache folder, a server and a downloader that are set
   up, as for the list item below), and not for an album or playlist that is whole on the
-  device. OK loads the tracks first, as Play now and Add to queue do ("Loading."; leaving
+  device at the requested Download quality. OK loads the tracks first, as Play now and Add to queue do ("Loading."; leaving
   cancels it; an error is spoken with the error sound and the Options stay), then starts the
   download, says "Downloading, 0 of 9 tracks." and goes back by itself. While a download
   runs, OK on the same album or playlist says the progress without loading, and on another

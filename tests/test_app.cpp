@@ -5715,6 +5715,154 @@ TEST_F(DownloadTest, TranscodeWithoutDurationUsesOriginalSizeForSpace) {
     EXPECT_EQ(downloader.requests.size(), 1u);
 }
 
+TEST_F(DownloadTest, AnOriginalDownloadKeepsTheLowerCopyPlayableUntilReplacementCompletes) {
+    const auto source = albumSource("al1");
+    const auto old = store().listFolder(source) / "t1~128.mp3";
+    touch(old);
+    ASSERT_TRUE(store().save(cachedAlbum("al1", {{"t1", old.filename().string(), "Storm Front", 200, "", false, 123, 128}})));
+    auto tracks = sized();
+    tracks.resize(1);
+    openAlbum(tracks);
+    app->setFreeSpace([](const fs::path&) -> std::optional<std::uintmax_t> { return 4; });
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Not enough space.");
+    EXPECT_TRUE(downloader.requests.empty()) << "replacement needs room for the new file alongside the old";
+    EXPECT_TRUE(fs::exists(old));
+    app->setFreeSpace([](const fs::path&) -> std::optional<std::uintmax_t> { return 5; });
+    startDownload();
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.lastRequest().bitrate, 0);
+    EXPECT_EQ(speech.last(), "Downloading, 0 of 1 track.");
+    EXPECT_EQ(store().load(source).tracks.front().bitrate, 128);
+    open("Storm Front");
+    EXPECT_EQ(player.file, old.string()) << "the in-memory cache index also keeps the old copy";
+    EXPECT_TRUE(player.playing());
+    finishLast();
+    const auto saved = store().load(source);
+    ASSERT_EQ(saved.tracks.size(), 1u);
+    EXPECT_EQ(saved.tracks.front().bitrate, 0);
+    EXPECT_TRUE(saved.tracks.front().pinned);
+    EXPECT_EQ(saved.tracks.front().file, "t1.flac");
+    EXPECT_FALSE(fs::exists(old)) << "the old file must not become an unlisted orphan";
+    EXPECT_TRUE(fs::exists(store().listFolder(source) / "t1.flac"));
+    ASSERT_TRUE(app->playRemote("Weather", tracks, 0));
+    EXPECT_EQ(player.file, (store().listFolder(source) / "t1.flac").string());
+}
+
+TEST_F(DownloadTest, DownloadPinsOriginalHigherAndEqualCopiesWithoutFetchingOrRequiringSpace) {
+    settings.setInt("downloads.bitrate", 128);
+    auto tracks = sized();
+    const int qualities[] = {0, 320, 128};
+    CachedList list = cachedAlbum("al1", {});
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        const std::string name = tracks[i].id + ".mp3";
+        touch(store().listFolder(list.source) / name);
+        list.tracks.push_back({tracks[i].id, name, tracks[i].title, tracks[i].duration, "", false, 123, qualities[i]});
+    }
+    ASSERT_TRUE(store().save(list));
+    openAlbum(tracks);
+    app->setFreeSpace([](const fs::path&) -> std::optional<std::uintmax_t> { return 0; });
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Already downloaded.");
+    EXPECT_TRUE(downloader.requests.empty());
+    const auto saved = store().load(list.source);
+    ASSERT_EQ(saved.tracks.size(), 3u);
+    for (size_t i = 0; i < saved.tracks.size(); ++i) {
+        EXPECT_TRUE(saved.tracks[i].pinned);
+        EXPECT_EQ(saved.tracks[i].bitrate, qualities[i]);
+        EXPECT_EQ(saved.tracks[i].lastPlayed, 123);
+        EXPECT_TRUE(store().completeFile(list.source, saved.tracks[i]));
+    }
+}
+
+TEST_F(DownloadTest, AnUpgradePinsTheOldCopyAgainstEvictionWhileDownloading) {
+    const auto source = albumSource("al1");
+    const auto old = store().listFolder(source) / "t1~128.mp3";
+    touch(old);
+    std::ofstream(old) << "old";
+    ASSERT_TRUE(store().save(cachedAlbum("al1", {{"t1", old.filename().string(), "Storm Front", 200, "", false, 123, 128}})));
+    auto tracks = sized();
+    tracks.resize(1);
+    openAlbum(tracks);
+    app->setCacheGigabyte(1); // this three-byte automatic copy would otherwise be evicted on sleep
+    startDownload();
+    press(Button::Power);
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_TRUE(fs::exists(old));
+    const auto saved = store().load(source);
+    ASSERT_EQ(saved.tracks.size(), 1u);
+    EXPECT_TRUE(saved.tracks.front().pinned);
+    EXPECT_EQ(saved.tracks.front().bitrate, 128);
+    press(Button::Ok); // wake; the explicit download is still in flight
+    open("Storm Front");
+    EXPECT_EQ(player.file, old.string());
+}
+
+TEST_F(DownloadTest, AFailedTranscodeUpgradeKeepsTheOldCopyAndRetryReplacesItOnce) {
+    settings.setInt("downloads.bitrate", 320);
+    const auto source = albumSource("al1");
+    const auto old = store().listFolder(source) / "t1~128.mp3";
+    touch(old);
+    ASSERT_TRUE(store().save(cachedAlbum("al1", {{"t1", old.filename().string(), "Storm Front", 200, "", true, 123, 128}})));
+    auto tracks = sized();
+    tracks.resize(1);
+    tracks.push_back(tracks.front()); // a duplicate must not schedule a second replacement
+    openAlbum(tracks);
+    startDownload();
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.lastRequest().bitrate, 320);
+    finishLast(Result::Unreachable, false);
+    EXPECT_EQ(speech.last(), "Cannot download Storm Front. Server not reachable.");
+    EXPECT_TRUE(fs::exists(old));
+    EXPECT_EQ(store().load(source).tracks.front().bitrate, 128);
+    open("Storm Front");
+    EXPECT_EQ(player.file, old.string());
+    press(Button::Home);
+    startDownload();
+    ASSERT_EQ(downloader.requests.size(), 2u);
+    finishLast();
+    EXPECT_EQ(downloader.requests.size(), 2u);
+    const auto saved = store().load(source);
+    ASSERT_EQ(saved.tracks.size(), 1u);
+    EXPECT_EQ(saved.tracks.front().bitrate, 320);
+    EXPECT_EQ(saved.tracks.front().file, "t1~320.mp3");
+    EXPECT_TRUE(saved.tracks.front().pinned);
+    EXPECT_FALSE(fs::exists(old));
+    ASSERT_TRUE(app->playRemote("Weather", tracks, 0));
+    EXPECT_EQ(player.file, (store().listFolder(source) / "t1~320.mp3").string());
+}
+
+TEST_F(DownloadTest, AReplacementWhoseManifestSaveFailsLeavesTheOldCopyPlayable) {
+    class SwitchableFiles : public TextFiles {
+    public:
+        bool fail = false;
+        std::optional<std::string> read(const fs::path& file) override { return diskFiles().read(file); }
+        bool writeAtomically(const fs::path& file, const std::string& contents) override {
+            return !fail && diskFiles().writeAtomically(file, contents);
+        }
+    } switchable;
+    textFiles = &switchable;
+    const auto source = albumSource("al1");
+    const auto old = store().listFolder(source) / "t1~128.mp3";
+    touch(old);
+    ASSERT_TRUE(store().save(cachedAlbum("al1", {{"t1", old.filename().string(), "Storm Front", 200, "", true, 123, 128}})));
+    auto tracks = sized();
+    tracks.resize(1);
+    openAlbum(tracks);
+    startDownload();
+    ASSERT_FALSE(downloader.requests.empty());
+    const auto replacement = downloader.lastRequest().dest;
+    switchable.fail = true;
+    finishLast();
+    EXPECT_EQ(speech.last(), "Cannot download Storm Front. Cannot write the file.");
+    EXPECT_TRUE(fs::exists(old));
+    EXPECT_FALSE(fs::exists(replacement));
+    EXPECT_EQ(store().load(source).tracks.front().bitrate, 128);
+    open("Storm Front");
+    EXPECT_EQ(player.file, old.string());
+    app.reset(); // before switchable goes
+}
+
 TEST_F(DownloadTest, ADownloadOfTheFirstServerLeavesTheSecondsDownloaderAlone) {
     FakeMusicServer second;
     FakeDownloader secondDownloader;
@@ -5922,6 +6070,25 @@ TEST_F(DownloadOptionsTest, AnAlbumWholeOnTheDeviceHasNoDownloadInOptions) {
     hold(Button::Home);
     openSecondAlbumOptions(true);
     EXPECT_EQ(labels().back(), "Download album") << "another album still has it";
+}
+
+TEST_F(DownloadOptionsTest, AWholeDownloadOffersAnUpgradeOnlyWhenTheRequestedQualityIsBetter) {
+    CachedList list = cachedAlbum("al1", {});
+    for (const auto& track : sized()) {
+        const std::string name = track.id + "~128.mp3";
+        touch(store().listFolder(list.source) / name);
+        list.tracks.push_back({track.id, name, track.title, track.duration, "", true, 123, 128});
+    }
+    ASSERT_TRUE(store().save(list));
+    openAlbumOptions(); // original requested by default
+    EXPECT_EQ(labels().back(), "Download album");
+    for (const auto& [quality, offered] : std::vector<std::pair<int, bool>>{{128, false}, {320, true}, {0, true}, {64, false}}) {
+        settings.setInt("downloads.bitrate", quality);
+        press(Button::Home);
+        press(Button::Options);
+        const auto items = labels();
+        EXPECT_EQ(std::find(items.begin(), items.end(), "Download album") != items.end(), offered) << quality;
+    }
 }
 
 TEST_F(DownloadOptionsTest, AnAlbumWhoseDownloadFailedOnTheLastTrackIsNotWhole) {

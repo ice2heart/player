@@ -2129,6 +2129,10 @@ constexpr const char* kDownloadPlaylist = "Download playlist";
 
 bool sameList(const RemoteSource& a, const RemoteSource& b) { return a.kind == b.kind && a.id == b.id; }
 
+bool qualityAtLeast(int cached, int requested) {
+    return cached == 0 || (requested > 0 && cached >= requested);
+}
+
 // A list the user downloaded whole: every manifest track pinned and complete on disk (`onDisk` are the
 // complete ones), and its download over (a failed or cut-short one has only the tracks that arrived).
 // It plays from the disk at once, with no question to the server.
@@ -2245,7 +2249,7 @@ RemoteSource App::sourceOf(const Pick& pick) {
 }
 
 // Download is offered for an album or playlist of the server where downloads work, unless it is already
-// whole on the device (every track pinned and complete: nothing is left to fetch).
+// whole at the requested quality (every track pinned and complete: nothing is left to fetch).
 bool App::offersDownload(const Pick& pick) const {
     if (pick.kind != Pick::Kind::Album && pick.kind != Pick::Kind::Playlist) return false;
     if (!canDownloadFrom(pick.link)) return false;
@@ -2253,7 +2257,11 @@ bool App::offersDownload(const Pick& pick) const {
     const RemoteSource source = sourceOf(pick);
     if (downloading(source, pick.link)) return true; // its manifest holds only what has arrived
     const CachedList cached = store.load(source);
-    return !isWholeDownload(cached, completeTracks(store, source, cached));
+    if (!isWholeDownload(cached, completeTracks(store, source, cached))) return true;
+    const int quality = servers_[pick.link].server.catalogue() == MusicServer::Catalogue::Books ? 0 :
+                        std::max(0, config_.getInt(kDownloadBitrate, kOriginalQuality));
+    return std::any_of(cached.tracks.begin(), cached.tracks.end(),
+                       [quality](const CachedTrack& track) { return !qualityAtLeast(track.bitrate, quality); });
 }
 
 // One track of a local list, alone. The queue is called after the track, as a loose track is.
@@ -4772,17 +4780,21 @@ bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, co
     std::string fileName = downloadFileName(track, update.bitrate);
     CachedTrack entry{track.id, fileName, track.title, track.duration, update.order ? kPartialMark : "", update.pinned,
                       update.playedAt >= kEarliestPlayTime ? update.playedAt : 0, update.bitrate};
+    std::vector<CachedTrack> dropped;
     auto old = std::find_if(cached.tracks.begin(), cached.tracks.end(), [&](const CachedTrack& t) { return t.id == track.id; });
     if (old != cached.tracks.end()) {
         entry.pinned = entry.pinned || old->pinned;
         if (!update.order) entry.changed = old->changed; // a play or the automatic cache does not end a download
         if (entry.lastPlayed == 0) entry.lastPlayed = old->lastPlayed;
+        if (old->file != fileName) dropped.push_back(*old); // retire the lower-quality file only after the manifest commits
         *old = entry;
     } else {
         cached.tracks.push_back(entry); // appended: a download's manifest then follows the order below
     }
-    std::vector<CachedTrack> dropped;
-    if (update.order) dropped = followServerOrder(cached, *update.order).second;
+    if (update.order) {
+        auto removed = followServerOrder(cached, *update.order).second;
+        dropped.insert(dropped.end(), removed.begin(), removed.end());
+    }
     if (!store.save(cached)) return false;
     deleteDropped(source, dropped, link);
     if (auto& cacheIndex = linkState(link).cacheIndex) (*cacheIndex)[track.id] = store.listFolder(source) / fileName;
@@ -4830,9 +4842,12 @@ void App::startDownload(size_t link, const std::string& title, const std::string
         auto entry = std::find_if(manifest.begin(), manifest.end(),
                                   [&](const CachedTrack& t) { return t.id == tracks[i].id; });
         if (entry != manifest.end() && store.completeFile(source, *entry)) {
-            job.finished++;
+            // The requested download owns even a lower copy while its replacement arrives.
             if (!entry->pinned) entry->pinned = pinned = true;
-            continue;
+            if (qualityAtLeast(entry->bitrate, job.bitrate)) {
+                job.finished++;
+                continue;
+            }
         }
         job.todo.push_back({tracks[i], i + 1});
         const auto bytes = downloadBytes(tracks[i], job.bitrate);

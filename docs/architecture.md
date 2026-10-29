@@ -614,7 +614,8 @@ Options in the music player (`playerOptionsMenu()`, "Options, <track>")
 
 The Options of a server album or playlist (Music and Streaming) have Download album / Download playlist after
 Add to queue (`optionsMenu()`), where `offersDownload()`: `canDownloadFrom(pick.link)` and the list is not already whole on the
-device (every manifest track pinned and complete, `isWholeDownload()`). `choose()` with `QueueAction::Download`
+device at Download quality (every manifest track pinned and complete, `isWholeDownload()`,
+and `qualityAtLeast()` for each track). `choose()` with `QueueAction::Download`
 loads the tracks ("Loading."), then `onPickLoaded()` calls `startDownload()` with a `started` callback that pops the
 Options screen and plays the close sound only once the download has started; a refusal is spoken on the Options.
 While a download runs `choose()` does not load: `sayDownloadBusy()` gives the progress for the same list, else
@@ -1095,8 +1096,9 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   played", and goes first).
 - **Downloads (3.4):** `trackItems()` adds "Download album" / "Download playlist"
   after the Play item when `canDownloadFrom(link)`. `startDownload(link, ...)` reads the list's
-  manifest, skips (and pins) the tracks whose files are whole (quality-aware replacement
-  comes in fixes 5.5), checks the free
+  manifest, pins existing complete copies and skips those at least as good as the requested
+  Download quality (original is best, else higher kbps). A lower copy stays playable and
+  protected from eviction while its replacement downloads. It checks the free
   space of the cache root against the sizes of the rest (`App::setFreeSpace()`,
   default `std::filesystem::space()`; transcodes use duration × bitrate × 1000 / 8,
   rounded up, when duration is known, else the original size; an unknown size counts
@@ -1111,6 +1113,8 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   of unknown length; original retries still resume. Each
   `Ok` (whole by the downloader's own check, see `Downloader` in `services.h`; `App`
   compares no sizes) is added to `manifest.tsv` pinned, and updates the cache index. The
+  prior quality file is deleted only after the replacement manifest commits; a failed
+  transfer or manifest save leaves the prior copy available. The
   manifest then follows the server's order, and pinned tracks the server no longer lists
   are dropped with their files (`followServerOrder()`); a track listed twice counts once. A failure is spoken once and drops the `Download`; OK on the item starts again
   and skips what is whole, the `.part` continuing. The download belongs to no screen,
