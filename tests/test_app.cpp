@@ -7310,6 +7310,52 @@ TEST_F(AutoCacheTest, TracksAreFetchedOneAtATimeInTheOrderTheyWereHeard) {
     EXPECT_TRUE(cached("t2"));
 }
 
+TEST_F(AutoCacheTest, TranscodedJobsKeepTheOpenedQualityWhileSettingsAndTracksChange) {
+    settings.setInt("streaming.bitrate", 128);
+    settings.setInt("downloads.bitrate", 320);
+    playSized();
+    EXPECT_TRUE(player.transcoded.has_value());
+    settings.setInt("streaming.bitrate", 192); // applies to the next track
+    listen(11s);
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.lastRequest().bitrate, 128);
+    EXPECT_EQ(downloader.lastRequest().dest, weatherFolderFile("t1~128.mp3"));
+    hold(Button::Forward);
+    listen(11s); // the 192 job waits behind the 128 job
+    settings.setInt("streaming.bitrate", 320);
+    finishLast();
+    auto first = store().load(albumSource("al1"));
+    ASSERT_EQ(first.tracks.size(), 1u);
+    EXPECT_EQ(first.tracks[0].bitrate, 128);
+    EXPECT_FALSE(first.tracks[0].pinned);
+    EXPECT_EQ(store().find("t1"), fs::path(weatherFolderFile("t1~128.mp3")));
+    ASSERT_EQ(downloader.requests.size(), 2u);
+    EXPECT_EQ(downloader.lastRequest().bitrate, 192);
+    EXPECT_EQ(downloader.lastRequest().dest, weatherFolderFile("t2~192.mp3"));
+    finishLast();
+    auto list = store().load(albumSource("al1"));
+    ASSERT_EQ(list.tracks.size(), 2u);
+    EXPECT_EQ(list.tracks[1].bitrate, 192);
+    EXPECT_EQ(store().find("t2"), fs::path(weatherFolderFile("t2~192.mp3")));
+}
+
+TEST_F(AutoCacheTest, AnOriginalStreamStaysOriginalWhenTheSettingChanges) {
+    settings.setInt("streaming.bitrate", 0);
+    settings.setInt("downloads.bitrate", 128);
+    playSized();
+    EXPECT_FALSE(player.transcoded.has_value());
+    settings.setInt("streaming.bitrate", 128);
+    listen(11s);
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.lastRequest().bitrate, 0);
+    EXPECT_EQ(downloader.lastRequest().dest, weatherFolderFile("t1.flac"));
+    finishLast();
+    auto list = store().load(albumSource("al1"));
+    ASSERT_EQ(list.tracks.size(), 1u);
+    EXPECT_EQ(list.tracks[0].bitrate, 0);
+    EXPECT_EQ(store().find("t1"), fs::path(weatherFolderFile("t1.flac")));
+}
+
 TEST_F(AutoCacheTest, ASkippedTrackIsNotFetched) {
     playSized();
     listen(5s);
@@ -7721,6 +7767,46 @@ TEST_F(AutoCacheLimitTest, ThePartFileOfARunningOrWaitingTransferIsNeverTouched)
     app->shutdown();
     EXPECT_TRUE(fs::exists(running));
     EXPECT_TRUE(fs::exists(waiting));
+}
+
+TEST_F(AutoCacheLimitTest, TranscodedPartsOfRunningAndWaitingJobsSurviveTrimming) {
+    settings.setInt("streaming.bitrate", 128);
+    startSmall(4'000'000);
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    hold(Button::Forward);
+    listen(11s);
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    fs::create_directories(store().listFolder(albumSource("al1")));
+    const auto running = weatherFolderFile("t1~128.mp3.part");
+    const auto waiting = weatherFolderFile("t2~128.mp3.part");
+    std::ofstream(running, std::ios::binary) << std::string(10, 'p');
+    std::ofstream(waiting, std::ios::binary) << std::string(10, 'p');
+    app->setCacheGigabyte(5); // force a trim of the protected partial files
+    app->shutdown();
+    EXPECT_TRUE(fs::exists(running));
+    EXPECT_TRUE(fs::exists(waiting));
+}
+
+TEST_F(AutoCacheLimitTest, TranscodeSpaceAndLimitUseTheStreamedSize) {
+    settings.setInt("streaming.bitrate", 128);
+    startSmall(16'000);
+    auto tracks = sized();
+    for (auto& track : tracks) {
+        track.duration = 1;
+        track.size = 100'000'000; // original is larger than both the limit and free space
+    }
+    std::uintmax_t room = kReserve + 15'999;
+    app->setFreeSpace([&](const fs::path&) -> std::optional<std::uintmax_t> { return room; });
+    ASSERT_TRUE(app->playRemote("Weather", tracks, 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    EXPECT_TRUE(downloader.requests.empty()) << "one byte short of the reserve";
+    room++;
+    hold(Button::Forward);
+    listen(11s);
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "t2");
+    EXPECT_EQ(downloader.lastRequest().bitrate, 128);
 }
 
 TEST_F(AutoCacheLimitTest, TheFolderOfAnAbandonedTransferGoesWithItsPartWhenOverTheLimit) {

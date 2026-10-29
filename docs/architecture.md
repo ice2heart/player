@@ -1040,17 +1040,25 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   so a skipped track costs no bandwidth), once per play, unless `cache.limit_gb` is 0.
   The job holds the list's `RemoteSource`, name and artist (`Book::artist`) and the
   track's title, length, `suffix` and `size` (`Book::suffixes`, `sizes`, set by
-  `playRemote()`). `pumpAutoCache()` starts one transfer at a time into the list's
+  `playRemote()`), and the Streaming quality captured when its stream opened.
+  Changing either quality setting during playback or while a job waits does not
+  change that job. Original streams cache originals; transcodes are fetched again
+  at the streamed bitrate into `<safe id>~<bitrate>.mp3`, recorded in the manifest's
+  `bitrate` column. `pumpAutoCache()` starts one transfer at a time into the list's
   folder, only while no explicit `download_` runs, the downloader works and the device
   is awake, and drops jobs for tracks that are on disk by then. A track bigger than the
-  limit is never queued (it would be evicted at once and fetched at every play), and a
+  limit is never queued (it would be evicted at once and fetched at every play); for
+  transcodes this estimate uses duration × bitrate / 8 (kbps converted to bits/s),
+  falling back to the original's listed size when duration is unknown. Likewise, a
   track that would leave less than `kAutoCacheReserve` (256 MiB: state, config and
   manifest writes on a small card, with margin for an unlisted size) free is skipped
   silently (`setFreeSpace()` as for explicit downloads). `sleep()` calls `pauseAutoCache()` too (nothing is fetched
-  for the cache while the device sleeps; the job continues from its `.part` after the wake). An
-  explicit download is not paused by sleep and ends silently. `startDownload()` calls `pauseAutoCache()`:
-  the running transfer is cancelled (its `.part` stays and continues later), its job
-  goes back to the head of the queue, and the queue waits until `download_` is gone.
+  for the cache while the device sleeps; an original continues its `.part` after
+  wake, while a transcode restarts it). An explicit download is not paused by sleep
+  and ends silently. `startDownload()` calls `pauseAutoCache()`:
+  the running transfer is cancelled (its `.part` stays; originals resume and transcodes
+  restart later), its job goes back to the head of the queue, and the queue waits
+  until `download_` is gone.
   Download progress ("Downloading, 3 of 9 tracks") counts only the download's own list
   and is never spoken for the automatic cache. The cache is silent: no speech, no
   earcon, a failed transfer is forgotten (not retried during that play). `onAutoCached()`

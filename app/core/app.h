@@ -564,13 +564,15 @@ private:
     // been heard for kAutoCacheAfter is queued here, unpinned, into the folder of the
     // list it plays from. One transfer at a time, only while no explicit download runs
     // (starting one cancels the transfer, which goes back to the head of the queue and
-    // continues from its .part later). Silent: no speech, no earcon, failures are ignored.
+    // resumes its original .part or restarts its transcode later). Silent: no speech,
+    // no earcon, failures are ignored.
     struct AutoCache {
         RemoteSource source;
         std::string title, artist; // of the list, for a manifest that does not exist yet
         RemoteTrack track;
         std::int64_t playedAt = 0; // wall time the play began: its lastPlayed
         size_t link = 0;           // the server it is fetched from and cached for (servers_)
+        int bitrate = 0;           // the quality used when the stream was opened
     };
     void checkAutoCache();       // tick(): queues the track that has been heard long enough
     void pumpAutoCache();        // tick(): starts the next queued track if nothing else downloads
@@ -840,6 +842,7 @@ private:
         std::optional<TimePoint> heardSince; // the last tick that heard it
     };
     std::optional<TrackPlay> scrobble_;
+    int openedStreamBitrate_ = 0; // captured on open; changing Settings applies to the next track
     // The scrobble outbox: every submission, with the time it was heard, until its server answers it. Kept
     // in scrobbles.tsv (empty path or no `files`: in memory only), written at once and each time it
     // changes, oldest first, at most kMaxScrobbles. Entries of another server stay and are not sent.

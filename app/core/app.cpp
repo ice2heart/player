@@ -3774,6 +3774,7 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
                 // A stream takes a moment to open: say why nothing plays yet.
                 if (origin == Origin::Menu || origin == Origin::Key || origin == Origin::Resume) say("Loading.");
                 MusicServer::Stream stream = remoteStream(file);
+                openedStreamBitrate_ = stream.transcoded ? streamingBitrate() : kOriginalQuality;
                 opens = player_.open(stream.url, position, stream.transcoded);
                 if (opens && !player_.opening() && music_) clearServerDown(link); // the stream opened at once
             }
@@ -4688,6 +4689,14 @@ std::string downloadFileName(const RemoteTrack& track, int bitrate = 0) {
     return name;
 }
 
+std::uintmax_t downloadBytes(const RemoteTrack& track, int bitrate) {
+    long double bytes = bitrate > 0 && std::isfinite(track.duration) && track.duration > 0
+                        ? std::ceil(static_cast<long double>(track.duration) * bitrate * 1000 / 8)
+                        : std::max(0LL, track.size);
+    const auto maximum = std::numeric_limits<std::uintmax_t>::max();
+    return bytes >= static_cast<long double>(maximum) ? maximum : std::uintmax_t(bytes);
+}
+
 // Puts a list's manifest in the order the server has the list now: the tracks it still
 // lists come first in its order, then what it no longer lists. Of those, a download the
 // user asked for (pinned) is dropped, and its file is deleted by the caller; a track the
@@ -4826,11 +4835,9 @@ void App::startDownload(size_t link, const std::string& title, const std::string
             continue;
         }
         job.todo.push_back({tracks[i], i + 1});
-        long double bytes = job.bitrate > 0 && std::isfinite(tracks[i].duration) && tracks[i].duration > 0
-                            ? std::ceil(static_cast<long double>(tracks[i].duration) * job.bitrate * 1000 / 8)
-                            : std::max(0LL, tracks[i].size);
+        const auto bytes = downloadBytes(tracks[i], job.bitrate);
         const auto maximum = std::numeric_limits<std::uintmax_t>::max();
-        needed = bytes >= static_cast<long double>(maximum - needed) ? maximum : needed + std::uintmax_t(bytes);
+        needed = bytes >= maximum - needed ? maximum : needed + bytes;
     }
     job.total = job.order.size();
     cached.source = source;
@@ -4954,12 +4961,13 @@ void App::checkAutoCache() {
     job.artist = book_->artist;
     job.playedAt = scrobble_->startedAt;
     job.link = scrobble_->link;
+    job.bitrate = openedStreamBitrate_;
     job.track.id = scrobble_->trackId;
     if (*inList < book_->titles.size()) job.track.title = book_->titles[*inList];
     if (*inList < book_->durations.size()) job.track.duration = book_->durations[*inList];
     if (*inList < book_->suffixes.size()) job.track.suffix = book_->suffixes[*inList];
     if (*inList < book_->sizes.size()) job.track.size = book_->sizes[*inList];
-    if (job.track.size > 0 && std::uintmax_t(job.track.size) > limit) return; // would be evicted at once: fetched at every play
+    if (downloadBytes(job.track, job.bitrate) > limit) return; // would be evicted at once: fetched at every play
     autoQueue_.push_back(std::move(job));
 }
 
@@ -4979,15 +4987,15 @@ void App::pumpAutoCache() {
     std::error_code ec;
     std::filesystem::create_directories(cacheRoot_, ec);
     std::optional<std::uintmax_t> room = freeSpace_(cacheRoot_);
-    std::uintmax_t size = autoQueue_.front().track.size > 0 ? std::uintmax_t(autoQueue_.front().track.size) : 0;
-    if (room && *room < size + kAutoCacheReserve) {
+    std::uintmax_t size = downloadBytes(autoQueue_.front().track, autoQueue_.front().bitrate);
+    if (room && (*room < kAutoCacheReserve || size > *room - kAutoCacheReserve)) {
         autoQueue_.pop_front();
         return;
     }
     autoJob_ = std::move(autoQueue_.front());
     autoQueue_.pop_front();
-    autoRequest_ = servers_[autoJob_->link].downloader.download(autoJob_->track.id, trackDestination(autoJob_->source, autoJob_->track, autoJob_->link),
-                                        autoJob_->track.size, {}, [this](Downloader::Result r) { onAutoCached(r); });
+    autoRequest_ = servers_[autoJob_->link].downloader.download(autoJob_->track.id, trackDestination(autoJob_->source, autoJob_->track, autoJob_->link, autoJob_->bitrate),
+                                        autoJob_->track.size, {}, [this](Downloader::Result r) { onAutoCached(r); }, autoJob_->bitrate);
 }
 
 // The transfer in flight is cancelled on the downloader it was started on.
@@ -5014,7 +5022,8 @@ void App::dropAutoCache(const RemoteSource& list, size_t link) {
     }
 }
 
-// Silent, whatever happens. A failure leaves its .part, which the next try of that track continues.
+// Silent, whatever happens. A failure leaves its .part: the next try resumes an
+// original, while a transcode restarts it.
 void App::onAutoCached(Downloader::Result result) {
     autoRequest_ = 0;
     if (!autoJob_) return;
@@ -5026,8 +5035,8 @@ void App::onAutoCached(Downloader::Result result) {
     }
     const TrackCache& store = trackCacheOf(job.link);
     if (!store.enabled()) return;
-    std::filesystem::path file = store.listFolder(job.source) / downloadFileName(job.track);
-    if (!addToManifest(job.source, job.track, {job.title, job.artist, false, false, job.playedAt, nullptr}, job.link)) {
+    std::filesystem::path file = store.listFolder(job.source) / downloadFileName(job.track, job.bitrate);
+    if (!addToManifest(job.source, job.track, {job.title, job.artist, false, false, job.playedAt, nullptr, nullptr, job.bitrate}, job.link)) {
         std::error_code ec;
         std::filesystem::remove(file, ec);
         return;
@@ -5049,8 +5058,8 @@ std::vector<std::filesystem::path> App::partsInUse() const {
     };
     if (download_)
         for (size_t i = download_->next; i < download_->todo.size(); ++i) add(download_->source, download_->todo[i].track, download_->link, download_->bitrate);
-    if (autoJob_) add(autoJob_->source, autoJob_->track, autoJob_->link);
-    for (const AutoCache& job : autoQueue_) add(job.source, job.track, job.link);
+    if (autoJob_) add(autoJob_->source, autoJob_->track, autoJob_->link, autoJob_->bitrate);
+    for (const AutoCache& job : autoQueue_) add(job.source, job.track, job.link, job.bitrate);
     return parts;
 }
 
