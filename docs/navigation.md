@@ -211,8 +211,9 @@ Settings no longer change in place with Left / Right (rule 6). Left / Right in m
 
 **As built (step 2.4):** Options on a menu item opens "Options, <item>" with Play now, Play next
 and Add to queue, on local tracks, local albums and Play all, and on remote tracks, albums,
-playlists and artists. Every other item, and Options in the book player, plays the edge sound and
-says "No options". An album's Options also has Album info (step 2.5). A remote
+playlists and artists. Every other item plays the edge sound and says "No options".
+The book player also says "No options" unless it has a later server place to offer
+(audiobookshelf.md 3.4). An album's Options also has Album info (step 2.5). A remote
 album, playlist or artist is loaded first ("Loading."); Play now says "Playing Weather." and the
 other two "Added Weather, 12 tracks. 30 in queue."; with no music queue loaded they say "Press play."
 instead (and while a book plays they leave it playing and keep the queue for Continue).
@@ -266,6 +267,24 @@ instead (and while a book plays they leave it playing and keep the queue for Con
   a restart. Each is left out when it has nothing.
 - The book player has no queue, shuffle or repeat. Its step units are Skip · Chapter ·
   10 minutes, the music player's are Skip · Track · Album.
+
+### A later server place in a book
+
+A book on a server that syncs progress starts playing its local place immediately and asks
+for the server's place silently. This also applies to a whole download while offline: a
+failed progress request says nothing and does not delay playback.
+
+When the server's saved place is newer and more than 30 seconds away, a book with no local
+place moves there and says the chapter title. With a local place it keeps playing and says
+once: "The server has a later place, chapter 5. It is in Options." Options in the book
+player then opens "Options, <book>" with a first action, "Go to the server's place, chapter
+5, 12 minutes" (the chapter number and time are the server's). OK moves to that exact
+place, returns to the player, and says the chapter; a paused book stays paused. The offer
+is gone after use. Choosing a chapter explicitly keeps that chapter, including the first;
+a later server place is offered in Options instead of moving automatically.
+Older places, differences of 30 seconds or less, missing progress and
+errors say nothing. Leaving the player, changing books, sleep or shutdown drops the pending
+answer and offer. A later opening asks again.
 
 ### Where am I in a player
 

@@ -361,7 +361,7 @@ The rules behind this table, and the checklist for new menus, are in
 | Home short | | previous screen | previous screen |
 | Home long | | home menu | home menu |
 | Volume up / down | content volume ± 5 % (`kVolumeStep`) on every screen, held repeats; edge sound once per press at 0 and 100 % | | |
-| Options | "Options, <item>" on an item with actions; in the music player "Options, <track>" (Go to album, Album info); otherwise "No options." with the edge sound | | |
+| Options | "Options, <item>" on an item with actions; in the music player "Options, <track>" (Go to album, Album info), in the book player a later server place when offered; otherwise "No options." with the edge sound | | |
 | Talk | "not available yet" | | |
 | Power short | sleep | | |
 | Power long | power menu | | |
@@ -763,7 +763,21 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   delivers only progress-save acknowledgements on the caller thread (`Audiobookshelf::finish()`),
   so completed exit saves can update the persisted marker without concurrent state-map writes.
   Browsing callbacks never run during this drain. Real-server listening and offline retry need a
-  device check; pulling a place and Continue listening remain steps 3.4 and 3.5.
+  device check; Continue listening remains step 3.5.
+- **Pulling a book's place (audiobookshelf.md 3.4).** Once `playServerBook()` has opened local
+  playback, `pullProgress()` asks the book's server without Loading or a wait. The opening remembers
+  whether a local position existed (an explicit chapter is also a local choice); `openPlayer()`
+  also pulls when returning to a loaded book.
+  `serverPlace()` maps timeline seconds to file and chapter, rejecting unknown multi-file timelines.
+  A newer `lastUpdate` than `posat` and a difference greater than 30 seconds moves an unpositioned book
+  automatically; otherwise it offers the place once in speech and as the first book-player Options
+  action. Older, nearby, missing and failed answers are silent. `useServerPlace()` preserves play/pause,
+  seeks or opens the target file, and says its chapter. The accepted place is kept in memory with the
+  server timestamp; accepting an Options offer also serializes a save after any older local save, so
+  pausing while the notice is pending cannot overwrite the chosen place remotely. The pull has a request
+  id, generation and weak App lifetime guard. `cancelProgressPull()` drops it and its offer on replacement,
+  player-screen removal, sleep, power off, restart or shutdown. Whole downloads play at once even if
+  the background progress GET fails offline. No state is written to disk by a pull.
 - **Server chapters (audiobookshelf.md 2.6).** `openServerBook()` passes `RemoteBook::chapters` to
   `serverBookOf()`, which places them with `serverChaptersOf()`: a file starts where the `durations`
   before it add up to (what Audiobookshelf calls `startOffset`), so `Book::chapters` holds

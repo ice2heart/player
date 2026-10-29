@@ -469,7 +469,7 @@ private:
     bool openBook(const Book& book, bool autoplay); // false if it cannot be opened
     // The saved place `pos:` + book.path: the file and the seconds, none (0, 0) when unknown or out of range.
     std::pair<size_t, double> savedPlace(const Book& book) const;
-    bool playServerBook(const Book& book, size_t file, double position, Then opened);
+    bool playServerBook(const Book& book, size_t file, double position, Then opened, bool explicitPlace = false);
     bool playMusic(const Book& album, size_t track, Then opened = {},
                    double position = 0); // false if it failed at once
     // Replaces the music queue with `entries` and plays from `track`. `list` is what they came from
@@ -610,6 +610,20 @@ private:
         std::string album, position, stamp;
         RemoteProgress progress;
     };
+    struct ServerPlace {
+        RemoteProgress progress;
+        size_t file = 0;
+        double position = 0;
+        int chapter = 0;
+    };
+    void pullProgress(bool hadLocal, std::string localStamp);
+    void cancelProgressPull();
+    std::optional<ServerPlace> serverPlace(RemoteProgress progress) const;
+    void useServerPlace(ServerPlace place);
+    MusicServer::RequestId progressPull_ = 0;
+    size_t progressPullLink_ = 0;
+    std::uint64_t progressPullScreen_ = 0, progressPullGeneration_ = 0;
+    std::optional<ServerPlace> serverPlace_;
     void recordProgress(bool finished = false);
     void pushProgress();
     void sendProgress(const std::string& id, ProgressSave save);

@@ -97,6 +97,8 @@ constexpr double kChapterSlack = 0.05;
 constexpr double kChapterPositionSlack = 0.25;
 // Previous chapter within this many seconds of a chapter's start goes to the chapter before it.
 constexpr double kPreviousRestartAfter = 3;
+// Ignore small differences between independently saved listening places.
+constexpr double kServerPlaceDistance = 30;
 // A server that is marked down is pinged in the background (docs/queue.md, "Playing it"): this long after
 // it was marked, then this long after the first ping went unanswered, then every kPingEvery.
 constexpr std::chrono::seconds kPingFirst{10};
@@ -721,6 +723,7 @@ void App::finishRefresh() {
 
 void App::shutdown() {
     if (shutDown_) return; // the player is closed now: a second save would write its place as 0
+    cancelProgressPull();
     shutDown_ = true;
     saveOnExit();
     for (auto [link, request] : progressRetries_) serverAt(link).cancel(request);
@@ -1050,6 +1053,7 @@ void App::closeScreens(size_t keep) {
         }
         if (ping_ && pingScreen_ == id) serverAt(pingLink_).cancel(std::exchange(ping_, 0));
         if (resume_ && resumeScreen_ == id) cancelResume(); // a server book still loading for this screen
+        if (progressPullScreen_ == id) cancelProgressPull();
         if (loading_.screen == id) cancelLoading();         // an album Options is loading for
         if (saving_.screen == id) cancelSaving();           // Save as playlist is waiting for the server
         bool drop = pendingOpen_ && pendingOpen_->screen == id;
@@ -1803,9 +1807,9 @@ std::vector<MenuItem> App::bookPage(const RemoteAlbum& album, const RemoteBook& 
     if (remote.tracks.empty()) return {};
     const std::string ref = LibraryIndex::seenRef(servers_[link].key, SeenKind::Album, album.id);
     auto book = std::make_shared<const Book>(serverBookOf(ref, album.name, album.artist, album.id, remote.tracks, link, remote.chapters));
-    auto play = [this, book](size_t file, double position) {
+    auto play = [this, book](size_t file, double position, bool explicitPlace = false) {
         std::uint64_t screen = screens_.back().id;
-        playServerBook(*book, file, position, [this, screen] { enterPlayerFrom(screen); });
+        playServerBook(*book, file, position, [this, screen] { enterPlayerFrom(screen); }, explicitPlace);
     };
     std::vector<MenuItem> items;
     MenuItem all = action("Play book", [this, play, book] {
@@ -1832,7 +1836,7 @@ std::vector<MenuItem> App::bookPage(const RemoteAlbum& album, const RemoteBook& 
         }));
     if (!onDisk.empty()) items.push_back(deleteDownloadItem(source, album.name, link));
     auto chapter = [&](std::string label, size_t file, double start) {
-        MenuItem item = action(std::move(label), [play, file, start] { play(file, start); });
+        MenuItem item = action(std::move(label), [play, file, start] { play(file, start, true); });
         item.okHint = "play";
         items.push_back(std::move(item));
     };
@@ -2113,11 +2117,24 @@ std::string selectionText(const std::string& title, size_t tracks) {
 }
 } // namespace
 
-// Options on the selected item of a menu; in the music player, for the playing track. The book player and
-// an item with no actions say "No options" with the edge sound.
+// Options on a menu item or the playing track; a book offers its later server place.
+// With no available actions, say "No options" with the edge sound.
 void App::openOptions() {
     if (mode() == Mode::Player && music_ && book_ && !queue_.empty()) {
         openMenu("Options, " + trackTitle(fileIndex_), [this] { return playerOptionsMenu(); });
+        return;
+    }
+    if (mode() == Mode::Player && !music_ && book_ && serverPlace_) {
+        openMenu("Options, " + book_->title, [this] {
+            if (!serverPlace_) return std::vector<MenuItem>{};
+            const ServerPlace place = *serverPlace_;
+            return std::vector<MenuItem>{action("Go to the server's place, chapter " + std::to_string(place.chapter + 1) +
+                ", " + spokenDuration(place.progress.seconds), [this, place] {
+                    if (!serverPlace_) return;
+                    if (auto player = playerScreenIndex()) closeScreens(*player + 1);
+                    useServerPlace(place);
+                })};
+        });
         return;
     }
     if (mode() == Mode::Menu && !screens_.empty()) {
@@ -3453,12 +3470,15 @@ void App::openServerBook(const IndexItem& item) {
 }
 
 // playMusic() for a book: its chapters are the tracks (the book player) and it keeps its place.
-bool App::playServerBook(const Book& book, size_t file, double position, Then opened) {
+bool App::playServerBook(const Book& book, size_t file, double position, Then opened, bool explicitPlace) {
     if (book_) rememberPosition();
-    auto playing = [this, opened = std::move(opened)] {
+    const bool hadLocal = explicitPlace || !state_.getString("pos:" + book.path.string()).empty() || file != 0 || position != 0;
+    const std::string localStamp = state_.getString("posat:" + book.path.string());
+    auto playing = [this, hadLocal, localStamp, opened = std::move(opened)] {
         sleepAtChapterEnd_ = -1;
         pausedAt_.reset();
         if (opened) opened();
+        pullProgress(hadLocal, localStamp);
     };
     return switchTo(book, false, file, position, true, std::move(playing)) != OpenResult::Failed;
 }
@@ -3598,6 +3618,7 @@ void App::restorePrevious() {
 // back; a book of the same kind replaces the loaded one and leaves the parked one alone.
 App::OpenResult App::switchTo(const Book& book, bool music, size_t file, double position, bool autoplay,
                               Then opened, std::optional<Queue> queue, bool continuing) {
+    cancelProgressPull();
     pushProgress(); // the book being replaced keeps its last heard place on its server
     progressBook_.clear();
     progressHeardSince_.reset();
@@ -4153,8 +4174,11 @@ void App::openPlayer(bool music) {
         // track has opened (onOpened()) it stays so, and choosing it again tries again.
         const std::uint64_t screen = screens_.empty() ? 0 : screens_.back().id;
         openFile(fileIndex_, *reopenAt_, true, Origin::Menu, [this, screen] { enterPlayerFrom(screen); }, {});
-    } else if (book_ && music_ == music) enterPlayer();
-    else if (parked_ && parked_->music == music) continueParked();
+    } else if (book_ && music_ == music) {
+        enterPlayer();
+        pullProgress(!state_.getString("pos:" + book_->path.string()).empty() || bookTime(fileIndex_, place()) > 0,
+                     state_.getString("posat:" + book_->path.string()));
+    } else if (parked_ && parked_->music == music) continueParked();
     else resumePlayer(music);
 }
 
@@ -4186,6 +4210,7 @@ void App::continueParked() {
                  sleepAtChapterEnd_ = -1;
                  pausedAt_.reset();
                  enterPlayerFrom(screen);
+                 pullProgress(true, state_.getString("posat:" + book_->path.string()));
              },
              target.music ? std::optional<Queue>(std::move(target.queue)) : std::nullopt, true);
 }
@@ -5043,6 +5068,105 @@ MusicServer::Stream App::newStream(size_t file) {
     return stream;
 }
 
+// A pull belongs to this opening of the book, not to the server's current screen.
+void App::cancelProgressPull() {
+    ++progressPullGeneration_;
+    if (progressPull_) serverAt(progressPullLink_).cancel(std::exchange(progressPull_, 0));
+    progressPullScreen_ = 0;
+    serverPlace_.reset();
+}
+
+std::optional<App::ServerPlace> App::serverPlace(RemoteProgress progress) const {
+    if (!book_ || book_->files.empty() || !std::isfinite(progress.seconds) || progress.seconds < 0) return std::nullopt;
+    ServerPlace place;
+    place.progress = progress;
+    place.position = progress.seconds;
+    while (place.file + 1 < book_->files.size()) {
+        const double length = trackDuration(place.file);
+        if (length <= 0) return std::nullopt; // no timeline across files of unknown length
+        if (place.position < length) break;
+        place.position -= length;
+        ++place.file;
+    }
+    const double length = trackDuration(place.file);
+    if (length > 0) place.position = std::min(place.position, length);
+    const auto list = chapters();
+    for (size_t i = 0; i < list.size(); ++i)
+        if (list[i].file < place.file || (list[i].file == place.file && list[i].start <= place.position + kChapterPositionSlack))
+            place.chapter = int(i);
+    return place;
+}
+
+void App::pullProgress(bool hadLocal, std::string localStamp) {
+    cancelProgressPull();
+    if (!book_ || music_ || !book_->serverBook || !book_->source || book_->link >= servers_.size() ||
+        !serverAt(book_->link).syncsProgress()) return;
+    const auto screen = playerScreenIndex();
+    if (!screen) return;
+    progressPullScreen_ = screens_[*screen].id;
+    progressPullLink_ = book_->link;
+    const auto generation = progressPullGeneration_;
+    const std::string id = book_->path.string();
+    const std::weak_ptr<int> lifetime = progressLifetime_;
+    progressPull_ = serverAt(book_->link).progress(book_->source->id,
+        [this, lifetime, generation, id, hadLocal, localStamp = std::move(localStamp)](MusicServer::Error error,
+                                                                                  std::optional<RemoteProgress> progress) {
+            if (lifetime.expired() || generation != progressPullGeneration_ || shutDown_ || sleeping_ || quit_ ||
+                !book_ || book_->path.string() != id) return;
+            progressPull_ = 0;
+            if (error != MusicServer::Error::None || !progress) return;
+            const std::string currentStamp = state_.getString("posat:" + id);
+            std::int64_t stamp = 0;
+            try { if (!(currentStamp.empty() ? localStamp : currentStamp).empty())
+                stamp = std::stoll(currentStamp.empty() ? localStamp : currentStamp); }
+            catch (...) { return; }
+            if (static_cast<long double>(progress->updated) <= static_cast<long double>(stamp) * kProgressMillisPerSecond ||
+                std::abs(progress->seconds - bookTime(fileIndex_, place())) <= kServerPlaceDistance) return;
+            const auto target = serverPlace(*progress);
+            if (!target) return;
+            if (!hadLocal && currentStamp.empty()) {
+                useServerPlace(*target);
+            } else {
+                serverPlace_ = *target;
+                say("The server has a later place, chapter " + std::to_string(target->chapter + 1) + ". It is in Options.");
+            }
+        });
+}
+
+void App::useServerPlace(ServerPlace target) {
+    if (!book_ || music_) return;
+    const std::string id = book_->path.string();
+    const auto generation = progressPullGeneration_;
+    const bool needsSave = serverPlace_.has_value() || progressOut_.contains(id);
+    auto arrived = [this, target, id, generation, needsSave] {
+        if (generation != progressPullGeneration_ || !book_ || book_->path.string() != id) return;
+        serverPlace_.reset();
+        progressQueued_.erase(id); // a queued older local place must not replace the accepted one
+        const std::string stamp = std::to_string(target.progress.updated / kProgressMillisPerSecond);
+        state_.setString("pos:" + id, std::to_string(fileIndex_) + ":" + tenths(place()));
+        state_.setString("posat:" + id, stamp);
+        state_.erase("finished:" + id);
+        if (needsSave) {
+            // A pause after the notice may already have sent the old local
+            // place. Serialize the accepted place after that save as well.
+            state_.setString("pushdirty:" + id, "1");
+            pushProgress();
+        } else {
+            state_.setString("pushed:" + id, stamp);
+            state_.erase("pushdirty:" + id);
+        }
+        progressLast_ = bookTime(fileIndex_, place());
+        progressHeard_ = {};
+        say(chapters()[size_t(currentChapter())].title + ".");
+    };
+    if (target.file != fileIndex_ || !player_.isOpen())
+        loadFile(target.file, target.position, willPlay(), Origin::Key, std::move(arrived));
+    else {
+        player_.seek(target.position);
+        arrived();
+    }
+}
+
 // Record only in memory. Whole seconds remain wall-clock seconds, even if two places
 // are recorded in the same second; invalidate the acknowledgement in that case.
 void App::recordProgress(bool finished) {
@@ -5281,6 +5405,7 @@ void App::setSleepTimer(int minutes, bool endOfChapter) {
 }
 
 void App::sleep(const std::string& announcement) {
+    cancelProgressPull();
     cancelResume();
     cancelLoading();
     cancelSaving();
@@ -5311,6 +5436,7 @@ void App::wake() {
 }
 
 void App::powerOff() {
+    cancelProgressPull();
     cancelResume(); // the front end ticks on while "Goodbye" is spoken
     cancelLoading();
     cancelSaving();

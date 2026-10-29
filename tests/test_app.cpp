@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <fstream>
 #include <memory>
+#include <new>
 #include <thread>
 
 using namespace oap;
@@ -16697,4 +16698,304 @@ TEST_F(BookProgressPushTest, ExitWithAnOlderSaveOutstandingKeepsTheLatestPlaceFo
     ASSERT_NO_FATAL_FAILURE(answerRetry());
     ASSERT_EQ(server.progressSaves.size(), 2u);
     EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 20);
+}
+
+// Pulls start after local playback, and are observed through speech, file opens,
+// seeks, and saved places. The fake answers only when explicitly told to.
+class BookProgressPullTest : public BookProgressPushTest {
+protected:
+    static RemoteProgress later(double seconds = 250) { return {seconds, 380, false, 1700000010000}; }
+    void localPlace(double seconds = 10) {
+        state.setString("pos:" + ref("b1"), "0:" + std::to_string(seconds));
+        state.setString("posat:" + ref("b1"), "1699999990");
+        state.setString("pushed:" + ref("b1"), "1699999990");
+    }
+    void answerPlace(std::optional<RemoteProgress> place) {
+        ASSERT_TRUE(server.replyProgress(lastOf(Kind::Progress), place));
+        app->tick();
+    }
+    void expectNoOptions() {
+        press(Button::Options);
+        EXPECT_EQ(app->mode(), App::Mode::Player);
+        EXPECT_EQ(speech.last(), "No options.");
+    }
+};
+
+TEST_F(BookProgressPullTest, NoLocalPlacePlaysAtOnceThenMovesToTheServersFileAndSaysTheChapter) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    EXPECT_TRUE(player.playing());
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    EXPECT_EQ(server.requests.back().kind, Kind::Progress);
+    EXPECT_EQ(server.requests.back().arg, "b1");
+    speech.said.clear();
+    ASSERT_NO_FATAL_FAILURE(answerPlace(later()));
+    EXPECT_NE(player.opened.back().find("t2"), std::string::npos);
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(speech.last(), "End.");
+    EXPECT_EQ(state.getString("pos:" + ref("b1")), "1:50.0");
+    EXPECT_EQ(state.getString("posat:" + ref("b1")), "1700000010");
+    EXPECT_EQ(stateFile.saves, 0);
+    ASSERT_NO_FATAL_FAILURE(expectNoOptions());
+}
+
+TEST_F(BookProgressPullTest, ALaterServerPlaceIsOfferedOnceInOptionsAndOkSeeksWithoutChangingPause) {
+    localPlace();
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    EXPECT_DOUBLE_EQ(player.pos, 10);
+    ASSERT_NO_FATAL_FAILURE(answerPlace(later()));
+    EXPECT_EQ(speech.last(), "The server has a later place, chapter 3. It is in Options.");
+    EXPECT_DOUBLE_EQ(player.pos, 10);
+    const auto spoken = speech.said.size();
+    app->tick();
+    EXPECT_EQ(speech.said.size(), spoken);
+    press(Button::PlayPause);
+    press(Button::Options);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Go to the server's place, chapter 3, 4 minutes 10 seconds"}));
+    press(Button::Ok);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(speech.last(), "End.");
+    ASSERT_NO_FATAL_FAILURE(expectNoOptions());
+}
+
+TEST_F(BookProgressPullTest, AnOlderOrNearbyOrMissingServerPlaceAndFailuresAreSilent) {
+    for (int scenario = 0; scenario < 5; ++scenario) {
+        SCOPED_TRACE(scenario);
+        app.reset(); player = FakePlayer{}; state.clear();
+        localPlace();
+        ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+        speech.said.clear();
+        if (scenario == 0) {
+            auto progress = later(); progress.updated = 1699999990000;
+            ASSERT_NO_FATAL_FAILURE(answerPlace(progress));
+        } else if (scenario == 1) {
+            ASSERT_NO_FATAL_FAILURE(answerPlace(later(40))); // exactly 30 seconds away
+        } else if (scenario == 2) {
+            ASSERT_NO_FATAL_FAILURE(answerPlace(std::nullopt));
+        } else {
+            ASSERT_TRUE(server.fail(lastOf(Kind::Progress), scenario == 3 ? MusicServer::Error::Unreachable : MusicServer::Error::BadLogin));
+            app->tick();
+        }
+        EXPECT_TRUE(speech.said.empty());
+        EXPECT_DOUBLE_EQ(player.pos, 10);
+        EXPECT_TRUE(player.playing());
+        ASSERT_NO_FATAL_FAILURE(expectNoOptions());
+    }
+}
+
+TEST_F(BookProgressPullTest, AOneFileBookUsesItsChaptersAndSeeksInsideThePlayingFile) {
+    RemoteBook remote = bookOf({file("m4b", 1000)});
+    remote.chapters = {{"Beginning", 0}, {"Second", 100}, {"Third", 700}};
+    ASSERT_NO_FATAL_FAILURE(playBook(remote));
+    const size_t opens = player.opened.size();
+    ASSERT_NO_FATAL_FAILURE(answerPlace(later(720)));
+    EXPECT_DOUBLE_EQ(player.pos, 720);
+    EXPECT_EQ(player.opened.size(), opens);
+    EXPECT_EQ(speech.last(), "Third.");
+}
+
+TEST_F(BookProgressPullTest, LeavingThePlayerDropsItsQueuedAnswerAndItsOptionsOffer) {
+    localPlace();
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    const auto request = lastOf(Kind::Progress);
+    ASSERT_TRUE(server.replyProgress(request, later())); // queued, not delivered
+    // Home is processed on keyUp; use a gesture directly without a tick between
+    // the queued answer and leaving the screen.
+    app->keyDown(Button::Home);
+    clock.advance(50ms);
+    app->keyUp(Button::Home);
+    speech.said.clear();
+    app->tick();
+    EXPECT_TRUE(speech.said.empty());
+    EXPECT_DOUBLE_EQ(player.pos, 10);
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), request), server.cancelled.end());
+    hold(Button::Home);
+    open("Now playing");
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    ASSERT_NO_FATAL_FAILURE(expectNoOptions());
+    ASSERT_NO_FATAL_FAILURE(answerPlace(later()));
+    press(Button::Options);
+    EXPECT_NE(labels().front().find("Go to the server's place"), std::string::npos);
+    hold(Button::Home);
+    open("Now playing");
+    ASSERT_NO_FATAL_FAILURE(expectNoOptions());
+}
+
+TEST_F(BookProgressPullTest, SleepShutdownPowerOffAndRestartDropPendingPullsWithoutMovingOrAnnouncing) {
+    for (int action = 0; action < 4; ++action) {
+        SCOPED_TRACE(action);
+        app.reset(); player = FakePlayer{}; state.clear();
+        ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+        const auto request = lastOf(Kind::Progress);
+        if (action == 1) app->shutdown();
+        else {
+            hold(Button::Power);
+            if (action == 0) press(Button::Ok);
+            else open(action == 2 ? "Power off" : "Restart");
+        }
+        EXPECT_FALSE(server.replyProgress(request, later()));
+        speech.said.clear();
+        app->tick();
+        EXPECT_TRUE(speech.said.empty());
+        EXPECT_DOUBLE_EQ(player.pos, 0);
+    }
+}
+
+TEST_F(BookProgressPullTest, ANewerLocalSaveWhileThePullWaitsPreventsAnAutomaticJump) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 75;
+    press(Button::PlayPause);
+    speech.said.clear();
+    auto progress = later(); progress.updated = 1699999999000;
+    ASSERT_NO_FATAL_FAILURE(answerPlace(progress));
+    EXPECT_TRUE(speech.said.empty());
+    EXPECT_DOUBLE_EQ(player.pos, 75);
+    ASSERT_NO_FATAL_FAILURE(expectNoOptions());
+}
+
+TEST_F(BookProgressPullTest, BooksMenuPlayAndNowPlayingAfterRestartBothAskForProgress) {
+    start(); syncBooks({book("b1", "Dune")});
+    open("Server"); open("Recently added");
+    answerAlbums({book("b1", "Dune")});
+    open("Dune");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters())); app->tick();
+    open("Play book");
+    EXPECT_EQ(server.requests.back().kind, Kind::Progress);
+    ASSERT_NO_FATAL_FAILURE(answerPlace(later()));
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+    app->shutdown();
+    restartFromDisk();
+    open("Now playing");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters())); app->tick();
+    EXPECT_EQ(server.requests.back().kind, Kind::Progress);
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+    auto newest = later(100); newest.updated += 1000;
+    ASSERT_NO_FATAL_FAILURE(answerPlace(newest));
+    EXPECT_EQ(speech.last(), "The server has a later place, chapter 2. It is in Options.");
+}
+
+TEST_F(BookProgressPullTest, AcceptingTheServerPlaceQueuesItAfterAnOlderOutstandingLocalSave) {
+    localPlace(); server.holdProgressSaves = true;
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    ASSERT_NO_FATAL_FAILURE(answerPlace(later()));
+    press(Button::PlayPause); // older local position is now on its way to the server
+    ASSERT_EQ(server.progressSaves.size(), 1u);
+    press(Button::Options); press(Button::Ok);
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+    ASSERT_TRUE(server.answerProgressSave()); app->tick();
+    ASSERT_EQ(server.progressSaves.size(), 2u);
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 250);
+    ASSERT_TRUE(server.answerProgressSave()); app->tick();
+    EXPECT_EQ(state.getString("pushdirty:" + ref("b1")), "");
+}
+
+TEST_F(BookProgressPullTest, ABookWithoutServerChaptersUsesTheFilesAndUnknownTimelinesAreIgnored) {
+    ASSERT_NO_FATAL_FAILURE(playBook(bookOf({file("one", 200), file("two", 180)})));
+    ASSERT_NO_FATAL_FAILURE(answerPlace(later()));
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+    EXPECT_EQ(speech.last(), "two.");
+    app.reset(); player = FakePlayer{}; state.clear();
+    ASSERT_NO_FATAL_FAILURE(playBook(bookOf({file("unknown", 0), file("two", 180)})));
+    speech.said.clear();
+    ASSERT_NO_FATAL_FAILURE(answerPlace(later()));
+    EXPECT_TRUE(speech.said.empty());
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+}
+
+TEST_F(BookProgressPullTest, ReplacingTheBookCancelsItsPendingPullAndUnsupportedServersNeverAsk) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    const auto request = lastOf(Kind::Progress);
+    hold(Button::Home); open("Library"); open("Alpha");
+    EXPECT_FALSE(server.replyProgress(request, later()));
+    EXPECT_EQ(player.file, alphaFile(1));
+    app.reset(); player = FakePlayer{}; state.clear(); server.progressSync = false;
+    const auto requests = countOf(Kind::Progress);
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    EXPECT_EQ(countOf(Kind::Progress), requests);
+    ASSERT_NO_FATAL_FAILURE(expectNoOptions());
+}
+
+TEST_F(BookDownloadTest, ProgressPullFailureDoesNotDelayOrAnnounceOverAnOfflineDownloadedBook) {
+    server.progressSync = true;
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    ASSERT_NO_FATAL_FAILURE(restartOffline());
+    open("Library");
+    speech.said.clear();
+    open("Dune");
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(player.file, fileOf(1));
+    EXPECT_EQ(server.lastRequest().kind, Kind::Progress);
+    EXPECT_FALSE(speech.heard("Loading."));
+    speech.said.clear();
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable)); app->tick();
+    EXPECT_TRUE(speech.said.empty());
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(BookProgressPullTest, AProgressReplyForADestroyedAppCannotAffectANewAppInTheSameStorage) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    const auto request = lastOf(Kind::Progress);
+    // Reuse valid storage for another App of the same type. Without the weak
+    // lifetime guard, equal book/session generations would let the old answer
+    // change the new player. This avoids relying on freed memory to crash.
+    App* storage = app.release();
+    storage->~App();
+    app.reset(new (storage) App(speech, player, sounds, volume, serverLinks(), indexStore, scanner, settings, state,
+                               clock, root, music, cache, textFiles, queueFile, scrobbleFile));
+    app->start();
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    syncBooks({book("b1", "Dune")});
+    open("Library"); open("Dune");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters())); app->tick();
+    speech.said.clear();
+    ASSERT_TRUE(server.replyProgress(request, later()));
+    server.poll();
+    EXPECT_TRUE(speech.said.empty());
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    EXPECT_TRUE(state.getString("pos:" + ref("b1")).empty());
+}
+
+TEST_F(BookProgressPullTest, ContinuingAParkedServerBookAlsoOffersTheLaterServerPlace) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 10;
+    hold(Button::Home); open("Music"); open("Albums A to Z"); open("Road Trip"); open("Sunrise");
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    hold(Button::Home); open("Continue");
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 10);
+    EXPECT_EQ(server.requests.back().kind, Kind::Progress);
+    ASSERT_NO_FATAL_FAILURE(answerPlace(later()));
+    EXPECT_EQ(speech.last(), "The server has a later place, chapter 3. It is in Options.");
+}
+
+TEST_F(BookProgressPullTest, ASlowStreamStartsThePullOnlyAfterItHasOpenedAndKeepsPlayingWhileItWaits) {
+    player.holdStreams = true;
+    start(); syncBooks({book("b1", "Dune")}); open("Library"); open("Dune");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters())); app->tick();
+    EXPECT_TRUE(player.opening());
+    EXPECT_EQ(countOf(Kind::Progress), 0u);
+    ASSERT_TRUE(player.finishOpen()); app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(server.requests.back().kind, Kind::Progress);
+    ASSERT_NO_FATAL_FAILURE(answerPlace(later(100)));
+    EXPECT_DOUBLE_EQ(player.pos, 100);
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(speech.last(), "Middle.");
+}
+
+TEST_F(BookProgressPullTest, ExplicitlyChoosingTheFirstChapterKeepsThatChoiceWhenServerProgressArrives) {
+    start(); syncBooks({book("b1", "Dune")});
+    open("Server"); open("Recently added"); answerAlbums({book("b1", "Dune")}); open("Dune");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters())); app->tick();
+    open("Intro");
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    ASSERT_NO_FATAL_FAILURE(answerPlace(later()));
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_EQ(speech.last(), "The server has a later place, chapter 3. It is in Options.");
 }
