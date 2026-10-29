@@ -25,7 +25,7 @@ Steps that touch the build, dependencies or Docker files also run the Docker tar
    - A path (contains `/` or ends in `.md`) is the plan file, `PLAN`. Default: `docs/streaming.md`. If the file doesn't exist, stop and say so.
    - A number is the phase.
    Examples: `/implement-phase 1`, `/implement-phase docs/streaming.md`, `/implement-phase docs/streaming.md 2`.
-2. Read `CLAUDE.md`, `PLAN` (the target phase, the one before it, its intro and its **Decisions** / **Open questions** sections) and skim `docs/architecture.md` sections the phase touches.
+2. Read `REPO.md`, `PLAN` (the target phase, the one before it, its intro and its **Decisions** / **Open questions** sections) and skim `docs/architecture.md` sections the phase touches.
 3. Work out how `PLAN` marks steps and progress, and tell the user how you read it (the expected format is in `docs/writing-plans.md`):
    - Step ids are `N.M`, usually rows of a `| # | Step | Tests |` table; the Tests column is that step's done criteria.
    - A step is done when its id cell is ticked as `✅ N.M` (or its `- [ ]` box is `- [x]` if the plan uses boxes). This is `MARK` below.
@@ -50,7 +50,7 @@ Fill in this prompt (keep the placeholders' content specific, not a summary of t
 ```
 You are implementing step {N.M} "{step title}" of {PLAN} in /Users/ice/hobby/deafbot.
 
-Read first: CLAUDE.md (binding rules, especially "Layering rules" and "Every test must be checked with a sabotage"), SPEC.md where the step touches product behaviour, docs/navigation.md if it touches menus or keys, the docs/architecture.md sections this step touches, the Decisions section of {PLAN}, and the full text of step {N.M} (both the Step and the Tests column).
+Read first: REPO.md (binding rules, especially "Layering rules" and "Every test must be checked with a sabotage"), SPEC.md where the step touches product behaviour, docs/navigation.md if it touches menus or keys, the docs/architecture.md sections this step touches, the Decisions section of {PLAN}, and the full text of step {N.M} (both the Step and the Tests column).
 
 Context from earlier steps in this phase:
 {one or two lines per finished step: what it added, file names, anything the next step relies on. "none" for the first step.}
@@ -58,19 +58,19 @@ Context from earlier steps in this phase:
 Do, in this order:
 1. Implement the step exactly as the plan describes. Keep the layering: app/core/ is plain C++20 with no third-party or OS calls beyond std::filesystem, talks out only through app/core/services.h interfaces, and never reads the real time (use clock_). Don't build later steps or later-phase features.
 2. Write tests for all new or changed behaviour, covering everything in the step's Tests column. Core tests use tests/fakes.h and drive App through keyDown / keyUp / tick; check what is spoken, which file plays and what is saved, not private state.
-3. Sabotage-check every new or changed test as CLAUDE.md describes, in the Ninja build-sabotage dir: green → smallest plausible bug in production code → red for the expected reason (read the message) → restore → green. Cover each meaningful branch. Never leave sabotage in the tree (check git diff).
+3. Sabotage-check every new or changed test as REPO.md describes, in the Ninja build-sabotage dir: green → smallest plausible bug in production code → red for the expected reason (read the message) → restore → green. Cover each meaningful branch. Never leave sabotage in the tree (check git diff).
 4. Run the full check until it passes:
    cmake -S . -B build && cmake --build build -j && ctest --test-dir build --output-on-failure
    If the step touches CMakeLists.txt, cmake/, docker/ or dependencies, also run the Docker targets it affects (docker build -f docker/Dockerfile --target native . / --target pi .), and the core-only configure (-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF).
 5. If your diff has no code changes (it touches only `.md` files), skip the `code-review` skill: re-read the diff yourself for wrong claims, leaked secrets and docs that no longer match the code, and write `REVIEW: skipped, no code changes`. Otherwise, before committing, you MUST run the `code-review` skill on your uncommitted working tree: call the Skill tool with skill "code-review" and args "high". Don't replace it with a review of your own. Only if the Skill tool is not available, review the diff yourself and say so in REVIEW. Either way, look for: correctness bugs, layering violations (media/ or platform/ headers in core, real time in App), threading bugs (UI vs decoder vs worker threads, callbacks after cancel or destruction), blocking calls on the UI thread, anything that could leave the user without speech or with a hung device, menus that break docs/navigation.md rules, magic numbers, missing or weak tests, dead code.
 6. Fix every real finding, add tests for bug fixes (red first, then green, sabotage-checked), and rerun the full check.
 7. Verify the step's Tests column and goal. Anything that needs a human (listening to audio, real buttons, the Pi, a real server, Wi-Fi) can't be verified by you: list it as a manual check, don't claim it.
-8. Mark the step done in {PLAN}: {MARK}. If the step changed a build or run command, update CLAUDE.md's "Build and test" section. Update docs/architecture.md if the step changed what it describes.
+8. Mark the step done in {PLAN}: {MARK}. If the step changed a build or run command, update REPO.md's "Build and test" section. Update docs/architecture.md if the step changed what it describes.
 9. Commit everything to main (no branch) with message `{N.M}: <short summary>` in the style of `git log` (plain sentence, capitalised, no trailing period); add a body when the change needs explaining, and end with the line:
    Co-Authored-By: {SUB_MODEL_NAME} <noreply@anthropic.com>
    Don't push.
 
-Stop instead of guessing if: the code and docs disagree, the step contradicts the Decisions section or CLAUDE.md, it depends on an undecided open question, or you can't make the check pass. In that case commit nothing, leave the tree as is, and report BLOCKED with the reason.
+Stop instead of guessing if: the code and docs disagree, the step contradicts the Decisions section or REPO.md, it depends on an undecided open question, or you can't make the check pass. In that case commit nothing, leave the tree as is, and report BLOCKED with the reason.
 
 Final report (this is all the orchestrator sees). Keep it terse, no prose outside these lines:
 STATUS: DONE | BLOCKED <reason if blocked>
@@ -101,9 +101,9 @@ When every step is committed:
 
 ```
 Review phase {N} of {PLAN} in /Users/ice/hobby/deafbot: the diff `git diff {BASE}..HEAD` (commits: `git log --oneline {BASE}..HEAD`).
-Read CLAUDE.md, the phase and Decisions sections of {PLAN}, and the docs/architecture.md sections the diff touches first. You MUST run the `code-review` skill on that range (Skill tool, skill "code-review", args "high {BASE}..HEAD"); review it yourself only if the Skill tool is not available, and say so. If the range has no code changes (only `.md` files), skip the skill and review the docs yourself: claims against the code, consistency between sections, leaked secrets.
+Read REPO.md, the phase and Decisions sections of {PLAN}, and the docs/architecture.md sections the diff touches first. You MUST run the `code-review` skill on that range (Skill tool, skill "code-review", args "high {BASE}..HEAD"); review it yourself only if the Skill tool is not available, and say so. If the range has no code changes (only `.md` files), skip the skill and review the docs yourself: claims against the code, consistency between sections, leaked secrets.
 Look especially for problems that only show up across steps: interfaces in app/core/services.h that one side implements differently, fakes in tests/fakes.h that behave unlike the real implementation, callbacks that can arrive after a menu or player was left, edge cases at step boundaries, duplicated helpers, layering violations, constants that ended up hard-coded, docs (architecture.md, navigation.md, help texts) that no longer match, tests that don't pin the behaviour, gaps against the phase's goal and device check.
-Then fix every real finding: tests first for bugs (red, then green), sabotage-check new tests as CLAUDE.md describes, and the full check passes (cmake --build build -j && ctest --test-dir build --output-on-failure).
+Then fix every real finding: tests first for bugs (red, then green), sabotage-check new tests as REPO.md describes, and the full check passes (cmake --build build -j && ctest --test-dir build --output-on-failure).
 Commit to main as `Phase {N} review fixes` with a body listing each fix as a `- ` bullet (see `git show f5fa32d` for the style), ending with:
 Co-Authored-By: {SUB_MODEL_NAME} <noreply@anthropic.com>
 If there is nothing worth fixing, commit nothing.

@@ -21,7 +21,7 @@ the manual checks. Run it with `/implement-phase docs/<plan>.md <phase>`.
 
 Goal: <what the user can do at the end, in one or two sentences>.
 
-| # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
 |---|------|------|
 | 1.1 | **Short title.** What to build: classes, files, keys, spoken text. | What the tests show. |
 | 1.2 | ... | ... |
