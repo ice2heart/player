@@ -769,6 +769,8 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   position; failed or stale metadata answers leave it pending. A late save answer can acknowledge
   only the same timestamp, file position and completion, and never touches a destroyed App (weak
   lifetime token). Saves of one book are serial; a newer snapshot waits behind an outstanding save.
+  Returning to the outstanding place drops a queued detour. An in-app restart keeps this ordering
+  while its transport remains alive; factory reset invalidates outstanding save callbacks and queues.
   If exit ends that queue before the newest snapshot is sent, it remains dirty for startup retry.
   `Servers::finish()` drains Audiobookshelf transports in parallel with Subsonic; after joins it
   delivers only progress-save acknowledgements on the caller thread (`Audiobookshelf::finish()`),

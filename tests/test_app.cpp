@@ -16581,6 +16581,73 @@ TEST_F(BookProgressPushTest, LateAcknowledgementCannotMarkANewerSameSecondPlaceA
     EXPECT_EQ(state.values(), saved);
 }
 
+TEST_F(BookProgressPushTest, ReturningToTheOutstandingPlaceDropsAnOlderQueuedSave) {
+    server.holdProgressSaves = true;
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 10;
+    press(Button::PlayPause); // A is in flight
+    press(Button::PlayPause);
+    player.pos = 20;
+    press(Button::PlayPause); // B waits behind A
+    press(Button::PlayPause);
+    player.pos = 10;
+    press(Button::PlayPause); // latest place is A again, in the same wall second
+    ASSERT_EQ(server.progressSaves.size(), 1u);
+    ASSERT_TRUE(server.answerProgressSave());
+    app->tick();
+    EXPECT_EQ(server.progressSaves.size(), 1u) << "the queued place at 20 is no longer current";
+    EXPECT_EQ(state.getString("pushed:" + ref("b1")), state.getString("posat:" + ref("b1")));
+    EXPECT_TRUE(state.getString("pushdirty:" + ref("b1")).empty());
+    app->shutdown();
+    EXPECT_EQ(stateFile.onDisk("pos:" + ref("b1")), "0:10.0");
+    EXPECT_EQ(server.progressSaves.size(), 1u);
+}
+
+TEST_F(BookProgressPushTest, RestartKeepsNewerProgressBehindAnOutstandingSave) {
+    server.holdProgressSaves = true;
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 10;
+    press(Button::PlayPause);
+    press(Button::PlayPause);
+    player.pos = 20;
+    press(Button::PlayPause);
+    hold(Button::Power);
+    open("Restart");
+    ASSERT_NO_FATAL_FAILURE(answerRetry());
+    EXPECT_EQ(server.progressSaves.size(), 1u) << "restart must not overlap saves for the same book";
+    ASSERT_TRUE(server.answerProgressSave());
+    app->tick();
+    ASSERT_EQ(server.progressSaves.size(), 2u);
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 20);
+    ASSERT_TRUE(server.answerProgressSave());
+    app->tick();
+    EXPECT_TRUE(state.getString("pushdirty:" + ref("b1")).empty());
+    app->shutdown();
+    EXPECT_EQ(stateFile.onDisk("pos:" + ref("b1")), "0:20.0");
+    EXPECT_EQ(stateFile.onDisk("pushed:" + ref("b1")), stateFile.onDisk("posat:" + ref("b1")));
+}
+
+TEST_F(BookProgressPushTest, FactoryResetDropsOutstandingAndQueuedProgressAcknowledgements) {
+    server.holdProgressSaves = true;
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 10;
+    press(Button::PlayPause);
+    press(Button::PlayPause);
+    player.pos = 20;
+    press(Button::PlayPause);
+    hold(Button::Home);
+    open("System");
+    open("Factory reset");
+    open("Erase all settings");
+    const auto reset = state.values();
+    ASSERT_TRUE(server.answerProgressSave());
+    app->tick();
+    EXPECT_EQ(state.values(), reset);
+    EXPECT_EQ(server.progressSaves.size(), 1u) << "erased progress must not be sent after reset";
+    EXPECT_TRUE(state.getString("pos:" + ref("b1")).empty());
+    EXPECT_TRUE(state.getString("pushed:" + ref("b1")).empty());
+}
+
 TEST_F(BookProgressPushTest, StaleStartupMetadataNeverOverwritesANewerPlayedPlace) {
     state.setString("pos:" + ref("b1"), "0:10.0");
     state.setString("posat:" + ref("b1"), "1699999990");

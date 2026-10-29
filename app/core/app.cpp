@@ -5245,6 +5245,7 @@ void App::sendProgress(const std::string& id, ProgressSave save) {
     if (auto it = progressOut_.find(id); it != progressOut_.end()) {
         if (it->second.position != save.position || it->second.stamp != save.stamp ||
             it->second.progress.finished != save.progress.finished) progressQueued_[id] = std::move(save);
+        else progressQueued_.erase(id); // returning to the in-flight place supersedes any queued detour
         return;
     }
     progressOut_[id] = save;
@@ -5482,9 +5483,13 @@ void App::restart(bool saveFirst) {
     if (saveFirst) saveOnExit();
     for (auto [link, request] : progressRetries_) serverAt(link).cancel(request);
     progressRetries_.clear();
-    progressLifetime_ = std::make_shared<int>(0);
-    progressOut_.clear();
-    progressQueued_.clear();
+    // Ordinary restart keeps the live transport: retain save ordering until
+    // its outstanding replies arrive. Factory reset must forget those saves.
+    if (!saveFirst) {
+        progressLifetime_ = std::make_shared<int>(0);
+        progressOut_.clear();
+        progressQueued_.clear();
+    }
     progressBook_.clear();
     progressHeardSince_.reset();
     progressHeard_ = {};

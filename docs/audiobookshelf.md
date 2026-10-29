@@ -285,6 +285,8 @@ durations before retrying. Failed or stale metadata does not alter playback or s
 Saves for one book are serial. If exit occurs while an older save is outstanding, the newest
 snapshot stays pending on disk for the next startup. Audiobookshelf exit draining delivers
 only save acknowledgements, on the caller after parallel transport draining has finished.
+Returning to an outstanding place drops an older queued detour. An in-app Restart preserves
+save ordering while its transport stays alive; factory reset discards outstanding callbacks and queues.
 
 Step 3.4 starts the progress GET after playback opens, including whole downloads, so a failed
 pull neither delays playback nor says an error. An explicit chapter selection is treated as a
