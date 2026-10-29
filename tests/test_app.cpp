@@ -5749,6 +5749,85 @@ TEST_F(DownloadTest, AnOriginalDownloadKeepsTheLowerCopyPlayableUntilReplacement
     EXPECT_EQ(player.file, (store().listFolder(source) / "t1.flac").string());
 }
 
+TEST_F(DownloadTest, ReplacingACopyRetargetsLocalQueueEntriesAndOpenAlbumActions) {
+    CachedList list = cachedAlbum("al1", {});
+    for (const auto& track : sized()) {
+        const std::string name = track.id + "~128.mp3";
+        touch(store().listFolder(list.source) / name);
+        list.tracks.push_back({track.id, name, track.title, track.duration, "", true, 123, 128});
+    }
+    ASSERT_TRUE(store().save(list));
+    openAlbum();
+    startDownload();
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    open("Weather");
+    open("Storm Front");
+    EXPECT_TRUE(player.file.ends_with("t1~128.mp3"));
+    finishLast();
+    finishLast();
+    finishLast();
+    hold(Button::Forward);
+    EXPECT_EQ(player.file, (store().listFolder(list.source) / "t2.mp3").string());
+    EXPECT_TRUE(player.playing());
+    press(Button::Home); // the already-open album still holds its earlier file names
+    open("Sunshine");
+    EXPECT_EQ(player.file, (store().listFolder(list.source) / "t3.flac").string());
+    press(Button::Home);
+    press(Button::Options); // the old Sunshine action can also be queued through Options
+    open("Play next");
+    hold(Button::Home);
+    open("Now playing");
+    hold(Button::Forward);
+    EXPECT_EQ(player.file, (store().listFolder(list.source) / "t3.flac").string());
+    app->shutdown();
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    ASSERT_EQ(saved->queue.size(), 4u);
+    for (const auto& entry : saved->queue.originalEntries()) {
+        EXPECT_EQ(entry.path.find("~128"), std::string::npos);
+        EXPECT_TRUE(fs::exists(entry.path));
+    }
+}
+
+TEST_F(DownloadTest, ReplacingACopyRetargetsTheParkedAndSavedMusicQueue) {
+    CachedList list = cachedAlbum("al1", {});
+    for (const auto& track : sized()) {
+        const std::string name = track.id + "~128.mp3";
+        touch(store().listFolder(list.source) / name);
+        list.tracks.push_back({track.id, name, track.title, track.duration, "", true, 123, 128});
+    }
+    ASSERT_TRUE(store().save(list));
+    openAlbum();
+    startDownload();
+    hold(Button::Home);
+    open("Music");
+    open("Albums A to Z");
+    open("Weather");
+    open("Storm Front");
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    const std::string bookFile = player.file;
+    finishLast();
+    finishLast();
+    finishLast();
+    EXPECT_EQ(player.file, bookFile) << "replacement does not disturb the book player";
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    for (const auto& entry : saved->queue.originalEntries()) {
+        EXPECT_EQ(entry.path.find("~128"), std::string::npos);
+        EXPECT_TRUE(fs::exists(entry.path));
+    }
+    hold(Button::Home);
+    open("Continue");
+    EXPECT_EQ(player.file, (store().listFolder(list.source) / "t1.flac").string());
+    hold(Button::Forward);
+    EXPECT_EQ(player.file, (store().listFolder(list.source) / "t2.mp3").string());
+    EXPECT_TRUE(player.playing());
+}
+
 TEST_F(DownloadTest, DownloadPinsOriginalHigherAndEqualCopiesWithoutFetchingOrRequiringSpace) {
     settings.setInt("downloads.bitrate", 128);
     auto tracks = sized();

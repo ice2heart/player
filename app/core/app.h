@@ -595,6 +595,10 @@ private:
     };
     static bool markTracks(CachedList& cached, const char* mark);
     bool addToManifest(const RemoteSource& source, const RemoteTrack& track, const ManifestUpdate& update, size_t link);
+    void replaceCachedPath(const std::filesystem::path& oldPath, const std::filesystem::path& newPath);
+    // Open menu actions can still hold a file name from before a quality replacement.
+    std::map<std::string, std::string> replacedCacheFiles_;
+    void resolveCachedPaths(std::vector<QueueEntry>& entries) const;
     void forgetCached(const std::string& id, const std::filesystem::path& file, size_t link); // its file is gone: the index finds another copy, if any
     std::filesystem::path failedPart_; // the .part of the explicit download that failed last: OK on Download continues it, so a trim leaves it
     std::uintmax_t cacheLimit() const; // bytes the unpinned tracks may take, 0: no automatic cache

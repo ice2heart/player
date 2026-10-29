@@ -1127,6 +1127,10 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   compares no sizes) is added to `manifest.tsv` pinned, and updates the cache index. The
   prior quality file is deleted only after the replacement manifest commits; a failed
   transfer or manifest save leaves the prior copy available. The
+  loaded, parked and previous local music queues are retargeted to the replacement
+  path without changing their order or settings; the saved queue is updated before
+  the old file is retired. Actions in an already-open Music menu resolve their
+  earlier paths to the replacement when played or added to the queue. The
   manifest then follows the server's order, and pinned tracks the server no longer lists
   are dropped with their files (`followServerOrder()`); a track listed twice counts once. A failure is spoken once and drops the `Download`; OK on the item starts again
   and skips sufficient whole copies; an original `.part` continues and a transcode restarts. The download belongs to no screen,

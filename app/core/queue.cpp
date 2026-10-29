@@ -7,6 +7,17 @@
 
 namespace oap {
 
+bool Queue::replaceLocalPath(const std::string& oldPath, const std::string& newPath) {
+    bool changed = false;
+    for (auto& entry : entries_)
+        if (entry.kind == QueueEntry::Kind::Local && entry.path == oldPath) {
+            entry.path = newPath;
+            changed = true;
+        }
+    if (changed) touch();
+    return changed;
+}
+
 namespace {
 
 std::atomic<std::uint64_t> lastRevision{0};

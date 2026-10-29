@@ -59,6 +59,10 @@ public:
     // not even revision(): for repairing a queue just read from a file, before anything is worked out from it.
     void setTitle(std::size_t index, std::string title) { entries_[index].title = std::move(title); }
 
+    // A cached file was replaced: update its local entries without changing play order,
+    // current entry, edits or the entries held next by playNext().
+    bool replaceLocalPath(const std::string& oldPath, const std::string& newPath);
+
     // A copy cut to at most `limit` entries: a window of the play order around the current entry (as centred
     // as the ends allow), kept in the original order too. Shuffle, repeat and edited are kept.
     Queue around(std::size_t limit) const;

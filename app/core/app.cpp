@@ -2439,6 +2439,7 @@ void App::cancelLoading() {
 
 // The action finishes a task: the Options screen goes away by itself and the device says what happened.
 void App::perform(Selection selection, QueueAction action) {
+    resolveCachedPaths(selection.entries);
     if (selection.entries.empty()) { // an album with no tracks: stay on the Options
         earcons_.play(Earcon::Error);
         say(selection.title + " has no tracks.");
@@ -3524,9 +3525,20 @@ bool App::playServerBook(const Book& book, size_t file, double position, Then op
 // neither saves a position nor replaces the book that start() resumes; a remote
 // list keeps its place as last_stream (rememberPosition()).
 bool App::playEntries(const Book& list, std::vector<QueueEntry> entries, size_t track, Then opened, double position) {
+    resolveCachedPaths(entries);
     Queue queue;
     queue.replace(std::move(entries), track);
     return playKept(list, std::move(queue), std::move(opened), position);
+}
+
+void App::resolveCachedPaths(std::vector<QueueEntry>& entries) const {
+    for (auto& entry : entries)
+        if (entry.kind == QueueEntry::Kind::Local) {
+            auto replacement = replacedCacheFiles_.find(entry.path);
+            std::error_code ec;
+            if (replacement != replacedCacheFiles_.end() && !std::filesystem::exists(entry.path, ec))
+                entry.path = replacement->second;
+        }
 }
 
 bool App::playKept(const Book& list, Queue queue, Then opened, double position) {
@@ -4806,6 +4818,9 @@ bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, co
         dropped.insert(dropped.end(), removed.begin(), removed.end());
     }
     if (!store.save(cached)) return false;
+    for (const auto& prior : dropped)
+        if (prior.id == track.id && prior.file != fileName)
+            replaceCachedPath(store.listFolder(source) / prior.file, store.listFolder(source) / fileName);
     deleteDropped(source, dropped, link);
     if (auto& cacheIndex = linkState(link).cacheIndex) {
         const auto path = store.listFolder(source) / fileName;
@@ -4813,6 +4828,17 @@ bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, co
         linkState(link).cacheQualities[path] = update.bitrate;
     }
     return true;
+}
+
+void App::replaceCachedPath(const std::filesystem::path& oldPath, const std::filesystem::path& newPath) {
+    const std::string old = oldPath.string(), replacement = newPath.string();
+    for (auto& [from, to] : replacedCacheFiles_)
+        if (to == old) to = replacement;
+    replacedCacheFiles_[old] = replacement;
+    bool changed = queue_.replaceLocalPath(old, replacement);
+    if (parked_ && parked_->music) changed = parked_->queue.replaceLocalPath(old, replacement) || changed;
+    if (previous_) previous_->queue.replaceLocalPath(old, replacement);
+    if (changed) saveQueue(); // a saved local queue must not keep the file we are about to retire
 }
 
 // A download runs: for the same list it says how far it is, for another it refuses.
