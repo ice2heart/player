@@ -162,14 +162,14 @@ HttpDownloader::~HttpDownloader() {
 }
 
 Downloader::RequestId HttpDownloader::download(const std::string& trackId, const std::string& dest,
-                                               long long expectedSize, Progress progress, Done done) {
+                                               long long expectedSize, Progress progress, Done done, int bitrate) {
     RequestId id = ++lastId_;
     waiting_.emplace(id, Callbacks{std::move(progress), std::move(done)});
-    std::string url = urls_(trackId);
+    std::string url = urls_(trackId, bitrate);
     {
         std::lock_guard lock(mutex_);
         if (url.empty()) finished_.emplace_back(id, Result::NotConfigured);
-        else queue_.push_back({id, std::move(url), dest, expectedSize});
+        else queue_.push_back({id, std::move(url), dest, expectedSize, bitrate});
     }
     wake_.notify_all();
     return id;
@@ -257,7 +257,7 @@ std::optional<Downloader::Result> HttpDownloader::transfer(const Job& job) {
         if (ec) return Result::Disk;
     }
 
-    for (bool fromStart = false;; fromStart = true) {
+    for (bool fromStart = job.bitrate > 0;; fromStart = true) {
         if (shouldStop()) return std::nullopt;
         Fetch fetch{*this, job.id, part, fromStart ? 0 : existingSize(part)};
         fetch.easy = curl_easy_init();
@@ -334,7 +334,7 @@ std::optional<Downloader::Result> HttpDownloader::transfer(const Job& job) {
         // The server's length is the truth; without one, the size the caller expects.
         // A body of unknown length that is longer than the expected size is not a cut one: the size is stale.
         bool incomplete = fetch.lengthKnown ? fetch.written != fetch.total
-                                            : job.expectedSize > 0 && fetch.written < job.expectedSize;
+                                            : job.bitrate == 0 && job.expectedSize > 0 && fetch.written < job.expectedSize;
         if (incomplete) return Result::Unreachable; // the `.part` is continued by the next try
         if (!fileStep([&] { fs::rename(part, dest, ec); })) return std::nullopt;
         return ec ? Result::Disk : Result::Ok;

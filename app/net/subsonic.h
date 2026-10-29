@@ -32,10 +32,11 @@ public:
     using SaltSource = std::function<std::string()>;
     static std::string randomSalt();
 
-    // The URL of a track's original file for the Downloader (`download?id=`),
+    // The URL for the Downloader: original (`download?id=`) at bitrate 0, else
+    // an MP3 transcode (`stream`, `format=mp3`, `maxBitRate` in kbps),
     // with the same token auth as stream(). It holds credentials: never speak
     // or log it. Each call has a fresh salt. Empty when `config` has no url.
-    using DownloadUrls = std::function<std::string(const std::string& trackId)>;
+    using DownloadUrls = std::function<std::string(const std::string& trackId, int bitrate)>;
     static DownloadUrls downloadUrls(Config config, SaltSource salt = randomSalt);
 
     // Requests go through `http` (an HttpClient in the program, a fake in tests).

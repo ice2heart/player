@@ -642,13 +642,14 @@ public:
         RequestId id = 0;
         std::string trackId, dest;
         long long expectedSize = 0;
+        int bitrate = 0;
     };
 
     bool configured() const override { return isConfigured; }
     RequestId download(const std::string& trackId, const std::string& dest, long long expectedSize, Progress progress,
-                       Done done) override {
+                       Done done, int bitrate = 0) override {
         RequestId id = ++lastId_;
-        requests.push_back({id, trackId, dest, expectedSize});
+        requests.push_back({id, trackId, dest, expectedSize, bitrate});
         if (isConfigured) pending_.emplace(id, Callbacks{std::move(progress), std::move(done)});
         else ready_.emplace_back(id, [done = std::move(done)] { if (done) done(Result::NotConfigured); });
         return id;

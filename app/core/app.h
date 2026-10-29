@@ -393,6 +393,7 @@ private:
     // manifest gets the track (pinned) once it is whole. Nothing here belongs to a
     // screen: leaving the menu, Home or playing something does not stop it.
     struct Download {
+        int bitrate = 0; // captured Download quality; books remain original
         struct Item {
             RemoteTrack track;
             size_t number = 0; // its place in the list, from 1
@@ -579,7 +580,7 @@ private:
     void onAutoCached(Downloader::Result result);
     void trimCache(bool flushPlays); // evicts over the limit; flushPlays: the plays in memory to the manifests
     std::vector<std::filesystem::path> partsInUse() const; // .part files of the running and waiting transfers
-    std::string trackDestination(const RemoteSource& source, const RemoteTrack& track, size_t link) const; // where a track is downloaded to
+    std::string trackDestination(const RemoteSource& source, const RemoteTrack& track, size_t link, int bitrate = 0) const; // where a track is downloaded to
     // A fetched track into its list's manifest and the index (shared by both kinds of download).
     struct ManifestUpdate {
         std::string title, artist;  // of the list
@@ -588,6 +589,7 @@ private:
         std::int64_t playedAt = 0;  // wall time of the play that caused it, 0: none
         const std::vector<std::string>* order = nullptr; // a download: the list's order on the server
         const std::vector<RemoteChapter>* chapters = nullptr; // a download: the chapters the manifest then holds
+        int bitrate = 0; // quality of the completed file
     };
     static bool markTracks(CachedList& cached, const char* mark);
     bool addToManifest(const RemoteSource& source, const RemoteTrack& track, const ManifestUpdate& update, size_t link);

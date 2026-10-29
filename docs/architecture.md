@@ -569,6 +569,7 @@ Home
 │   ├── Menu wrap around on / off
 │   ├── Auto sleep       1–30 min / never
 │   ├── Streaming quality original file / 320 / 192 / 128 kbps (an MP3 transcode for a slow link; from the next track)
+│   ├── Download quality original file / 320 / 192 / 128 kbps (independent of Streaming quality; captured when an album/playlist download starts; Books providers keep originals)
 │   ├── Cache size       off / 1 / 4 / 16 GB (automatic cache of streamed tracks; default 1 GB; a lower size is applied on the next exit; off keeps what is cached and caches nothing new)
 │   └── Sleep timer →    Off · 1 · 15 · 30 · 45 min · 1 hour · End of chapter/track (only when something is loaded; opens on the timer that is set)
 ├── System
@@ -1086,11 +1087,20 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   played", and goes first).
 - **Downloads (3.4):** `trackItems()` adds "Download album" / "Download playlist"
   after the Play item when `canDownloadFrom(link)`. `startDownload(link, ...)` reads the list's
-  manifest, skips (and pins) the tracks whose files are whole, checks the free
+  manifest, skips (and pins) the tracks whose files are whole (quality-aware replacement
+  comes in fixes 5.5), checks the free
   space of the cache root against the sizes of the rest (`App::setFreeSpace()`,
-  default `std::filesystem::space()`; an unknown size counts as 0, a failed query
+  default `std::filesystem::space()`; transcodes use duration × bitrate × 1000 / 8,
+  rounded up, when duration is known, else the original size; an unknown size counts
+  as 0, a failed query
   as room enough) and holds one `Download` in `download_`. It asks the
-  `Downloader` for one track at a time into `<list folder>/<safe id>.<suffix>`; each
+  `Downloader` for one track at a time with the job's captured `downloads.bitrate`
+  (0 original, else MP3 kbps). Originals go into `<list folder>/<safe id>.<suffix>`,
+  transcodes into `<safe id>~<bitrate>.mp3` so a different quality never resumes
+  incompatible bytes. Subsonic transcodes use `stream` with `format=mp3` and
+  `maxBitRate`; original-only Books providers use bitrate 0. A transcode starts its
+  `.part` over without Range and ignores the original size when checking a response
+  of unknown length; original retries still resume. Each
   `Ok` (whole by the downloader's own check, see `Downloader` in `services.h`; `App`
   compares no sizes) is added to `manifest.tsv` pinned, and updates the cache index. The
   manifest then follows the server's order, and pinned tracks the server no longer lists
@@ -1149,7 +1159,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 
 | File | Store | Keys |
 |------|-------|------|
-| `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` (kbps, 0 = the original file), `cache.limit_gb` (0, 1, 4 or 16; default 1), and `servers.*` (or legacy `server.*`; see [audiobookshelf.md](audiobookshelf.md#configuration-a-list-of-servers)) |
+| `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` and `downloads.bitrate` (kbps, 0 = the original file; download quality defaults to original), `cache.limit_gb` (0, 1, 4 or 16; default 1), and `servers.*` (or legacy `server.*`; see [audiobookshelf.md](audiobookshelf.md#configuration-a-list-of-servers)) |
 | `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_player`: `music` or `book`, the player used last; `unit.music` / `unit.book`: the step unit of each player (0 Skip, 1 Track / Chapter, 2 Album / 10 minutes); `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.<server key>.version`: the catalogue version of the last sync with that server; `catalogue.<server key>.folder`: its `audiobook_folder` at that sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); syncing server books also use `posat:<id>` (recorded wall seconds), `pushed:<id>` (acknowledged timestamp), `pushdirty:<id>` (pending changed place) and `finished:<id>` (completion retained until playback restarts), where `<id>` is `<server key>:album:<album id>`; `last_stream.*` (`.server`, `.user`, `.kind`, `.id`, `.title`, `.track`, `.track_id`, `.pos`): only read, from a state.tsv of an older version (below); it is removed once a music queue plays |
 | `scrobbles.tsv` (next to `state.tsv`; `defaultScrobbleFile()`) | `App` through `TextFiles` (`writeAtomically()`) | the scrobble outbox (`app/core/scrobble_file.{h,cpp}`), see below |
 | `queue.tsv` (next to `state.tsv`; `defaultQueueFile()`) | `App` through `TextFiles` (`writeAtomically()`) | the music queue (`app/core/queue_file.{h,cpp}`), see below |

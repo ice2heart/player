@@ -14,7 +14,7 @@ class NoDownloader : public Downloader {
 public:
     bool configured() const override { return false; }
     RequestId download(const std::string& trackId, const std::string& dest, long long expectedSize, Progress progress,
-                      Done done) override;
+                      Done done, int bitrate = 0) override;
     void cancel(RequestId id) override;
     void poll() override;
 

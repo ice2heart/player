@@ -44,6 +44,7 @@ constexpr const char* kLongPress = "buttons.long_press_ms";
 constexpr const char* kMenuWrap = "menu.wrap";
 constexpr const char* kAutoSleep = "power.auto_sleep_min";
 constexpr const char* kStreamingBitrate = "streaming.bitrate"; // kbit/s of a transcode; 0: the original file
+constexpr const char* kDownloadBitrate = "downloads.bitrate";
 constexpr const char* kCacheLimit = "cache.limit_gb"; // automatic cache: gigabytes of unpinned tracks, 0: off
 constexpr const char* kLastBook = "last_book";
 // The player used last, "music" or "book": which one Home lists first and start() resumes.
@@ -2854,6 +2855,7 @@ std::vector<MenuItem> App::settingsMenu() {
                            {{1, "1 minute"}, {2, "2 minutes"}, {5, "5 minutes"}, {10, "10 minutes"}, {30, "30 minutes"}, {0, "never"}}, 5));
     // Read when a track is opened: a change takes effect with the next one.
     items.push_back(choice("Streaming quality", kStreamingBitrate, kStreamingQualities, kOriginalQuality));
+    items.push_back(choice("Download quality", kDownloadBitrate, kStreamingQualities, kOriginalQuality));
     // Read by the automatic cache when it queues a track; a lower limit evicts on the next exit or cached track.
     items.push_back(choice("Cache size", kCacheLimit,
                            {{0, "off"}, {1, "1 gigabyte"}, {4, "4 gigabytes"}, {16, "16 gigabytes"}},
@@ -4678,9 +4680,11 @@ std::string App::downloadProgress() const {
 
 namespace {
 // The track's file in its list's folder: its id, which is unique, and its type.
-std::string downloadFileName(const RemoteTrack& track) {
+std::string downloadFileName(const RemoteTrack& track, int bitrate = 0) {
     std::string name = TrackCache::safeName(track.id);
-    if (!track.suffix.empty()) name += "." + TrackCache::safeName(track.suffix);
+    // safeName escapes ~ in both ids and suffixes, so this cannot alias an original.
+    if (bitrate > 0) name += "~" + std::to_string(bitrate) + ".mp3";
+    else if (!track.suffix.empty()) name += "." + TrackCache::safeName(track.suffix);
     return name;
 }
 
@@ -4726,8 +4730,8 @@ void App::deleteDropped(const RemoteSource& source, const std::vector<CachedTrac
     }
 }
 
-std::string App::trackDestination(const RemoteSource& source, const RemoteTrack& track, size_t link) const {
-    return (trackCacheOf(link).listFolder(source) / downloadFileName(track)).string();
+std::string App::trackDestination(const RemoteSource& source, const RemoteTrack& track, size_t link, int bitrate) const {
+    return (trackCacheOf(link).listFolder(source) / downloadFileName(track, bitrate)).string();
 }
 
 // The index has one file per track id, and a track can be in two lists (an album and a playlist).
@@ -4756,9 +4760,9 @@ bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, co
         cached.artist = update.artist;
     }
     if (update.chapters) cached.chapters = *update.chapters;
-    std::string fileName = downloadFileName(track);
+    std::string fileName = downloadFileName(track, update.bitrate);
     CachedTrack entry{track.id, fileName, track.title, track.duration, update.order ? kPartialMark : "", update.pinned,
-                      update.playedAt >= kEarliestPlayTime ? update.playedAt : 0};
+                      update.playedAt >= kEarliestPlayTime ? update.playedAt : 0, update.bitrate};
     auto old = std::find_if(cached.tracks.begin(), cached.tracks.end(), [&](const CachedTrack& t) { return t.id == track.id; });
     if (old != cached.tracks.end()) {
         entry.pinned = entry.pinned || old->pinned;
@@ -4800,6 +4804,8 @@ void App::startDownload(size_t link, const std::string& title, const std::string
     CachedList cached = store.load(source);
     std::vector<CachedTrack>& manifest = cached.tracks;
     Download job;
+    job.bitrate = serverAt(link).catalogue() == MusicServer::Catalogue::Books ? 0 :
+                  std::max(0, config_.getInt(kDownloadBitrate, kOriginalQuality));
     job.link = link;
     job.source = source;
     job.title = title;
@@ -4820,7 +4826,11 @@ void App::startDownload(size_t link, const std::string& title, const std::string
             continue;
         }
         job.todo.push_back({tracks[i], i + 1});
-        if (tracks[i].size > 0) needed += std::uintmax_t(tracks[i].size);
+        long double bytes = job.bitrate > 0 && std::isfinite(tracks[i].duration) && tracks[i].duration > 0
+                            ? std::ceil(static_cast<long double>(tracks[i].duration) * job.bitrate * 1000 / 8)
+                            : std::max(0LL, tracks[i].size);
+        const auto maximum = std::numeric_limits<std::uintmax_t>::max();
+        needed = bytes >= static_cast<long double>(maximum - needed) ? maximum : needed + std::uintmax_t(bytes);
     }
     job.total = job.order.size();
     cached.source = source;
@@ -4863,7 +4873,7 @@ void App::startDownload(size_t link, const std::string& title, const std::string
 void App::fetchNextTrack() {
     Download& job = *download_;
     const RemoteTrack& track = job.todo[job.next].track;
-    job.request = servers_[job.link].downloader.download(track.id, trackDestination(job.source, track, job.link), track.size, {}, [this](Downloader::Result result) { onTrackDownloaded(result); });
+    job.request = servers_[job.link].downloader.download(track.id, trackDestination(job.source, track, job.link, job.bitrate), track.size, {}, [this](Downloader::Result result) { onTrackDownloaded(result); }, job.bitrate);
 }
 
 void App::onTrackDownloaded(Downloader::Result result) {
@@ -4879,9 +4889,9 @@ void App::onTrackDownloaded(Downloader::Result result) {
     case Downloader::Result::Server: failDownload(track, item.number, "Server error"); return;
     case Downloader::Result::Disk: failDownload(track, item.number, "Cannot write the file"); return;
     }
-    if (!addToManifest(job.source, track, {job.title, job.artist, true, true, 0, &job.order, &job.chapters}, job.link)) {
+    if (!addToManifest(job.source, track, {job.title, job.artist, true, true, 0, &job.order, &job.chapters, job.bitrate}, job.link)) {
         std::error_code ec; // the whole file is in place but unlisted: nothing would count or evict it
-        std::filesystem::remove(trackDestination(job.source, track, job.link), ec);
+        std::filesystem::remove(trackDestination(job.source, track, job.link, job.bitrate), ec);
         failDownload(track, item.number, "Cannot write the file");
         return;
     }
@@ -4894,7 +4904,7 @@ void App::onTrackDownloaded(Downloader::Result result) {
 void App::failDownload(const RemoteTrack& track, size_t number, const std::string& reason) {
     std::string unit = "track"; // a file of a book has no title worth speaking: it is "file 3"
     if (download_) {
-        failedPart_ = trackDestination(download_->source, track, download_->link) + ".part";
+        failedPart_ = trackDestination(download_->source, track, download_->link, download_->bitrate) + ".part";
         unit = download_->unit;
     }
     download_.reset();
@@ -5034,11 +5044,11 @@ void App::onAutoCached(Downloader::Result result) {
 std::vector<std::filesystem::path> App::partsInUse() const {
     std::vector<std::filesystem::path> parts;
     if (!failedPart_.empty()) parts.push_back(failedPart_);
-    auto add = [&](const RemoteSource& source, const RemoteTrack& track, size_t link) {
-        parts.push_back(trackDestination(source, track, link) + ".part");
+    auto add = [&](const RemoteSource& source, const RemoteTrack& track, size_t link, int bitrate = 0) {
+        parts.push_back(trackDestination(source, track, link, bitrate) + ".part");
     };
     if (download_)
-        for (size_t i = download_->next; i < download_->todo.size(); ++i) add(download_->source, download_->todo[i].track, download_->link);
+        for (size_t i = download_->next; i < download_->todo.size(); ++i) add(download_->source, download_->todo[i].track, download_->link, download_->bitrate);
     if (autoJob_) add(autoJob_->source, autoJob_->track, autoJob_->link);
     for (const AutoCache& job : autoQueue_) add(job.source, job.track, job.link);
     return parts;

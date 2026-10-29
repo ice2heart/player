@@ -24,14 +24,14 @@ namespace oap {
 // The URL of a track comes from `UrlSource` (for Subsonic: Subsonic::downloadUrls()),
 // called on the UI thread in download(). URLs hold credentials: nothing here
 // logs, prints or reports one, not even in an error. The `.part` is continued
-// with a Range request; a server that answers 200 to it (no ranges) or 416
+// with a Range request for originals; transcodes start over. A server that answers 200 to Range (no ranges) or 416
 // (the `.part` is not a prefix of its file) gets the file from its start. Only
 // audio is kept: an HTTP error, or an error document (a Subsonic error comes as
 // text or JSON with status 200) is Result::Server and leaves the `.part` as it was.
 // Complete means the length the server says (Content-Length; for a continued
 // `.part` the total of Content-Range): a body that ends before it is Unreachable.
 // A server that says no length is compared with the `expectedSize` given to
-// download(), if that is not 0; a shorter body is Unreachable and the `.part` stays
+// download(), for originals only and if that is not 0; a shorter body is Unreachable and the `.part` stays
 // (continued by the next try). A longer one is accepted: it cannot be a cut one, so
 // the size the listing gave is stale.
 //
@@ -44,7 +44,7 @@ namespace oap {
 // stuck socket; the `.part` stays, and no callback runs.
 class HttpDownloader : public Downloader {
 public:
-    using UrlSource = std::function<std::string(const std::string& trackId)>; // empty: not configured
+    using UrlSource = std::function<std::string(const std::string& trackId, int bitrate)>; // empty: not configured
     struct Options {
         std::chrono::seconds connectTimeout{10};
         std::chrono::seconds readTimeout{10}; // no byte received for this long ends the transfer
@@ -61,7 +61,7 @@ public:
 
     bool configured() const override { return true; }
     RequestId download(const std::string& trackId, const std::string& dest, long long expectedSize, Progress progress,
-                       Done done) override;
+                       Done done, int bitrate = 0) override;
     void cancel(RequestId id) override;
     void poll() override;
 
@@ -70,6 +70,7 @@ private:
         RequestId id = 0;
         std::string url, dest;
         long long expectedSize = 0;
+        int bitrate = 0;
     };
     struct Callbacks {
         Progress progress;

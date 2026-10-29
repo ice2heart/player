@@ -40,7 +40,7 @@ Servers makeServers(const Settings& config) {
             Audiobookshelf* source = audiobookshelf.get();
             out.servers_.push_back(std::move(audiobookshelf));
             out.downloaders_.push_back(std::make_unique<HttpDownloader>(
-                [source](const std::string& trackId) { return source->stream(trackId, 0).url; }));
+                [source](const std::string& trackId, int) { return source->stream(trackId, 0).url; }));
         } else if (entry.type == kSubsonicType) {
             Subsonic::Config subsonic = Subsonic::configFrom(entry);
             out.servers_.push_back(std::make_unique<Subsonic>(subsonic));

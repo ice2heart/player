@@ -411,15 +411,16 @@ public:
 // transfer, and the callbacks of that id never run.
 //
 // The bytes go to `<dest>.part`. A `.part` left by an earlier try (a failure, a
-// cancel, a restart) is continued from where it ends, or started over when the
-// server cannot continue it. Only a complete file is renamed to `dest`, so
+// cancel, a restart) is continued for an original (bitrate 0), or started over when the
+// server cannot continue it. Transcodes (bitrate > 0 kbps) always start over.
+// Only a complete file is renamed to `dest`, so
 // `dest` exists only when it is whole. A failure or cancel keeps the `.part`.
 // Folders above `dest` are created. A `dest` that exists is replaced.
 //
 // Whole means: the length the server sends (Content-Length, or the total of
 // Content-Range for a continued `.part`) is authoritative; a body that ends before
 // it is Unreachable. Only when the server sends no length is the file compared
-// with `expectedSize` (0: not known, anything is accepted); a shorter body is
+// with `expectedSize` for originals (0: not known; ignored for transcodes); a shorter body is
 // Unreachable too, and the `.part` stays; a longer one is taken (the size was stale). After cancel() returns the downloader
 // creates no folder or file for that request any more.
 class Downloader {
@@ -442,7 +443,7 @@ public:
     virtual bool configured() const = 0;
     // `progress` may be empty. `done` runs once, unless the request is cancelled.
     virtual RequestId download(const std::string& trackId, const std::string& dest, long long expectedSize,
-                               Progress progress, Done done) = 0;
+                               Progress progress, Done done, int bitrate = 0) = 0;
     virtual void cancel(RequestId id) = 0; // unknown ids are ignored
     virtual void poll() = 0;               // UI thread: run the callbacks
 };

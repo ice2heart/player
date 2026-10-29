@@ -262,6 +262,22 @@ TEST_F(HttpDownloaderTest, AsksForTheDownloadUrlWithTheSameAuthAsAStream) {
     EXPECT_EQ(rangeOf(server.requests()[0]), "") << "a new file asks for all of it";
 }
 
+TEST_F(HttpDownloaderTest, ATranscodeRestartsItsPartWithoutRangeAndIgnoresOriginalSize) {
+    TestServer server([](const std::string&) { return Answer{"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nConnection: close\r\n\r\nnew mp3", {}, false}; });
+    use(server);
+    fs::path dest = dir / "t1.mp3";
+    spit(dest.string() + ".part", "stale partial transcode");
+    Outcome outcome;
+    downloader->download("t1", dest.string(), 1000000, outcome.progress(), outcome.done(), 128);
+    ASSERT_TRUE(pump([&] { return outcome.doneCalls > 0; }));
+    EXPECT_EQ(outcome.result, Result::Ok);
+    ASSERT_EQ(server.requestCount(), 1u);
+    EXPECT_EQ(rangeOf(server.requests()[0]), "");
+    EXPECT_NE(requestLine(server.requests()[0]).find("/rest/stream?"), std::string::npos);
+    EXPECT_NE(requestLine(server.requests()[0]).find("&maxBitRate=128"), std::string::npos);
+    EXPECT_EQ(slurp(dest), "new mp3");
+}
+
 TEST_F(HttpDownloaderTest, AFinishedFileIsRenamedFromThePartAndFoldersAreCreated) {
     TestServer server([](const std::string&) { return whole("the whole song"); });
     use(server);

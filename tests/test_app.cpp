@@ -375,7 +375,7 @@ TEST_F(AppTest, ChoosingAValueFromTheListSavesItAppliesItAndGoesBack) {
     EXPECT_EQ(configFile.onDisk("speech.rate"), "250") << "written at once";
     EXPECT_EQ(speech.rate, 250);
     EXPECT_EQ(level().title, "Settings");
-    EXPECT_EQ(speech.last(), "Speech rate, 250 words per minute, 1 of 12");
+    EXPECT_EQ(speech.last(), "Speech rate, 250 words per minute, 1 of 13");
 }
 
 TEST_F(AppTest, LeavingAValueListChangesNothing) {
@@ -386,7 +386,7 @@ TEST_F(AppTest, LeavingAValueListChangesNothing) {
     press(Button::Home);
     EXPECT_EQ(level().title, "Settings");
     EXPECT_EQ(settings.getInt("volume", 70), 70);
-    EXPECT_EQ(speech.last(), "Volume, 70 percent, 2 of 12");
+    EXPECT_EQ(speech.last(), "Volume, 70 percent, 2 of 13");
 }
 
 TEST_F(AppTest, RightInSettingsChangesNoSetting) {
@@ -422,16 +422,16 @@ TEST_F(AppTest, ASettingIsOnlyChangedInItsList) {
 
 TEST_F(AppTest, RightInAListThatIsNotSortedByNameMovesTenItems) {
     start();
-    open("Settings"); // 12 items
+    open("Settings"); // 13 items
     press(Button::Forward);
     EXPECT_EQ(level().index, 10u);
     EXPECT_EQ(sounds.last(), Earcon::Move);
-    EXPECT_EQ(speech.last(), "Cache size, 1 gigabyte, 11 of 12") << "no letter: the list is not sorted by name";
+    EXPECT_EQ(speech.last(), "Download quality, original file, 11 of 13") << "no letter: the list is not sorted by name";
     press(Button::Forward);
-    EXPECT_EQ(level().index, 11u) << "stops at the last item";
+    EXPECT_EQ(level().index, 12u) << "stops at the last item";
     EXPECT_EQ(sounds.last(), Earcon::Move);
     press(Button::Back);
-    EXPECT_EQ(level().index, 1u);
+    EXPECT_EQ(level().index, 2u);
     press(Button::Back);
     EXPECT_EQ(level().index, 0u) << "stops at the first item";
     EXPECT_EQ(sounds.last(), Earcon::Move);
@@ -444,12 +444,12 @@ TEST_F(AppTest, TheTenItemJumpHasEdgesAndWrapsWhenWrapAroundIsOn) {
     press(Button::Back);
     EXPECT_EQ(level().index, 0u);
     EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Speech rate, 220 words per minute, 1 of 12");
+    EXPECT_EQ(speech.last(), "Speech rate, 220 words per minute, 1 of 13");
     hold(Button::Down); // last
     press(Button::Forward);
-    EXPECT_EQ(level().index, 11u);
+    EXPECT_EQ(level().index, 12u);
     EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 12 of 12");
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 13 of 13");
 
     hold(Button::Up);
     open("Menu wrap around"); // turn wrapping on in the list
@@ -461,7 +461,7 @@ TEST_F(AppTest, TheTenItemJumpHasEdgesAndWrapsWhenWrapAroundIsOn) {
     EXPECT_EQ(level().index, 0u) << "wrapped to the first item";
     EXPECT_EQ(sounds.last(), Earcon::Wrap);
     press(Button::Back);
-    EXPECT_EQ(level().index, 11u) << "and back to the last";
+    EXPECT_EQ(level().index, 12u) << "and back to the last";
     EXPECT_EQ(sounds.last(), Earcon::Wrap);
 }
 
@@ -520,7 +520,7 @@ TEST_F(AppTest, AStoredValueBetweenOptionsIsSpokenAndItsListHasNoCurrentOne) {
     settings.setInt("speech.rate", 225); // between 220 and 250
     start();
     open("Settings");
-    EXPECT_EQ(speech.last(), "Settings. Speech rate, 225, 1 of 12");
+    EXPECT_EQ(speech.last(), "Settings. Speech rate, 225, 1 of 13");
     press(Button::Ok);
     EXPECT_EQ(level().index, 0u);
     for (const MenuItem& item : level().items) EXPECT_FALSE(item.value) << item.label << " is not the current value";
@@ -1524,7 +1524,7 @@ TEST_F(AppTest, SleepTimerAtEndOfALooseTrack) {
     hold(Button::Home);
     open("Settings");
     hold(Button::Down);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 12 of 12");
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 13 of 13");
 }
 
 TEST_F(AppTest, MusicDoesNotTakeOverTheBookToResume) {
@@ -4894,11 +4894,11 @@ TEST_F(AppTest, SleepTimerIsInSettings) {
     hold(Button::Home);
     open("Settings");
     hold(Button::Down);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 12 of 12");
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 13 of 13");
     press(Button::Ok);
     open("15 minutes");
     EXPECT_EQ(level().title, "Settings") << "choosing a time goes back";
-    EXPECT_EQ(speech.last(), "Sleep timer, 15 minutes left, 12 of 12");
+    EXPECT_EQ(speech.last(), "Sleep timer, 15 minutes left, 13 of 13");
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "Sleep timer. 15 minutes, current, 3 of 7") << "opens on the timer that is set";
     press(Button::Home);
@@ -5630,6 +5630,90 @@ protected:
         return out;
     }
 };
+
+TEST_F(DownloadTest, DownloadQualityDefaultsToOriginalAndPersistsIndependently) {
+    start();
+    open("Settings");
+    open("Download quality");
+    EXPECT_EQ(speech.last(), "Download quality. original file, current, 1 of 4");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"original file", "320 kilobits per second", "192 kilobits per second", "128 kilobits per second"}));
+    open("128 kilobits per second");
+    EXPECT_EQ(configFile.onDisk("downloads.bitrate"), "128");
+    Settings reloaded{&configFile};
+    reloaded.load();
+    EXPECT_EQ(reloaded.getInt("downloads.bitrate", -1), 128);
+    open("Streaming quality");
+    EXPECT_EQ(speech.last(), "Streaming quality. original file, current, 1 of 4");
+}
+
+TEST_F(DownloadTest, DownloadedTranscodesRecordTheCapturedQualityAndMp3File) {
+    settings.setInt("downloads.bitrate", 128);
+    openAlbum();
+    startDownload();
+    EXPECT_EQ(downloader.lastRequest().bitrate, 128);
+    EXPECT_TRUE(downloader.lastRequest().dest.ends_with("t1~128.mp3"));
+    settings.setInt("downloads.bitrate", 320); // an ongoing album retains its chosen quality
+    finishLast();
+    EXPECT_EQ(downloader.lastRequest().bitrate, 128);
+    finishLast();
+    finishLast();
+    auto saved = store().load(albumSource("al1"));
+    ASSERT_EQ(saved.tracks.size(), 3u);
+    for (const auto& track : saved.tracks) {
+        EXPECT_EQ(track.bitrate, 128);
+        EXPECT_TRUE(track.file.ends_with("~128.mp3"));
+        EXPECT_TRUE(store().completeFile(albumSource("al1"), track));
+    }
+}
+
+TEST_F(DownloadTest, ATranscodedFilenameCannotOverwriteAnotherTracksOriginal) {
+    settings.setInt("downloads.bitrate", 128);
+    const auto source = albumSource("al1");
+    const auto old = store().listFolder(source) / "t1.128.mp3";
+    touch(old);
+    ASSERT_TRUE(store().save(cachedAlbum("al1", {{"t1.128", "t1.128.mp3", "Other song", 10, "", true, 0, 0}})));
+    auto tracks = sized();
+    tracks.resize(2);
+    tracks[1].id = "t1.128";
+    tracks[1].suffix = "mp3";
+    openAlbum(tracks);
+    startDownload();
+    EXPECT_NE(fs::path(downloader.lastRequest().dest), old);
+    EXPECT_TRUE(fs::exists(old));
+}
+
+TEST_F(DownloadTest, TranscodeSpaceUsesDurationAndBitrateWithByteConversion) {
+    settings.setInt("downloads.bitrate", 128);
+    auto tracks = sized();
+    tracks.resize(1);
+    tracks[0].duration = 2.5;
+    tracks[0].size = 1000000;
+    openAlbum(tracks);
+    app->setFreeSpace([](const fs::path&) -> std::optional<std::uintmax_t> { return 39999; });
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Not enough space.");
+    EXPECT_TRUE(downloader.requests.empty());
+    app->setFreeSpace([](const fs::path&) -> std::optional<std::uintmax_t> { return 40000; });
+    press(Button::Ok);
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.lastRequest().bitrate, 128);
+}
+
+TEST_F(DownloadTest, TranscodeWithoutDurationUsesOriginalSizeForSpace) {
+    settings.setInt("downloads.bitrate", 128);
+    auto tracks = sized();
+    tracks.resize(1);
+    tracks[0].duration = 0;
+    tracks[0].size = 100;
+    openAlbum(tracks);
+    app->setFreeSpace([](const fs::path&) -> std::optional<std::uintmax_t> { return 99; });
+    open("Download album");
+    EXPECT_EQ(speech.last(), "Not enough space.");
+    EXPECT_TRUE(downloader.requests.empty());
+    app->setFreeSpace([](const fs::path&) -> std::optional<std::uintmax_t> { return 100; });
+    press(Button::Ok);
+    EXPECT_EQ(downloader.requests.size(), 1u);
+}
 
 TEST_F(DownloadTest, ADownloadOfTheFirstServerLeavesTheSecondsDownloaderAlone) {
     FakeMusicServer second;
@@ -16135,6 +16219,20 @@ protected:
     std::string bookKey(const std::string& id) const { return "pos:" + ref(id); }
     size_t asked = 0;
 };
+
+TEST_F(BookDownloadTest, BooksRemainOriginalWhenDownloadQualityIsSet) {
+    settings.setInt("downloads.bitrate", 128);
+    openPage(twoParts());
+    open("Download book");
+    ASSERT_FALSE(downloader.requests.empty());
+    EXPECT_EQ(downloader.lastRequest().bitrate, 0);
+    EXPECT_FALSE(downloader.lastRequest().dest.ends_with("~128.mp3"));
+    finishFile();
+    auto saved = store().load(albumSource("b1"));
+    ASSERT_EQ(saved.tracks.size(), 1u);
+    EXPECT_EQ(saved.tracks[0].bitrate, 0);
+    EXPECT_EQ(downloader.lastRequest().bitrate, 0);
+}
 
 TEST_F(BookDownloadTest, TheDownloaderGetsTheFilesInOrderIntoTheServersCacheFolderPinned) {
     ASSERT_NO_FATAL_FAILURE(openPage(manyParts(24)));

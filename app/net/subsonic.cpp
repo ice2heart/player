@@ -99,8 +99,9 @@ std::string Subsonic::url(const std::string& method, const Params& params) const
 
 Subsonic::DownloadUrls Subsonic::downloadUrls(Config config, SaltSource salt) {
     trimTrailingSlashes(config.url);
-    return [config = std::move(config), salt = std::move(salt)](const std::string& trackId) -> std::string {
+    return [config = std::move(config), salt = std::move(salt)](const std::string& trackId, int bitrate) -> std::string {
         if (config.url.empty()) return {};
+        if (bitrate > 0) return buildUrl(config, salt(), "stream", {{"id", trackId}, {"format", "mp3"}, {"maxBitRate", std::to_string(bitrate)}});
         return buildUrl(config, salt(), "download", {{"id", trackId}});
     };
 }
