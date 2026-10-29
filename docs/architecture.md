@@ -4,7 +4,7 @@
 > streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)),
 > plus phases 1 and 2 of [queue.md](queue.md): volume and Options buttons, the step unit, menus that jump, separate music and book players,
 > and the music queue (local and server tracks mixed, skipped when unavailable, a server that fails checked until it answers), Options (Play now, Play next, Add to queue, Go to album, Album info),
-> Shuffle and Repeat (off, all, album, track; Add to queue mixed into a shuffled queue), the Queue list, the queue kept in `queue.tsv` and Save as playlist, and, from [fixes.md](fixes.md) phase 2, playlists in `library.db` and in Music, Download in Options and the player's name in "where am I?". Star is not built (streaming.md 2a.1). Last updated: 2026-10-28.
+> Shuffle and Repeat (off, all, album, track; Add to queue mixed into a shuffled queue), the Queue list, the queue kept in `queue.tsv` and Save as playlist, and, from [fixes.md](fixes.md) phase 2, playlists in `library.db` and in Music, Download in Options and the player's name in "where am I?". Star is not built (streaming.md 2a.1). Several servers and Audiobookshelf books (audiobookshelf.md phases 1 and 2) are built; progress sync (phase 3) is not. Last updated: 2026-10-29.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -46,6 +46,7 @@ core depends on none of them:
 ├───────────────────────────────────────────────────────────────────────┤
 │ Net  (app/net/, library "oapnet", libcurl + yaml-cpp)                 │
 │   Subsonic : MusicServer   URLs with token auth, JSON answers         │
+│   Audiobookshelf : MusicServer   Bearer key, books and chapters       │
 │   HttpClient               libcurl on one worker thread, timeouts     │
 │   HttpDownloader : Downloader   track files to *.part, own thread     │
 ├───────────────────────────────────────────────────────────────────────┤
@@ -754,8 +755,8 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   per-file and embedded chapters, so a chapter may begin in one file and go on in the next.
   "Where am I?" and Previous count time over files with `bookTime()` / `bookLeft()`, and the sleep timer's
   end of chapter ends with a file only when `chapterEndsWithFile()` (the next chapter starts there).
-  The place is still `pos:<id>` = file index and seconds. A book played from a whole download has no
-  chapters yet (2.8).
+  The place is still `pos:<id>` = file index and seconds. A book played from a whole download has the same chapters:
+  they are kept in its manifest (2.8) and handed to `serverBookOf()` as when the server answers.
 - **Audiobooks from the server (4.11).** `MusicServer::musicFolders()` (`getMusicFolders`,
   `RemoteFolder{id, name}`) and a trailing `musicFolderId` on `albums()` (`getAlbumList2`; empty:
   all). `server.audiobook_folder` in `config.yaml` (the folder's name, exact match; set by the
@@ -1305,7 +1306,7 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 ## 13. Known gaps / next steps
 
 - Speed control (libavfilter `atempo`, or Sonic), skip silence.
-- Bookmarks, podcasts (RSS), sync (Audiobookshelf).
+- Bookmarks, podcasts (RSS), listening-progress sync with Audiobookshelf (phase 3 of [audiobookshelf.md](audiobookshelf.md); its books, chapters and downloads are built).
 - Streaming phases 2a and 5 in [streaming.md](streaming.md): star / unstar and a Starred
   list, and sync. The limits of phase 4 (one library) are listed under "Known limits after
   phase 4" there.

@@ -427,13 +427,13 @@ downloads, and progress sync; has podcast support).
 - Sync bookmarks.
 - Works offline; queue updates and push when online.
 
-Audiobookshelf is a second **server type** next to Subsonic. `config.yaml` is meant to hold
-a list of servers (`servers:`), each with its own `type`, and each server gets its own Home
-entry. An Audiobookshelf server logs in with an API key. Its books are listed in Library, play
-in the book player with the server's chapters and can be downloaded. Planned in phases (none
-built yet); see [docs/audiobookshelf.md](docs/audiobookshelf.md). Phase 1 is several Subsonic
-servers, phase 2 the Audiobookshelf books, phase 3 the progress sync above. Bookmarks sync and
-podcasts from Audiobookshelf come later.
+Audiobookshelf is a second **server type** next to Subsonic. `config.yaml` holds a list of
+servers (`servers:`), each with its own `type`, and each server has its own Home entry. An
+Audiobookshelf server logs in with an API key. Built: its books are listed in Library, play in
+the book player with the server's chapters and keep their place, can be downloaded and play
+offline, and its Home entry has a Books menu (Recently added, Books A to Z, Authors,
+Downloaded, Server status). Not built: the progress sync above (phase 3), bookmarks sync and
+podcasts from Audiobookshelf. See [docs/audiobookshelf.md](docs/audiobookshelf.md).
 
 Secondary / alternatives **[OPEN]**:
 - **gPodder sync API** (gpodder.net / Nextcloud gPodder Sync) for podcast subscriptions.

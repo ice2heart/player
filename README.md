@@ -44,7 +44,7 @@ sudo apt install build-essential cmake ninja-build pkgconf ca-certificates git \
 | `libpulse-dev` / `libasound2-dev` | the `pulse` / `alsa` outputs; drop one by leaving it out of `OAP_AUDIO_BACKENDS` |
 | `libyaml-cpp-dev` | reading `config.yaml`; optional, CMake downloads yaml-cpp without it |
 | `libsqlite3-dev` | the library index (`oaplibrary`); optional, CMake downloads the SQLite amalgamation without it |
-| `libcurl4-openssl-dev` | streaming from a Subsonic server (`OAP_BUILD_NET`: `oapnet`, `oap-net-tests`); without it configure with `-DOAP_BUILD_NET=OFF` |
+| `libcurl4-openssl-dev` | streaming from a Subsonic or Audiobookshelf server (`OAP_BUILD_NET`: `oapnet`, `oap-net-tests`); without it configure with `-DOAP_BUILD_NET=OFF` |
 
 Only the core and tests (`-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF`) need just
 `build-essential cmake ninja-build ca-certificates git`; add `pkgconf libcurl4-openssl-dev`
@@ -78,7 +78,7 @@ Build switches:
 |--------|---------|---------|
 | `OAP_BUILD_SIM` | `ON` | `oap-sim` (needs SDL2) |
 | `OAP_BUILD_HEADLESS` | `ON` on Linux | `oap-headless` |
-| `OAP_BUILD_NET` | `ON` when a front end is built, else `OFF` | `oapnet`, streaming from a Subsonic server (needs libcurl; configure fails without it). `OFF`: the front ends build without libcurl and cannot stream (they say so on stderr when `config.yaml` sets up a server) |
+| `OAP_BUILD_NET` | `ON` when a front end is built, else `OFF` | `oapnet`, streaming from a Subsonic or Audiobookshelf server (needs libcurl; configure fails without it). `OFF`: the front ends build without libcurl and cannot stream (they say so on stderr when `config.yaml` sets up a server) |
 | `OAP_AUDIO_BACKENDS` | `coreaudio` (macOS), `pulse;alsa` (Linux) | audio outputs to build in |
 | `OAP_BUILD_TESTS` | `ON` | `oap-tests`, `oap-net-tests` with `OAP_BUILD_NET`, `oap-media-tests` with a front end |
 
@@ -217,24 +217,30 @@ oap-headless [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--audio
   positions in `state.tsv` next to it (`--state` to move it). An old `settings.tsv`
   is not read.
   `config.yaml` can be edited by hand; see [docs/streaming.md](docs/streaming.md#configuration-one-yaml-file).
-- Music servers are a list in `config.yaml`. Each has its own Home entry:
+- Servers are a list in `config.yaml`. Each has its own Home entry. The type is `subsonic`
+  (music, such as Navidrome; left out, it is `subsonic`) or `audiobookshelf` (books):
 
   ```yaml
   servers:
-    - type: subsonic            # the only type so far; left out, it is subsonic
+    - type: subsonic
       name: Music               # spoken on Home; default "Server", or "Server 1", "Server 2", ...
-      url: https://navidrome.microserver
+      url: https://navidrome.example
       user: ice
       password: "..."           # quote it
-    - name: Jazz
-      url: https://jazz.example
-      user: ice
-      password: "..."
+    - type: audiobookshelf
+      name: Audiobooks
+      url: https://audiobooks.example
+      api_key: "..."            # Settings > API Keys in the Audiobookshelf web page; quote it
+      library: Books            # optional: the book library to use; default the first one
   ```
 
-  The old single `server:` section still works and is read as a list of one. With both,
-  `servers:` wins. Factory reset keeps the servers. Quote a password or key: an all-digit one
-  is read as a number otherwise. Two entries with the same url and user are one server.
+  The `url` of an Audiobookshelf server must be its final address (for example `https://...`):
+  a request that carries the key is not redirected, so a server that answers with a redirect
+  (http to https) does not work. An Audiobookshelf entry without `api_key` is skipped with a
+  line on stderr. The old single `server:` section still works and is read as a list of one.
+  With both, `servers:` wins. Factory reset keeps the servers. Quote a password or key: an
+  all-digit one is read as a number otherwise. Two entries with the same url and user are one
+  server.
 - Downloaded and cached tracks are kept in `cache/` next to `state.tsv`; `--cache DIR` moves
   them (`oap-sim` has the same option). The device uses `/data/library/cache`.
 - `--input` is a comma-separated list of `evdev`, `terminal` and `none`. The default is

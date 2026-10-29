@@ -1,19 +1,19 @@
 # Audiobookshelf and several servers: plan
 
-> Status: **a plan**; phase 1 (several servers) is built, phase 2 (Audiobookshelf) is not. The code is described in [architecture.md](architecture.md),
+> Status: phases 1 (several servers) and 2 (Audiobookshelf books: Library, the Books menu, server chapters, downloads) are built; phase 3 (progress sync) is a plan. The code is described in [architecture.md](architecture.md),
 > the menu rules in [navigation.md](navigation.md) (see [Lists from the server](navigation.md#lists-from-the-server)
 > and [Music and Library](navigation.md#music-and-library)). The Subsonic plan this follows is
-> [streaming.md](streaming.md). Last updated: 2026-10-28.
+> [streaming.md](streaming.md). Last updated: 2026-10-29.
 > Target server: Audiobookshelf 2.37 (API keys exist since 2.26). Test server:
 > `https://audiobooks.microserver` (a Books library with two books, a Podcasts library with none;
 > its certificate verifies without extra setup). The credentials are in `.env` (`OAP_BOOKSHELF_*`;
 > git ignores it) only so they are at hand during development; the program does not read it.
 
-Today `config.yaml` has one `server:` section, and only `type: subsonic` works. `App` holds one
-`MusicServer` and one `Downloader`. Server books come from one music folder of the Subsonic
-server (`server.audiobook_folder`), and their chapters are the album's tracks.
+Before this plan `config.yaml` had one `server:` section, and only `type: subsonic` worked. `App`
+held one `MusicServer` and one `Downloader`. Server books came from one music folder of the
+Subsonic server (`server.audiobook_folder`), and their chapters were the album's tracks.
 
-The plan adds:
+The plan added (1 and 2 are built, 3 is not):
 
 1. **Several servers** in `config.yaml` (`servers:`, a list), each with its own type. Every
    server gets its own Home entry, its own catalogue sync, cache folder and downloads. Phase 1
@@ -226,7 +226,7 @@ book can be downloaded and played offline.
 | ✅ 2.6 | **Server chapters in the book player.** `Book::chapters` from `RemoteBook`; `App::chapters()`, `currentChapter()`, `gotoChapter()`, Next / Previous chapter, the Chapters list, "where am I?" and the sleep timer's end of chapter use them. The place stays `pos:<id>` = file and seconds. | A two-file book with three chapters, one starting in the middle of file 1: the Chapters list has three; Next chapter from chapter 1 seeks inside file 1; from chapter 2 it opens file 2 at the right second; "where am I?" names the chapter, not the file. A one-file book uses the server chapters. A book with no server chapters is one chapter per file, as today. Pause, another book, then this one resumes the place. |
 | ✅ 2.7 | **The Books server menu.** As in [Menus](#menus): Recently added, Books A to Z (paged), Authors → books, Downloaded, Server status; a book opens on Play book, Download book, then its chapters. | Each list: Loading, filled with the first item spoken, error with Try again, empty ("No books", "No authors"). Books A to Z asks the second page while `more`. Play book resumes the saved place; OK on chapter 3 starts there; an author lists only their books. |
 | ✅ 2.8 | **Download a book.** Download book fetches the files into the server's cache folder, pinned, as Download album does; a whole download plays offline from Library, from the Books menu's Downloaded and from "Now playing" after a restart (`last_book`). Progress counts files. | The downloader gets the files in order; "where am I?" says "Downloading, 3 of 24 files."; with the fake server down a whole download plays from its files with no "Loading."; a partial one gives "Server not reachable." as server books do today. |
-| 2.9 | **Docs for phase 2 as built:** architecture.md (`Audiobookshelf`, chapters from the server, ids), navigation.md (the Books server menu), SPEC §6.3, README config example. | – |
+| ✅ 2.9 | **Docs for phase 2 as built:** architecture.md (`Audiobookshelf`, chapters from the server, ids), navigation.md (the Books server menu), SPEC §6.3, README config example. | – |
 
 **Device check (manual):** with the Audiobookshelf test server in `servers:`, Library lists
 "Вперед в прошлое" and "Нейромант" with "on the server". The m4b plays and Next chapter

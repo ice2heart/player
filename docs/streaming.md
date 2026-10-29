@@ -666,8 +666,8 @@ still empty.
 - **State is written only on exit** (and sleep), to spare the flash. A crash or power loss loses the place since the last exit.
 - `.env` only stores the test credentials for development; the program does not read it.
 - yaml-cpp is slow at parsing JSON, and that is **acceptable**.
-- Subsonic is the **first** server type. Other services, such as Audiobookshelf for
-  books, are added later behind the same interface.
+- Subsonic is the **first** server type. Audiobookshelf for books is the second, behind the
+  same interface ([audiobookshelf.md](audiobookshelf.md)).
 - Streaming is a **separate Home entry** for now and may be merged into Library and
   Music later.
 - Streams default to the **original file**. Streaming quality in Settings can pick a
@@ -678,8 +678,7 @@ still empty.
 1. Should more than one server be supported (`servers:` as a YAML list)? **Answered: yes.**
    `servers:` is a list, each entry has its own `type` and its own Home entry, and the old
    `server:` section is read as a list of one. See [audiobookshelf.md](audiobookshelf.md)
-   (phase 1 for several servers, phase 2 for Audiobookshelf). This plan still describes one
-   server.
+   (phases 1 and 2, built). This plan still describes one server.
 2. Should the password stay in plain text in `config.yaml` (mode 0600), or should
    the device keep only `t`/`s` (a token that never expires, so it is just as
    sensitive)? Navidrome API keys would be better once the server offers

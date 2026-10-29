@@ -8,7 +8,8 @@
 > playlist and the saved queue (see [The queue](#the-queue)), Music → Playlists, and the
 > player's name, album and artist in "where am I?". Star / Unstar in the player's Options is
 > **not built** ([streaming.md](streaming.md) 2a.1). Where the build differs from the text, a
-> note says so; [architecture.md](architecture.md) describes the code. Last updated: 2026-10-28.
+> note says so; [architecture.md](architecture.md) describes the code. Several servers and the Books server menu
+> ([audiobookshelf.md](audiobookshelf.md) phases 1 and 2) are built. Last updated: 2026-10-29.
 
 Users can't see the menu, so they learn it from what each key does. A key that
 does one thing in one menu and something else in the next menu breaks that.
@@ -610,7 +611,8 @@ Music
   12 albums, 2 books."); with none of either it says "Library updated.".
 - **Server books are in Library**, after the local books, with the value "on the
   server" (spoken after the title). They are never in Music. They open as books:
-  chapters are the tracks, and the place is kept and resumed like a local book. A book that is
+  a Subsonic server book has its tracks as chapters, an Audiobookshelf book the chapters the server lists
+  (a chapter can span files), and the place is kept and resumed like a local book. A book that is
   both on the device and on the server is listed twice, once for each; they are not merged.
   While their tracks load, the "Loading" rules apply. After a restart "Now playing" on Home resumes the
   book when the book player was used last (otherwise it is "Continue"); a downloaded book plays from
@@ -636,7 +638,7 @@ The menu, the lists, the book page and downloading a book are built.
 ```
 
 - A book in these lists says its title and author ("Neuromancer, William Gibson").
-- **Play book** opens the book player at the book's place (or the start), like a book in
+- **Play book** (value: the number of chapters) opens the book player at the book's place (or the start), like a book in
   Library. OK on a chapter plays the book from that chapter. The chapters are the server's,
   and a chapter can span files.
 - **Download book** behaves like Download album ("Downloading, 0 of 24 files."), counting
