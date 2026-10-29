@@ -19,7 +19,10 @@ enum class Button { PlayPause, Back, Forward, Up, Down, Ok, Home, Talk, Power, B
                     VolumeUp, VolumeDown, Options, Count };
 // Repeat is only sent for a key that repeats while held (the volume keys), after the
 // Short that its press sends at once.
-enum class Gesture { Short, Long, Deep, Repeat, Count };
+// Light: a deep navigation contact opened while the light contact remains down.
+// Release: the last navigation contact opened after a hold/deep gesture.
+// Cancel: a navigation gesture was abandoned; its contacts stay suppressed until up.
+enum class Gesture { Short, Long, Deep, Repeat, Light, Release, Cancel, Count };
 
 constexpr size_t kButtonCount = static_cast<size_t>(Button::Count);
 constexpr size_t kGestureCount = static_cast<size_t>(Gesture::Count);
@@ -31,16 +34,11 @@ struct ButtonEvent {
 
 const char* buttonName(Button button);
 
-// Turns raw press/release into short, long and deep presses. A long press fires
-// while the button is still held, so the user gets feedback without letting go.
-// A deep press fires as soon as the second stage closes. The first stage's
-// release that follows is then ignored, as after a long press, and so is a light
-// press while the deep stage is down (stages out of order, or contact bounce).
-//
-// A key that repeats (the volume keys) sends a Short as soon as it goes down, so the
-// first step is heard at once, then a Repeat every kRepeatInterval once it has been
-// held for kRepeatDelay, until it is let go. It has no long press and its release says
-// nothing. The delay keeps a slow tap from stepping twice.
+// Turns raw contacts into gestures. Back/Forward have one lifecycle shared by
+// both contacts: Deep is immediate, Long uses the initial press deadline even
+// after Deep, Light reports easing, and Release ends the gesture without Short.
+// Duplicate downs are ignored; the final contact up ends the lifecycle in either
+// release order. Volume keeps its immediate Short and delayed Repeat behavior.
 class GestureDetector {
 public:
     using Clock = std::chrono::steady_clock;
@@ -52,12 +50,15 @@ public:
     std::optional<ButtonEvent> press(Button button, Clock::time_point now); // a Deep, or a repeating key's Short
     std::optional<ButtonEvent> release(Button button, Clock::time_point now);
     std::vector<ButtonEvent> poll(Clock::time_point now);
+    // Suppress currently held contacts until up. Hold locking preserves Power.
+    std::vector<ButtonEvent> cancel(bool preservePower = false);
 
 private:
     struct State {
         bool down = false;
-        bool consumed = false; // a long or deep press already fired: the release says nothing
-        bool longFired = false; // a long press fired during this hold
+        bool consumed = false; // suppress Short after a long/deep action
+        bool longFired = false; // Long fires once, including after Deep
+        bool cancelled = false; // ignored until the last contact is released
         Clock::time_point since;
         Clock::time_point nextRepeat; // a repeating key: when the next Repeat is due
     };

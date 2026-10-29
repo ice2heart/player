@@ -725,6 +725,7 @@ void App::finishRefresh() {
 
 void App::shutdown() {
     if (shutDown_) return; // the player is closed now: a second save would write its place as 0
+    cancelGestures();
     cancelProgressPull();
     shutDown_ = true;
     saveOnExit();
@@ -749,8 +750,9 @@ void App::shutdown() {
 }
 
 void App::keyDown(Button button) {
+    if (shutDown_ || held_[static_cast<size_t>(button)]) return;
     held_[static_cast<size_t>(button)] = true;
-    locked_[static_cast<size_t>(button)] = false; // a new press; a lock left by a release that never came ends
+    locked_[static_cast<size_t>(button)] = false; // a fresh contact cycle clears its prior lock
     if (hold_ && button != Button::Power) {
         tts_.stop();
         earcons_.play(Earcon::Error);
@@ -761,6 +763,7 @@ void App::keyDown(Button button) {
 }
 
 void App::keyUp(Button button) {
+    if (shutDown_) return;
     held_[static_cast<size_t>(button)] = false;
     auto ev = gestures_.release(button, clock_.now());
     if (std::exchange(locked_[static_cast<size_t>(button)], false)) return; // held down when Hold was switched on
@@ -768,17 +771,35 @@ void App::keyUp(Button button) {
 }
 
 void App::onGesture(ButtonEvent ev) {
-    if (!locked_[static_cast<size_t>(ev.button)]) onButton(ev);
+    if (ev.gesture == Gesture::Release || ev.gesture == Gesture::Cancel) {
+        navigationActed_[static_cast<size_t>(ev.button)] = false;
+        return; // lifecycle endpoints are used by repeated seeking in step 1.4
+    }
+    if (ev.gesture == Gesture::Light) return; // stage transition, no legacy action
+    if (locked_[static_cast<size_t>(ev.button)] ||
+        (ev.button == Button::Back && locked_[static_cast<size_t>(Button::BackDeep)]) ||
+        (ev.button == Button::Forward && locked_[static_cast<size_t>(Button::ForwardDeep)])) return;
+    if ((ev.button == Button::Back || ev.button == Button::Forward) &&
+        (ev.gesture == Gesture::Long || ev.gesture == Gesture::Deep)) {
+        if (std::exchange(navigationActed_[static_cast<size_t>(ev.button)], true)) return;
+    }
+    onButton(ev);
+}
+
+void App::cancelGestures(bool preservePower) {
+    for (const ButtonEvent& ev : gestures_.cancel(preservePower)) onGesture(ev);
+    navigationActed_.fill(false);
+    for (size_t i = 0; i < kButtonCount; ++i)
+        if (held_[i] && !(preservePower && static_cast<Button>(i) == Button::Power)) locked_[i] = true;
 }
 
 void App::setHold(bool on) {
+    if (shutDown_) return;
     if (hold_ == on) return;
     hold_ = on;
     // A key already down when Hold is switched on does nothing more: no long
     // press while it is held, no short press when it is let go. Power still works.
-    if (on)
-        for (size_t i = 0; i < kButtonCount; ++i)
-            if (held_[i] && static_cast<Button>(i) != Button::Power) locked_[i] = true;
+    if (on) cancelGestures(true);
     tts_.stop();
     earcons_.play(on ? Earcon::Close : Earcon::Open);
     say(on ? "Buttons locked." : "Buttons unlocked.");
@@ -791,7 +812,8 @@ App::Mode App::mode() const {
 
 void App::tick() {
     auto now = clock_.now();
-    for (const ButtonEvent& ev : gestures_.poll(now)) onGesture(ev);
+    if (!shutDown_)
+        for (const ButtonEvent& ev : gestures_.poll(now)) onGesture(ev);
     if (servers_.empty()) { // the stand-ins answer through poll() too
         noServer_.poll();
         noDownloader_.poll();
@@ -801,6 +823,7 @@ void App::tick() {
         link.downloader.poll(); // a finished track starts the next one
     }
     scanner_.poll();    // a finished scan updates the index
+    if (shutDown_) return; // exit acknowledgements above still clear saved outboxes
     if (pendingOpen_ && !player_.opening()) finishPendingOpen();
     else if (pendingOpen_ && now - pendingOpen_->since > kStreamOpenGiveUp) giveUpPendingOpen();
 
@@ -1038,6 +1061,7 @@ void App::openMenu(const std::string& title, std::function<std::vector<MenuItem>
 }
 
 void App::pushScreen(Screen screen) {
+    cancelGestures();
     if (ping_) serverAt(pingLink_).cancel(std::exchange(ping_, 0)); // the user moved on from Server status
     cancelResume(); // likewise from a stream resume (resumeStream()) still loading
     cancelLoading(); // and from an album Options is loading for: a screen over the Options screen leaves it
@@ -1047,6 +1071,7 @@ void App::pushScreen(Screen screen) {
 
 // Every way off the stack comes here, so a screen's request never outlives it.
 void App::closeScreens(size_t keep) {
+    if (screens_.size() > keep) cancelGestures();
     while (screens_.size() > keep) {
         std::uint64_t id = screens_.back().id;
         if (auto list = remoteLists_.find(id); list != remoteLists_.end()) {
@@ -5532,6 +5557,7 @@ void App::setSleepTimer(int minutes, bool endOfChapter) {
 }
 
 void App::sleep(const std::string& announcement) {
+    cancelGestures();
     cancelProgressPull();
     cancelResume();
     cancelLoading();
@@ -5549,6 +5575,7 @@ void App::sleep(const std::string& announcement) {
 }
 
 void App::wake() {
+    cancelGestures();
     tts_.stop();
     sleeping_ = false;
     earcons_.play(Earcon::Wake);
@@ -5563,6 +5590,7 @@ void App::wake() {
 }
 
 void App::powerOff() {
+    cancelGestures();
     cancelProgressPull();
     cancelResume(); // the front end ticks on while "Goodbye" is spoken
     cancelLoading();

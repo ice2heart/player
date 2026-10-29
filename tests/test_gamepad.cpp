@@ -92,7 +92,7 @@ TEST(Gamepad, L1DoesNotDeepenKeysWithoutADeepStage) {
     EXPECT_EQ(press(pad, PadControl::South), "OK down");
 }
 
-TEST(Gamepad, L1WithLeftIsADeepGestureAndTheReleaseSaysNothing) {
+TEST(Gamepad, L1WithLeftHasDeepEasingAndFinalReleaseWithoutShort) {
     GamepadMapper pad;
     GestureDetector g;
     auto t0 = GestureDetector::Clock::time_point{};
@@ -106,9 +106,13 @@ TEST(Gamepad, L1WithLeftIsADeepGestureAndTheReleaseSaysNothing) {
     feed(pad.set(PadControl::L1, true), t0);
     feed(pad.setAxis(PadControl::DpadLeft, PadControl::DpadRight, -1), t0 + 10ms);
     feed(pad.setAxis(PadControl::DpadLeft, PadControl::DpadRight, 0), t0 + 100ms);
-    ASSERT_EQ(events.size(), 1u);
+    ASSERT_EQ(events.size(), 3u);
     EXPECT_EQ(events[0].button, Button::Back);
     EXPECT_EQ(events[0].gesture, Gesture::Deep);
+    EXPECT_EQ(events[1].button, Button::Back);
+    EXPECT_EQ(events[1].gesture, Gesture::Light);
+    EXPECT_EQ(events[2].button, Button::Back);
+    EXPECT_EQ(events[2].gesture, Gesture::Release);
 }
 
 TEST(Gamepad, ReleaseAllLetsGoOfEveryHeldButton) {

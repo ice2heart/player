@@ -127,7 +127,8 @@ private:
         double start = 0;
     };
 
-    void onGesture(ButtonEvent ev); // drops gestures of keys locked by the hold switch
+    void onGesture(ButtonEvent ev);
+    void cancelGestures(bool preservePower = false);
     void onButton(ButtonEvent ev);
     void handleMenu(ButtonEvent ev);
     void handlePlayer(ButtonEvent ev);
@@ -713,6 +714,9 @@ private:
     FreeSpace freeSpace_;
     QueueRandom random_;
     GestureDetector gestures_;
+    // Until the menu/player mappings are replaced, keep their single-action
+    // handling of a navigation gesture while accepting the richer lifecycle.
+    std::array<bool, kButtonCount> navigationActed_{};
 
     std::vector<Screen> screens_;
     std::uint64_t lastScreenId_ = 0;

@@ -40,58 +40,90 @@ std::optional<Button> deepOf(Button shallow) {
 } // namespace
 
 std::optional<ButtonEvent> GestureDetector::press(Button button, Clock::time_point now) {
-    State& s = states_[static_cast<size_t>(button)];
-    s.down = true;
-    s.since = now;
-    s.longFired = false;
+    State& contact = states_[static_cast<size_t>(button)];
+    if (contact.down) return std::nullopt;
+    auto shallow = shallowOf(button);
+    auto deep = deepOf(button);
+    const bool navigation = shallow || deep;
+    State& first = shallow ? states_[static_cast<size_t>(*shallow)] : contact;
+    const bool otherDown = shallow ? first.down : deep && states_[static_cast<size_t>(*deep)].down;
+    contact.down = true;
+    if (!navigation || !otherDown) {
+        first.since = now;
+        first.longFired = false;
+        first.consumed = false;
+        first.cancelled = false;
+    }
+    if (first.cancelled) return std::nullopt;
     if (repeats(button)) {
-        s.consumed = true; // no long press, and the release says nothing
-        s.nextRepeat = now + kRepeatDelay;
+        first.consumed = true;
+        first.nextRepeat = now + kRepeatDelay;
         return ButtonEvent{button, Gesture::Short};
     }
-    auto shallow = shallowOf(button);
-    if (!shallow) {
-        // A light press while its deep stage is down (stages out of order, or the
-        // first contact bouncing) belongs to the deep press that already fired.
-        auto deep = deepOf(button);
-        s.consumed = deep && states_[static_cast<size_t>(*deep)].down;
-        return std::nullopt;
+    if (shallow) {
+        first.consumed = true;
+        return ButtonEvent{*shallow, Gesture::Deep};
     }
-    s.consumed = true; // the deep stage never fires a short or long press of its own
-    State& first = states_[static_cast<size_t>(*shallow)];
-    if (!first.down) return ButtonEvent{*shallow, Gesture::Deep};
-    first.consumed = true;
-    if (first.longFired) { // pushed deeper only after the long press: one step is enough
-        first.longFired = false; // but pushing deeper again is a new step
-        return std::nullopt;
-    }
-    return ButtonEvent{*shallow, Gesture::Deep};
+    return std::nullopt;
 }
 
 std::optional<ButtonEvent> GestureDetector::release(Button button, Clock::time_point) {
-    State& s = states_[static_cast<size_t>(button)];
-    if (!s.down) return std::nullopt;
-    s.down = false;
-    if (s.consumed) return std::nullopt;
-    return ButtonEvent{button, Gesture::Short};
+    State& contact = states_[static_cast<size_t>(button)];
+    if (!contact.down) return std::nullopt;
+    contact.down = false;
+    auto shallow = shallowOf(button);
+    auto deep = deepOf(button);
+    State& first = shallow ? states_[static_cast<size_t>(*shallow)] : contact;
+    const bool navigation = shallow || deep;
+    const bool otherDown = shallow ? first.down : deep && states_[static_cast<size_t>(*deep)].down;
+    if (otherDown) {
+        if (shallow && !first.cancelled) return ButtonEvent{*shallow, Gesture::Light};
+        return std::nullopt;
+    }
+    const bool cancelled = first.cancelled;
+    const bool consumed = first.consumed;
+    first.cancelled = false;
+    first.consumed = false;
+    first.longFired = false;
+    if (cancelled) return std::nullopt;
+    if (navigation && consumed) return ButtonEvent{shallow.value_or(button), Gesture::Release};
+    if (!consumed) return ButtonEvent{button, Gesture::Short};
+    return std::nullopt;
 }
 
 std::vector<ButtonEvent> GestureDetector::poll(Clock::time_point now) {
     std::vector<ButtonEvent> events;
     for (size_t i = 0; i < states_.size(); ++i) {
+        const Button button = static_cast<Button>(i);
+        if (shallowOf(button)) continue; // deep contacts share their light contact's deadline
         State& s = states_[i];
-        if (s.down && repeats(static_cast<Button>(i))) {
+        auto deep = deepOf(button);
+        const bool down = s.down || (deep && states_[static_cast<size_t>(*deep)].down);
+        if (!down || s.cancelled) continue;
+        if (repeats(button)) {
             if (now >= s.nextRepeat) {
                 s.nextRepeat = now + kRepeatInterval;
-                events.push_back({static_cast<Button>(i), Gesture::Repeat});
+                events.push_back({button, Gesture::Repeat});
             }
-            continue;
-        }
-        if (s.down && !s.consumed && now - s.since >= longPress_) {
+        } else if (!s.longFired && now - s.since >= longPress_) {
             s.consumed = true;
             s.longFired = true;
-            events.push_back({static_cast<Button>(i), Gesture::Long});
+            events.push_back({button, Gesture::Long});
         }
+    }
+    return events;
+}
+
+std::vector<ButtonEvent> GestureDetector::cancel(bool preservePower) {
+    std::vector<ButtonEvent> events;
+    for (size_t i = 0; i < states_.size(); ++i) {
+        const Button button = static_cast<Button>(i);
+        if (shallowOf(button) || (preservePower && button == Button::Power)) continue;
+        State& s = states_[i];
+        auto deep = deepOf(button);
+        if (!s.down && !(deep && states_[static_cast<size_t>(*deep)].down)) continue;
+        if (deep && s.consumed && !s.cancelled) events.push_back({button, Gesture::Cancel});
+        s.cancelled = true;
     }
     return events;
 }

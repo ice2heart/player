@@ -236,12 +236,15 @@ void drawNowPlaying(const App& app) {
 }
 
 void drawUsage(App& app) {
-    if (ImGui::BeginTable("usage", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+    if (ImGui::BeginTable("usage", int(kGestureCount + 1), ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("Button");
         ImGui::TableSetupColumn("Short");
         ImGui::TableSetupColumn("Long");
         ImGui::TableSetupColumn("Deep");
         ImGui::TableSetupColumn("Repeat");
+        ImGui::TableSetupColumn("Light");
+        ImGui::TableSetupColumn("Release");
+        ImGui::TableSetupColumn("Cancel");
         ImGui::TableHeadersRow();
         const auto& usage = app.buttonUsage();
         for (size_t i = 0; i < kButtonCount; ++i) {

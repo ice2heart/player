@@ -1104,12 +1104,15 @@ TEST_F(AppTest, ARepeatAtTheLimitDoesNotCutOffMaximumVolume) {
     EXPECT_EQ(speech.last(), "Maximum volume.");
 }
 
-TEST_F(AppTest, AKeyThatWokeTheDeviceAndNeverCameUpWorksAgainOnTheNextPress) {
+TEST_F(AppTest, AKeyThatWokeTheDeviceStaysSuppressedUntilItComesUp) {
     start();
     press(Button::Power);
     ASSERT_EQ(app->mode(), App::Mode::Sleeping);
     app->keyDown(Button::VolumeUp); // wakes; the release is lost
-    app->keyDown(Button::VolumeUp);
+    app->keyDown(Button::VolumeUp); // a duplicate cannot end suppression
+    EXPECT_EQ(settings.getInt("volume", 70), 70);
+    app->keyUp(Button::VolumeUp);
+    press(Button::VolumeUp);
     EXPECT_EQ(settings.getInt("volume", 70), 75);
 }
 
@@ -4817,6 +4820,98 @@ TEST_F(ResumeStreamTest, ShutdownWritesTheQueueOnce) {
     EXPECT_EQ(files.queueWrites, 1);
     EXPECT_DOUBLE_EQ(savedQueue().position, 35);
     EXPECT_EQ(configFile.saves, 0);
+}
+
+// ---------------------------------------------------------------- gesture cancellation
+
+TEST_F(AppTest, ScreenChangeCancelsHeldNavigationAndVolumeUntilReleased) {
+    playAlpha();
+    app->keyDown(Button::Forward);
+    app->keyDown(Button::VolumeUp);
+    const float afterPress = volume.volume;
+    press(Button::Ok); // a new screen cancels the held keys
+    ASSERT_EQ(level().title, "Player menu");
+    const auto spoken = speech.last();
+    idle(1s);
+    app->keyUp(Button::Forward);
+    app->keyUp(Button::VolumeUp);
+    EXPECT_EQ(speech.last(), spoken);
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_FLOAT_EQ(volume.volume, afterPress);
+    press(Button::VolumeUp);
+    EXPECT_GT(volume.volume, afterPress) << "a fresh press works";
+}
+
+TEST_F(AppTest, ScreenChangeDuringPollSuppressesAlreadyQueuedRepeats) {
+    playAlpha();
+    app->keyDown(Button::VolumeUp);
+    const float afterPress = volume.volume;
+    app->keyDown(Button::Ok); // its Long changes screen in this same tick
+    idle(600ms); // poll also returns a volume Repeat, after OK in button order
+    EXPECT_FLOAT_EQ(volume.volume, afterPress);
+    app->keyUp(Button::Ok);
+    app->keyUp(Button::VolumeUp);
+    EXPECT_EQ(level().title, "Library");
+}
+
+TEST_F(AppTest, ReturningToPreviousScreenCancelsOtherHeldKeys) {
+    playAlpha();
+    press(Button::Ok);
+    app->keyDown(Button::Forward);
+    press(Button::Home);
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    const auto spoken = speech.last();
+    idle(1s);
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_EQ(speech.last(), spoken);
+}
+
+TEST_F(AppTest, HoldCancellationSuppressesLateDeepAndDuplicateDownUntilBothContactsUp) {
+    playAlpha();
+    app->keyDown(Button::Forward);
+    app->setHold(true);
+    app->setHold(false);
+    app->keyDown(Button::Forward); // duplicate raw down cannot unlock this press
+    app->keyDown(Button::ForwardDeep);
+    idle(1s);
+    app->keyUp(Button::Forward);
+    app->keyUp(Button::ForwardDeep);
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_EQ(speech.last(), "Buttons unlocked.");
+    press(Button::ForwardDeep);
+    EXPECT_EQ(player.file, alphaFile(2)) << "a new gesture works";
+}
+
+TEST_F(AppTest, SleepingCancelsHeldNavigationWithoutWakingOnItsRelease) {
+    playAlpha();
+    app->keyDown(Button::Forward);
+    press(Button::Power);
+    ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    idle(1s);
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_EQ(speech.last(), "Going to sleep.");
+    press(Button::PlayPause);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_FALSE(player.playing());
+}
+
+TEST_F(AppTest, ShutdownCancelsInputAndSubsequentTicksCannotReopenOrSpeak) {
+    playAlpha();
+    app->keyDown(Button::Forward);
+    app->shutdown();
+    const auto spoken = speech.last();
+    const auto saves = stateFile.saves;
+    idle(1s);
+    app->keyUp(Button::Forward);
+    press(Button::PlayPause);
+    press(Button::VolumeUp); // immediate-down action must also stay inert
+    app->setHold(true);
+    EXPECT_EQ(speech.last(), spoken);
+    EXPECT_EQ(stateFile.saves, saves);
+    EXPECT_FALSE(player.playing());
+    EXPECT_FALSE(player.isOpen());
 }
 
 // ---------------------------------------------------------------- hold switch and power

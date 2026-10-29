@@ -81,7 +81,7 @@ The unit tests wire in fakes instead (section 12).
 |------|----------|
 | `CMakeLists.txt` | Builds `oapcore`, `oapconfig`, `oapfrontend`, `oaplibrary` (SQLite from the system, else the amalgamation is fetched), `oapnet` (`OAP_BUILD_NET`, libcurl via pkg-config; on by default when a front end is built), `oapmusicserver` (`makeServers()`, linking `oapnet` when it is built), `oapmedia`, `oapaudio` (backends from `OAP_AUDIO_BACKENDS`), `imgui` and `oap-sim` (`OAP_BUILD_SIM`), `oap-headless` (`OAP_BUILD_HEADLESS`, Linux), plus `oap-tests`, `oap-net-tests` (with `OAP_BUILD_NET`) and `oap-media-tests` (with a front end) (`OAP_BUILD_TESTS`). ImGui and GoogleTest are fetched at configure time, and yaml-cpp and SQLite too when the system has none. |
 | `app/core/app.{h,cpp}` | `App`: the UI state machine and all menus. |
-| `app/core/buttons.{h,cpp}` | `Button`, `Gesture` (`Short`, `Long`, `Deep`, `Repeat`), `GestureDetector` (with `kRepeatDelay` 400 ms and `kRepeatInterval` 150 ms for the volume keys). |
+| `app/core/buttons.{h,cpp}` | `Button`, `Gesture` (`Short`, `Long`, `Deep`, `Repeat`, `Light`, `Release`, `Cancel`), `GestureDetector` (with `kRepeatDelay` 400 ms and `kRepeatInterval` 150 ms for the volume keys). |
 | `app/core/menu.h` | `MenuItem` (no `adjust` part: a value is changed only in its list), `ListOrder` (`None`, `ByName`, `ByArtist`: how a list is sorted, for the letter jump), `Screen` data model. |
 | `app/core/services.h` | Interfaces `App` depends on: `Speech`, `MediaPlayer`, `SoundEffects`, `VolumeControl`, `Clock` (+ `SystemClock`), `TextFiles` (whole text files for the cache manifests: `read()` and `writeAtomically()`, which leaves the old or the new contents after a crash; core does no file I/O of its own), `TagReader` (tags and length of a local audio file, `TrackTags`, none if unreadable; callable from any thread; `FfmpegTagReader` in `app/media/`, whose constructor lowers FFmpeg's log level to errors), `LibraryScanner` (`ScanRequest` in, local `IndexItem`s out, asynchronous like `MusicServer`: `scan()` / `cancel()` / `poll()`; `ThreadedScanner` in `app/frontend/`), and `Downloader` (queues a track download into `<dest>.part`, renamed when complete; the same `RequestId` / `poll()` / `cancel()` contract as `MusicServer`, results `Ok` / `NotConfigured` / `Unreachable` / `Server` / `Disk`; `App` takes one for Download album / playlist), and `MusicServer` (with `musicFolders(done)` and `albums(..., musicFolderId)`, and `catalogueVersion(done)`: a token that changes when the server's catalogue does, empty when it says none) with its `RemoteTrack` (with the original's `suffix` and `size`) / `RemoteAlbum` (with `genre`, `year`, `created`, `musicBrainzId`) / `RemoteArtist` / `RemotePlaylist` structs, and `book(albumId, done)` (a `RemoteBook`: the tracks and the `RemoteChapter`s the server lists, none for Subsonic, whose `book()` is `getAlbum`) and `catalogue()` (`Catalogue::Music` or `Books`; Subsonic and `NoMusicServer` say `Music`), and `createPlaylist(name, trackIds, done)` (a new server playlist; at most `kMaxPlaylistTracks` = 150 ids, as they all go in the GET URL; `done` gets only an `Error`) (asynchronous: a request returns a `RequestId`, its callback runs from `poll()` on the UI thread, and `cancel(id)` drops it). `syncsProgress()` says whether progress sync is supported. `progress(albumId, done)` returns an optional `RemoteProgress` (seconds on the book timeline, duration, finished, updated in wall ms); `saveProgress(albumId, progress, done = {})` optionally acknowledges completion from `poll()`. `inProgress(done)` returns the selected book library’s in-progress books. Subsonic answers unsupported progress requests with `Server`; `NoMusicServer` answers `NotConfigured`. `App` takes a `std::vector<ServerLink>` (`ServerLink`: the server's `ServerConfig`, its key `TrackCache::serverKey(url, user)`, its spoken name, its `MusicServer&` and its `Downloader&`; the objects belong to the front end and outlive `App`). With an empty list it behaves as with a server that is not configured. Browsing (step 1.4) and playing (step 1.5: streams, scrobbles, read-ahead, the automatic cache, the marked-down state) use the link of the list or of the queue entry; downloads (step 1.6) and the catalogue (step 1.7) use the link of the list or of the item too. Its identity in saved state (queue entries, the cache folder, `catalogue.*` keys) comes from the link, not from `server.*` in the settings. The Streaming menu asks the `MusicServer` for lists, `tick()` calls its `poll()`, and opening a remote track asks it for `stream(id, maxBitRate)`: the URL, and for a transcode a `Transcoded` (offset URL, and the length `App` fills in from the listing) that `MediaPlayer::open()` takes. |
 | `app/net/http_client.{h,cpp}` | `Http`: asynchronous GET and JSON PATCH (`patch(id, url, headers, body, handler)`, with `Content-Type: application/json`) with optional extra request headers (`Headers`, "Name: value" lines; values can be secrets, so they are never logged; a request with headers does not follow redirects, and a line break in one fails it; `Subsonic` passes none) whose handler runs on the client's thread (tests use a fake). `HttpClient`: libcurl multi on one worker thread; 10 s connect timeout, 10 s without data or 60 s in all ends a request, answers over 16 MB fail; cancellable; the destructor aborts transfers and never waits on a socket. `finish(deadline)` (also on `Http`, a no-op in fakes) is the way out at exit: it rejects new requests, waits until the queued and running ones are answered or the deadline has passed, then aborts the rest. |
@@ -317,16 +317,31 @@ Rules:
 ## 6. Input: buttons and gestures
 
 ```
-key / GPIO ─► App::keyDown(b) ─► GestureDetector.press   ─► Deep ──┐
-          └─► App::keyUp(b)   ─► GestureDetector.release ─► Short ─┤
-              App::tick()     ─► GestureDetector.poll    ─► Long / Repeat ┴► App::onButton()
+key / GPIO ─► App::keyDown(b) ─► GestureDetector.press   ─► Deep / Short ─┐
+          └─► App::keyUp(b)   ─► GestureDetector.release ─► Short / Light / Release ─┤
+              App::tick()     ─► GestureDetector.poll    ─► Long / Repeat ─┤
+              App::cancelGestures() ─► GestureDetector.cancel ─► Cancel ─┘
+                                               App::onGesture() ─► App::onButton()
 ```
 
-- **Long press** fires while the button is still held, after `Long press time`
-  (default 600 ms). The release that follows is ignored.
-- **Deep press**: Left / Right may be two-stage keys. The second stage is a
-  raw input (`BackDeep`, `ForwardDeep`). It fires a `Deep` gesture on `Back` /
-  `Forward` as soon as it closes, and the first stage's release is then ignored.
+- **Long press** fires once while held after `Long press time` (default 600 ms).
+  Ordinary keys suppress their release; Back/Forward report `Release` after a hold.
+- **Two-stage Back/Forward:** raw `BackDeep`/`ForwardDeep` immediately report `Deep`
+  on the light key, including after a light hold. `Long` still fires at the initial
+  contact's deadline after a deep press. Opening the deep contact while light stays
+  down reports `Light`; opening the last contact reports `Release`, never a trailing
+  `Short`. Either release order is accepted; duplicate downs and light-contact bounce
+  do not restart the shared deadline. A deep-only input starts the same lifecycle.
+- **Cancellation:** `GestureDetector::cancel()` reports `Cancel` for active navigation
+  gestures and suppresses held contacts until both stages are up. `App::cancelGestures()`
+  applies this on screen push/pop, sleep/wake, Hold and shutdown; Hold preserves Power.
+  Shutdown makes subsequent input inert; ticks still poll exit acknowledgements
+  before returning without player work. Already-polled events from
+  keys cancelled during the same tick are suppressed by the App's held-key locks.
+  Step 1.2 of [button-remap.md](button-remap.md) installs this lifecycle first;
+  the existing menu/player actions still use one action per hold/deep sequence via
+  `navigationActed_` until steps 1.3 and 1.4 replace those handlers. `Light`, `Release`
+  and `Cancel` currently have no speech/action side effects in those old handlers.
 - **Repeat**: the volume keys (`VolumeUp`, `VolumeDown`) send a `Short` as soon as they go
   down, then a `Repeat` every `kRepeatInterval` (150 ms) after `kRepeatDelay` (400 ms), until
   they are let go. They have no long press and the release says nothing. `App` plays the

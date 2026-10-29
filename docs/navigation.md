@@ -1,8 +1,9 @@
 # Navigation guidelines
 
 > Status: this contract includes the approved [button-remap.md](button-remap.md)
-> mapping and parameters, recorded before code in step 1.1. Steps 1.2–1.5 implement
-> the gesture lifecycle, menu/player mapping and help. Until those steps finish,
+> mapping and parameters, recorded before code in step 1.1. The gesture lifecycle
+> is built (step 1.2); steps 1.3–1.5 implement menu/player mapping and help.
+> Until those steps finish,
 > the build still uses the previous step-unit and letter-jump controls;
 > [architecture.md](architecture.md) describes that build.
 > The two players, queue, Options actions, server menus, progress sync, download
