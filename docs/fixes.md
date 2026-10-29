@@ -279,7 +279,7 @@ throw-away scripts stay out of the repo (the scratch folder), tools worth keepin
 | # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
 |---|------|------|
 | ✅ 1.1 | **Missing artists.** Compare the test server's `getArtists` (and each album's OpenSubsonic `artists` / `displayArtist` in `getAlbumList2`) with the artists the index gives (`artistsMenu()` over `mergeAlbums`). Check the hypotheses: an artist only on tracks (featured), an album with several artists whose `artist` is one joined string ("A • B"), compilations without an album artist split per track, a sync that stopped early (`kCatalogueLimit`, an empty page with `more`), local albums without an album tag under "Unknown artist". Credentials from `.env`; never print or write the token or the password. Write the counts, the missing names (a sample) and the cause. | – |
-| 1.2 | **Scrobbles at exit and "now playing".** Measure on the test server: is a scrobble queued just before exit lost (expected yes, 3.1 fixes it); does Navidrome's "now playing" stay after the app closes, and for how long; does Navidrome accept `time=` on a late submission and list it at that time; is the same track with the same `time=` sent twice counted twice (3.2 can resend). Decide whether exit should send anything more. | – |
+| ✅ 1.2 | **Scrobbles at exit and "now playing".** Measure on the test server: is a scrobble queued just before exit lost (expected yes, 3.1 fixes it); does Navidrome's "now playing" stay after the app closes, and for how long; does Navidrome accept `time=` on a late submission and list it at that time; is the same track with the same `time=` sent twice counted twice (3.2 can resend). Decide whether exit should send anything more. | – |
 | 1.3 | **Voices to download, and Han transliteration.** On the Pi image (Debian `espeak-ng-data`): which voices are installed, and how long a voice switch inside one utterance takes on a Pi Zero 2 W. Voices that can be downloaded (plan A): eSpeak data for one language, Piper voices per language (can the Pi Zero 2 W run one next to playback?), a kanji reading for Japanese (kakasi / a kanji→kana dictionary). Transliteration of Han (plan B): a Han→pinyin table (Unihan `kMandarin`) and ICU Any-Latin. For each: size, licence, quality on 20 real artist and album names, where it would be downloaded from, how it is checked (hash). Count the Japanese names written in kanji only in the test library (open question 6: they are read in Chinese). Suggest the format of a downloaded voice and the Languages list. | – |
 | 1.4 | **Tag encodings.** With FFmpeg's tag reading (`tag_reader.cpp`): what comes out of ID3v1 and ID3v2 tags written in cp1251 and Shift-JIS but marked Latin-1 (mojibake such as "Àãàòà Êðèñòè"), and of a file name in a non-UTF-8 encoding. Make sample files in the scratch folder. Suggest a repair (detect and re-decode) or none. | – |
 | 1.5 | **Background tasks.** List the work that waits for a background runner (language pack download, cache replacement, the stream tee of 1.6, transliteration) and what the existing pattern (a thread per service, results through `poll()` in `tick()`) costs for each. Compare a small `TaskRunner` in `services.h` (a worker thread, callbacks run in `poll()`) with libuv: dependencies, size, threads on the Pi Zero, how tests drive it. Suggest one. | – |
@@ -497,8 +497,9 @@ Filled in by phase 1. Facts checked while writing this plan (2026-10-28):
   utterance gives a Russian reading and switches back after `</voice>`; `<s xml:lang="ru">`
   leaks Russian into the text after it. `cmn` reads Han in pinyin with tones, `ja` reads
   kana but not kanji, `ko` reads Hangul.
-- `HttpClient::~HttpClient` sets `stop_` and the worker breaks out at once, so queued and
-  running requests are dropped at exit. `Subsonic::scrobble` only logs a failure.
+- Before phase 3, destruction dropped queued/running HTTP requests and scrobble failures
+  were only logged. Phase 3 added bounded draining and the durable outbox; current
+  test-server measurements are in [1.2](#12-scrobbles-at-exit-and-now-playing).
 - Downloads and the automatic cache use `download?id=` (the original); `CachedTrack` has no
   quality.
 - `album_merge.cpp` and `library.cpp` each have a case fold for Latin-1, Extended-A, Greek
@@ -555,6 +556,64 @@ Test server (Navidrome, OpenSubsonic), 2026-10-28; `getArtists` and all of `getA
   "T.M.Revolution" and "T.M. Revolution" stay two (they are two artists on the server).
   Track-only (featured) artists are left out of 6.1: the server's own artist list does not
   have them, and finding them needs a call per track.
+
+### 1.2 Scrobbles at exit and now playing
+
+Measured 2026-10-29 against the configured test server: Navidrome **0.64.2
+(10114574)**, Subsonic API 1.16.1. Credentials were loaded from `.env` in memory;
+throw-away probes and results stayed outside the repository. These are server API
+measurements, not a listening/device shutdown test.
+
+- **Exit delivery now works.** A scratch C++ executable linked the current
+  `build/liboapnet.a` / `liboapcore.a`, constructed `Subsonic`, queued one submission
+  and immediately called `finish(3s)` before destruction, without `poll()` or a
+  pre-drain sleep. Its success callback ran and it exited in **84 ms**. `getSong`
+  showed the sample's play count **4 → 5** and the supplied submission time.
+  The original “expected yes” in step 1.2 describes the pre-3.1 destructor-only path;
+  phase 3 is already built. The simulator calls `app.shutdown(); servers.finish();`
+  and the headless front end has the same drain policy. Existing local-server tests
+  cover a just-queued request, deadline abort and rejection after finish. This probe
+  verifies the transport path against the real server, not every GUI/device exit.
+- **Now playing survives client exit until server expiry.** A second scratch process
+  used the actual `Subsonic` implementation to send `submission=false`, drained in
+  **70 ms**, then exited. For **“Unknown Depths Below”**, advertised duration **5 s**,
+  `getNowPlaying` still listed player `oap` at **9.669 s**, but no longer at
+  **10.733 s**, measured from sender launch with roughly one-second polling. No
+  client stop notification was sent. An independent API probe also saw the entry
+  disappear by 10.1 s. The wider rule comes from the matching
+  [Navidrome v0.64.2 source](https://github.com/navidrome/navidrome/blob/v0.64.2/core/scrobbler/play_tracker.go):
+  `remainingTTL()` converts the remaining duration at the playback rate to whole
+  seconds and adds **5 s**.
+  Its [legacy scrobble handler](https://github.com/navidrome/navidrome/blob/v0.64.2/server/subsonic/media_annotation.go)
+  maps `submission=false` to playing at position zero when no position is supplied,
+  as this client does. Thus a long track can remain visible for approximately its
+  full duration plus 5 s after that notification; only the short-track interval
+  above was measured. A later ordinary submission does not clear now playing.
+- **Late timestamp accepted.** A submission with
+  `time=1793191752752` (2026-10-28 12:49:12.752 UTC, approximately one day old)
+  returned `ok`; `getSong.played` became exactly
+  `2026-10-28T12:49:12.752Z` and play count **2 → 3**. This confirms the server's
+  exposed last-played value, not delivery to Last.fm/ListenBrainz or its web history
+  presentation. The [Subsonic API](https://www.subsonic.org/pages/api.jsp#scrobble)
+  defines `time` as the listening timestamp in milliseconds since the epoch.
+- **Duplicates count twice.** Repeating that exact track id and exact `time` returned
+  `ok` again and raised play count **3 → 4**, keeping the same `played` timestamp.
+  This server does not deduplicate those submissions: retry after a lost answer can
+  visibly overcount a play, the cost of the existing at-least-once policy. The probes
+  added **three
+  synthetic plays** in total (the duplicate pair and the immediate-exit submission)
+  to that sample; no play history was deleted or edited to hide the measurement.
+- **Suggested exit policy: keep phase 3's policy.** Drain already queued work within
+  the shared 3 s deadline; keep unacknowledged qualifying plays in `scrobbles.tsv`
+  with their original times. Send no extra submission at exit for a track below the
+  existing listening threshold, and no second submission for one already qualified.
+  Do not send a fake “now playing” or submission merely to clear server presence;
+  neither is a stop notification in the API this client uses. A future explicit
+  playback-report extension could clear presence, but needs separate capability
+  negotiation and design. Accept a possible duplicate after a lost acknowledgement,
+  as already decided, and never persist “now playing”. No product change is needed
+  for this step. Real power-cut/offline recovery and audible shutdown remain the
+  phase 3 device checks.
 
 ## Decisions
 
