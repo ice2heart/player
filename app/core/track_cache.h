@@ -127,7 +127,8 @@ public:
 
     // Every track find() would return, by track id, from one pass over the
     // manifests: for a caller that asks often and keeps the answer in memory.
-    std::map<std::string, std::filesystem::path> index() const;
+    // Optional qualities is replaced with the bitrate of every complete file, keyed by path.
+    std::map<std::string, std::filesystem::path> index(std::map<std::filesystem::path, int>* qualities = nullptr) const;
 
 private:
     // The manifest in a list folder of this server; empty if it is not valid or is another list's (a copied folder).

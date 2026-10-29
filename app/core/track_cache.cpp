@@ -459,15 +459,19 @@ size_t TrackCache::trim(std::uintmax_t limitBytes, const std::map<std::string, i
     return gone.size();
 }
 
-std::map<std::string, fs::path> TrackCache::index() const {
+std::map<std::string, fs::path> TrackCache::index(std::map<fs::path, int>* qualities) const {
     std::map<std::string, fs::path> out;
+    if (qualities) qualities->clear();
     if (!enabled()) return out;
     std::error_code ec;
     for (fs::directory_iterator it(serverDir_, ec), end; !ec && it != end; it.increment(ec)) {
         std::error_code entryEc;
         if (!it->is_directory(entryEc)) continue;
         for (const CachedTrack& t : readFolder(it->path()).tracks)
-            if (auto path = completeIn(it->path(), t)) out.emplace(t.id, *path);
+            if (auto path = completeIn(it->path(), t)) {
+                out.emplace(t.id, *path);
+                if (qualities) (*qualities)[*path] = t.bitrate;
+            }
     }
     return out;
 }

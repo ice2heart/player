@@ -375,7 +375,7 @@ TEST_F(AppTest, ChoosingAValueFromTheListSavesItAppliesItAndGoesBack) {
     EXPECT_EQ(configFile.onDisk("speech.rate"), "250") << "written at once";
     EXPECT_EQ(speech.rate, 250);
     EXPECT_EQ(level().title, "Settings");
-    EXPECT_EQ(speech.last(), "Speech rate, 250 words per minute, 1 of 13");
+    EXPECT_EQ(speech.last(), "Speech rate, 250 words per minute, 1 of 14");
 }
 
 TEST_F(AppTest, LeavingAValueListChangesNothing) {
@@ -386,7 +386,7 @@ TEST_F(AppTest, LeavingAValueListChangesNothing) {
     press(Button::Home);
     EXPECT_EQ(level().title, "Settings");
     EXPECT_EQ(settings.getInt("volume", 70), 70);
-    EXPECT_EQ(speech.last(), "Volume, 70 percent, 2 of 13");
+    EXPECT_EQ(speech.last(), "Volume, 70 percent, 2 of 14");
 }
 
 TEST_F(AppTest, RightInSettingsChangesNoSetting) {
@@ -422,16 +422,16 @@ TEST_F(AppTest, ASettingIsOnlyChangedInItsList) {
 
 TEST_F(AppTest, RightInAListThatIsNotSortedByNameMovesTenItems) {
     start();
-    open("Settings"); // 13 items
+    open("Settings"); // 14 items
     press(Button::Forward);
     EXPECT_EQ(level().index, 10u);
     EXPECT_EQ(sounds.last(), Earcon::Move);
-    EXPECT_EQ(speech.last(), "Download quality, original file, 11 of 13") << "no letter: the list is not sorted by name";
+    EXPECT_EQ(speech.last(), "Download quality, original file, 11 of 14") << "no letter: the list is not sorted by name";
     press(Button::Forward);
-    EXPECT_EQ(level().index, 12u) << "stops at the last item";
+    EXPECT_EQ(level().index, 13u) << "stops at the last item";
     EXPECT_EQ(sounds.last(), Earcon::Move);
     press(Button::Back);
-    EXPECT_EQ(level().index, 2u);
+    EXPECT_EQ(level().index, 3u);
     press(Button::Back);
     EXPECT_EQ(level().index, 0u) << "stops at the first item";
     EXPECT_EQ(sounds.last(), Earcon::Move);
@@ -444,12 +444,12 @@ TEST_F(AppTest, TheTenItemJumpHasEdgesAndWrapsWhenWrapAroundIsOn) {
     press(Button::Back);
     EXPECT_EQ(level().index, 0u);
     EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Speech rate, 220 words per minute, 1 of 13");
+    EXPECT_EQ(speech.last(), "Speech rate, 220 words per minute, 1 of 14");
     hold(Button::Down); // last
     press(Button::Forward);
-    EXPECT_EQ(level().index, 12u);
+    EXPECT_EQ(level().index, 13u);
     EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 13 of 13");
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 14 of 14");
 
     hold(Button::Up);
     open("Menu wrap around"); // turn wrapping on in the list
@@ -461,7 +461,7 @@ TEST_F(AppTest, TheTenItemJumpHasEdgesAndWrapsWhenWrapAroundIsOn) {
     EXPECT_EQ(level().index, 0u) << "wrapped to the first item";
     EXPECT_EQ(sounds.last(), Earcon::Wrap);
     press(Button::Back);
-    EXPECT_EQ(level().index, 12u) << "and back to the last";
+    EXPECT_EQ(level().index, 13u) << "and back to the last";
     EXPECT_EQ(sounds.last(), Earcon::Wrap);
 }
 
@@ -520,7 +520,7 @@ TEST_F(AppTest, AStoredValueBetweenOptionsIsSpokenAndItsListHasNoCurrentOne) {
     settings.setInt("speech.rate", 225); // between 220 and 250
     start();
     open("Settings");
-    EXPECT_EQ(speech.last(), "Settings. Speech rate, 225, 1 of 13");
+    EXPECT_EQ(speech.last(), "Settings. Speech rate, 225, 1 of 14");
     press(Button::Ok);
     EXPECT_EQ(level().index, 0u);
     for (const MenuItem& item : level().items) EXPECT_FALSE(item.value) << item.label << " is not the current value";
@@ -1524,7 +1524,7 @@ TEST_F(AppTest, SleepTimerAtEndOfALooseTrack) {
     hold(Button::Home);
     open("Settings");
     hold(Button::Down);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 13 of 13");
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 14 of 14");
 }
 
 TEST_F(AppTest, MusicDoesNotTakeOverTheBookToResume) {
@@ -4894,11 +4894,11 @@ TEST_F(AppTest, SleepTimerIsInSettings) {
     hold(Button::Home);
     open("Settings");
     hold(Button::Down);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 13 of 13");
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 14 of 14");
     press(Button::Ok);
     open("15 minutes");
     EXPECT_EQ(level().title, "Settings") << "choosing a time goes back";
-    EXPECT_EQ(speech.last(), "Sleep timer, 15 minutes left, 13 of 13");
+    EXPECT_EQ(speech.last(), "Sleep timer, 15 minutes left, 14 of 14");
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "Sleep timer. 15 minutes, current, 3 of 7") << "opens on the timer that is set";
     press(Button::Home);
@@ -7435,6 +7435,178 @@ protected:
     }
     bool cached(const std::string& id) const { return store().find(id).has_value(); }
 };
+
+class CacheUpgradeTest : public AutoCacheTest {
+protected:
+    void seedLower(bool pinned = false, int bitrate = 128) {
+        CachedList list{albumSource("al1"), "Weather", "Band", {}};
+        for (const auto& track : sized()) {
+            auto name = track.id + "~" + std::to_string(bitrate) + ".mp3";
+            touch(store().listFolder(list.source) / name);
+            list.tracks.push_back({track.id, name, track.title, track.duration, "", pinned, 123, bitrate});
+        }
+        ASSERT_TRUE(store().save(list));
+    }
+    std::string lower(const std::string& id = "t1") const { return weatherFolderFile(id + "~128.mp3"); }
+    void begin(double at = 0) {
+        start();
+        ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), at, "Band"));
+    }
+    void enable() { settings.setInt("cache.upgrade", 1); }
+};
+
+TEST_F(CacheUpgradeTest, ReplaceCachedCopiesDefaultsOffAndPersistsFromItsList) {
+    start();
+    open("Settings");
+    open("Replace cached copies");
+    EXPECT_EQ(speech.last(), "Replace cached copies. off, current, 1 of 2");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"off", "on"}));
+    open("on");
+    EXPECT_EQ(level().title, "Settings");
+    EXPECT_EQ(configFile.onDisk("cache.upgrade"), "1");
+    Settings reloaded{&configFile};
+    reloaded.load();
+    EXPECT_EQ(reloaded.getInt("cache.upgrade", 0), 1);
+}
+
+TEST_F(CacheUpgradeTest, DisabledOrSufficientCopiesPlayWithoutAStreamOrTransfer) {
+    seedLower();
+    begin();
+    EXPECT_EQ(player.file, lower());
+    EXPECT_FALSE(anyStreamOpened());
+    listen(11s);
+    EXPECT_TRUE(downloader.requests.empty());
+    enable();
+    settings.setInt("streaming.bitrate", 128);
+    hold(Button::Forward);
+    EXPECT_EQ(player.file, lower("t2"));
+    listen(11s);
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(CacheUpgradeTest, ABetterStreamReplacesThePinnedCopyAndUpdatesItsQualityIndex) {
+    seedLower(true);
+    enable();
+    begin();
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    listen(9s);
+    EXPECT_TRUE(downloader.requests.empty());
+    listen(2s);
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.lastRequest().bitrate, 0);
+    EXPECT_TRUE(fs::exists(lower()));
+    finishLast();
+    auto list = store().load(albumSource("al1"));
+    EXPECT_EQ(list.tracks[0].bitrate, 0);
+    EXPECT_TRUE(list.tracks[0].pinned);
+    EXPECT_FALSE(fs::exists(lower()));
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    EXPECT_EQ(player.file, weatherFolderFile("t1.flac"));
+}
+
+TEST_F(CacheUpgradeTest, ATranscodedUpgradeKeepsItsOpenedQualityAndFailureKeepsTheCopy) {
+    seedLower();
+    enable();
+    settings.setInt("streaming.bitrate", 320);
+    begin();
+    ASSERT_TRUE(player.transcoded.has_value());
+    settings.setInt("streaming.bitrate", 128);
+    listen(11s);
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.lastRequest().bitrate, 320);
+    finishLast(Result::Unreachable);
+    EXPECT_TRUE(fs::exists(lower()));
+    EXPECT_EQ(store().load(albumSource("al1")).tracks[0].bitrate, 128);
+    settings.setInt("streaming.bitrate", 320);
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    listen(11s);
+    ASSERT_EQ(downloader.requests.size(), 2u);
+    finishLast();
+    const auto list = store().load(albumSource("al1"));
+    EXPECT_EQ(list.tracks[0].bitrate, 320);
+    EXPECT_FALSE(list.tracks[0].pinned);
+    EXPECT_FALSE(fs::exists(lower()));
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
+    EXPECT_EQ(player.file, weatherFolderFile("t1~320.mp3"));
+}
+
+TEST_F(CacheUpgradeTest, ImmediateFailureFallsBackAtTheSamePositionAndMarksTheServerDown) {
+    seedLower();
+    enable();
+    player.unopenable.push_back("fake://stream/t1");
+    begin(42);
+    EXPECT_EQ(player.file, lower());
+    EXPECT_DOUBLE_EQ(player.position(), 42);
+    EXPECT_TRUE(player.playing());
+    EXPECT_FALSE(spokeUnreachable());
+    listen(11s);
+    EXPECT_TRUE(downloader.requests.empty());
+    hold(Button::Forward);
+    EXPECT_EQ(player.file, lower("t2"));
+    EXPECT_EQ(player.opened.size(), 3u) << "marked-down server uses the next copy directly";
+}
+
+TEST_F(CacheUpgradeTest, AsyncFailureFallsBackAtTheSamePositionAndHonorsPauseIntent) {
+    seedLower();
+    enable();
+    player.holdStreams = true;
+    begin(42);
+    ASSERT_TRUE(player.opening());
+    press(Button::PlayPause);
+    player.unopenable.push_back("fake://stream/t1");
+    ASSERT_TRUE(player.finishOpen());
+    app->tick();
+    EXPECT_EQ(player.file, lower());
+    EXPECT_DOUBLE_EQ(player.position(), 42);
+    EXPECT_FALSE(player.playing());
+    EXPECT_FALSE(spokeUnreachable());
+    idle(10s); // still paused: recover before any fallback audio has been heard
+    answerPing();
+    press(Button::PlayPause);
+    EXPECT_TRUE(player.playing());
+    listen(11s); // server recovery must not turn local fallback playback into an upgrade
+    EXPECT_TRUE(downloader.requests.empty());
+}
+
+TEST_F(CacheUpgradeTest, TimeoutFallsBackAndCancelledUpgradeNeverPlaysALateCopy) {
+    seedLower();
+    enable();
+    player.holdStreams = true;
+    begin(37);
+    idle(16s);
+    EXPECT_EQ(player.file, lower());
+    EXPECT_DOUBLE_EQ(player.position(), 37);
+    EXPECT_TRUE(player.playing());
+    EXPECT_FALSE(player.finishOpen());
+    EXPECT_FALSE(spokeUnreachable());
+    // A successful fresh stream clears the down mark; cancel a later pending upgrade by sleeping.
+    player.holdStreams = false;
+    ASSERT_TRUE(app->playRemote("Fresh", {{"fresh", "Fresh", "Band", "Fresh", 200}}, 0));
+    player.holdStreams = true;
+    ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 31, "Band"));
+    ASSERT_TRUE(player.opening());
+    press(Button::Power);
+    press(Button::Ok);
+    EXPECT_FALSE(player.finishOpen());
+    app->tick();
+    EXPECT_FALSE(player.playing());
+    EXPECT_NE(player.file, lower()) << "cancelled open must not trigger fallback";
+}
+
+TEST_F(CacheUpgradeTest, ReadAheadPreloadsALowerQualityCopyOnlyWhenUpgradesAreEnabled) {
+    seedLower();
+    enable();
+    begin();
+    player.pos = player.duration() - 5;
+    app->tick();
+    ASSERT_FALSE(player.preloads.empty());
+    EXPECT_EQ(player.preloads.back(), "fake://stream/t2");
+    settings.setInt("cache.upgrade", 0);
+    app->tick();
+    EXPECT_FALSE(player.preloaded.has_value());
+    hold(Button::Forward);
+    EXPECT_EQ(player.file, lower("t2"));
+}
 
 TEST_F(AutoCacheTest, AStreamedTrackIsFetchedUnpinnedIntoItsListFolderOnceHeardLongEnough) {
     playSized();

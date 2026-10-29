@@ -605,6 +605,8 @@ private:
     std::optional<std::filesystem::path> cachedFile(size_t link, const std::string& id, bool verify = false) const;
     const TrackCache& trackCacheOf(size_t link) const; // of server `link`: <cache>/<its key>/; a link that does not exist has a cache that stores nothing
     bool canDownloadFrom(size_t link) const;
+    bool upgradeCached(size_t link, const std::filesystem::path& file, int bitrate) const;
+    bool openCachedFallback(size_t file, double position, bool autoplay, Origin origin, const Then& opened);
     int streamingBitrate() const; // Streaming quality: kbit/s, 0 for the original file
     // The stream of remote track `file` at the Streaming quality set now: the
     // pre-opened one if it is that track at that quality, else a new one.
@@ -776,6 +778,7 @@ private:
         TimePoint since;       // when it was asked for
         Then opened, undo;
         size_t file = 0; // its track
+        bool cachedFallback = false; // an upgrade may fall back if its stream cannot open
     };
     std::optional<PendingOpen> pendingOpen_;
     // The stream that plays first ran dry (MediaPlayer::buffering()) at `since`.
@@ -810,6 +813,7 @@ private:
         std::optional<std::uintmax_t> cacheBytes;
         // The complete files of the server, by track id (TrackCache::index()), and its cache, made at the first call.
         std::optional<std::map<std::string, std::filesystem::path>> cacheIndex;
+        std::map<std::filesystem::path, int> cacheQualities;
         std::optional<TrackCache> cache;
     };
     LinkState& linkState(size_t link) const; // `link` past the list: the state of the no-server stand-in
@@ -842,6 +846,7 @@ private:
         std::optional<TimePoint> heardSince; // the last tick that heard it
     };
     std::optional<TrackPlay> scrobble_;
+    bool openedFromStream_ = false; // a local fallback must never schedule an upgrade download
     int openedStreamBitrate_ = 0; // captured on open; changing Settings applies to the next track
     // The scrobble outbox: every submission, with the time it was heard, until its server answers it. Kept
     // in scrobbles.tsv (empty path or no `files`: in memory only), written at once and each time it

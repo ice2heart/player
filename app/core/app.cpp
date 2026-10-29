@@ -45,6 +45,7 @@ constexpr const char* kMenuWrap = "menu.wrap";
 constexpr const char* kAutoSleep = "power.auto_sleep_min";
 constexpr const char* kStreamingBitrate = "streaming.bitrate"; // kbit/s of a transcode; 0: the original file
 constexpr const char* kDownloadBitrate = "downloads.bitrate";
+constexpr const char* kCacheUpgrade = "cache.upgrade"; // prefer a better stream to a complete cached copy
 constexpr const char* kCacheLimit = "cache.limit_gb"; // automatic cache: gigabytes of unpinned tracks, 0: off
 constexpr const char* kLastBook = "last_book";
 // The player used last, "music" or "book": which one Home lists first and start() resumes.
@@ -2868,6 +2869,7 @@ std::vector<MenuItem> App::settingsMenu() {
     items.push_back(choice("Cache size", kCacheLimit,
                            {{0, "off"}, {1, "1 gigabyte"}, {4, "4 gigabytes"}, {16, "16 gigabytes"}},
                            kDefaultCacheGigabytes));
+    items.push_back(choice("Replace cached copies", kCacheUpgrade, {{0, "off"}, {1, "on"}}, 0));
     MenuItem timer = submenu("Sleep timer", [this] { return sleepTimerMenu(); });
     timer.selected = [this] { return sleepTimerIndex(); };
     timer.value = [this] {
@@ -3767,7 +3769,9 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
             }
         sayUnavailable(skipped);
         setFile(file);
+        openedFromStream_ = false;
         bool opens = false;
+        bool cachedFallback = false;
         const bool remote = trackRemote(file);
         const std::string key = trackKey(file);
         const size_t link = trackLink(file).value_or(0); // (a music entry that gets here has a server)
@@ -3775,16 +3779,20 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
             // A downloaded track is a local file: it opens at once and seeks by itself. If it
             // cannot be opened after all, the stream is the way.
             if (std::optional<std::filesystem::path> cached = cachedFile(link, key, true)) {
-                opens = player_.open(cached->string(), position);
-                if (!opens && linkState(link).cacheIndex) linkState(link).cacheIndex->erase(key); // not tried again at every play
+                cachedFallback = upgradeCached(link, *cached, streamingBitrate());
+                if (!cachedFallback) opens = player_.open(cached->string(), position);
+                if (!opens && !cachedFallback && linkState(link).cacheIndex) linkState(link).cacheIndex->erase(key); // not tried again at every play
             }
             if (!opens) {
                 // A stream takes a moment to open: say why nothing plays yet.
                 if (origin == Origin::Menu || origin == Origin::Key || origin == Origin::Resume) say("Loading.");
                 MusicServer::Stream stream = remoteStream(file);
                 openedStreamBitrate_ = stream.transcoded ? streamingBitrate() : kOriginalQuality;
+                openedFromStream_ = true;
                 opens = player_.open(stream.url, position, stream.transcoded);
                 if (opens && !player_.opening() && music_) clearServerDown(link); // the stream opened at once
+                if (!opens && cachedFallback && openCachedFallback(file, position, autoplay, origin, opened))
+                    return OpenResult::Opened;
             }
         } else {
             opens = player_.open(key, position);
@@ -3793,7 +3801,7 @@ App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origi
             if (player_.opening()) {
                 std::uint64_t screen = origin == Origin::Menu && !screens_.empty() ? screens_.back().id : 0;
                 pendingOpen_ = PendingOpen{screen,    origin,         trackTitle(file), autoplay,
-                                           position,  clock_.now(),   std::move(opened),       std::move(undo), file};
+                                           position,  clock_.now(),   std::move(opened),       std::move(undo), file, cachedFallback};
                 return OpenResult::Pending;
             }
             onOpened(autoplay, origin, opened);
@@ -3925,7 +3933,7 @@ void App::finishPendingOpen() {
         if (music_)
             if (const std::optional<size_t> link = trackLink(open.file)) clearServerDown(*link); // a stream opened: the server answers
         onOpened(open.autoplay, open.origin, open.opened);
-    } else {
+    } else if (!open.cachedFallback || !openCachedFallback(open.file, open.position, open.autoplay, open.origin, open.opened)) {
         failOpen(open.origin, open.title, open.file, open.undo);
     }
 }
@@ -3945,7 +3953,8 @@ void App::giveUpPendingOpen() {
     PendingOpen open = std::move(*pendingOpen_);
     pendingOpen_.reset();
     player_.close(); // drops the open: its result never shows
-    failOpen(open.origin, open.title, open.file, open.undo);
+    if (!open.cachedFallback || !openCachedFallback(open.file, open.position, open.autoplay, open.origin, open.opened))
+        failOpen(open.origin, open.title, open.file, open.undo);
 }
 
 // The user has moved on before the track opened: no result of it is ever heard.
@@ -4579,7 +4588,8 @@ void App::checkReadAhead() {
         size_t next = *upcoming;
         const std::string id = trackKey(next);
         const size_t link = trackLink(next).value_or(0);
-        if (cachedFile(link, id)) { // a file on disk opens at once: nothing to read ahead, and a stream pre-opened before it was cached is dropped
+        auto cached = cachedFile(link, id);
+        if (cached && !upgradeCached(link, *cached, streamingBitrate())) { // a sufficient cached file needs no preload
             if (readAhead_) {
                 player_.cancelPreload();
                 readAhead_.reset();
@@ -4641,7 +4651,7 @@ std::optional<std::filesystem::path> App::cachedFile(size_t link, const std::str
     if (!store.enabled()) return std::nullopt;
     LinkState& state = linkState(link);
     auto& cacheIndex = state.cacheIndex;
-    if (!cacheIndex) cacheIndex = store.index();
+    if (!cacheIndex) cacheIndex = store.index(&state.cacheQualities);
     auto it = cacheIndex->find(id);
     if (it == cacheIndex->end()) return std::nullopt;
     if (verify) {
@@ -4797,7 +4807,11 @@ bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, co
     }
     if (!store.save(cached)) return false;
     deleteDropped(source, dropped, link);
-    if (auto& cacheIndex = linkState(link).cacheIndex) (*cacheIndex)[track.id] = store.listFolder(source) / fileName;
+    if (auto& cacheIndex = linkState(link).cacheIndex) {
+        const auto path = store.listFolder(source) / fileName;
+        (*cacheIndex)[track.id] = path;
+        linkState(link).cacheQualities[path] = update.bitrate;
+    }
     return true;
 }
 
@@ -4966,6 +4980,7 @@ void App::checkAutoCache() {
     // Only a track of the list the queue came from: its details and its folder are that list's.
     // A queue can mix servers, and ids are only unique on one: the track must be of the server the list is on.
     if (scrobble_->link != book_->link) return;
+    if (!openedFromStream_) return;
     const std::optional<size_t> inList = listIndexOf(scrobble_->trackId, fileIndex_);
     if (!inList) return;
     std::uintmax_t limit = cacheLimit();
@@ -4995,7 +5010,12 @@ void App::pumpAutoCache() {
     if (autoQueue_.size() != jobs) trimDirty_ = true; // a .part of the dropped jobs may be left
     if (autoQueue_.empty()) return;
     // A download has fetched it meanwhile.
-    while (!autoQueue_.empty() && cachedFile(autoQueue_.front().link, autoQueue_.front().track.id, true)) autoQueue_.pop_front();
+    while (!autoQueue_.empty()) {
+        const auto& job = autoQueue_.front();
+        auto cached = cachedFile(job.link, job.track.id, true);
+        if (!cached || upgradeCached(job.link, *cached, job.bitrate)) break;
+        autoQueue_.pop_front();
+    }
     if (autoQueue_.empty()) return;
     // Never fill the card: a track that leaves less than the reserve is skipped, silently, and
     // nothing else starts in this tick (the next one looks at the next track).
@@ -5108,6 +5128,23 @@ void App::trimCache(bool flushPlays) {
             for (const auto& [id, file] : info.evicted) forgetCached(id, file, link);
     }
     if (dirty) trimDirty_ = false;
+}
+
+bool App::upgradeCached(size_t link, const std::filesystem::path& file, int bitrate) const {
+    if (config_.getInt(kCacheUpgrade, 0) == 0 || linkState(link).down) return false;
+    const auto& qualities = linkState(link).cacheQualities;
+    auto found = qualities.find(file);
+    return found != qualities.end() && !qualityAtLeast(found->second, bitrate);
+}
+
+bool App::openCachedFallback(size_t file, double position, bool autoplay, Origin origin, const Then& opened) {
+    const size_t link = trackLink(file).value_or(0);
+    markServerDown(link);
+    auto cached = cachedFile(link, trackKey(file), true);
+    if (!cached || !player_.open(cached->string(), position)) return false;
+    openedFromStream_ = false;
+    onOpened(autoplay, origin, opened);
+    return true;
 }
 
 int App::streamingBitrate() const { return std::max(kOriginalQuality, config_.getInt(kStreamingBitrate, kOriginalQuality)); }

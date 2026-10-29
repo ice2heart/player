@@ -571,6 +571,7 @@ Home
 │   ├── Streaming quality original file / 320 / 192 / 128 kbps (an MP3 transcode for a slow link; from the next track)
 │   ├── Download quality original file / 320 / 192 / 128 kbps (independent of Streaming quality; captured when an album/playlist download starts; Books providers keep originals)
 │   ├── Cache size       off / 1 / 4 / 16 GB (automatic cache of streamed tracks; default 1 GB; a lower size is applied on the next exit; off keeps what is cached and caches nothing new)
+│   ├── Replace cached copies off / on (default off; a better stream replaces the cached quality after listening)
 │   └── Sleep timer →    Off · 1 · 15 · 30 · 45 min · 1 hour · End of chapter/track (only when something is loaded; opens on the timer that is set)
 ├── System
 │   ├── Status           battery (simulated), free space, Wi-Fi, time
@@ -1007,13 +1008,20 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   track id is looked up only in its own server's), else from `remoteStream()` as above.
   The file is a local path: it opens at once (no "Loading."), seeks by itself and
   has no transcode offset, whatever the Streaming quality. A file that is gone is
-  not found, and one that fails to open falls back to the stream. Read-ahead
-  pre-opens nothing for a cached next track (it is a file). A cached track is
+  not found, and one that fails to open falls back to the stream. With `cache.upgrade`
+  on, a cached copy below Streaming quality is bypassed while that server is not
+  marked down (`upgradeCached()`; original is best, then higher kbps). Read-ahead
+  pre-opens that better stream too. If opening fails immediately, asynchronously or
+  at the open deadline, `openCachedFallback()` marks the server down and opens the
+  cached file at the requested position, preserving Play/Pause intent without an
+  unreachable error. Cancelling the pending open never starts the fallback.
+  Other cached tracks need no preload. A cached track is
   scrobbled like a streamed one (it is a play on the server's account; offline
   its submission waits in the scrobble outbox). The menus do not change.
 - **Cache index:** `cachedFile()` is called once per tick near the end of a
   track, so it never reads the disk by itself. It keeps `TrackCache::index()` (track
-  id to file, for the server in the config) in memory, built at the first call and
+  id to file, for the server in the config) in memory, with `LinkState::cacheQualities`
+  (file path to bitrate) filled by the same manifest pass, built at the first call and
   updated when a download saves a track (and when one drops a track). The open of a track passes `verify`, which
   also checks that the file is still there. A file added to the cache by anything
   but `App`'s own downloads is not seen until the index is rebuilt (Delete download
@@ -1047,7 +1055,10 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   at the streamed bitrate into `<safe id>~<bitrate>.mp3`, recorded in the manifest's
   `bitrate` column. `pumpAutoCache()` starts one transfer at a time into the list's
   folder, only while no explicit `download_` runs, the downloader works and the device
-  is awake, and drops jobs for tracks that are on disk by then. A track bigger than the
+  is awake, and drops jobs for sufficient copies already on disk. With Replace
+  cached copies enabled, a streamed upgrade can replace a lower copy after 10 s;
+  local fallback playback never queues an upgrade, even after the server recovers.
+  The replacement retains pinning and the old file until the manifest commits. A track bigger than the
   limit is never queued (it would be evicted at once and fetched at every play); for
   transcodes this estimate uses duration × bitrate / 8 (kbps converted to bits/s),
   falling back to the original's listed size when duration is unknown. Likewise, a
@@ -1171,7 +1182,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 
 | File | Store | Keys |
 |------|-------|------|
-| `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` and `downloads.bitrate` (kbps, 0 = the original file; download quality defaults to original), `cache.limit_gb` (0, 1, 4 or 16; default 1), and `servers.*` (or legacy `server.*`; see [audiobookshelf.md](audiobookshelf.md#configuration-a-list-of-servers)) |
+| `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` and `downloads.bitrate` (kbps, 0 = the original file; download quality defaults to original), `cache.upgrade` (0 or 1; default 0), `cache.limit_gb` (0, 1, 4 or 16; default 1), and `servers.*` (or legacy `server.*`; see [audiobookshelf.md](audiobookshelf.md#configuration-a-list-of-servers)) |
 | `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_player`: `music` or `book`, the player used last; `unit.music` / `unit.book`: the step unit of each player (0 Skip, 1 Track / Chapter, 2 Album / 10 minutes); `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.<server key>.version`: the catalogue version of the last sync with that server; `catalogue.<server key>.folder`: its `audiobook_folder` at that sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); syncing server books also use `posat:<id>` (recorded wall seconds), `pushed:<id>` (acknowledged timestamp), `pushdirty:<id>` (pending changed place) and `finished:<id>` (completion retained until playback restarts), where `<id>` is `<server key>:album:<album id>`; `last_stream.*` (`.server`, `.user`, `.kind`, `.id`, `.title`, `.track`, `.track_id`, `.pos`): only read, from a state.tsv of an older version (below); it is removed once a music queue plays |
 | `scrobbles.tsv` (next to `state.tsv`; `defaultScrobbleFile()`) | `App` through `TextFiles` (`writeAtomically()`) | the scrobble outbox (`app/core/scrobble_file.{h,cpp}`), see below |
 | `queue.tsv` (next to `state.tsv`; `defaultQueueFile()`) | `App` through `TextFiles` (`writeAtomically()`) | the music queue (`app/core/queue_file.{h,cpp}`), see below |
