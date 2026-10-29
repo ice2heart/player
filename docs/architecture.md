@@ -1,6 +1,6 @@
 # Software Architecture
 
-> Status: describes the code as of v0.1 (simulator on macOS and Linux, headless Linux front end,
+> Status: describes the current code (simulator on macOS and Linux, headless Linux front end,
 > streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)),
 > plus phases 1 and 2 of [queue.md](queue.md): volume and Options buttons, the step unit, menus that jump, separate music and book players,
 > and the music queue (local and server tracks mixed, skipped when unavailable, a server that fails checked until it answers), Options (Play now, Play next, Add to queue, Go to album, Album info),
@@ -9,7 +9,9 @@
 
 ## 1. Overview
 
-The software is one C++20 program in layers. A front end wires the others together;
+The software is one C++20 process per running front end, in layers. It has worker
+threads for audio, decoding, scanning and network I/O, but no interprocess bus.
+A front end wires the layers together;
 core depends on none of them:
 
 ```
@@ -275,7 +277,11 @@ Rules:
   stream. The synth callback returns 1 when its epoch is stale, which aborts
   eSpeak mid-utterance.
 - **`App::onButton()` calls `tts.stop()` first on every key press**, so speech is
-  always interruptible.
+  interruptible in the mixer. This flushes queued speech and cancels synthesis;
+  it does not retract samples already handed to an output backend. PulseAudio
+  and ALSA are configured for roughly 50 ms latency, so audible cancellation
+  must be measured at the headphone output. The acceptance boundary and target
+  workload are in [SPEC.md](../SPEC.md#13-design-principles).
 - Rate is applied per utterance (`Settings → Speech rate`).
 - **Names in other scripts (4.5).** The core speaks any string; `Tts::run()` first calls
   `speechMarkup(text, voices)` (`app/core/text.{h,cpp}`, plain functions, no eSpeak). `scriptRuns()`
@@ -376,8 +382,8 @@ does and does nothing else. Holding Home leaves the mode. The same texts
 ```
  start(): [Home]  or, with a last local book, [Home, Book player]
           (also starts the background scan of the local files, see section 8)
-          a stream or a server book played last: [Home], "Now playing" first, nothing loaded
-          (a local book resumes into its player, unless the music player was used last and a stream is saved)
+          a saved music queue or a server book played last: [Home], "Now playing" first, nothing loaded
+          (a local book resumes into its player, unless the music player was used last and a queue is saved)
 
  screens_:  Home ─► Library ─► Book player ─► Player menu ─► Chapters
             ◄────────── Home / hold OK pops one ─────────────
@@ -400,9 +406,11 @@ does and does nothing else. Holding Home leaves the mode. The same texts
   Player menu (`musicPlayerMenu()` has Queue, Shuffle, Repeat, Go to first track and Sleep timer; `bookPlayerMenu()` has
   Chapters, Speed and Add bookmark, and neither). Home (`homeMenu()`) lists the player used last as "Now
   playing" and the other as "Continue", each when it has something: `playerTitle()` gives the
-  title of the loaded book, the parked one, or what is saved for a restart (the stream, or
+  title of the loaded book, the parked one, or what is saved for a restart (the queue, or
   `last_book`); `openPlayer()` enters, continues or resumes it. A parked place is kept across a restart in
   state.tsv (the book: `pos:` + `last_book`) and queue.tsv (the music queue, loaded or parked).
+  `Add bookmark` in the book player is currently a spoken placeholder; no bookmark
+  storage or navigation is implemented.
 - **The music queue.** The music player's tracks are `queue_` (`app/core/queue.h`), local and remote
   entries mixed; `fileIndex_` is the current position in its play order (`setFile()` keeps the two
   together). For the music player `book_` is only the list the queue came from: its title, its
@@ -423,7 +431,10 @@ does and does nothing else. Holding Home leaves the mode. The same texts
   server (url or user) or with no server set up (`linkOf()` finds no configured link: `Availability::NoServer`), or of
   a server while its `LinkState::down` is set and the track has no complete cached copy (`cachedFile()`; not for `Origin::Menu`:
   the user chose it from what the server just listed, so it is tried, and an open that works clears the
-  mark) is skipped. The entries skipped in a row
+  mark) is skipped during automatic queue traversal. A user-selected remote entry
+  is tried even when its server is marked down. An automatic failed open marks
+  that server down and tries the next playable queue entry; if none remains,
+  playback parks at the first skipped entry for an explicit Play retry. The entries skipped in a row
   are a `SkippedRun`, said once when an entry plays ("Storm, source unavailable." or "3 tracks,
   source unavailable."; when every entry of the run was skipped because its server is not set up,
   `SkippedRun::noServer == count`: "Cannot play Storm. Server not set up."); Previous (`stepChapter()`) goes back over them the same way. A remote
@@ -842,7 +853,8 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   `pos:` against the list as it is now (the server's, or the download's manifest order, which
   follows the server's); an index past the end of the list starts at the first chapter at 0. Limits:
   a download of a book that left the index is listed in Music as an album and "Now playing" for it
-  goes; local music played after a server book leaves `last_book` alone, so a restart resumes the book.
+  goes; local music played after a server book leaves `last_book` alone, but `last_player`
+  determines which player is offered first on restart (section 9).
 - **Duplicates and downloads (4.8).** Merging is stored as references, not as a merged item:
   an album that is on the device and on the server is a local item holding the server item's
   reference in its `seenOn`, and the same for a download. `replaceServer()` keeps a reference
@@ -914,7 +926,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   into albums (see "The index" above): an untagged file is grouped by its folder under the
   music root, and a top-level untagged file is a loose track. Music reuses the book playback code (`book_` holds the album or the
   "Play all" list, `music_` is set), but it says "track" instead of "chapter", ends with
-  "End of queue", and **saves no position and does not change `last_book`**. Playing music
+  "End of queue", and **saves its queue position in `queue.tsv`, not a book `pos:` key, and does not change `last_book`**. Playing music
   never makes you lose your place in a book.
 - Previous chapter: if more than 3 s into the chapter, the first press goes to
   its start, like a CD player.
@@ -932,8 +944,9 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   `Transcoded`, its length taken from the listing. The list plays like music (`playMusic` → `switchTo(..., music=true)`),
   so it saves no `pos:` key and leaves `last_book` alone. Every spoken part name comes from
   `partTitle()`: the server title, or "Track 3" if it has none, never the URL, which holds the login.
-- A remote track that cannot be opened says "Cannot play Rain. Server not reachable." and **no
-  other track is tried** (each try could block for the network timeout). What was current
+- An explicitly selected remote track that cannot be opened reports the error without
+  trying another selection. Automatic music-queue advancement instead skips unavailable
+  entries as described in section 7; the book player stops for an explicit retry. What was current
   before stays current and paused at the same place. If that is a remote track it is **not
   opened again at once** (it would wait on the same dead server): `reopenAt_` holds its
   position and Play opens it. When the next track fails at the end of one, the track that
@@ -1150,13 +1163,17 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   and the `api_key` always. A file that does not parse, or is there but cannot be read, is reported
   on stderr, the defaults are used, and it is never overwritten. A `config.yaml` or
   `state.tsv` that is a symbolic link stays one: the file it points to is replaced.
-- **State is written only on exit and on sleep**, to spare the flash: Power off,
+- **Listening positions are written on exit and on sleep**, to spare the flash: Power off,
   Restart, Sleep and `App::shutdown()` (the front ends call it on SIGTERM / SIGINT /
   SIGHUP and when the window closes). Pause and a book change only update the map
   in memory, so switching back to a book still resumes it. The file is written
   only when the map differs from what was last loaded or written (a write that
-  failed counts as not written, so the next exit tries again). A crash or
-  power loss loses the place since the last exit.
+  failed counts as not written, so the next exit tries again). Factory reset also
+  writes state immediately; an acknowledged remote progress save may write its
+  acknowledgement while sleeping or shutting down. There is no periodic local
+  position checkpoint. A chapter-boundary checkpoint is only a proposal pending
+  design and write-wear measurements. A crash or power loss loses the local place
+  since the last successful save.
 - **scrobbles.tsv (fixes.md 3.2).** The scrobble outbox: a header `oap-scrobbles<TAB>1`, then one line per entry,
   oldest first: `server key<TAB>track id<TAB>time` (the key is `TrackCache::serverKey()`, the time ms since 1970;
   tab, line break and backslash escaped as in queue.tsv). Never a URL, a token or the password. `saveScrobbles()`
@@ -1191,14 +1208,17 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   at that place and enters the player (`openPlayer()`), and Play does the same without entering it; an entry
   that cannot play is skipped like in any queue. The `Book` of a restored queue has no `remote` or `source`, so the
   automatic cache does not run for it until another list is played.
-- **last_stream.* from an older version.** `rememberPosition()` no longer writes them. When a state.tsv has them and
+- **Legacy `last_stream.*` migration only.** `rememberPosition()` no longer writes them. When a state.tsv has them and
   queue.tsv has no queue, `savedStream()` still makes "Now playing" on Home, and OK or Play runs `resumeStream()`
   (below) as before; the queue it plays is saved in queue.tsv from then on, and any music queue that plays removes the
   keys (`switchTo()`), as does reading a queue.tsv.
 - **Which place start() resumes:** the one that played last. The books keep their place in `pos:` + `last_book`
   and the music queue in queue.tsv; neither removes the other. `last_player` (`music` or `book`, set when a player starts)
   says which was used last; without it (an older state.tsv) the music player
-  counts as last when a music queue or a stream is saved. If `savedStream()` finds a place for the server set up
+  counts as last when a music queue or a legacy stream is saved. A restored `queue.tsv`
+  supplies the music player's normal restart path, including mixed local and remote
+  entries; the following `savedStream()` path applies only when there is no saved queue.
+  If `savedStream()` finds a place for the server set up
   now (same url and user, and `MusicServer::configured()`) and the music player was last, `start()`
   opens Home with "Now playing" first and loads nothing; otherwise `last_book` resumes as before,
   and the stream is "Continue" on Home. OK on it, or Play with
@@ -1224,7 +1244,9 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 - Every write is atomic (`writeFileAtomically`): `FILE.tmp` created with mode 0600,
   `fsync`, `rename`, then `fsync` of the folder. A power cut leaves the old file.
 - The old single `settings.tsv` is not read any more; settings start from the defaults.
-- **`library.db`** (`--library-db`, default next to `state.tsv`) is the library index, written by `SqliteLibraryStore` (section 8 and the source table): only what changed, in one transaction, and the play times (`lastPlayed`) only on exit and sleep. It is a cache of what the disk and the server hold (items and playlists), so a lost or damaged file (moved to `library.db.bad`) is rebuilt by the next scan and sync; Factory reset leaves it alone.
+- **`library.db`** (`--library-db`, default next to `state.tsv`) is the library index, written by `SqliteLibraryStore` (section 8 and the source table): only what changed, in one transaction, and the play times (`lastPlayed`) only on exit and sleep. It is a cache of what the disk and the server hold (items and playlists), so a lost or damaged file (moved to `library.db.bad`) is rebuilt by the next scan and sync; Factory reset leaves it alone. Its first-seen and last-played history is not fully
+  rebuildable; [fixes.md phase 7](fixes.md#phase-7-listening-reliability-and-durable-data)
+  plans separating authoritative history/identity from regenerable metadata.
 
 ## 10. Simulator (`app/sim/main.cpp`)
 

@@ -4,7 +4,7 @@
 > discovery first where the cause or the design is not known, fixes where it is. The rules are in
 > [navigation.md](navigation.md), the code is described in [architecture.md](architecture.md),
 > streaming in [streaming.md](streaming.md), the queue in [queue.md](queue.md).
-> Last updated: 2026-10-28.
+> Last updated: 2026-10-29.
 
 Each note was checked against the code (2026-10-28). What the device does today, and where
 the work goes:
@@ -43,6 +43,13 @@ the work goes:
 6. **From the findings** (phase 6): artists, background tasks, cache from the stream, jog dial,
    voices to download, Han transliteration, tag encodings. Each needs its phase 1 step done and
    its open question decided.
+
+7. **Listening reliability and durable data** (phase 7): output loss, stable resume
+   identity, and separating rebuildable metadata from user data. Proposed after the
+   architecture review; none of phase 7 is built.
+
+Related drafts: [input methods](input-methods.md) and
+[shared runtime and App decomposition](refactoring.md).
 
 Phases 2 to 5 do not depend on phase 1, and can be built before it or alongside it.
 
@@ -380,6 +387,107 @@ fills in the Step and Tests cells, or drops the step.
 
 ---
 
+## Listening reliability and storage rules (proposed)
+
+These rules govern phase 7. Preserve the user's preference for flash longevity:
+no periodic local position/status writes. Pause and ordinary seek keep changes in
+RAM; sleep/exit remain the durable save points. Chapter checkpoints are a candidate,
+not a policy silently enabled by this plan. Server progress requests are separate
+from local flash writes. Existing scrobble durability is unchanged by phase 7.
+
+### Output loss
+
+Today `ThreadedAudioOutput` consumes and discards the mix during reconnection. Stop
+consuming content immediately on a failed output write, before the UI polls the failure.
+Expose output availability through a core service contract; the backend never calls
+App from its audio thread. Freeze content consumption and listening-time accounting
+while unavailable. Account for already submitted device buffers: the recovery position
+must be conservative so uncertainty repeats a small portion rather than skips it.
+
+When availability returns, remain paused and say "Audio restored. Press Play to
+continue." Do not auto-resume on a different output route. Discard stale speech/effects
+and speak current context on request. A Play while unavailable records no deferred
+start; the user presses Play after recovery. Headphone removal/routing is also HAL
+work: do not claim that output availability alone implements jack privacy behavior.
+Explicit `--audio null` remains a successful intentional sink. Shutdown remains bounded
+when speech cannot be heard; reuse the lifecycle policy in refactoring.md phase 1.
+
+### Stable resume identity
+
+Replace index-only resume records with a versioned record containing book identity,
+track identity, seconds within that track, and known book-timeline seconds. Server
+identity includes the configured server identity plus item/track ids. Local tracks
+need persistent ids in authoritative storage and a relocation matcher; paths are
+locators, not durable identity. Do not use a title or file index as proof of identity.
+
+Match unchanged paths cheaply. For moved files, reuse available metadata and a
+content fingerprint only when necessary; ambiguous matches must not merge identities.
+The fingerprint algorithm and index size/write cost are decided in step 7.4 before
+migration. A replaced file must not inherit a position solely because its path matches.
+If a track cannot be identified, preserve the saved record and say "Saved chapter
+unavailable. Choose a chapter." Offer the chapter list; do not silently play a different
+file at the same index. Timeline fallback is allowed only when the edition/timeline is
+known unchanged, never after an unverified replacement.
+
+Read legacy file-index positions against the available list and keep that mapping as
+best effort; old records cannot reveal a past reorder. Migrate on the next already
+scheduled save, not on load or every scan. Preserve the original record if migration
+or writing fails. Bookmarks, when implemented, must use the same identity model.
+
+### Authoritative data and rebuildable metadata
+
+`library.db` currently holds the index and derived playlists, plus history such as
+firstSeen/lastPlayed that is not fully reconstructible. Positions, pending book-progress
+state, queue and scrobble outbox live elsewhere. Calling the entire DB disposable
+hides this distinction. Future bookmarks and local identity mappings must never be
+placed only in a disposable cache.
+
+Step 7.1 inventories every persisted field and its recovery policy. Proposed ownership:
+config.yaml for configuration; versioned user-state storage for positions, identity
+mappings, completion and history (future bookmarks too); queue.tsv and scrobbles.tsv
+retain their existing contracts; library.db for regenerable catalogue/tag metadata.
+Choose the user-state schema in 7.1 before coding; do not add a second independent copy
+of each authoritative field. Keep history's current save cadence. Corrupt user state is
+retained for recovery and reported once when speech is available; never discard it as
+if it were a catalogue cache. Newer schemas must be preserved without destructive
+migration, including after application rollback.
+
+### Chapter checkpoint investigation
+
+A possible audiobook policy writes once after a naturally completed chapter, including
+embedded chapters within one file, with unchanged-state suppression. A seek across
+chapters must not write once per crossed chapter; repeated navigation must not create
+a write loop. Measure actual bytes and writes, including atomic replace, filesystem
+metadata, manifests, SQLite and scrobble saves, before selecting a policy. Tiny chapters
+and the last chapter require an explicit rule. Keep sleep/exit-only behavior until
+that decision is recorded; no claim about flash lifetime is made from write counts alone.
+
+## Phase 7: listening reliability and durable data
+
+Goal: an unavailable output cannot silently consume a book, file changes cannot silently
+resume another chapter, and rebuilding metadata preserves authoritative user data.
+This phase is proposed; steps 7.1 and 7.4 resolve schema/identity design before their
+implementation dependants. It does not depend on download-quality phase 5 or libuv.
+
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
+|---|------|------|
+| 7.1 | **Storage inventory and schema decision.** Document every persisted field, owner, save trigger, schema version, migration and corruption policy; select authoritative user-state format and history migration. Update SPEC storage distinction. No product code. | Review against all stores/manifests and load/save call sites; identify non-reconstructible fields and preserve each explicitly. |
+| 7.2 | **Output availability and consumption gate.** Extend services.h/AudioOutput/Mixer contract; stop consumption on failure and publish availability on the UI thread; keep null intentional. Cover Pulse/ALSA and define equivalent CoreAudio detection. | Fake failing output cannot advance content during outage; recovery does not drain old speech; null advances normally; output callbacks never invoke App; measure maximum uncertain buffered position. |
+| 7.3 | **Paused recovery behavior.** App freezes listening timers, keeps position, suppresses stale speech and announces recovery paused. Update navigation.md before changing behavior; ensure bounded exit with unavailable output. | Output loss during book/music never advances chapters or submits extra heard-time scrobbles; recovery says the notice once and waits for Play; pause intent and shutdown survive an outage. |
+| 7.4 | **Identity design and fixtures.** Specify local id/fingerprint matching, edition/timeline validation and versioned resume schema; include examples of moved/reordered/replaced/ambiguous files. No migration code until the design is recorded. | Design review demonstrates no index-only fallback after a detected mismatch, server namespace isolation and bounded fingerprint work; document unavoidable limits of legacy records. |
+| 7.5 | **Stable resume records and migration.** Implement the agreed identity resolver and records, including cached server books, with writes only at established save points. | Insert/reorder a track and resume the original; move a uniquely matched book and retain position; replace/ambiguously match a file and ask for chapter choice; legacy record migrates on save; read-only startup does not rewrite state. |
+| 7.6 | **Separate user data from index recovery.** Implement the 7.1 ownership/migration decision; preserve history and ids when rebuilding library.db and on rollback/corrupt state. | Rebuilding index retains positions/history/identity; migration interruption leaves a recoverable authoritative copy; newer version is not overwritten; failed save keeps dirty state; recovery emits one useful notice. |
+| 7.7 | **Checkpoint measurements and decision.** Record a representative listening/navigation write profile and decide whether natural chapter-end checkpoints justify their cost. No periodic-write policy or chapter implementation in this step. Add a separate implementation step only after decision. | Document bytes/write counts for long and short chapters, embedded chapters, seek bursts, crash and clean shutdown. No production behavior change. |
+| 7.8 | **Docs for phase 7 as built.** Update architecture.md, SPEC, navigation.md and the persistence ownership table with measured limits and actual behavior. | – |
+
+**Device check (manual):** unplug/reconnect the audio output during a book, verify
+paused recovery and that no unheard chapter was consumed. Reorder and relocate test
+book files, restart, and verify identity-aware resume. Rebuild a deliberately damaged
+index in a disposable test library and verify history and progress survive. Interrupt
+state migration/save on disposable storage; record recovery and write measurements.
+
+---
+
 ## Findings
 
 Filled in by phase 1. Facts checked while writing this plan (2026-10-28):
@@ -480,8 +588,10 @@ Test server (Navidrome, OpenSubsonic), 2026-10-28; `getArtists` and all of `getA
    most, so every word in front of the status costs. The other options: the player's name at
    the end ("... Playing. Music player."), or the menu path that led to the player as well
    ("Music, Artists, Weather, Dune, Music player..."), which is long. Try it on the device.
-2. **Background tasks:** a small `TaskRunner` of our own or libuv (1.5). Nothing in phases
-   2 to 5 needs it.
+2. **Background tasks:** the proposed libuv design and phased implementation are in
+   [async.md](async.md), with measurements before migration and the existing service
+   contracts retained. That plan expands 1.5 and 6.2; neither step is marked built by
+   writing the plan. Nothing in phases 2 to 5 needs it.
 3. **Jog dial or deep Up / Down:** which hardware, and what a turn or a deep press does
    (1.7).
 4. **Voices to download:** which ones (eSpeak data, Piper, a kanji reading for `ja`), where

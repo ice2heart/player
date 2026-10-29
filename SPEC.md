@@ -1,6 +1,6 @@
-# Open Audio Player for Blind Users — Design Spec (Draft v0.1)
+# Open Audio Player for Blind Users — Design Spec (Draft v0.2)
 
-> Status: **draft v0.2** · Last updated: 2026-10-28
+> Status: **draft v0.2** · Last updated: 2026-10-29. Product goals and hardware targets below are proposals unless marked built.
 > Software architecture as built: [docs/architecture.md](docs/architecture.md)
 > Working name: _TBD_ (placeholder: **OAP** — Open Audio Player)
 
@@ -16,7 +16,7 @@ the audio user interface, features, and an implementation roadmap. Sections mark
 ### 1.1 Goals
 - **Fully usable without sight**, from unboxing onward — no sighted help needed for setup.
 - **Never silent**: every action gets audible (and optionally haptic) feedback.
-- **Instant-on feel**: from button press to speech in < 2 s (target), < 5 s (acceptable).
+- **Instant-on feel**: from a power or wake button press to the first audible response in < 2 s (target), < 5 s (acceptable) on target hardware. This has not been measured on a device.
 - **Long battery life** with deep sleep; resume exactly where the user left off.
 - First-class **audiobooks** (incl. M4B chapters and DAISY) and **podcasts**.
 - **Sync** of library and listening position with a self-hosted server.
@@ -41,6 +41,21 @@ the audio user interface, features, and an implementation roadmap. Sections mark
 5. **No time pressure** — no menus that time out while the user is thinking.
 6. **Tactile first, voice second** — every function reachable with buttons alone;
    voice is a shortcut and a text-input method, not a requirement.
+
+**Speech interruption acceptance target:** Measure from the electrical key event
+to the last audible sample of the old utterance at the headphone output, not to
+the call that cancels TTS or flushes its in-process FIFO. The current TTS cancels
+synthesis and flushes the mixer speech stream, but the PulseAudio and ALSA
+backends can hold about 50 ms of already submitted audio. Their actual drain
+time, plus input and render scheduling, must be measured on target hardware.
+Record both the latency to silence and the latency to the next utterance for
+repeated key presses while content audio plays and while it is paused. The
+"immediately" principle is a target, not a measured device guarantee. Use the
+prototype RK3566 board if selected, the intended USB audio codec and headphones,
+and a representative locally stored audiobook while eSpeak announces menu items.
+Report median, 95th percentile and worst observed latency across repeated trials,
+with the board, audio backend, software image and load recorded. Re-run on the
+final hardware because a desktop result is not a device acceptance result.
 
 ---
 
@@ -188,7 +203,7 @@ so it can be used as a talking sound card for a PC? Nice-to-have, not v1.
   partition** for library, DB, settings.
 - Early audio: play a boot earcon as soon as the audio device is ready, before the full UI.
 
-**Boot time budget (target, cold boot):**
+**Boot time budget (unmeasured target, cold boot):** Cold boot starts with SoC power off and ends at the first audible UI word. Measure from the electrical button event, including MCU wake, bootloader, kernel, init, audio device readiness and application startup. Record the board, storage, audio device, software image and repeated-trial distribution when hardware exists.
 
 | Stage                 | Target   |
 |-----------------------|----------|
@@ -199,26 +214,27 @@ so it can be used as a talking sound card for a PC? Nice-to-have, not v1.
 | UI says first words   | < 500 ms |
 | **Total**             | **< 2 s** |
 
-Resume from suspend-to-RAM: **< 300 ms** to audio.
+Resume from suspend-to-RAM: **< 300 ms to audible response** is a separate, unmeasured warm-resume target, measured from the electrical wake event. A screen or log event does not count as audible output.
 
 ### 4.2 Processes / components
 
-All components talk over a single local IPC bus. **[OPEN]** D-Bus vs. a lightweight
-Unix-socket JSON/msgpack bus. Proposal: one main process (`oapd`) with internal modules for
-v1 to minimize latency and boot time; split later if needed.
+The current simulator and headless front end each run as one C++20 process with
+worker threads; modules use in-process interfaces and queues. There is no local
+IPC bus. A future device daemon could retain this arrangement. If processes are
+split later, the bus and protocol need a separate design decision.
 
 | Component        | Responsibility |
 |------------------|----------------|
-| **input**        | Reads evdev (and MCU events), turns raw keys into gestures (short/long/double), handles Hold. |
-| **ui-core**      | State machine for menus/player; decides what to say and do. The "brain". |
-| **audio-engine** | Decoding, playback, seeking, speed control, mixing/ducking of TTS over content. |
-| **tts**          | Text → PCM. Queue with priorities and instant cancel. |
-| **stt**          | Push-to-talk capture → text (commands or free dictation). |
-| **library**      | Scans storage, parses metadata/chapters, SQLite DB, bookmarks, positions. |
-| **sync**         | Talks to sync server: download, progress upload/download, podcast feeds. |
-| **power**        | Talks to MCU, battery status, idle timers, suspend/resume, sleep timer. |
+| **input**        | Built: evdev and simulator keys, gestures and Hold. MCU input is planned. |
+| **ui-core**      | Built: state machine for menus and players; decides what to say and do. |
+| **audio-engine** | Built: decoding, playback, seeking and mixing/ducking of TTS over content. Speed control is planned. |
+| **tts**          | Built: eSpeak NG text to PCM, queued utterances and cancellation. Speech priorities are planned. |
+| **stt**          | Planned: push-to-talk capture to commands or dictation. |
+| **library**      | Scans storage and parses metadata; the SQLite index holds items, tracks and playlists; history recovery needs phase 7 of fixes.md. Book positions live in `state.tsv`; bookmarks are planned. |
+| **sync**         | Talks to Subsonic and Audiobookshelf servers for built browsing, downloads and supported progress sync; podcast feeds are planned. |
+| **power**        | Built: software sleep and sleep timer. Planned: MCU, real battery status and hardware suspend/resume. |
 | **settings**     | Persistent config (speech rate, voice, skip intervals, language…) and the music server, in `config.yaml`; positions in `state.tsv`. |
-| **net**          | Wi-Fi management (wpa_supplicant / iwd), connection status announcements. |
+| **net**          | Built: server access and status. Wi-Fi management and connection announcements are planned. |
 
 ### 4.3 Implementation language — **decided: C++20 + CMake**
 - Direct use of the C libraries we depend on (FFmpeg, eSpeak NG, sherpa-onnx/whisper.cpp).
@@ -229,10 +245,10 @@ v1 to minimize latency and boot time; split later if needed.
 ### 4.4 Audio stack
 - Output behind an `AudioOutput` interface:
   - **macOS (simulator): CoreAudio** — implemented.
-  - **Linux (device): PulseAudio API (libpulse)** — planned. Also works on PipeWire
-    systems through `pipewire-pulse`, so one backend covers both.
-  - Optional later: direct **ALSA** backend if the sound server costs too much boot time /
-    RAM on the device (ALSA remains the kernel layer underneath either way).
+  - **Linux (simulator and headless front end): PulseAudio simple API** — implemented;
+    PipeWire can serve it through `pipewire-pulse`.
+  - **Linux: direct ALSA PCM** — implemented, including `alsa:DEVICE` selection.
+  - **Null output** — implemented for headless runs without a sound card.
 - Internal mixer: content stream + speech stream + earcons, all 48 kHz stereo float.
 - **Ducking**: when TTS speaks during playback, lower content (e.g. −15 dB) or pause it
   (user setting).
@@ -250,8 +266,12 @@ Two tiers:
   or **RHVoice**.
 
 Requirements:
-- Time-to-first-audio < 100 ms for UI speech.
-- Cancel within 20 ms on any key press.
+- UI speech time-to-first-audible-audio < 100 ms is an unmeasured warm-system target:
+  measure from UI dispatch to the first headphone output sample with the engine
+  already initialized, both idle and while decoding and playing a local book.
+- Audible cancellation within 20 ms of a key press remains an unmeasured target.
+  Measure software cancellation (UI dispatch to TTS stop and mixer flush) separately;
+  it does not establish the audible target. See section 1.3 for the measurement boundary.
 - Adjustable rate, pitch, volume, voice; per-language voices.
 - Names in other scripts (Cyrillic, Greek, Chinese, Japanese, Korean, Hebrew, Arabic) are spoken
   with that script's voice when it is installed, else transliterated into Latin letters
@@ -283,13 +303,19 @@ Design:
 - VAD to trim silence; earcon on start/stop of listening.
 
 ### 4.7 Storage and library
-- SQLite DB: items, chapters, positions, bookmarks, play state, podcast feeds/episodes.
+- SQLite DB: the currently built `library.db` is primarily a rebuildable index of items,
+  tracks, references and playlists. It does not own positions or bookmarks.
   The library index (local files, downloads and server albums, with where each was seen) is
   `library.db` next to `state.tsv`. The app core holds the index in memory and loads and saves
   it through a `LibraryStore` interface; only the SQLite implementation knows the database
   ([docs/streaming.md](docs/streaming.md) phase 4). The scan of the files runs in the background and
   reads tags only of new or changed files, so start-up shows the saved index at once; the
   database is a cache that a scan and a sync rebuild, so a damaged file is moved aside and replaced.
+  However, first-seen and last-played history is not fully rebuildable today.
+  [fixes.md phase 7](docs/fixes.md#phase-7-listening-reliability-and-durable-data)
+  plans explicit ownership and recovery for authoritative data.
+  Book positions and last-player state are in `state.tsv`; the music queue and its
+  place are in `queue.tsv`. Bookmarks and podcast state need a separate design.
 - Folder layout on data partition:
   ```
   /data/library/audiobooks/<Author>/<Title>/...
@@ -297,9 +323,13 @@ Design:
   /data/library/music/   (optional)
   ```
 - **USB mass-storage mode** (or MTP) when connected to a PC to copy files directly.
-- Position saving: kept in memory on pause and book change, and written to
-  flash only on suspend, power-off and restart, to spare the flash. The same holds
-  for the place in the album or playlist streamed last. A crash or
+- Position saving: local places are kept in memory on pause and book change,
+  and written to flash on sleep, power-off, exit and restart. The music queue's
+  place is saved with `queue.tsv` at those boundaries. This policy prioritizes
+  flash longevity over reducing the loss window after abrupt power failure.
+  A chapter-boundary checkpoint is a proposal only, pending a concrete design
+  and device measurements of write frequency, wear and useful recovery. There is
+  no periodic local position write requirement. A crash or
   sudden power loss loses the place since then, so the power MCU must shut down
   cleanly at low battery (see [docs/streaming.md](docs/streaming.md#configuration-one-yaml-file)).
 
@@ -383,7 +413,7 @@ Home
 | Back / Forward long or deep | previous / next chapter or track; announces chapter name |
 | Up / Down             | choose the step unit for Back / Forward; speaks it ("Track") |
 | Volume up / down      | content volume, held repeats; earcon pitch indicates level, edge sound at the limits |
-| Options               | actions for the playing track (Go to album, Album info; Star later); the book player says "No options". On a list item: Play now, Play next, Add to queue, and for a server album or playlist Download |
+| Options               | Music: actions for the playing track (Go to album, Album info; Star later). Book: when a newer, distant server place is offered, the first action accepts it; otherwise it says "No options". On a list item: Play now, Play next, Add to queue, and for a server album or playlist Download |
 | Play long             | "Book player. Dune, by Frank Herbert. Chapter 7 of 22, 'The Storm'. 14 minutes left in chapter, 6 hours 3 minutes left in book." |
 | OK                    | player menu. Music: queue (list, move, remove, save as server playlist, clear), shuffle, repeat (off, all, album, track), go to first track, sleep timer. Book: chapters, sleep timer, info, speed, bookmark add |
 | Talk                  | voice command |
@@ -409,7 +439,7 @@ Home
   **[OPEN]** v1 or v2?
 - Multi-file books (one folder = one book), ordered by track number / filename.
 - Chapters from: M4B atoms, ID3 CHAP, CUE files, DAISY NCC/NCX, or one-file-per-chapter.
-- Per-book resume position, speed, and bookmarks (with optional voice note label).
+- Per-book resume position is built. Speed control and bookmarks (with optional voice note label) are planned; Add bookmark currently speaks a placeholder.
 - Mark finished; "rewind a bit on resume" (e.g. back 5 s after long pause).
 
 ### 6.2 Podcasts
@@ -479,11 +509,11 @@ States:
 
 ## 7. Development workflow
 
-- **Desktop simulator** (`oap-sim`, implemented for macOS): the core runs on a normal PC;
+- **Desktop simulator** (`oap-sim`, implemented for macOS and Linux): the core runs on a normal PC;
   keyboard keys map to device buttons, laptop speakers used for audio. An SDL2 + Dear ImGui
   window visualises the menu stack, playback state, speech log and **per-button usage
   counts** (to decide how many buttons the hardware really needs). A `--script` mode
-  replays button sequences. The window draws names in any script (`--font TTF` picks the font; by default a system font with Cyrillic and CJK glyphs). Most work happens here; then port to Linux.
+  replays button sequences. The window draws names in any script (`--font TTF` picks the font; by default a system font with Cyrillic and CJK glyphs). Most UI work happens here; validate device behavior with the Linux headless front end.
 - Hardware-abstraction layer for: input source, power/MCU, battery, Wi-Fi, Bluetooth,
   audio routing. Plan: [docs/hal.md](docs/hal.md).
 - CI: unit tests for ui-core state machine (scripted key sequences → expected speech output
@@ -506,19 +536,28 @@ States:
 
 ## 8. Roadmap
 
+Milestone names describe product scope, not completion gates. Current software
+status is summarized here; device hardware, power, boot and listening targets
+remain to be measured on the chosen board. The present Linux headless front end
+is a development front end, not a completed hardware product.
+
 | Milestone | Scope |
 |-----------|-------|
-| **M0 — Simulator** | Desktop app: menu engine, eSpeak NG TTS, local file playback, keyboard input. **In progress — macOS version working.** |
-| **M0.5 — Linux port** | PulseAudio backend, evdev input front end, run the simulator on Linux. |
-| **M1 — Player core** | Audiobooks with chapters, resume, bookmarks, speed, sleep timer. |
+| **M0 — Simulator** | Built on macOS and Linux: menu engine, eSpeak NG TTS, local playback, keyboard input and SDL window. |
+| **M0.5 — Linux port** | Built: PulseAudio and ALSA backends, evdev and terminal input, headless front end and Linux simulator. Device listening checks remain. |
+| **M1 — Player core** | Built: local and server books, chapters where available, resume, sleep timer, music queue and server playback. Planned: bookmarks and speed control. |
 | **M2 — Hardware bring-up** | Dev board + USB audio + GPIO buttons; Buildroot image; boot time measurement. |
 | **M3 — STT** | Push-to-talk commands + dictation + spelling mode. |
-| **M4 — Network** | Wi-Fi setup, podcasts (RSS), Audiobookshelf sync. |
+| **M4 — Network** | Built in software: Subsonic streaming and downloads, Audiobookshelf books and progress sync. Planned: Wi-Fi setup and podcasts (RSS). Real-server and device checks for Audiobookshelf progress remain. |
 | **M5 — Power** | MCU firmware, suspend/resume, deep sleep, battery reporting. |
 | **M6 — Custom PCB + enclosure** | First integrated prototype; user testing round. |
 | **M7 — v1.0** | OTA updates, localization, DAISY (if not earlier), docs for builders. |
 
 ---
+
+Draft implementation plans: [input methods](docs/input-methods.md),
+[shared runtime and App decomposition](docs/refactoring.md), and
+[listening reliability](docs/fixes.md#phase-7-listening-reliability-and-durable-data).
 
 ## 9. Open questions
 
