@@ -14,10 +14,6 @@ constexpr char kIdSeparator = '/'; // RemoteTrack ids are "<item id>/<ino>"
 constexpr const char* kNewest = "newest";
 constexpr const char* kAlphabetical = "alphabeticalByName";
 
-void trimTrailingSlashes(std::string& url) {
-    while (!url.empty() && url.back() == '/') url.pop_back();
-}
-
 } // namespace
 
 Audiobookshelf::Config Audiobookshelf::configFrom(const ServerConfig& server) {

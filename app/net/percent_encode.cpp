@@ -15,4 +15,8 @@ std::string percentEncode(const std::string& s) {
     return out;
 }
 
+void trimTrailingSlashes(std::string& url) {
+    while (!url.empty() && url.back() == '/') url.pop_back();
+}
+
 } // namespace oap

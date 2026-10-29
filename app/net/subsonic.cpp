@@ -24,10 +24,6 @@ constexpr const char* kTimeOffset = "timeOffset";
 // has no extensions (it is not OpenSubsonic); fewer could be a passing error.
 constexpr int kExtensionErrorsForNo = 3;
 
-void trimTrailingSlashes(std::string& url) {
-    while (!url.empty() && url.back() == '/') url.pop_back();
-}
-
 const char* errorName(MusicServer::Error error) {
     switch (error) {
     case MusicServer::Error::None: return "none";

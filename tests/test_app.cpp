@@ -9992,6 +9992,22 @@ TEST_F(BooksServerTest, ASeekToAChapterInTheFileThatPlaysIsNotANewPlayOfTheFile)
     EXPECT_EQ(server.scrobbles.size(), 1u);
 }
 
+TEST_F(BooksServerTest, AStreamThatFailsKeepsTheChapterAndTheEndOfChapterTimer) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 150;
+    hold(Button::Forward); // End, in file 2
+    ASSERT_EQ(player.file, "fake://stream/t2");
+    player.pos = 50;
+    press(Button::Ok); // Player menu
+    open("Sleep timer");
+    open("End of chapter");
+    player.broken = true;
+    app->tick(); // the stream gave up: the player is closed, the place is kept for Play
+    EXPECT_NE(app->mode(), App::Mode::Sleeping) << "the chapter did not end";
+    EXPECT_EQ(app->nowPlaying().chapter, "End");
+    EXPECT_EQ(app->nowPlaying().chapterIndex, 2);
+}
+
 TEST_F(BooksServerTest, AChapterGoesOnInTheNextFileUntilTheNextChapterStarts) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 150;

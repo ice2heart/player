@@ -2964,7 +2964,7 @@ bool App::setShuffle(QueueShuffle mode) {
 // Shuffle off, Move and Remove all come here.
 void App::followQueue() {
     fileIndex_ = queue_.position();
-    if (sleepAtChapterEnd_ >= 0) sleepAtChapterEnd_ = trackCount() > 1 ? int(fileIndex_) : currentChapter();
+    if (sleepAtChapterEnd_ >= 0) sleepAtChapterEnd_ = filePerChapter() ? int(fileIndex_) : currentChapter();
     if (pendingOpen_) pendingOpen_->file = fileIndex_; // the track that is opening is the current one
 }
 
@@ -4341,14 +4341,15 @@ std::vector<App::ChapterRef> App::chapters() const {
 int App::currentChapter() const {
     if (!book_) return 0;
     if (filePerChapter()) return int(fileIndex_);
-    double pos = player_.position() + kChapterPositionSlack;
     int cur = 0;
-    if (hasServerChapters()) { // the last one that starts at or before the position, in a file before this or in this
+    if (hasServerChapters()) {
+        const double pos = place() + kChapterPositionSlack; // a closed player (a failed stream) still has a place // the last one that starts at or before the position, in a file before this or in this
         const auto& list = book_->chapters;
         for (size_t i = 0; i < list.size(); ++i)
             if (list[i].file < fileIndex_ || (list[i].file == fileIndex_ && list[i].start <= pos)) cur = int(i);
         return cur;
     }
+    const double pos = player_.position() + kChapterPositionSlack;
     const auto& list = player_.chapters();
     for (size_t i = 0; i < list.size(); ++i)
         if (list[i].start <= pos) cur = int(i);
