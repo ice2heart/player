@@ -422,18 +422,26 @@ Home
 Primary target: **Audiobookshelf** (open-source, self-hosted, has REST API for library,
 downloads, and progress sync; has podcast support).
 - Download books/episodes from server to device.
-- Sync **listening progress** both ways (latest-timestamp-wins, with conflict announcement:
-  "Server position is further, jump there?").
+- Sync **listening progress** both ways. Playback starts at the local place while the server
+  is asked. A newer server place more than 30 seconds away moves a book with no local place;
+  with an existing local place it is offered without interrupting playback: "The server has a
+  later place, chapter 5. It is in Options." The first Options action is "Go to the server's place, chapter
+  5, 12 minutes"; accepting it moves there and preserves pause. Older or nearby places and
+  failed background requests stay silent.
 - Sync bookmarks.
-- Works offline; queue updates and push when online.
+- Works offline; keep failed book-progress saves pending and retry on the next startup
+  with a reachable server.
 
 Audiobookshelf is a second **server type** next to Subsonic. `config.yaml` holds a list of
 servers (`servers:`), each with its own `type`, and each server has its own Home entry. An
 Audiobookshelf server logs in with an API key. Built: its books are listed in Library, play in
 the book player with the server's chapters and keep their place, can be downloaded and play
-offline, and its Home entry has a Books menu (Recently added, Books A to Z, Authors,
-Downloaded, Server status). Not built: the progress sync above (phase 3), bookmarks sync and
-podcasts from Audiobookshelf. See [docs/audiobookshelf.md](docs/audiobookshelf.md).
+offline, and its Home entry has a Books menu (Continue listening, Recently added, Books A to Z,
+Authors, Downloaded, Server status). Progress is sent on pause, changing books, sleep, exit,
+and every 60 seconds of playback when it moved at least 5 seconds; end of book sends completion.
+Continue listening opens at the server’s place even when a local place exists. Progress sync
+is implemented; real-server and device checks are pending. Bookmarks sync and podcasts from
+Audiobookshelf are not built. See [docs/audiobookshelf.md](docs/audiobookshelf.md).
 
 Secondary / alternatives **[OPEN]**:
 - **gPodder sync API** (gpodder.net / Nextcloud gPodder Sync) for podcast subscriptions.

@@ -9,7 +9,8 @@
 > player's name, album and artist in "where am I?". Star / Unstar in the player's Options is
 > **not built** ([streaming.md](streaming.md) 2a.1). Where the build differs from the text, a
 > note says so; [architecture.md](architecture.md) describes the code. Several servers and the Books server menu
-> ([audiobookshelf.md](audiobookshelf.md) phases 1 and 2) are built. Last updated: 2026-10-29.
+> ([audiobookshelf.md](audiobookshelf.md) phases 1–3), progress sync, the later-place Options action
+> and Continue listening are implemented; phase 3 real-server and device checks are pending. Last updated: 2026-10-29.
 
 Users can't see the menu, so they learn it from what each key does. A key that
 does one thing in one menu and something else in the next menu breaks that.
@@ -643,7 +644,8 @@ Music
 
 An Audiobookshelf server ([audiobookshelf.md](audiobookshelf.md)) is a Books server. Its Home
 entry has this menu instead of the Streaming one; a Subsonic server keeps the Streaming menu.
-The menu, the lists, the book page and downloading a book are built.
+The menu, the lists, the book page, downloading and progress sync are implemented.
+Real-server progress and device listening checks remain pending.
 
 ```
 <server name>

@@ -182,6 +182,7 @@ core and `oap-tests`, without libcurl. Add `-DOAP_BUILD_NET=ON` for `oapnet` and
 | ← / → | Back / Forward (hold: previous / next chapter) |
 | ↑ / ↓ | Up / Down |
 | Enter | OK |
+| O | Options |
 | Esc / Backspace | Home |
 | T | Talk |
 | P | Power (hold: power menu) |
@@ -241,6 +242,12 @@ oap-headless [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--audio
   With both, `servers:` wins. Factory reset keeps the servers. Quote a password or key: an
   all-digit one is read as a number otherwise. Two entries with the same url and user are one
   server.
+- Audiobookshelf books sync their listening place on pause, changing books, sleep, exit,
+  and each minute of playback with at least 5 seconds of movement. Failed saves retry at the
+  next startup. Ordinary opens start locally and offer a newer server place in Options;
+  **Continue listening**, first in the server menu, follows the server place directly.
+  Background progress errors stay silent, including when playing whole downloads offline.
+  See [the progress navigation rules](docs/navigation.md#a-later-server-place-in-a-book).
 - Downloaded and cached tracks are kept in `cache/` next to `state.tsv`; `--cache DIR` moves
   them (`oap-sim` has the same option). The device uses `/data/library/cache`.
 - `--input` is a comma-separated list of `evdev`, `terminal` and `none`. The default is

@@ -1,6 +1,6 @@
 # Audiobookshelf and several servers: plan
 
-> Status: phases 1 (several servers) and 2 (Audiobookshelf books: Library, the Books menu, server chapters, downloads) are built; phase 3 (progress sync) is a plan. The code is described in [architecture.md](architecture.md),
+> Status: phases 1 (several servers), 2 (Audiobookshelf books) and 3 (progress sync and Continue listening) are implemented. Phase 3 real-server and device checks are pending. The code is described in [architecture.md](architecture.md),
 > the menu rules in [navigation.md](navigation.md) (see [Lists from the server](navigation.md#lists-from-the-server)
 > and [Music and Library](navigation.md#music-and-library)). The Subsonic plan this follows is
 > [streaming.md](streaming.md). Last updated: 2026-10-29.
@@ -13,11 +13,11 @@ Before this plan `config.yaml` had one `server:` section, and only `type: subson
 held one `MusicServer` and one `Downloader`. Server books came from one music folder of the
 Subsonic server (`server.audiobook_folder`), and their chapters were the album's tracks.
 
-The plan added (1 and 2 are built, 3 is not):
+The three implemented phases added:
 
 1. **Several servers** in `config.yaml` (`servers:`, a list), each with its own type. Every
    server gets its own Home entry, its own catalogue sync, cache folder and downloads. Phase 1
-   does this with Subsonic only, so it can be tested before a second type exists.
+   introduced this with Subsonic before adding the second type.
 2. **Audiobookshelf** (`type: audiobookshelf`) as the second type: its books are listed in
    Library, play in the book player with the server's chapters, and can be downloaded (phase 2).
 3. **Progress sync** with Audiobookshelf, both ways, as SPEC §6.3 asks (phase 3).
@@ -101,7 +101,7 @@ servers:
   server: the second is left out with a line on stderr.
 - **Secrets.** `api_key` is always written quoted, like `password`, and never logged or
   spoken. An Audiobookshelf stream or download URL carries `token=<api_key>`, so it falls
-  under the rule for stream URLs in CLAUDE.md.
+  under the rule for stream URLs in REPO.md.
 - **Factory reset** keeps `servers.*` as well as `server.*` (`Settings::clearExcept` takes a
   list of prefixes).
 - **Header of `config.yaml`** names the new keys: `servers:` (a list), `type`, `name`, `url`,
@@ -112,19 +112,18 @@ servers:
 
 ```
 app/core/      App ── takes std::vector<ServerLink>; one Home entry per server
-                │     services.h: MusicServer gets book(), progress(), saveProgress(); RemoteBook, RemoteChapter
+                │     services.h: book(), catalogue(), progress(), saveProgress(), inProgress()
                 └── settings: ServerConfig, serverConfigs()
-app/net/       Http: GET with headers, plus PATCH with a body (phase 3)
-               Subsonic        : MusicServer (unchanged but for book())
-               Audiobookshelf  : MusicServer (new) + audiobookshelf_json.{h,cpp}
+app/net/       Http: GET with headers, plus JSON PATCH with a body
+               Subsonic        : MusicServer (no progress sync)
+               Audiobookshelf  : MusicServer + audiobookshelf_json.{h,cpp}
 app/frontend/  makeServers(config) → Servers: one MusicServer + one Downloader per entry
 ```
 
 - **One interface, `MusicServer`.** Audiobookshelf maps onto it: a book is a `RemoteAlbum`,
   an audio file a `RemoteTrack`, an author a `RemoteArtist`, the chosen library the only
   `RemoteFolder`. What it cannot do answers at once through `poll()`: `playlists` an empty list,
-  `createPlaylist` `Error::Server`, `scrobble` nothing. Two additions, which Subsonic implements
-  too:
+  `createPlaylist` `Error::Server`, `scrobble` nothing. Books and catalogue type use:
 
   ```cpp
   struct RemoteChapter { std::string title; double start = 0; }; // seconds on the book's timeline
@@ -136,6 +135,12 @@ app/frontend/  makeServers(config) → Servers: one MusicServer + one Downloader
   virtual Catalogue catalogue() const = 0;
   ```
 
+- **Progress sync.** `RemoteProgress` carries timeline seconds, duration, completion and the
+  server update time in wall milliseconds. `syncsProgress()` is true for Audiobookshelf only.
+  `progress(id, done)` returns an optional place (404 means none); `saveProgress(id, place, done = {})`
+  optionally acknowledges the PATCH through `poll()`, so failed saves stay pending.
+  `inProgress(done)` lists the selected book library’s in-progress books. Subsonic answers
+  progress and in-progress requests with `Error::Server`; `NoMusicServer` uses `NotConfigured`.
 - **`ServerLink`** (in `services.h`) is what `App` gets per server:
   `{ ServerConfig config; std::string key; std::string name; MusicServer& server; Downloader& downloader; }`
   (`key` is the server key, `name` the spoken name after the rules above). The front ends own
@@ -151,7 +156,8 @@ app/frontend/  makeServers(config) → Servers: one MusicServer + one Downloader
   (`{title, file, start}`, `start` in seconds into that file), made from `RemoteChapter`s with
   the tracks' `startOffset`. When it is not empty, `App::chapters()` uses it before the
   per-file and embedded chapters. The place is still `pos:<id>` = file index and seconds into
-  the file, so nothing in `state.tsv` changes.
+  the file. Progress sync adds timestamps and pending/completion markers alongside that place
+  (see [Phase 3 as built](#phase-3-as-built)).
 
 ## Menus
 
@@ -168,13 +174,24 @@ above. A Music server (Subsonic) keeps today's Streaming menu. A Books server
 ├── Downloaded         (as in Streaming, only where a cache folder is set up)
 └── Server status      "Connected to Audiobookshelf 2.37.2." / the error
 
-<book> → Play book · Download book · <chapters>
+<book> → Play book · Download book / Delete download · <chapters>
 ```
 
 - A book in these lists says its title and author ("Neuromancer, William Gibson").
 - **Play book** opens the book player at the book's place (or the start) like a book in
   Library. OK on a chapter plays the book from that chapter. **Download book** behaves like
   Download album ("Downloading, 0 of 24 files."), counting files, not chapters.
+- **Continue listening** follows the normal Loading, error and Try again rules, with
+  "Nothing in progress" when empty. OK on a listed book opens the player directly and follows
+  a fresh server place, even with a newer or nearby local place. Playback starts locally while
+  the request runs; a failure stays silent.
+- **Progress on ordinary opens:** Library, Play book and Now playing start at the local place
+  immediately. A server place newer than the local timestamp and more than 30 seconds away
+  moves a book with no local place and says its chapter; with a local place it is offered once:
+  "The server has a later place, chapter 5. It is in Options." Options then starts with
+  "Go to the server's place, chapter 5, 12 minutes". OK moves there, says the chapter and
+  preserves pause. An explicit chapter selection is a local choice. Older, nearby, missing
+  and failed answers stay silent; leaving the player drops the request and offer.
 - **Library** lists the books of every Books server after the local books, with the value
   "on the server", as server books are listed today. Two servers' books are not merged.
 - All "Lists from the server" rules hold (Loading, errors, Try again, not rebuilt on return).
@@ -195,7 +212,7 @@ Goal: with two Subsonic servers in `servers:`, Home has an entry for each, Music
 albums of both, and a queue that mixes tracks from both plays and resumes after a restart.
 An old `server:` section keeps working unchanged.
 
-| # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
 |---|------|------|
 | ✅ 1.1 | **Docs first:** navigation.md (one Home entry per server, the names, Refresh with several servers, the Books server menu above marked "phase 2"), SPEC §6.3 (Audiobookshelf as a second server type), streaming.md open question 1 answered with a link to this plan. | – |
 | ✅ 1.2 | **`servers:` in the config.** `ServerConfig` and `serverConfigs()` in `app/core/settings.{h,cpp}` as in [Configuration](#configuration-a-list-of-servers); `serverConfigured()` becomes "`serverConfigs()` is not empty". `Settings::clearExcept` takes several prefixes and factory reset keeps `servers.` and `server.`. `stores.cpp`: `api_key` always quoted, the key order in an entry, the header. Nothing reads the second server yet. | A `servers:` list of two gives two configs in order; a missing type is `subsonic`; `Subsonic` in any case is lower-cased; an entry with no url is left out; a lone `server:` gives one config; `servers:` and `server:` together use `servers:`; the same url and user twice gives one. An all-digit `api_key` stays a quoted string after a round trip. Factory reset keeps both sections and clears `volume`. |
@@ -217,7 +234,7 @@ Goal: with an Audiobookshelf server in `servers:`, its books are in Library and 
 Home menu, they play in the book player with the server's chapters and keep their place, and a
 book can be downloaded and played offline.
 
-| # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
 |---|------|------|
 | ✅ 2.1 | **Request headers.** `Http::get` takes a list of headers (`HttpClient` sets them on the curl handle). `Subsonic` passes none. The headers are never logged. | Net test with the local socket server: a header is sent; a request without headers sends none of it. A failed request logs no header value. |
 | ✅ 2.2 | **`MusicServer::book()` and `catalogue()`.** `RemoteBook` and `RemoteChapter` in `services.h`; `Subsonic::book` is `getAlbum` with no chapters, `catalogue()` is `Music`; `FakeMusicServer` and `NoMusicServer` follow. No App change. | Subsonic `book()` gives the tracks of the `getAlbum` fixture and no chapters. The fake answers `book()` only when told to. An id `<uuid>/<ino>` round-trips through `TrackCache::safeName` (a file name with no `/`), a `seenOn` reference and `queue.tsv`. |
@@ -242,21 +259,21 @@ Goal: a book listened to on the device continues where it stopped in the Audiobo
 a phone, and the other way round. Offline listening is sent when the server can be reached
 again.
 
-| # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
 |---|------|------|
 | ✅ 3.1 | **PATCH with a body.** `Http` gets `patch(id, url, headers, body, handler)` (curl `CUSTOMREQUEST`, JSON content type). | Net test with the local socket server: method, header and body arrive; a cancelled PATCH's handler does not run. |
 | ✅ 3.2 | **Progress in `MusicServer`.** `struct RemoteProgress { double seconds = 0, duration = 0; bool finished = false; std::int64_t updated = 0; /* wall, ms */ };` `virtual bool syncsProgress() const`, `virtual RequestId progress(std::string albumId, std::function<void(Error, std::optional<RemoteProgress>)>)`, `virtual void saveProgress(std::string albumId, RemoteProgress, std::function<void(Error)> done = {})` (an optional completion callback from `poll()` lets step 3.3 acknowledge successful saves; a failure is logged only by kind on stderr without the URL). Audiobookshelf: `GET` / `PATCH /api/me/progress/<id>`; 404 is "none". Subsonic: `syncsProgress()` false. | Net tests: the progress fixture parses; 404 gives none and no error; the PATCH body has `currentTime`, `duration`, `progress`, `isFinished`. The fake records saves and can hold their acknowledgements; success and failure callbacks run only from `poll()`. |
 | ✅ 3.3 | **Push the place.** For a server book on a server that syncs: the place on the book's timeline (start of the file + seconds) is sent on pause, on leaving the book, on sleep, on exit, and every 60 s of playback when it moved by 5 s or more. `state.tsv` gets `posat:<id>` (wall seconds when the place was recorded, kept with `pos:`) and `pushed:<id>` (the `posat` sent last). A send that fails leaves `pushed` behind; the start-up sync sends every place newer than its `pushed`. "End of book" sends `finished`. | Pause sends the timeline seconds of file 2 + 30 s. 59 s of play sends nothing new, 60 s does. A failed send is sent again at the next start-up; a successful one is not. End of book sends `finished`. Playback writes nothing to disk until exit or sleep, as today. |
 | ✅ 3.4 | **Pull the place.** Opening a server book (Library, Books menu, "Now playing") plays at the local place at once and asks the server. If the server's place is newer than `posat` and more than 30 s from it: with no local place it moves there and says the chapter; otherwise it says "The server has a later place, chapter 5. It is in Options." and the book player's Options gets a first item "Go to the server's place, chapter 5, 12 minutes". The answer is dropped when the book is left. | No local place: the book moves to the server's place. A local place older than the server's: the notice and the Options item, and OK on it moves there. A server place older than the local one or within 30 s: nothing said. The server down: nothing said, the book plays. |
 | ✅ 3.5 | **Continue listening.** First item of the Books server menu, from `/api/me/items-in-progress` (only this server's library). | Loading, filled, error, "Nothing in progress". A book listed opens at the server's place. |
-| 3.6 | **Docs for phase 3 as built:** architecture.md, navigation.md (the notice and the Options item), SPEC §6.3. | – |
+| ✅ 3.6 | **Docs for phase 3 as built:** architecture.md, navigation.md (the notice and the Options item), SPEC §6.3. | – |
 
 **Device check (manual):** listen 10 minutes on the device, pause, open the book in the
 Audiobookshelf web page: it is at the device's place. Listen on the web page, open the book on
 the device: it says the server has a later place, and Options moves there. Listen offline,
 reconnect and restart: the web page has the offline place.
 
-### Phase 3 as built (through step 3.4)
+### Phase 3 as built
 
 Progress saves use the optional completion callback agreed for step 3.2. For step 3.3,
 `pushed:<id>` remains the last acknowledged wall timestamp. `pushdirty:<id>` additionally
@@ -299,8 +316,8 @@ files and chapters without a metadata fetch or Loading announcement.
 
 - **Several servers in a `servers:` list**, each with a `type`. The old `server:` section is
   read when there is no list and is never rewritten.
-- **One `MusicServer` interface** for both types, with `book()`, `catalogue()` and (phase 3)
-  progress added. `App` asks `catalogue()` which menu a server gets; it never checks a type name.
+- **One `MusicServer` interface** for both types, with `book()`, `catalogue()`, progress
+  and `inProgress()`. `App` asks `catalogue()` which menu a server gets; it never checks a type name.
 - **Progress saves acknowledge completion** through an optional callback, so failed saves remain pending for retry.
 - **Audiobookshelf logs in with an API key** (`api_key`), sent as a Bearer header; stream and
   download URLs carry it as `token=`. No user name / password login.
@@ -317,8 +334,8 @@ files and chapters without a metadata fetch or Loading announcement.
 ## Open questions
 
 1. **How to offer the server's later place** (step 3.4). Chosen: say it once and add an
-   Options item, so playback is never interrupted by a question. SPEC §6.3 says "Server position
-   is further, jump there?"; confirm on the device that the notice is enough.
+   Options item, so playback is never interrupted by a question. SPEC §6.3 describes this
+   notice and action; confirm on the device that the notice is enough.
 2. **User name and password login** for Audiobookshelf (`POST /login`, short-lived tokens with
    a refresh token since 2.26). Chosen: not now, the API key is enough. Revisit with the setup
    web page (SPEC §6.3), where typing a password is easier than creating a key.
