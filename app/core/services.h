@@ -377,6 +377,8 @@ public:
     // Optional acknowledgement runs from poll(), so a caller can retry only failed saves.
     // A failure is logged by kind only, never with a URL or response body.
     virtual void saveProgress(std::string albumId, RemoteProgress progress, std::function<void(Error)> done = {}) = 0;
+    // Books currently being listened to, only from this server's selected book library.
+    virtual RequestId inProgress(Done<RemoteAlbum> done) = 0;
     virtual RequestId playlists(Done<RemotePlaylist> done) = 0;
     virtual RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) = 0;
     // A request carries every track id in its URL, so a server or proxy may refuse a very long one:

@@ -726,13 +726,24 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   version or folder is stored. `replaceServer()` / `saveItems()` write only what changed, so an unchanged
   list writes no index. Library lists them like folder books; `openServerBook()` asks `book()` for these
   servers and `albumTracks()` for the others.
-- **The Books server menu (audiobookshelf.md 2.7).** `booksMenu(link)` is Recently added and Books A to Z
+- **The Books server menu (audiobookshelf.md 2.7).** `booksMenu(link)` is Continue listening, Recently added and Books A to Z
   (`openAlbumList(..., books=true)`: the Streaming list machinery with `bookItems()`, "No books"), Authors
   (`openAuthors()`: `artists()`, then `artistAlbums()`), Downloaded and Server status. A book opens
   `openBookPage()`, a remote list whose request is `book()`; `bookPage()` builds Play book, Download book
   (`startDownload(..., unit "file")`, so the progress counts files) and the chapters from the already loaded
   `RemoteBook`, with no second request. It plays through `serverBookOf()` under the Library id
   `<server key>:album:<id>`, so the place (`pos:` + id) is shared with Library; a chapter plays at its file and start.
+- **Continue listening (audiobookshelf.md 3.5).** `MusicServer::inProgress(done)` returns books from the
+  selected library. Audiobookshelf resolves that library through `withLibrary()` and reads
+  `/api/me/items-in-progress`; `parseInProgress()` keeps only `libraryItems` with that `libraryId`
+  and `mediaType: book`. A missing list is `Server`, an empty list succeeds. Subsonic reports
+  `Server` (unsupported), and `NoMusicServer` reports `NotConfigured`, both through `poll()`.
+  `openInProgress()` uses `openRemoteList()` ("Nothing in progress" when empty). Its book actions
+  call `openServerBook(..., followServer=true)`, then `pullProgress(..., followServer=true)` applies
+  the progress GET regardless of a local place, timestamp or 30-second distance; this explicit
+  choice uses the same cancellation and timeline mapping as ordinary pulls. Playback starts at
+  the local place while it waits, and errors remain silent. Ordinary book opens retain the
+  later-place notice and Options action.
 - **Download a book (audiobookshelf.md 2.8).** Download book is `startDownload(..., unit "file", chapters)`: the files go
   one by one into `<cache>/<server key>/album%3A<id>/`, pinned, as for an album, and the server's chapters are written to
   the manifest with the first file (`ManifestUpdate::chapters`, the `chapter` lines of `CachedList::chapters`). A file that
@@ -763,7 +774,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   delivers only progress-save acknowledgements on the caller thread (`Audiobookshelf::finish()`),
   so completed exit saves can update the persisted marker without concurrent state-map writes.
   Browsing callbacks never run during this drain. Real-server listening and offline retry need a
-  device check; Continue listening remains step 3.5.
+  device check.
 - **Pulling a book's place (audiobookshelf.md 3.4).** Once `playServerBook()` has opened local
   playback, `pullProgress()` asks the book's server without Loading or a wait. The opening remembers
   whether a local position existed (an explicit chapter is also a local choice); `openPlayer()`

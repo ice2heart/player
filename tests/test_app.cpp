@@ -15748,13 +15748,13 @@ protected:
 
 TEST_F(BooksMenuTest, HomeOpensTheBooksMenuNotStreaming) {
     openServer();
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Books A to Z", "Authors", "Downloaded", "Server status"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Continue listening", "Recently added", "Books A to Z", "Authors", "Downloaded", "Server status"}));
 }
 
 TEST_F(BooksMenuTest, WithoutACacheFolderThereIsNoDownloaded) {
     cache.clear();
     openServer();
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Books A to Z", "Authors", "Server status"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Continue listening", "Recently added", "Books A to Z", "Authors", "Server status"}));
 }
 
 TEST_F(BooksMenuTest, AMusicServerStillOpensStreaming) {
@@ -16998,4 +16998,108 @@ TEST_F(BookProgressPullTest, ExplicitlyChoosingTheFirstChapterKeepsThatChoiceWhe
     EXPECT_DOUBLE_EQ(player.pos, 0);
     EXPECT_EQ(player.file, "fake://stream/t1");
     EXPECT_EQ(speech.last(), "The server has a later place, chapter 3. It is in Options.");
+}
+
+
+TEST_F(BooksMenuTest, ContinueListeningLoadsItsFirstBookWithAuthorAndKeepsTheListOnReturn) {
+    openList("Continue listening");
+    EXPECT_EQ(server.lastRequest().kind, Kind::InProgress);
+    EXPECT_EQ(speech.last(), "Continue listening. Loading, 1 of 1");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Still loading.");
+    answer(std::vector<RemoteAlbum>{book("b1", "Neuromancer"), book("b2", "Dune", "Herbert")});
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Neuromancer", "Dune"}));
+    EXPECT_EQ(speech.last(), "Neuromancer, Gibson, 1 of 2");
+    press(Button::Down);
+    press(Button::Ok);
+    ASSERT_TRUE(server.replyBook(server.lastRequest().id, threeChapters())); app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    press(Button::Home);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Neuromancer", "Dune"}));
+    EXPECT_NE(speech.last().find("Dune, Herbert, 2 of 2"), std::string::npos);
+    EXPECT_EQ(requestsOf(Kind::InProgress), 1u);
+}
+
+TEST_F(BooksMenuTest, ContinueListeningErrorRetriesAndEmptyExplainsNothingInProgress) {
+    openList("Continue listening");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable)); app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again"}));
+    EXPECT_EQ(speech.last(), "Server not reachable, 1 of 2");
+    open("Try again");
+    EXPECT_EQ(speech.last(), "Loading, 1 of 1");
+    EXPECT_EQ(requestsOf(Kind::InProgress), 2u);
+    answer(std::vector<RemoteAlbum>{});
+    EXPECT_EQ(speech.last(), "Nothing in progress, 1 of 1");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "There are no books in progress in this library.");
+}
+
+TEST_F(BooksMenuTest, LeavingContinueListeningDropsEvenAnAlreadyQueuedAnswer) {
+    openList("Continue listening");
+    const auto request = server.lastRequest().id;
+    ASSERT_TRUE(server.reply(request, std::vector<RemoteAlbum>{book("b1", "Neuromancer")}));
+    hold(Button::Home);
+    speech.said.clear(); app->tick();
+    EXPECT_TRUE(speech.said.empty());
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), request), server.cancelled.end());
+    EXPECT_EQ(requestsOf(Kind::Book), 0u);
+}
+
+TEST_F(BookProgressPullTest, ContinueListeningOpensAtTheServerPlaceEvenWithANewerNearbyLocalPlace) {
+    localPlace();
+    start(); syncBooks({book("b1", "Dune")});
+    open("Server"); open("Continue listening");
+    EXPECT_EQ(server.requests.back().kind, Kind::InProgress);
+    ASSERT_TRUE(server.reply(server.requests.back().id, std::vector<RemoteAlbum>{book("b1", "Dune")})); app->tick();
+    open("Dune");
+    EXPECT_EQ(speech.last(), "Loading.");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters())); app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_TRUE(player.playing());
+    EXPECT_DOUBLE_EQ(player.pos, 10);
+    ASSERT_NO_FATAL_FAILURE(answerPlace(RemoteProgress{15, 380, false, 1699999980000LL}));
+    EXPECT_DOUBLE_EQ(player.pos, 15);
+    EXPECT_EQ(speech.last(), "Intro.");
+    EXPECT_EQ(state.getString("pos:" + ref("b1")), "0:15.0");
+    ASSERT_NO_FATAL_FAILURE(expectNoOptions());
+}
+
+TEST_F(BookProgressPullTest, ContinueListeningMapsTheServerTimelineAcrossFilesAndDropsRepliesAfterLeaving) {
+    start(); syncBooks({book("b1", "Dune")});
+    open("Server"); open("Continue listening");
+    ASSERT_TRUE(server.reply(server.requests.back().id, std::vector<RemoteAlbum>{book("b1", "Dune")})); app->tick();
+    open("Dune");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters())); app->tick();
+    ASSERT_NO_FATAL_FAILURE(answerPlace(later()));
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+    EXPECT_EQ(speech.last(), "End.");
+    hold(Button::Home); open("Server"); open("Continue listening");
+    ASSERT_TRUE(server.reply(server.requests.back().id, std::vector<RemoteAlbum>{book("b1", "Dune")})); app->tick();
+    open("Dune");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters())); app->tick();
+    const auto request = lastOf(Kind::Progress);
+    hold(Button::Home);
+    EXPECT_FALSE(server.replyProgress(request, later(100)));
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+}
+
+TEST_F(BookDownloadTest, ContinueListeningUsesDownloadedFilesAndStillFollowsTheServerPlace) {
+    server.progressSync = true;
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    state.setString(bookKey("b1"), "0:10.0");
+    state.setString("posat:" + ref("b1"), "1700000000");
+    hold(Button::Home); open("Server"); open("Continue listening");
+    ASSERT_TRUE(server.reply(server.requests.back().id, std::vector<RemoteAlbum>{book("b1", "Dune")})); app->tick();
+    speech.said.clear();
+    const size_t books = countOf(Kind::Book);
+    open("Dune");
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, fileOf(1));
+    EXPECT_DOUBLE_EQ(player.pos, 10);
+    EXPECT_EQ(countOf(Kind::Book), books);
+    EXPECT_FALSE(speech.heard("Loading."));
+    ASSERT_TRUE(server.replyProgress(lastOf(Kind::Progress), RemoteProgress{210, 380, false, 1699999990000LL})); app->tick();
+    EXPECT_EQ(player.file, fileOf(2));
+    EXPECT_DOUBLE_EQ(player.pos, 10);
 }

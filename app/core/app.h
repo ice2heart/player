@@ -188,7 +188,7 @@ private:
     std::vector<MenuItem> albumMenu(const Book& album, const std::string& playedId = {});
     void openLocalAlbum(const Book& album, const std::string& playedId, size_t at); // its list, on track `at`
     Book bookOf(const IndexItem& item) const;
-    void openServerBook(const IndexItem& item); // Library, "Now playing": plays it from its saved place (its files if downloaded, else "Loading.")
+    void openServerBook(const IndexItem& item, bool followServer = false); // Library, "Now playing": plays it from its saved place (its files if downloaded, else "Loading.")
     bool resumeServerBook();                    // "Now playing" / Play with nothing loaded: false when `last_book` names none
     static bool isServerBookId(const std::string& id);
     const IndexItem* savedServerBook() const;   // `last_book` when it names a server book of a server set up
@@ -234,6 +234,7 @@ private:
     std::vector<MenuItem> streamingMenu(size_t link); // the browsing menu of a Music server
     std::vector<MenuItem> booksMenu(size_t link);     // the browsing menu of a Books server (catalogue() == Books)
     void openAuthors(size_t link);
+    void openInProgress(size_t link);
     void openBookPage(const RemoteAlbum& book, size_t link); // the book's page: Play book, Download book, chapters
     std::vector<MenuItem> bookItems(const std::vector<RemoteAlbum>& books, size_t link);
     std::vector<MenuItem> bookPage(const RemoteAlbum& book, const RemoteBook& remote, size_t link);
@@ -469,7 +470,7 @@ private:
     bool openBook(const Book& book, bool autoplay); // false if it cannot be opened
     // The saved place `pos:` + book.path: the file and the seconds, none (0, 0) when unknown or out of range.
     std::pair<size_t, double> savedPlace(const Book& book) const;
-    bool playServerBook(const Book& book, size_t file, double position, Then opened, bool explicitPlace = false);
+    bool playServerBook(const Book& book, size_t file, double position, Then opened, bool explicitPlace = false, bool followServer = false);
     bool playMusic(const Book& album, size_t track, Then opened = {},
                    double position = 0); // false if it failed at once
     // Replaces the music queue with `entries` and plays from `track`. `list` is what they came from
@@ -616,7 +617,7 @@ private:
         double position = 0;
         int chapter = 0;
     };
-    void pullProgress(bool hadLocal, std::string localStamp);
+    void pullProgress(bool hadLocal, std::string localStamp, bool followServer = false);
     void cancelProgressPull();
     std::optional<ServerPlace> serverPlace(RemoteProgress progress) const;
     void useServerPlace(ServerPlace place);

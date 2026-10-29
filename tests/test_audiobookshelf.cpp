@@ -810,3 +810,85 @@ TEST(Audiobookshelf, ExitDrainDeliversOnlySaveAcknowledgementsOnTheCallingThread
     s.abs->poll();
     EXPECT_EQ(reads, 0);
 }
+
+TEST(Audiobookshelf, InProgressUsesTheChosenBookLibraryAndBearerHeader) {
+    const std::string libraries = R"({"libraries":[{"id":"pod","name":"Podcasts","mediaType":"podcast","displayOrder":0},{"id":"first","name":"First","mediaType":"book","displayOrder":1},{"id":"chosen","name":"Books","mediaType":"book","displayOrder":2}]})";
+    const std::string items = R"({"libraryItems":[{"id":"other","libraryId":"first","mediaType":"book","media":{"metadata":{"title":"Other"}}},{"id":"podcast","libraryId":"pod","mediaType":"podcast","media":{"metadata":{"title":"Podcast"}}},{"id":"b1","libraryId":"chosen","mediaType":"book","media":{"metadata":{"title":"Нейромант","authorName":"Уильям Гибсон"}}},{"id":"badtype","libraryId":"chosen","mediaType":"podcast","media":{"metadata":{"title":"Wrong type"}}}]})";
+    for (const std::string library : {std::string("Books"), std::string("chosen"), std::string()}) {
+        Server s(config(library));
+        ListResult<RemoteAlbum> result;
+        const auto id = s.abs->inProgress(result.callback());
+        EXPECT_EQ(s.http->url(0), kBase + "/api/libraries");
+        s.http->answer(0, kOk, libraries);
+        EXPECT_EQ(result.calls, 0);
+        s.abs->poll();
+        ASSERT_EQ(s.http->calls.size(), 2u);
+        EXPECT_EQ(s.http->calls[1].id, id);
+        EXPECT_EQ(s.http->url(1), kBase + "/api/me/items-in-progress");
+        for (const auto& request : s.http->calls) {
+            EXPECT_EQ(request.headers, (Http::Headers{"Authorization: Bearer " + kKey}));
+            EXPECT_EQ(request.url.find(kKey), std::string::npos);
+        }
+        s.http->answer(1, kOk, items);
+        EXPECT_EQ(result.calls, 0);
+        s.abs->poll();
+        ASSERT_EQ(result.calls, 1);
+        EXPECT_EQ(result.error, Error::None);
+        EXPECT_FALSE(result.more);
+        ASSERT_EQ(result.items.size(), 1u);
+        EXPECT_EQ(result.items[0].id, library.empty() ? "other" : "b1");
+        if (!library.empty()) {
+            EXPECT_EQ(result.items[0].name, "Нейромант");
+            EXPECT_EQ(result.items[0].artist, "Уильям Гибсон");
+        }
+    }
+}
+
+TEST(Audiobookshelf, InProgressErrorsEmptyAndCancellationFollowTheListContract) {
+    for (const std::string body : {std::string("not json"), std::string("{}"), std::string(R"({"libraryItems":[]})")}) {
+        Server s;
+        ListResult<RemoteAlbum> result;
+        s.abs->inProgress(result.callback());
+        s.http->answer(0, kOk, audiobookshelfFixture("libraries.json")); s.abs->poll();
+        s.http->answer(1, kOk, body); s.abs->poll();
+        EXPECT_EQ(result.error, body == R"({"libraryItems":[]})" ? Error::None : Error::Server);
+        EXPECT_TRUE(result.items.empty());
+        EXPECT_FALSE(result.more);
+    }
+    for (int stage : {0, 1}) {
+        Server s;
+        ListResult<RemoteAlbum> result;
+        auto id = s.abs->inProgress(result.callback());
+        if (stage == 1) { s.http->answer(0, kOk, audiobookshelfFixture("libraries.json")); s.abs->poll(); }
+        s.http->answer(stage, kOk, stage == 0 ? audiobookshelfFixture("libraries.json") : R"({"libraryItems":[]})");
+        s.abs->cancel(id); s.abs->poll();
+        EXPECT_EQ(result.calls, 0);
+        EXPECT_EQ(s.http->calls.size(), size_t(stage + 1));
+        EXPECT_EQ(s.http->cancelled, (std::vector<Http::Id>{id}));
+    }
+    for (long status : {401L, 500L}) {
+        Server s;
+        ListResult<RemoteAlbum> result;
+        s.abs->inProgress(result.callback());
+        s.http->answer(0, kOk, audiobookshelfFixture("libraries.json")); s.abs->poll();
+        s.http->answer(1, status, "{}"); s.abs->poll();
+        EXPECT_EQ(result.error, status == 401 ? Error::BadLogin : Error::Server);
+    }
+    Server absent(config());
+    ListResult<RemoteAlbum> failed;
+    absent.abs->inProgress(failed.callback());
+    absent.http->unreachable(0); absent.abs->poll();
+    EXPECT_EQ(failed.error, Error::Unreachable);
+    Server unknown(config("Absent library"));
+    ListResult<RemoteAlbum> missing;
+    unknown.abs->inProgress(missing.callback());
+    unknown.http->answer(0, kOk, audiobookshelfFixture("libraries.json")); unknown.abs->poll();
+    EXPECT_EQ(missing.error, Error::Server);
+    EXPECT_EQ(unknown.http->calls.size(), 1u);
+    auto noConfig = config(); noConfig.apiKey.clear();
+    Server none(noConfig);
+    ListResult<RemoteAlbum> noServer;
+    none.abs->inProgress(noServer.callback()); none.abs->poll();
+    EXPECT_EQ(noServer.error, Error::NotConfigured);
+    EXPECT_TRUE(none.http->calls.empty());
+}

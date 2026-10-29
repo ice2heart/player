@@ -127,3 +127,21 @@ TEST(NoMusicServer, ProgressIsNotConfiguredAndAcknowledgedFromPoll) {
     server.poll();
     EXPECT_EQ(read, 1);
 }
+
+TEST(NoMusicServer, InProgressIsNotConfiguredAndCancellableFromPoll) {
+    NoMusicServer server;
+    int calls = 0;
+    auto done = [&](Error error, std::vector<oap::RemoteAlbum> items, bool more) {
+        ++calls;
+        EXPECT_EQ(error, Error::NotConfigured);
+        EXPECT_TRUE(items.empty());
+        EXPECT_FALSE(more);
+    };
+    server.inProgress(done);
+    EXPECT_EQ(calls, 0);
+    server.poll();
+    EXPECT_EQ(calls, 1);
+    server.cancel(server.inProgress(done));
+    server.poll();
+    EXPECT_EQ(calls, 1);
+}

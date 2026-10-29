@@ -41,6 +41,8 @@ Error parseMe(std::string_view body);
 Parsed<Library> parseLibraries(std::string_view body);
 // GET /api/libraries/<id>/items: `results`. `more` is true while offset + size < total.
 Parsed<RemoteAlbum> parseBookList(std::string_view body, int offset, int size);
+// GET /api/me/items-in-progress: libraryItems, restricted to the selected book library.
+Parsed<RemoteAlbum> parseInProgress(std::string_view body, std::string_view libraryId);
 // GET /api/libraries/<id>/authors: `authors`, with the number of books.
 Parsed<RemoteArtist> parseAuthors(std::string_view body);
 // GET /api/authors/<id>?include=items: the author's `libraryItems`.

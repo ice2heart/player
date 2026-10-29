@@ -220,6 +220,10 @@ MusicServer::RequestId Subsonic::book(std::string albumId, std::function<void(Er
     });
 }
 
+MusicServer::RequestId Subsonic::inProgress(Done<RemoteAlbum> done) {
+    return progress({}, [done = std::move(done)](Error error, std::optional<RemoteProgress>) { done(error, {}, false); });
+}
+
 MusicServer::RequestId Subsonic::playlists(Done<RemotePlaylist> done) {
     return list<RemotePlaylist>("getPlaylists", {}, subsonic::parsePlaylists, std::move(done));
 }

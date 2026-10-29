@@ -647,6 +647,7 @@ The menu, the lists, the book page and downloading a book are built.
 
 ```
 <server name>
+├── Continue listening → <books>      from this server’s selected book library
 ├── Recently added     → <books>      newest first, one page of 500
 ├── Books A to Z       → <books>      pages of 500
 ├── Authors            → <author> → <books>
@@ -657,6 +658,10 @@ The menu, the lists, the book page and downloading a book are built.
 ```
 
 - A book in these lists says its title and author ("Neuromancer, William Gibson").
+- **Continue listening** is first. It follows the network-list rules (including "Nothing in progress"
+  when empty). OK on a book opens the player and follows its server place, even when there is a
+  saved local place or the server place is older or nearby. Playback starts at the local place
+  while progress is fetched; a failed progress request stays silent and leaves playback there.
 - **Play book** (value: the number of chapters) opens the book player at the book's place (or the start), like a book in
   Library. OK on a chapter plays the book from that chapter. The chapters are the server's,
   and a chapter can span files.

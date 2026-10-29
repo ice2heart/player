@@ -1738,6 +1738,7 @@ std::vector<MenuItem> App::serverMenu(size_t link) {
 
 std::vector<MenuItem> App::booksMenu(size_t link) {
     std::vector<MenuItem> items;
+    items.push_back(action("Continue listening", [this, link] { openInProgress(link); }));
     items.push_back(action("Recently added", [this, link] {
         openAlbumList(link, "Recently added", "newest", kAlbumPageSize, false, false, true);
     }));
@@ -1750,6 +1751,30 @@ std::vector<MenuItem> App::booksMenu(size_t link) {
     status.value = [this, link] { return serverDown(link) ? std::string("not reachable") : std::string(); };
     items.push_back(std::move(status));
     return items;
+}
+
+void App::openInProgress(size_t link) {
+    openRemoteList(link, "Continue listening",
+        fetchPages<RemoteAlbum>(
+            [this, link](int, MusicServer::Done<RemoteAlbum> done) { return serverAt(link).inProgress(std::move(done)); },
+            [this, link](const std::vector<RemoteAlbum>& books) {
+                std::vector<MenuItem> items;
+                for (const RemoteAlbum& book : books) {
+                    MenuItem item = action(book.name, [this, link, book] {
+                        IndexItem saved;
+                        saved.id = LibraryIndex::seenRef(servers_[link].key, SeenKind::Album, book.id);
+                        saved.seenOn = {saved.id};
+                        saved.title = book.name;
+                        saved.artist = book.artist;
+                        openServerBook(saved, true);
+                    });
+                    item.okHint = "play";
+                    if (!book.artist.empty()) item.value = [author = book.artist] { return author; };
+                    items.push_back(std::move(item));
+                }
+                return items;
+            }),
+        0, "Nothing in progress", "There are no books in progress in this library.");
 }
 
 void App::openAuthors(size_t link) {
@@ -3407,7 +3432,7 @@ std::vector<Book::Chapter> App::serverChaptersOf(const std::vector<double>& dura
 // of resumeStream(): a new screen, sleep or power off drops it. Once it plays, the book is
 // `last_book`, as for a local book; the music player keeps its own place (`last_stream`). Its place is a file index of the
 // list as the server gives it now: a list shorter than the saved index starts at the first chapter.
-void App::openServerBook(const IndexItem& item) {
+void App::openServerBook(const IndexItem& item, bool followServer) {
     const std::optional<ServerRef> on = serverRefOf(item.seenOn); // its server: the book is loaded and plays from there
     if (!on) {
         earcons_.play(Earcon::Error);
@@ -3433,14 +3458,14 @@ void App::openServerBook(const IndexItem& item) {
         Book book = serverBookOf(ref, item.title, item.artist, albumId, onDisk, link, cached.chapters); // the manifest kept the chapters
         if (book_) rememberPosition(); // the book that plays may be this one: its place is saved only now
         auto [file, pos] = savedPlace(book);
-        playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
+        playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); }, false, followServer);
         return;
     }
     say("Loading.");
     resumeScreen_ = screen; // leaving this screen drops the request (closeScreens())
     resumeLink_ = link;
     // A Books server gives the book (its tracks and chapters); any other the tracks of the album.
-    auto opened = [this, screen, ref, title = item.title, author = item.artist, albumId, link](MusicServer::Error error,
+    auto opened = [this, screen, ref, title = item.title, author = item.artist, albumId, link, followServer](MusicServer::Error error,
                                                                                             RemoteBook remote) {
         std::vector<RemoteTrack>& tracks = remote.tracks;
         resume_ = 0; // a new screen or sleep would have cancelled it: the user is still where they asked
@@ -3459,7 +3484,7 @@ void App::openServerBook(const IndexItem& item) {
         Book book = serverBookOf(ref, title, author, albumId, tracks, link, remote.chapters);
         if (book_) rememberPosition();
         auto [file, pos] = savedPlace(book);
-        playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
+        playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); }, false, followServer);
     };
     if (servers_[link].server.catalogue() == MusicServer::Catalogue::Books)
         resume_ = servers_[link].server.book(albumId, [opened](MusicServer::Error error, RemoteBook book) { opened(error, std::move(book)); });
@@ -3470,15 +3495,15 @@ void App::openServerBook(const IndexItem& item) {
 }
 
 // playMusic() for a book: its chapters are the tracks (the book player) and it keeps its place.
-bool App::playServerBook(const Book& book, size_t file, double position, Then opened, bool explicitPlace) {
+bool App::playServerBook(const Book& book, size_t file, double position, Then opened, bool explicitPlace, bool followServer) {
     if (book_) rememberPosition();
     const bool hadLocal = explicitPlace || !state_.getString("pos:" + book.path.string()).empty() || file != 0 || position != 0;
     const std::string localStamp = state_.getString("posat:" + book.path.string());
-    auto playing = [this, hadLocal, localStamp, opened = std::move(opened)] {
+    auto playing = [this, hadLocal, localStamp, followServer, opened = std::move(opened)] {
         sleepAtChapterEnd_ = -1;
         pausedAt_.reset();
         if (opened) opened();
-        pullProgress(hadLocal, localStamp);
+        pullProgress(hadLocal, localStamp, followServer);
     };
     return switchTo(book, false, file, position, true, std::move(playing)) != OpenResult::Failed;
 }
@@ -5097,7 +5122,7 @@ std::optional<App::ServerPlace> App::serverPlace(RemoteProgress progress) const 
     return place;
 }
 
-void App::pullProgress(bool hadLocal, std::string localStamp) {
+void App::pullProgress(bool hadLocal, std::string localStamp, bool followServer) {
     cancelProgressPull();
     if (!book_ || music_ || !book_->serverBook || !book_->source || book_->link >= servers_.size() ||
         !serverAt(book_->link).syncsProgress()) return;
@@ -5109,12 +5134,16 @@ void App::pullProgress(bool hadLocal, std::string localStamp) {
     const std::string id = book_->path.string();
     const std::weak_ptr<int> lifetime = progressLifetime_;
     progressPull_ = serverAt(book_->link).progress(book_->source->id,
-        [this, lifetime, generation, id, hadLocal, localStamp = std::move(localStamp)](MusicServer::Error error,
+        [this, lifetime, generation, id, hadLocal, followServer, localStamp = std::move(localStamp)](MusicServer::Error error,
                                                                                   std::optional<RemoteProgress> progress) {
             if (lifetime.expired() || generation != progressPullGeneration_ || shutDown_ || sleeping_ || quit_ ||
                 !book_ || book_->path.string() != id) return;
             progressPull_ = 0;
             if (error != MusicServer::Error::None || !progress) return;
+            if (followServer) {
+                if (const auto target = serverPlace(*progress)) useServerPlace(*target);
+                return;
+            }
             const std::string currentStamp = state_.getString("posat:" + id);
             std::int64_t stamp = 0;
             try { if (!(currentStamp.empty() ? localStamp : currentStamp).empty())

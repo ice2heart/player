@@ -31,6 +31,7 @@ MusicServer::RequestId NoMusicServer::progress(std::string, std::function<void(E
 void NoMusicServer::saveProgress(std::string, RemoteProgress, std::function<void(Error)> done) {
     if (done) add([done = std::move(done)] { done(Error::NotConfigured); });
 }
+MusicServer::RequestId NoMusicServer::inProgress(Done<RemoteAlbum> done) { return fail(std::move(done)); }
 MusicServer::RequestId NoMusicServer::playlists(Done<RemotePlaylist> done) { return fail(std::move(done)); }
 MusicServer::RequestId NoMusicServer::playlistTracks(std::string, Done<RemoteTrack> done) { return fail(std::move(done)); }
 MusicServer::RequestId NoMusicServer::createPlaylist(std::string, std::vector<std::string>, std::function<void(Error, std::string)> done) {

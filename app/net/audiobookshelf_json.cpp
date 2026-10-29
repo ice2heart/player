@@ -128,6 +128,23 @@ Parsed<RemoteAlbum> parseBookList(std::string_view body, int offset, int size) {
     return parsed;
 }
 
+Parsed<RemoteAlbum> parseInProgress(std::string_view body, std::string_view libraryId) {
+    Parsed<RemoteAlbum> result;
+    YAML::Node doc = open(body, result.error);
+    if (result.error != Error::None) return result;
+    try {
+        const YAML::Node items = child(doc, "libraryItems");
+        if (!items.IsSequence()) { result.error = Error::Server; return result; }
+        for (const auto& item : items)
+            if (text(item, "libraryId") == libraryId && text(item, "mediaType") == kBookMediaType)
+                result.items.push_back(book(item));
+    } catch (const YAML::Exception&) {
+        result = {};
+        result.error = Error::Server;
+    }
+    return result;
+}
+
 Parsed<RemoteArtist> parseAuthors(std::string_view body) {
     return parseArray<RemoteArtist>(body, "authors", [](const YAML::Node& node) {
         RemoteArtist artist;

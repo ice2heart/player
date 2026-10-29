@@ -350,7 +350,7 @@ inline std::vector<ServerLink> linkTo(const Settings& settings, MusicServer& ser
 // A fake that is not configured does not record a scrobble (like Subsonic).
 class FakeMusicServer : public MusicServer {
 public:
-    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Book, Progress, Playlists, PlaylistTracks, CreatePlaylist };
+    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Book, Progress, InProgress, Playlists, PlaylistTracks, CreatePlaylist };
     struct Request {
         RequestId id = 0;
         Kind kind = Kind::Ping;
@@ -413,6 +413,7 @@ public:
         pending_.erase(it);
         return true;
     }
+    RequestId inProgress(Done<RemoteAlbum> done) override { return add(std::move(done), Kind::InProgress); }
     RequestId playlists(Done<RemotePlaylist> done) override { return add(std::move(done), Kind::Playlists); }
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override {
         return add(std::move(done), Kind::PlaylistTracks, std::move(playlistId));

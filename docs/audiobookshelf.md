@@ -161,6 +161,7 @@ above. A Music server (Subsonic) keeps today's Streaming menu. A Books server
 
 ```
 <server name>
+├── Continue listening → <books>      in-progress books of the selected library
 ├── Recently added     → <books>      sort=addedAt desc, one page of 500
 ├── Books A to Z       → <books>      sort=media.metadata.title, pages of 500
 ├── Authors            → <author> → <books>
@@ -247,7 +248,7 @@ again.
 | ✅ 3.2 | **Progress in `MusicServer`.** `struct RemoteProgress { double seconds = 0, duration = 0; bool finished = false; std::int64_t updated = 0; /* wall, ms */ };` `virtual bool syncsProgress() const`, `virtual RequestId progress(std::string albumId, std::function<void(Error, std::optional<RemoteProgress>)>)`, `virtual void saveProgress(std::string albumId, RemoteProgress, std::function<void(Error)> done = {})` (an optional completion callback from `poll()` lets step 3.3 acknowledge successful saves; a failure is logged only by kind on stderr without the URL). Audiobookshelf: `GET` / `PATCH /api/me/progress/<id>`; 404 is "none". Subsonic: `syncsProgress()` false. | Net tests: the progress fixture parses; 404 gives none and no error; the PATCH body has `currentTime`, `duration`, `progress`, `isFinished`. The fake records saves and can hold their acknowledgements; success and failure callbacks run only from `poll()`. |
 | ✅ 3.3 | **Push the place.** For a server book on a server that syncs: the place on the book's timeline (start of the file + seconds) is sent on pause, on leaving the book, on sleep, on exit, and every 60 s of playback when it moved by 5 s or more. `state.tsv` gets `posat:<id>` (wall seconds when the place was recorded, kept with `pos:`) and `pushed:<id>` (the `posat` sent last). A send that fails leaves `pushed` behind; the start-up sync sends every place newer than its `pushed`. "End of book" sends `finished`. | Pause sends the timeline seconds of file 2 + 30 s. 59 s of play sends nothing new, 60 s does. A failed send is sent again at the next start-up; a successful one is not. End of book sends `finished`. Playback writes nothing to disk until exit or sleep, as today. |
 | ✅ 3.4 | **Pull the place.** Opening a server book (Library, Books menu, "Now playing") plays at the local place at once and asks the server. If the server's place is newer than `posat` and more than 30 s from it: with no local place it moves there and says the chapter; otherwise it says "The server has a later place, chapter 5. It is in Options." and the book player's Options gets a first item "Go to the server's place, chapter 5, 12 minutes". The answer is dropped when the book is left. | No local place: the book moves to the server's place. A local place older than the server's: the notice and the Options item, and OK on it moves there. A server place older than the local one or within 30 s: nothing said. The server down: nothing said, the book plays. |
-| 3.5 | **Continue listening.** First item of the Books server menu, from `/api/me/items-in-progress` (only this server's library). | Loading, filled, error, "Nothing in progress". A book listed opens at the server's place. |
+| ✅ 3.5 | **Continue listening.** First item of the Books server menu, from `/api/me/items-in-progress` (only this server's library). | Loading, filled, error, "Nothing in progress". A book listed opens at the server's place. |
 | 3.6 | **Docs for phase 3 as built:** architecture.md, navigation.md (the notice and the Options item), SPEC §6.3. | – |
 
 **Device check (manual):** listen 10 minutes on the device, pause, open the book in the
@@ -274,6 +275,13 @@ local choice even at chapter 1, second 0: a later place is offered rather than a
 pull and offer belong to the opening of the player and are dropped when it is left, replaced,
 put to sleep or shut down. Accepting an Options offer also queues that accepted place after
 any older local save, so a pause made after the notice cannot overwrite the accepted place.
+
+Step 3.5 adds `MusicServer::inProgress()`: Audiobookshelf resolves the selected book library,
+then filters `/api/me/items-in-progress` by `libraryId` and book media type. Continue listening
+opens a listed book directly in the player, starting from its local place while a fresh progress
+GET runs. That explicit choice applies the server place even when older or within 30 seconds;
+a failed GET stays silent and leaves local playback running. Whole downloads use their cached
+files and chapters without a metadata fetch or Loading announcement.
 
 ## Later
 

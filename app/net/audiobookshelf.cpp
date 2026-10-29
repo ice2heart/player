@@ -272,6 +272,16 @@ void Audiobookshelf::saveProgress(std::string albumId, RemoteProgress progress, 
          std::move(complete), std::move(body));
 }
 
+MusicServer::RequestId Audiobookshelf::inProgress(Done<RemoteAlbum> done) {
+    RequestId id = ++lastId_;
+    withLibrary(id, {}, [done](Error error) { done(error, {}, false); },
+        [this, id, done](const std::string& library) {
+            sendList<RemoteAlbum>(id, "/api/me/items-in-progress",
+                [library](const std::string& body) { return audiobookshelf::parseInProgress(body, library); }, done);
+        });
+    return id;
+}
+
 MusicServer::RequestId Audiobookshelf::playlists(Done<RemotePlaylist> done) { return noItems<RemotePlaylist>(std::move(done)); }
 
 MusicServer::RequestId Audiobookshelf::playlistTracks(std::string, Done<RemoteTrack> done) {

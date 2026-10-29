@@ -787,3 +787,21 @@ TEST(Subsonic, ProgressIsUnsupportedAndSendsNoRequest) {
     s.subsonic->poll();
     EXPECT_EQ(read, 1);
 }
+
+TEST(Subsonic, InProgressIsUnsupportedWithoutNetworkRequests) {
+    for (const std::string url : {std::string("https://music.example"), std::string()}) {
+        Server s(config(url));
+        ListResult<RemoteAlbum> result;
+        s.subsonic->inProgress(result.callback());
+        EXPECT_EQ(result.calls, 0);
+        s.subsonic->poll();
+        EXPECT_EQ(result.calls, 1);
+        EXPECT_EQ(result.error, url.empty() ? Error::NotConfigured : Error::Server);
+        EXPECT_TRUE(result.items.empty());
+        EXPECT_FALSE(result.more);
+        EXPECT_TRUE(s.http->calls.empty());
+        auto id = s.subsonic->inProgress(result.callback());
+        s.subsonic->cancel(id); s.subsonic->poll();
+        EXPECT_EQ(result.calls, 1);
+    }
+}
