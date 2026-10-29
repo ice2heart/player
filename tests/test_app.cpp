@@ -9754,6 +9754,29 @@ protected:
         b.tracks = std::move(tracks);
         return b;
     }
+    static RemoteTrack file(const std::string& id, double seconds) { return {id, id, "Author", "Dune", seconds, 0}; }
+    // Two files (200 s and 180 s) and three chapters: Intro and Middle in file 1 (Middle at 100 s), End in file 2 at 30 s,
+    // so Middle goes from file 1 into file 2.
+    static RemoteBook twoFilesThreeChapters() {
+        RemoteBook b = bookOf({file("t1", 200), file("t2", 180)});
+        b.chapters = {{"Intro", 0}, {"Middle", 100}, {"End", 230}};
+        return b;
+    }
+    // Home > Library > Dune, and the server gives `book`; it plays at its first chapter.
+    void playBook(RemoteBook book) {
+        start();
+        syncBooks({BooksServerTest::book("b1", "Dune")});
+        open("Library");
+        open("Dune");
+        ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), std::move(book)));
+        app->tick();
+        ASSERT_EQ(app->mode(), App::Mode::Player);
+    }
+    std::vector<std::string> chapterLabels() {
+        press(Button::Ok); // Player menu
+        open("Chapters");
+        return labels();
+    }
 };
 
 TEST_F(BooksServerTest, LibraryListsTheBooksAfterTheLocalOnesWithOnTheServer) {
@@ -9895,6 +9918,423 @@ TEST_F(BooksServerTest, ABookWithNoTracksSaysItHasNoChapters) {
     app->tick();
     EXPECT_EQ(speech.last(), "This book has no chapters on the server.");
     EXPECT_EQ(app->mode(), App::Mode::Menu);
+}
+
+// ---------------------------------------------------------------- server chapters in the book player (audiobookshelf.md 2.6)
+
+TEST_F(BooksServerTest, TheChaptersListHasTheServerChaptersNotTheFiles) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    EXPECT_EQ(chapterLabels(), (std::vector<std::string>{"Intro", "Middle", "End"}));
+    EXPECT_EQ(level().index, 0u) << "the chapter that plays is selected";
+    EXPECT_EQ(app->nowPlaying().chapterCount, 3);
+}
+
+TEST_F(BooksServerTest, ChoosingAChapterInTheMiddleOfAFileSeeksThereAndOpensTheFileOfALaterOne) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    press(Button::Ok);
+    open("Chapters");
+    open("Middle");
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 100);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    press(Button::Ok);
+    open("Chapters");
+    EXPECT_EQ(level().index, 1u);
+    open("End");
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 30);
+    EXPECT_EQ(app->nowPlaying().chapter, "End");
+}
+
+TEST_F(BooksServerTest, NextChapterFromTheFirstSeeksInsideTheFirstFile) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 10;
+    hold(Button::Forward);
+    EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1"})) << "no second open: it is a seek";
+    EXPECT_DOUBLE_EQ(player.pos, 100);
+    EXPECT_EQ(speech.last(), "Middle");
+    EXPECT_EQ(app->nowPlaying().chapterIndex, 1);
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(BooksServerTest, NextChapterFromTheSecondOpensTheSecondFileAtTheRightSecond) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 150; // Middle, in file 1
+    hold(Button::Forward);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 30);
+    EXPECT_EQ(speech.last(), "End");
+    EXPECT_EQ(app->nowPlaying().chapterIndex, 2);
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Last chapter.");
+    EXPECT_EQ(player.file, "fake://stream/t2");
+}
+
+TEST_F(BooksServerTest, ASeekToAChapterInTheFileThatPlaysIsNotANewPlayOfTheFile) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    idle(1s);
+    ASSERT_EQ(server.scrobbles.size(), 1u) << "now playing, once the file plays";
+    hold(Button::Forward); // Middle: a seek in file 1
+    idle(1s);
+    EXPECT_EQ(server.scrobbles.size(), 1u);
+}
+
+TEST_F(BooksServerTest, AChapterGoesOnInTheNextFileUntilTheNextChapterStarts) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 150;
+    hold(Button::Forward);
+    hold(Button::Back); // End, 0 s in: the chapter before
+    EXPECT_EQ(speech.last(), "Middle");
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 100);
+    player.pos = 190;
+    player.atEnd = true;
+    app->tick(); // file 1 ends, and Middle goes on in file 2
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    EXPECT_EQ(app->nowPlaying().chapter, "Middle");
+    EXPECT_EQ(app->nowPlaying().chapterIndex, 1);
+    player.pos = 31;
+    app->tick();
+    EXPECT_EQ(app->nowPlaying().chapter, "End");
+}
+
+TEST_F(BooksServerTest, WhereAmINamesTheChapterAndNotTheFile) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.length = 200;
+    player.pos = 150; // Middle ends at 230 s of the book: 80 s on; the book has 230 s left
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Book player. Dune, by Author. Chapter 2 of 3, Middle. 1 minute 20 seconds left in chapter. "
+                             "3 minutes 50 seconds left in book. Playing.");
+}
+
+TEST_F(BooksServerTest, WhereAmIWithAStreamOfUnknownLengthUsesTheLengthsTheServerGave) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.length = 0;
+    player.pos = 150;
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Book player. Dune, by Author. Chapter 2 of 3, Middle. 1 minute 20 seconds left in chapter. "
+                             "3 minutes 50 seconds left in book. Playing.");
+}
+
+TEST_F(BooksServerTest, WhereAmIInAChapterThatBeganInTheFileBeforeCountsTheTimeLeftToTheNextChapter) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 150;
+    hold(Button::Forward); // End, file 2 at 30 s
+    hold(Button::Back);    // Middle again, file 1 at 100 s
+    hold(Button::Forward);
+    player.length = 180;
+    player.pos = 50; // in the last chapter: 130 s of file 2 left
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Book player. Dune, by Author. Chapter 3 of 3, End. 2 minutes 10 seconds left in chapter. "
+                             "2 minutes 10 seconds left in book. Playing.");
+}
+
+TEST_F(BooksServerTest, WhereAmIInMiddleSpanningTwoFilesCountsTheTimeLeftAcrossThem) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.length = 180;
+    player.pos = 190;
+    player.atEnd = true;
+    app->tick(); // file 1 ended; file 2 is open at 0
+    player.pos = 10; // book time 210 s, in Middle, which ends at 230 s
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Book player. Dune, by Author. Chapter 2 of 3, Middle. 20 seconds left in chapter. "
+                             "2 minutes 50 seconds left in book. Playing.");
+}
+
+TEST_F(BooksServerTest, PreviousChapterLongIntoAChapterThatBeganInAnEarlierFileGoesBackToItsStart) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 190;
+    player.atEnd = true;
+    app->tick(); // file 2 at 0: Middle, 100 s in
+    player.pos = 2;
+    hold(Button::Back);
+    EXPECT_EQ(speech.last(), "Middle") << "not the Intro: it is 102 s into Middle, not 2";
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 100);
+}
+
+TEST_F(BooksServerTest, PreviousChapterJustAfterTheStartGoesToTheChapterBefore) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 150;
+    hold(Button::Forward); // End at file 2, 30 s
+    player.pos = 31;
+    hold(Button::Back);
+    EXPECT_EQ(speech.last(), "Middle");
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 100);
+    hold(Button::Back); // at 100 s exactly: the chapter before
+    EXPECT_EQ(speech.last(), "Intro");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    hold(Button::Back);
+    EXPECT_EQ(speech.last(), "First chapter.");
+}
+
+TEST_F(BooksServerTest, PreviousChapterWellIntoAChapterRestartsIt) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 150;
+    hold(Button::Forward); // End: file 2, 30 s
+    player.pos = 60;
+    hold(Button::Back);
+    EXPECT_EQ(speech.last(), "End");
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 30);
+    EXPECT_EQ(player.opened.size(), 2u) << "a seek in the open file";
+}
+
+TEST_F(BooksServerTest, AOneFileBookUsesTheServerChaptersAndNotTheMarksInTheFile) {
+    RemoteBook b = bookOf({file("t1", 600)});
+    b.chapters = {{"One", 0}, {"Two", 200}, {"Three", 400}};
+    ASSERT_NO_FATAL_FAILURE(playBook(std::move(b)));
+    player.embedded = {{"Mark", 0}};
+    player.pos = 10;
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Two");
+    EXPECT_DOUBLE_EQ(player.pos, 200);
+    player.pos = 450;
+    EXPECT_EQ(app->nowPlaying().chapter, "Three");
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Book player. Dune, by Author. Chapter 3 of 3, Three. 2 minutes 30 seconds left in chapter. "
+                             "2 minutes 30 seconds left in book. Playing.") << "player.length is 600";
+    EXPECT_EQ(chapterLabels(), (std::vector<std::string>{"One", "Two", "Three"}));
+}
+
+TEST_F(BooksServerTest, ABookWithNoServerChaptersIsOneChapterPerFile) {
+    ASSERT_NO_FATAL_FAILURE(playBook(bookOf(weather())));
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Rain");
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    EXPECT_EQ(chapterLabels(), (std::vector<std::string>{"Storm Front", "Rain", "Sunshine"}));
+}
+
+TEST_F(BooksServerTest, ChaptersAreSortedAndAnEmptyTitleGetsANumber) {
+    RemoteBook b = bookOf({file("t1", 600)});
+    b.chapters = {{"Two", 200}, {"", 0}};
+    ASSERT_NO_FATAL_FAILURE(playBook(std::move(b)));
+    EXPECT_EQ(chapterLabels(), (std::vector<std::string>{"Chapter 1", "Two"}));
+}
+
+TEST_F(BooksServerTest, AChapterBeforeTheStartIsAtTheStartAndOneAtTheEndOfTheBookIsDropped) {
+    RemoteBook b = bookOf({file("t1", 200), file("t2", 180)});
+    b.chapters = {{"Early", -5}, {"Late", 100}, {"Gone", 380}, {"Beyond", 500}};
+    ASSERT_NO_FATAL_FAILURE(playBook(std::move(b)));
+    player.pos = 50;
+    hold(Button::Back);
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+    EXPECT_EQ(chapterLabels(), (std::vector<std::string>{"Early", "Late"}));
+}
+
+TEST_F(BooksServerTest, AChapterThatStartsAHairBeforeTheEndOfAFileStartsTheNextFile) {
+    RemoteBook b = bookOf({file("t1", 199.99), file("t2", 180)});
+    b.chapters = {{"One", 0}, {"Two", 199.98}};
+    ASSERT_NO_FATAL_FAILURE(playBook(std::move(b)));
+    player.pos = 10;
+    hold(Button::Forward);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+}
+
+TEST_F(BooksServerTest, ABookWithAFileOfUnknownLengthCannotPlaceChaptersAndUsesTheFiles) {
+    RemoteBook b = bookOf({file("t1", 200), file("t2", 0)});
+    b.chapters = {{"One", 0}, {"Two", 100}, {"Three", 250}};
+    ASSERT_NO_FATAL_FAILURE(playBook(std::move(b)));
+    EXPECT_EQ(chapterLabels(), (std::vector<std::string>{"t1", "t2"}));
+}
+
+TEST_F(BooksServerTest, AFileOfUnknownLengthIsFineInAOneFileBook) {
+    RemoteBook b = bookOf({file("t1", 0)});
+    b.chapters = {{"One", 0}, {"Two", 100}};
+    ASSERT_NO_FATAL_FAILURE(playBook(std::move(b)));
+    EXPECT_EQ(chapterLabels(), (std::vector<std::string>{"One", "Two"}));
+}
+
+TEST_F(BooksServerTest, PauseAnotherBookThenThisOneResumesTheFileAndSecond) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 150;
+    hold(Button::Forward); // End: file 2, 30 s
+    player.pos = 50;
+    press(Button::PlayPause);
+    ASSERT_FALSE(player.playing());
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    ASSERT_EQ(app->nowPlaying().title, "Alpha");
+    hold(Button::Home);
+    open("Library");
+    open("Dune");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters()));
+    app->tick();
+    EXPECT_EQ(app->nowPlaying().title, "Dune");
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+    EXPECT_EQ(app->nowPlaying().chapter, "End");
+    EXPECT_EQ(app->nowPlaying().chapterCount, 3);
+}
+
+TEST_F(BooksServerTest, ARestartKeepsTheServerChaptersOfTheBookToResume) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 150;
+    hold(Button::Forward);
+    player.pos = 50;
+    app->shutdown();
+    app.reset();
+    player = FakePlayer{};
+    speech.said.clear();
+    start(false);
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    syncBooks({book("b1", "Dune")});
+    ASSERT_EQ(level().items[0].label, "Now playing");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Loading.");
+    EXPECT_EQ(countOf(Kind::AlbumTracks), 0u);
+    ASSERT_EQ(server.lastRequest().kind, Kind::Book) << "the chapters come with the book, not with the tracks of an album";
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters()));
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+    EXPECT_EQ(app->nowPlaying().chapter, "End");
+    EXPECT_EQ(app->nowPlaying().chapterCount, 3);
+    EXPECT_EQ(speech.last(), "Now playing. Dune.");
+}
+
+TEST_F(BooksServerTest, PlayWithNothingLoadedAfterARestartAlsoGetsTheChapters) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    app->shutdown();
+    app.reset();
+    player = FakePlayer{};
+    start(false);
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    syncBooks({book("b1", "Dune")});
+    press(Button::PlayPause);
+    ASSERT_EQ(server.lastRequest().kind, Kind::Book);
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters()));
+    app->tick();
+    EXPECT_EQ(app->nowPlaying().chapterCount, 3);
+}
+
+TEST_F(BooksServerTest, SleepAtTheEndOfAChapterInTheMiddleOfAFileWaitsForTheNextChapter) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 10;
+    press(Button::Ok);
+    open("Sleep timer");
+    open("End of chapter");
+    press(Button::Home); // back to the player
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    ASSERT_TRUE(player.playing());
+    player.pos = 99;
+    app->tick();
+    EXPECT_NE(app->mode(), App::Mode::Sleeping);
+    player.pos = 100.5;
+    app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_TRUE(speech.heard("End of chapter. Sleep timer ended."));
+}
+
+TEST_F(BooksServerTest, SleepAtTheEndOfAChapterThatGoesOnInTheNextFileIgnoresTheEndOfTheFile) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 150; // Middle
+    app->tick();
+    press(Button::Ok);
+    open("Sleep timer");
+    open("End of chapter");
+    press(Button::Home); // back to the player
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    player.pos = 150;
+    ASSERT_TRUE(player.playing() || (press(Button::PlayPause), player.playing()));
+    player.atEnd = true;
+    app->tick();
+    EXPECT_NE(app->mode(), App::Mode::Sleeping) << "Middle goes on in file 2";
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    player.pos = 29;
+    app->tick();
+    EXPECT_NE(app->mode(), App::Mode::Sleeping);
+    player.pos = 31;
+    app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+}
+
+TEST_F(BooksServerTest, SleepAtTheEndOfAChapterThatEndsWithItsFileSleepsAtOnce) {
+    RemoteBook b = bookOf({file("t1", 200), file("t2", 180)});
+    b.chapters = {{"One", 0}, {"Two", 200}};
+    ASSERT_NO_FATAL_FAILURE(playBook(std::move(b)));
+    press(Button::Ok);
+    open("Sleep timer");
+    open("End of chapter");
+    press(Button::Home); // back to the player
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    player.pos = 190;
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_TRUE(speech.heard("End of chapter. Sleep timer ended."));
+    EXPECT_FALSE(player.playing()) << "the next chapter did not start";
+}
+
+TEST_F(BooksServerTest, SleepAtTheEndOfTheLastChapterListedGoesOnPastTheEndOfAFileWhileFilesFollow) {
+    RemoteBook b = bookOf({file("t1", 200), file("t2", 180)});
+    b.chapters = {{"One", 0}, {"Two", 100}}; // Two goes to the end of the book
+    ASSERT_NO_FATAL_FAILURE(playBook(std::move(b)));
+    player.pos = 150;
+    press(Button::Ok);
+    open("Sleep timer");
+    open("End of chapter");
+    press(Button::Home);
+    player.pos = 190;
+    player.atEnd = true;
+    app->tick();
+    EXPECT_NE(app->mode(), App::Mode::Sleeping);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    player.pos = 170;
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+}
+
+TEST_F(BooksServerTest, SleepAtTheEndOfAChapterWhenTheFileEndsBeforeTheNextChapterSleepsThere) {
+    RemoteBook b = bookOf({file("t1", 200), file("t2", 180)});
+    b.chapters = {{"One", 0}, {"Two", 195}}; // the file is shorter than the server said
+    ASSERT_NO_FATAL_FAILURE(playBook(std::move(b)));
+    press(Button::Ok);
+    open("Sleep timer");
+    open("End of chapter");
+    press(Button::Home);
+    player.holdStreams = true; // the next file waits to open: a sleep must not wait for it
+    player.pos = 190;
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_FALSE(player.playing());
+}
+
+TEST_F(BooksServerTest, SleepAtTheEndOfTheLastChapterSleepsWhenTheBookEnds) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 150;
+    hold(Button::Forward); // End
+    press(Button::Ok);
+    open("Sleep timer");
+    open("End of chapter");
+    press(Button::Home); // back to the player
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    player.pos = 170;
+    player.atEnd = true;
+    app->tick();
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping);
+}
+
+TEST_F(BooksServerTest, NextChapterMovesTheSleepTimerToTheChapterThatPlays) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    press(Button::Ok);
+    open("Sleep timer");
+    open("End of chapter");
+    press(Button::Home); // back to the player
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    press(Button::PlayPause);
+    hold(Button::Forward); // Middle at 100 s: the timer is for Middle now
+    EXPECT_NE(app->mode(), App::Mode::Sleeping);
+    player.pos = 150;
+    app->tick();
+    EXPECT_NE(app->mode(), App::Mode::Sleeping);
 }
 
 // ---------------------------------------------------------------- resume a server book (docs/streaming.md 4.12)

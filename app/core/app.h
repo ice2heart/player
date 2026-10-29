@@ -192,7 +192,9 @@ private:
     static bool isServerBookId(const std::string& id);
     const IndexItem* savedServerBook() const;   // `last_book` when it names a server book of a server set up
     static Book serverBookOf(const std::string& ref, const std::string& title, const std::string& author,
-                             const std::string& albumId, const std::vector<RemoteTrack>& tracks, size_t link);
+                             const std::string& albumId, const std::vector<RemoteTrack>& tracks, size_t link,
+                             const std::vector<RemoteChapter>& chapters = {});
+    static std::vector<Book::Chapter> serverChaptersOf(const std::vector<double>& durations, std::vector<RemoteChapter> chapters);
     // The server an item is of: the first link, in config order, that the item has a reference on, and that reference.
     struct ServerRef {
         size_t link = 0;
@@ -526,7 +528,13 @@ private:
     void stepByUnit(int direction);             // a light press of Left / Right in a player
     void stepAlbum(int direction);
     void changeVolume(int delta, Gesture gesture);
-    std::vector<ChapterRef> chapters() const;
+    std::vector<ChapterRef> chapters() const;   // the server's, else a file each, else the file's own marks
+    bool hasServerChapters() const;             // a server book that lists chapters
+    bool filePerChapter() const;                // the chapters are the files
+    double bookTime(size_t file, double at) const;
+    double bookLeft() const;
+    double secondsIntoChapter(const ChapterRef& chapter) const;
+    bool chapterEndsWithFile() const;
     int currentChapter() const;
     bool gotoChapter(int index, Origin origin, Then opened = {}); // false if its file did not open
     void stepChapter(int direction);

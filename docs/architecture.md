@@ -724,7 +724,19 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   every time (`fetchCatalogue()`, pages of 500, `catalogue_.books`), every item is `Kind::Book`, and no
   version or folder is stored. `replaceServer()` / `saveItems()` write only what changed, so an unchanged
   list writes no index. Library lists them like folder books; `openServerBook()` asks `book()` for these
-  servers (their tracks; the chapters come with 2.6) and `albumTracks()` for the others.
+  servers and `albumTracks()` for the others.
+- **Server chapters (audiobookshelf.md 2.6).** `openServerBook()` passes `RemoteBook::chapters` to
+  `serverBookOf()`, which places them with `serverChaptersOf()`: a file starts where the `durations`
+  before it add up to (what Audiobookshelf calls `startOffset`), so `Book::chapters` holds
+  `{title, file, start}` with `start` in seconds into that file (sorted; a start before 0 is 0, one at
+  or past the end of the book is dropped, one within `kChapterSlack` before a file's start belongs to
+  that file; a multi-file book with a file of unknown length keeps no server chapters). When
+  `hasServerChapters()`, `chapters()`, `currentChapter()` and `gotoChapter()` use them before the
+  per-file and embedded chapters, so a chapter may begin in one file and go on in the next.
+  "Where am I?" and Previous count time over files with `bookTime()` / `bookLeft()`, and the sleep timer's
+  end of chapter ends with a file only when `chapterEndsWithFile()` (the next chapter starts there).
+  The place is still `pos:<id>` = file index and seconds. A book played from a whole download has no
+  chapters yet (2.8).
 - **Audiobooks from the server (4.11).** `MusicServer::musicFolders()` (`getMusicFolders`,
   `RemoteFolder{id, name}`) and a trailing `musicFolderId` on `albums()` (`getAlbumList2`; empty:
   all). `server.audiobook_folder` in `config.yaml` (the folder's name, exact match; set by the

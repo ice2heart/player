@@ -87,6 +87,13 @@ constexpr int kRandomAlbums = 50;
 // DNS lookup) can take longer. App gives up a little after it, so "Loading"
 // always ends.
 constexpr std::chrono::seconds kStreamOpenGiveUp{15};
+// A chapter that starts this close before a file's start, on the book's timeline, starts that file: durations
+// the server adds up in floating point can fall a hair short of the chapter start it wrote for the same instant.
+constexpr double kChapterSlack = 0.05;
+// Chapters this close to a chapter start count as inside it: the position of a player is not exact.
+constexpr double kChapterPositionSlack = 0.25;
+// Previous chapter within this many seconds of a chapter's start goes to the chapter before it.
+constexpr double kPreviousRestartAfter = 3;
 // A server that is marked down is pinged in the background (docs/queue.md, "Playing it"): this long after
 // it was marked, then this long after the first ping went unanswered, then every kPingEvery.
 constexpr std::chrono::seconds kPingFirst{10};
@@ -783,10 +790,11 @@ void App::tick() {
     if (pendingOpen_ && !player_.opening()) finishPendingOpen();
     else if (pendingOpen_ && now - pendingOpen_->since > kStreamOpenGiveUp) giveUpPendingOpen();
 
-    // The end of a file is always the end of a chapter, even when the next
-    // chapter has the same number (a one-file book or a loose track starts again).
+    // The end of a file is the end of a chapter, even when the next chapter has the same number (a one-file
+    // book or a loose track starts again), but for a server chapter that goes on in the next file.
     if (book_ && player_.failed()) onStreamFailed();
     bool fileFinished = book_ && player_.finished();
+    const bool chapterFinished = fileFinished && chapterEndsWithFile(); // asked before the next file opens
     if (fileFinished) onFileFinished();
     checkBuffering(now);
     checkScrobble(now);
@@ -799,7 +807,7 @@ void App::tick() {
     }
     // While a track opens, the current one is the track it would replace if it fails.
     if (sleepAtChapterEnd_ >= 0 && book_ &&
-        (fileFinished || (!pendingOpen_ && currentChapter() != sleepAtChapterEnd_))) {
+        (chapterFinished || (!pendingOpen_ && currentChapter() != sleepAtChapterEnd_))) {
         sleepAtChapterEnd_ = -1;
         sleep("End of " + unit() + ". Sleep timer ended.");
     }
@@ -3153,7 +3161,8 @@ bool App::isServerBookId(const std::string& id) {
 
 // The chapters of a server book: the tracks of the album, under the item id as its path.
 Book App::serverBookOf(const std::string& ref, const std::string& title, const std::string& author,
-                       const std::string& albumId, const std::vector<RemoteTrack>& tracks, size_t link) {
+                       const std::string& albumId, const std::vector<RemoteTrack>& tracks, size_t link,
+                       const std::vector<RemoteChapter>& chapters) {
     Book book;
     book.link = link;
     book.title = title;
@@ -3169,7 +3178,36 @@ Book App::serverBookOf(const std::string& ref, const std::string& title, const s
         book.titles.push_back(t.title);
         book.durations.push_back(t.duration);
     }
+    book.chapters = serverChaptersOf(book.durations, chapters);
     return book;
+}
+
+// The server's chapters on the book's timeline, placed in the files: a file starts where the durations of those before it add
+// up to (the same as the server's `startOffset`). A chapter before the start is at the start, one that is not before the end
+// of the book is dropped. With a file of unknown length in a book of several files nothing can be placed: none.
+std::vector<Book::Chapter> App::serverChaptersOf(const std::vector<double>& durations, std::vector<RemoteChapter> chapters) {
+    std::vector<Book::Chapter> out;
+    if (chapters.empty() || durations.empty()) return out;
+    std::vector<double> offsets;
+    double total = 0;
+    for (double d : durations) {
+        if (d <= 0 && durations.size() > 1) return out;
+        offsets.push_back(total);
+        total += d;
+    }
+    std::stable_sort(chapters.begin(), chapters.end(), [](const RemoteChapter& a, const RemoteChapter& b) { return a.start < b.start; });
+    for (const RemoteChapter& c : chapters) {
+        const double start = c.start;
+        if (total > 0 && start >= total - kChapterSlack) continue;
+        size_t file = 0;
+        while (file + 1 < offsets.size() && offsets[file + 1] <= start + kChapterSlack) ++file;
+        Book::Chapter chapter;
+        chapter.title = c.title.empty() ? "Chapter " + std::to_string(out.size() + 1) : c.title;
+        chapter.file = file;
+        chapter.start = std::max(0.0, start - offsets[file]);
+        out.push_back(std::move(chapter));
+    }
+    return out;
 }
 
 // A book of the server, from Library or "Now playing" (`last_book`): it plays from where it was left
@@ -3203,7 +3241,7 @@ void App::openServerBook(const IndexItem& item) {
     CachedList cached = store.enabled() ? store.load(source) : CachedList{};
     std::vector<RemoteTrack> onDisk = completeTracks(store, source, cached);
     if (isWholeDownload(cached, onDisk)) {
-        Book book = serverBookOf(ref, item.title, item.artist, albumId, onDisk, link);
+        Book book = serverBookOf(ref, item.title, item.artist, albumId, onDisk, link); // no chapters: a download keeps none yet (2.8)
         auto [file, pos] = savedPlace(book);
         playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
         return;
@@ -3211,9 +3249,10 @@ void App::openServerBook(const IndexItem& item) {
     say("Loading.");
     resumeScreen_ = screen; // leaving this screen drops the request (closeScreens())
     resumeLink_ = link;
-    // A Books server gives the book (its tracks, later its chapters); any other the tracks of the album.
+    // A Books server gives the book (its tracks and chapters); any other the tracks of the album.
     auto opened = [this, screen, ref, title = item.title, author = item.artist, albumId, link](MusicServer::Error error,
-                                                                                            std::vector<RemoteTrack> tracks) {
+                                                                                            RemoteBook remote) {
+        std::vector<RemoteTrack>& tracks = remote.tracks;
         resume_ = 0; // a new screen or sleep would have cancelled it: the user is still where they asked
         resumeScreen_ = 0;
         tts_.stop();
@@ -3227,15 +3266,15 @@ void App::openServerBook(const IndexItem& item) {
             say("This book has no chapters on the server.");
             return;
         }
-        Book book = serverBookOf(ref, title, author, albumId, tracks, link);
+        Book book = serverBookOf(ref, title, author, albumId, tracks, link, remote.chapters);
         auto [file, pos] = savedPlace(book);
         playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
     };
     if (servers_[link].server.catalogue() == MusicServer::Catalogue::Books)
-        resume_ = servers_[link].server.book(albumId, [opened](MusicServer::Error error, RemoteBook book) { opened(error, std::move(book.tracks)); });
+        resume_ = servers_[link].server.book(albumId, [opened](MusicServer::Error error, RemoteBook book) { opened(error, std::move(book)); });
     else
         resume_ = servers_[link].server.albumTracks(albumId, [opened](MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) {
-            opened(error, std::move(tracks));
+            opened(error, RemoteBook{std::move(tracks), {}});
         });
 }
 
@@ -4080,10 +4119,49 @@ void App::changeVolume(int delta, Gesture gesture) {
     else if (!player_.playing()) say("Volume " + std::to_string(v) + " percent.");
 }
 
+bool App::hasServerChapters() const { return !music_ && book_ && !book_->chapters.empty(); }
+
+// Seconds from the start of the book to `at` seconds into file `file`, by the lengths the server gave.
+double App::bookTime(size_t file, double at) const {
+    double total = at;
+    for (size_t i = 0; i < file && i < book_->durations.size(); ++i) total += book_->durations[i];
+    return total;
+}
+
+// Seconds from the position to the end of the book (the open file's own length, then the files after it).
+double App::bookLeft() const {
+    // A stream that does not say its length (a transcode) has the server's.
+    double length = player_.duration() > 0 ? player_.duration() : fileIndex_ < book_->durations.size() ? book_->durations[fileIndex_] : 0;
+    double left = std::max(0.0, length - player_.position());
+    for (size_t i = fileIndex_ + 1; i < book_->durations.size(); ++i) left += book_->durations[i];
+    return left;
+}
+
+// How long chapter `index` of the list has played. A server chapter may have begun in an earlier file.
+double App::secondsIntoChapter(const ChapterRef& ch) const {
+    if (!hasServerChapters()) return player_.position() - ch.start;
+    return bookTime(fileIndex_, player_.position()) - bookTime(ch.file, ch.start);
+}
+
+// The file that ended is the end of the chapter too, unless a server chapter goes on in the next file.
+bool App::chapterEndsWithFile() const {
+    if (!hasServerChapters()) return true;
+    const auto& list = book_->chapters;
+    const size_t next = size_t(currentChapter()) + 1;
+    if (next >= list.size()) return !upcomingTrack();
+    // The next chapter is in this file when the file is shorter than the server said: nothing more of this chapter follows.
+    return list[next].file <= fileIndex_ || (list[next].file == fileIndex_ + 1 && list[next].start <= kChapterSlack);
+}
+
+// A file is a chapter: the files of a book that lists no chapters, the entries of a queue.
+bool App::filePerChapter() const { return trackCount() > 1 && !hasServerChapters(); }
+
 std::vector<App::ChapterRef> App::chapters() const {
     std::vector<ChapterRef> out;
     if (!book_) return out;
-    if (trackCount() > 1) {
+    if (hasServerChapters()) {
+        for (const Book::Chapter& c : book_->chapters) out.push_back({c.title, c.file, c.start});
+    } else if (trackCount() > 1) {
         for (size_t i = 0; i < trackCount(); ++i)
             out.push_back({trackTitle(i), i, 0});
     } else if (!player_.chapters().empty()) {
@@ -4096,9 +4174,15 @@ std::vector<App::ChapterRef> App::chapters() const {
 
 int App::currentChapter() const {
     if (!book_) return 0;
-    if (trackCount() > 1) return int(fileIndex_);
-    double pos = player_.position() + 0.25;
+    if (filePerChapter()) return int(fileIndex_);
+    double pos = player_.position() + kChapterPositionSlack;
     int cur = 0;
+    if (hasServerChapters()) { // the last one that starts at or before the position, in a file before this or in this
+        const auto& list = book_->chapters;
+        for (size_t i = 0; i < list.size(); ++i)
+            if (list[i].file < fileIndex_ || (list[i].file == fileIndex_ && list[i].start <= pos)) cur = int(i);
+        return cur;
+    }
     const auto& list = player_.chapters();
     for (size_t i = 0; i < list.size(); ++i)
         if (list[i].start <= pos) cur = int(i);
@@ -4112,7 +4196,7 @@ bool App::gotoChapter(int index, Origin origin, Then opened) {
     const ChapterRef& ch = list[size_t(index)];
     auto arrived = [this, index, opened = std::move(opened)] {
         // The track that plays, which is a later one when the queue skipped entries that cannot play.
-        if (sleepAtChapterEnd_ >= 0) sleepAtChapterEnd_ = trackCount() > 1 ? int(fileIndex_) : index;
+        if (sleepAtChapterEnd_ >= 0) sleepAtChapterEnd_ = filePerChapter() ? int(fileIndex_) : index;
         if (opened) opened();
     };
     // Closed: a remote track that failed, ended the list or is still opening.
@@ -4120,7 +4204,7 @@ bool App::gotoChapter(int index, Origin origin, Then opened) {
         return loadFile(ch.file, ch.start, willPlay(), origin, std::move(arrived)) != OpenResult::Failed;
     player_.seek(ch.start);
     // The whole track from its start (not a chapter in it): heard again.
-    if (trackRemote(fileIndex_) && (trackCount() > 1 || player_.chapters().empty())) startTrackPlay();
+    if (trackRemote(fileIndex_) && (filePerChapter() || (!hasServerChapters() && player_.chapters().empty()))) startTrackPlay();
     arrived();
     return true;
 }
@@ -4131,8 +4215,7 @@ void App::stepChapter(int direction) {
     int target = cur + direction;
     if (direction < 0) {
         // Like a CD player: first press goes to the start of the current chapter.
-        double intoChapter = player_.position() - list[size_t(cur)].start;
-        if (intoChapter > 3) target = cur;
+        if (secondsIntoChapter(list[size_t(cur)]) > kPreviousRestartAfter) target = cur;
     }
     // With Repeat all Previous on the first track goes to the last, and Next on the last to the first.
     const int count = int(list.size());
@@ -4160,7 +4243,7 @@ void App::stepChapter(int direction) {
     if (!gotoChapter(target, Origin::Key)) return; // the error was said
     earcons_.play(Earcon::Move);
     // The track that plays, which is a later one when the queue skipped entries that cannot play.
-    say(list[trackCount() > 1 ? fileIndex_ : size_t(target)].title);
+    say(list[filePerChapter() ? fileIndex_ : size_t(target)].title);
 }
 
 void App::onFileFinished() {
@@ -4812,11 +4895,15 @@ std::string App::playerStatusBody() const {
         text += std::string(music_ ? "Track " : "Chapter ") + std::to_string(cur + 1) + " of " + std::to_string(list.size()) + ", " +
                 list[size_t(cur)].title + ". ";
     if (player_.isOpen()) { // else a remote track opened on Play: no place or length yet
-        double chapterEnd = player_.duration();
-        if (trackCount() == 1 && size_t(cur) + 1 < list.size()) chapterEnd = list[size_t(cur) + 1].start;
-        text += spokenDuration(chapterEnd - pos) + " left in " + unit() + ". ";
-        if (!music_ && trackCount() == 1 && list.size() > 1)
-            text += spokenDuration(player_.duration() - pos) + " left in book. ";
+        const bool hasNext = size_t(cur) + 1 < list.size();
+        double left = player_.duration() - pos;
+        if (hasServerChapters())
+            left = hasNext ? bookTime(list[size_t(cur) + 1].file, list[size_t(cur) + 1].start) - bookTime(fileIndex_, pos) : bookLeft();
+        else if (trackCount() == 1 && hasNext)
+            left = list[size_t(cur) + 1].start - pos;
+        text += spokenDuration(left) + " left in " + unit() + ". ";
+        if (!music_ && !filePerChapter() && list.size() > 1)
+            text += spokenDuration(bookLeft()) + " left in book. ";
     }
     text += pendingOpen_ ? "Loading." : player_.playing() ? "Playing." : "Paused.";
     if (sleepDeadline_)

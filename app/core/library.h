@@ -46,6 +46,14 @@ struct Book {
         std::string title;
     };
     std::vector<Album> albums;
+    // serverBook: the chapters the server lists, in order, each placed in a file of `files` (`start`
+    // in seconds into that file). Empty: the chapters are the files, or the file's own marks.
+    struct Chapter {
+        std::string title;
+        size_t file = 0;
+        double start = 0;
+    };
+    std::vector<Chapter> chapters;
 };
 
 // Puts the files of the local Book `from` at the end of `into`, as one more album (titled `from.title`)
