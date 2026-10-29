@@ -4,7 +4,7 @@
 > streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)),
 > plus phases 1 and 2 of [queue.md](queue.md): volume and Options buttons, the step unit, menus that jump, separate music and book players,
 > and the music queue (local and server tracks mixed, skipped when unavailable, a server that fails checked until it answers), Options (Play now, Play next, Add to queue, Go to album, Album info),
-> Shuffle and Repeat (off, all, album, track; Add to queue mixed into a shuffled queue), the Queue list, the queue kept in `queue.tsv` and Save as playlist, and, from [fixes.md](fixes.md) phase 2, playlists in `library.db` and in Music, Download in Options and the player's name in "where am I?". Star is not built (streaming.md 2a.1). Several servers, Audiobookshelf books, progress sync and Continue listening (audiobookshelf.md phases 1–3) are implemented; phase 3 real-server and device checks are pending. Last updated: 2026-10-29.
+> Shuffle and Repeat (off, all, album, track; Add to queue mixed into a shuffled queue), the Queue list, the queue kept in `queue.tsv` and Save as playlist, and, from [fixes.md](fixes.md) phase 2, playlists in `library.db` and in Music, Download in Options and the player's name in "where am I?". Download quality, caching at the opened stream quality and optional cached-copy upgrades with local fallback are built (fixes.md phase 5); real-server listening checks remain pending. Star is not built (streaming.md 2a.1). Several servers, Audiobookshelf books, progress sync and Continue listening (audiobookshelf.md phases 1–3) are implemented; phase 3 real-server and device checks are pending. Last updated: 2026-10-29.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -1042,7 +1042,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   `cacheIndex_.reset()`, two `popScreen()` (the rebuilt Downloaded list shows what is
   left) and "Deleted Weather.". The folder name keeps an album and a playlist apart;
   the manifest keeps the name and artist.
-- **Offline (3.6):** `showStatus()` adds a "Downloaded" item after "Try again" in an error list when `hasDownloads()` (a cache folder and `TrackCache::lists(true)` not empty); it opens `downloadedMenu()`, which never asks the server. "Server status" is not changed: it sits in the Streaming menu, which already has Downloaded. `completeTracks()` builds the playable tracks of a manifest and is shared by `downloadedListMenu()` and `resumeStream()`. Scrobbles of a cached track are still sent; they are fire and forget and silent, so a failure offline says nothing and blocks nothing. A cached next track is never read ahead (`checkReadAhead()`), so offline play of a cached album touches no network.
+- **Offline (3.6):** `showStatus()` adds a "Downloaded" item after "Try again" in an error list when `hasDownloads()` (a cache folder and `TrackCache::lists(true)` not empty); it opens `downloadedMenu()`, which never asks the server. "Server status" is not changed: it sits in the Streaming menu, which already has Downloaded. `completeTracks()` builds the playable tracks of a manifest and is shared by `downloadedListMenu()` and `resumeStream()`. Scrobbles of a cached track are still sent; they are fire and forget and silent, so a failure offline says nothing and blocks nothing. A cached next track is not read ahead unless `upgradeCached()` selects a better stream; a server already marked down uses cached tracks directly.
 - **Automatic cache (3.7):** `checkAutoCache()` (in `tick()`, after `checkScrobble()`)
   queues the streamed track that plays once it has been heard for `kAutoCacheAfter`
   (10 s of listening, the same count as scrobbling: paused or dry time does not count,
@@ -1056,7 +1056,8 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   `bitrate` column. `pumpAutoCache()` starts one transfer at a time into the list's
   folder, only while no explicit `download_` runs, the downloader works and the device
   is awake, and drops jobs for sufficient copies already on disk. With Replace
-  cached copies enabled, a streamed upgrade can replace a lower copy after 10 s;
+  cached copies enabled, a streamed upgrade queues a replacement after 10 s,
+  subject to the cache limit and free-space reserve;
   local fallback playback never queues an upgrade, even after the server recovers.
   The replacement retains pinning and the old file until the manifest commits. A track bigger than the
   limit is never queued (it would be evicted at once and fetched at every play); for
@@ -1128,7 +1129,7 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   transfer or manifest save leaves the prior copy available. The
   manifest then follows the server's order, and pinned tracks the server no longer lists
   are dropped with their files (`followServerOrder()`); a track listed twice counts once. A failure is spoken once and drops the `Download`; OK on the item starts again
-  and skips what is whole, the `.part` continuing. The download belongs to no screen,
+  and skips sufficient whole copies; an original `.part` continues and a transcode restarts. The download belongs to no screen,
   so leaving menus never cancels it; `tick()` calls each link's `downloader.poll()`, and
   `shutdown()` cancels the transfer (the `.part` stays). `whereAmI()` adds
   `downloadProgress()`. The end is spoken, or an earcon while something plays.

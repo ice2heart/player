@@ -12,10 +12,9 @@
 > ([audiobookshelf.md](audiobookshelf.md) phases 1–3), progress sync, the later-place Options action
 > and Continue listening are implemented; phase 3 real-server and device checks are pending. Last updated: 2026-10-29.
 >
-> Download quality and Replace cached copies below are the contract for
-> [fixes.md phase 5](fixes.md#phase-5-download-quality-and-the-cache).
-> They are not built yet: downloads and automatic caching currently fetch the
-> original, and any complete cached copy is used regardless of Streaming quality.
+> Download quality, caching at the streamed quality and Replace cached copies are
+> built ([fixes.md phase 5](fixes.md#phase-5-download-quality-and-the-cache));
+> real-server listening checks remain pending.
 
 Users can't see the menu, so they learn it from what each key does. A key that
 does one thing in one menu and something else in the next menu breaks that.
@@ -60,8 +59,7 @@ Sleep in it closes the menu first, so the device wakes where you were.
    kept in memory and written on exit and sleep. Streaming quality is the one exception: a stream that plays
    would have to open again, so the new quality starts with the next track.
    Download quality applies to the next download; Replace cached copies applies
-   when the next track opens. Neither restarts a transfer or track already running
-   (phase 5 contract, not built yet).
+   when the next track opens. Neither restarts a transfer or track already running.
 7. **In a program, Left / Right are that program's own keys.** In a player
    they skip back and forward by the step unit, and holding them or pressing
    them deeper moves to the previous or next chapter or track.
@@ -463,8 +461,8 @@ server alone. All the rules below hold for every server.
 - **Download album / Download playlist** is the item right after "Play album" /
   "Play playlist". It is offered only where it can work: a cache folder, a server
   and a downloader that is set up. OK starts the download and says "Downloading, 0
-  of 9 tracks." (tracks already whole count as done and are not fetched again;
-  phase 5 changes this to copies at least as good as Download quality, as below).
+  of 9 tracks." (complete copies at least as good as Download quality count as done
+  and are not fetched again).
   OK on it while it runs says the same with the count so far, and so does "where
   am I?", in a menu and in the player. One list downloads at a time: starting
   another says "Another download is running." Not enough room on the disk for the
@@ -476,7 +474,7 @@ server alone. All the rules below hold for every server.
   earcon (and a sleeping device says nothing).
 - **Download from Options** starts the same download from
   the Options of an album or playlist ([Options](#options)).
-- **Download quality** (Settings; phase 5 contract, not built yet) opens a list of
+- **Download quality** (Settings) opens a list of
   original file, 320, 192 and 128 kbps, in that order, with original file the default.
   OK selects and saves `downloads.bitrate` (0 for original) and goes back, as for
   Streaming quality. It is independent of Streaming quality and applies to the next
@@ -484,7 +482,8 @@ server alone. All the rules below hold for every server.
   original is best, otherwise higher kbps is better. A lower-quality copy is fetched
   again and replaced only once the new file is complete; the old copy plays until then.
   Originals use the server's download endpoint; other qualities request an MP3 stream
-  capped at that bitrate. A partial original can resume; a partial transcode starts
+  capped at that bitrate. Original-only Books providers keep the original regardless
+  of this setting. A partial original can resume; a partial transcode starts
   over on retry. Space for a transcode is checked using duration times bitrate when
   duration is known, otherwise the original's size, otherwise the existing unknown-size
   rule. Insufficient space still says "Not enough space." and starts nothing.
@@ -510,17 +509,21 @@ server alone. All the rules below hold for every server.
   first. A lower size takes effect on the next exit or cached track. Off caches nothing
   new but keeps what is cached. Downloads you asked for never count toward the size
   and are never removed by it.
-- **Cache quality** (phase 5 contract, not built yet): the automatic cache fetches
+- **Cache quality:** the automatic cache fetches
   the quality that was streamed, with a second fetch at that quality after 10 s of
   listening. It does not fetch the original for a lower-quality stream. Each cached
   file records its bitrate in `manifest.tsv` (0 for original; older rows mean original).
-- **Replace cached copies** (Settings; phase 5 contract, not built yet) opens off / on,
+- **Replace cached copies** (Settings) opens off / on,
   default off, and saves `cache.upgrade` on OK before going back. Off plays a complete
   cached copy whatever its quality. On, when that server is not marked down, a copy
   below Streaming quality is streamed at the selected quality instead; the automatic
-  cache replaces it after 10 s of listening. A pinned copy stays pinned after replacement.
+  cache queues a replacement after 10 s of listening, subject to Cache size and free
+  space. A pinned copy stays pinned after replacement; the old file remains until
+  the new file and its manifest are saved.
   If opening the stream fails, the cached copy plays immediately at the same place
-  and the server is marked down. A server already marked down uses the copy at once.
+  and the server is marked down. An asynchronous failure or open timeout follows
+  the same fallback, preserving Play/Pause intent; cancelling the open does not
+  start it. A server already marked down uses the copy at once.
 - **Offline.** When a list from the server fails with an error ("Server not
   reachable", "Server error" and so on), the list is "the error", "Try again" and, if
   anything is downloaded (not just cached by playing), "Downloaded" (the same list as in the Streaming menu, which
@@ -528,7 +531,8 @@ server alone. All the rules below hold for every server.
   playlist in it that is not whole on the disk loads its tracks and follows these rules. Without downloads there is no such item. Try again replaces the
   error list with "Loading" as before. A cached album played offline never says
   "Loading." and does not wait on the server when Replace cached copies is off or
-  the server is already marked down (the phase 5 contract above adds the upgrade attempt).
+  the server is already marked down. Otherwise Replace cached copies can attempt
+  the better stream first, with the fallback described above.
 - **The last album or playlist resumes after a restart.** When a stream played
   last, the device starts on Home (nothing plays), with "Now playing, Weather"
   first. OK on it, or Play, says "Loading.", loads the list from the server and

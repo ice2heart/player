@@ -7,7 +7,8 @@
 > rules for lists from the server are in [navigation.md](navigation.md#lists-from-the-server).
 > The music queue ([queue.md](queue.md) phase 2) changed some of it: tracks from any source play in one
 > queue, `queue.tsv` replaced `last_stream`, and a track that cannot play is skipped.
-> Last updated: 2026-10-28.
+> Download quality and cache replacement are built in [fixes.md phase 5](fixes.md#phase-5-download-quality-and-the-cache); real-server listening checks remain pending.
+> Last updated: 2026-10-29.
 > Target server: Navidrome 0.64 (Subsonic API 1.16.1, OpenSubsonic). Test server:
 > `https://navidrome.microserver`. The credentials are kept in `.env` (git ignores it) only so
 > they are at hand during development; the program does not read it.
@@ -161,7 +162,10 @@ power:
   auto_sleep_min: 10
 streaming:
   bitrate: 0                # Streaming quality: 0 = the original file, or 320 / 192 / 128 kbps MP3
+downloads:
+  bitrate: 0                # Download quality: independent of Streaming quality; 0 / 320 / 192 / 128
 cache:
+  upgrade: 0                # Replace cached copies: 0 = off (default), 1 = prefer a better stream online
   limit_gb: 1               # Cache size: gigabytes of automatically cached tracks (0, 1, 4 or 16); 0 = off: caches nothing new, evicts nothing
 
 server:
@@ -412,7 +416,10 @@ The plan above is kept as it was written. Where the code differs, the code is ri
 
 - **Manifest.** `manifest.tsv` has the header `oap-cache 2`, a list line (kind, id, name,
   artist) and one line per track: id, file, title, duration, server `changed` time,
-  pinned, last-played wall time. The folder is `<cache>/<server key>/<kind>%3A<id>/`, so an
+  pinned, last-played wall time, bitrate (0 for original, otherwise transcode kbps).
+  Older seven-column track rows read as original and gain the column on their next
+  save; merely reading them does not rewrite them. The header stays at version 2.
+  The folder is `<cache>/<server key>/<kind>%3A<id>/`, so an
   album and a playlist with one id do not meet. Format 1 (no list line) reads as empty;
   no device ever held one. Core does no file I/O: manifests go through `TextFiles`
   (`services.h`), which `DiskTextFiles` (`app/config/`) implements with an atomic
@@ -424,9 +431,30 @@ The plan above is kept as it was written. Where the code differs, the code is ri
 - **Complete means the downloader says so.** The server's `Content-Length`, or the total of
   `Content-Range` for a continued `.part`, is authoritative; a short body is
   `Unreachable` and keeps the `.part`. Only when the server sends no length is the body
-  compared with the size from the listing (0 accepts anything): shorter fails the same
-  way, longer is taken as a stale size. `App` checks no sizes itself, except the free
-  space before a download.
+  compared with the size from the listing for an original (0 accepts anything):
+  shorter fails the same way, longer is taken as a stale size. A transcode ignores
+  that original size; its own response length, when present, still applies. `App`
+  checks no sizes itself, except the free space before a download.
+- **Download quality (fixes.md 5.3–5.5).** Settings → Download quality selects
+  original (default), 320, 192 or 128 kbps independently of Streaming quality.
+  Subsonic originals use `download`; transcodes use `stream` with `format=mp3` and
+  `maxBitRate`. Original-only Books providers still download originals. A job keeps
+  the quality chosen at its start. A complete copy at least as good is kept and
+  pinned (original is best, otherwise higher kbps); a lower copy stays playable
+  until its replacement and manifest are saved. Transfer or manifest-save failure
+  preserves the old copy. Originals use `<safe id>.<suffix>` and transcodes
+  `<safe id>~<bitrate>.mp3`; a transcode restarts its `.part` without Range, while
+  an original can resume. Free-space estimates for a transcode use duration ×
+  bitrate × 1000 / 8, rounded up; unknown duration uses the original size, and an
+  unknown size counts as zero.
+- **Replace cached copies (fixes.md 5.6).** Settings → Replace cached copies is off
+  by default (`cache.upgrade: 0`): a complete copy plays regardless of quality.
+  On, a cached copy below Streaming quality opens the better stream if its server
+  is not marked down; read-ahead follows that selection too. An immediate or
+  asynchronous open failure, or open timeout, marks the server down and plays the
+  cached copy at the requested position, preserving Play/Pause intent and without
+  an unreachable error. Cancelling the open stays silent and plays no late copy.
+  A server already marked down uses the copy directly.
 - **Delete waits for cancel.** `HttpDownloader::cancel()` waits for the file operation in
   flight (one write at most), and the job then creates no folder or file, so Delete
   download can remove the folder at once. Deleting the list that downloads cancels the
@@ -436,7 +464,8 @@ The plan above is kept as it was written. Where the code differs, the code is ri
   their files; unpinned (automatically cached) ones stay after the others until the LRU
   limit evicts them. A track listed twice is fetched and counted once. The `.part` of the
   explicit download that failed last is kept in this session (OK on Download goes on from
-  it); after a restart it is an abandoned `.part` like the others.
+  it for an original, or restarts it for a transcode); after a restart it is an
+  abandoned `.part` like the others.
 - **Resume after a restart.** A download that is whole (every manifest track pinned and
   complete on disk, its download over (no `partial` mark), the saved track among them) plays at once, with no question to the
   server and no "Loading.". Anything else asks the server first, so a partly cached album
@@ -448,15 +477,21 @@ The plan above is kept as it was written. Where the code differs, the code is ri
   track). The automatic cache's tracks play from their files wherever they are met
   (a server list, a resume), but make no entry there. An error list gets a "Downloaded"
   item when there is one. A pre-opened stream is cancelled when the next track turns out
-  to be cached.
+  to be cached at sufficient quality (or replacement is off or the server is down).
 - **Automatic cache.** A streamed track is queued once it has been heard for 10 s (a
   skipped track costs no bandwidth), unpinned, into the folder of the list it plays from.
+  It captures the quality of the stream when it opened and fetches it a second
+  time at that quality; later setting changes leave the job unchanged. With
+  replacement enabled, an upgrade stream queues replacement of the lower copy
+  under the same size and free-space rules, retaining its pinning. Playback from
+  a fallback file never queues an upgrade, even if the server recovers.
   It is silent (no speech, no earcon, failures forgotten) and counts nothing in the
   download progress. An explicit download goes first: it cancels the running automatic
-  transfer, which waits and continues from its `.part` afterwards. Sleep pauses the
-  automatic cache the same way (an explicit download goes on). It never fills the card:
+  transfer, which waits and resumes an original `.part` or restarts a transcode
+  afterwards. Sleep pauses the automatic cache the same way (an explicit download goes on). It never fills the card:
   a track that would leave less than 256 MiB free is skipped. A track bigger than the
-  limit is not cached at all.
+  limit is not cached at all; transcodes use the same duration-based estimate as
+  explicit downloads, falling back to the original size.
 - **LRU.** Only unpinned complete files count toward the limit (`cache.limit_gb`, 0 / 1 /
   4 / 16, default 1); pinned tracks never go and are not counted. A `.part` left by an
   abandoned transfer counts and is evicted first, then the least recently played (never

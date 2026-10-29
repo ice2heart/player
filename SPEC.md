@@ -29,7 +29,10 @@ the audio user interface, features, and an implementation roadmap. Sections mark
   (Subsonic, such as Navidrome) is not one of these: it is private and needs no
   account with a company. Streaming from it is built (Home, one entry per server, see
   [docs/streaming.md](docs/streaming.md)). Albums and playlists can be downloaded
-  and play offline, and streamed tracks are cached up to a size set in Settings.
+  and play offline, and streamed tracks are cached at the quality played, up to a
+  size set in Settings. Download quality is independent of Streaming quality;
+  optional replacement upgrades a lower-quality cached copy, with local fallback
+  if the better stream cannot open (see §4.7).
 - Phone calls, messaging, general-purpose assistant features.
 - Cloud STT/TTS (may be optional plugins later, never required).
 
@@ -303,6 +306,18 @@ Design:
 - VAD to trim silence; earcon on start/stop of listening.
 
 ### 4.7 Storage and library
+- **Built: download and cache quality** ([fixes.md phase 5](docs/fixes.md#phase-5-download-quality-and-the-cache)).
+  Subsonic Download album / playlist uses Download quality: original (default),
+  320, 192 or 128 kbps, independently of Streaming quality. Original-only Books
+  providers keep originals. A complete copy at least as good is kept and pinned;
+  a lower copy stays usable until the replacement is complete and saved.
+  Automatic caching fetches a streamed music track again at its opened quality
+  after 10 seconds heard, subject to Cache size and free space. Replace cached
+  copies is off by default; on, a lower-quality copy can stream at Streaming
+  quality while its server is not marked down, then be replaced silently.
+  Failed stream opening falls back to the copy at the requested position and
+  marks the server down; a server already marked down uses the copy directly.
+  Replacement preserves pinning. Real-server listening checks remain pending.
 - SQLite DB: the currently built `library.db` is primarily a rebuildable index of items,
   tracks, references and playlists. It does not own positions or bookmarks.
   The library index (local files, downloads and server albums, with where each was seen) is
@@ -396,8 +411,10 @@ Home
 │   ├── Wi-Fi
 │   ├── Sync account
 │   ├── Power (auto-sleep time, deep sleep)
-│   ├── Streaming quality (original file, or a transcode for a slow link)
+│   ├── Streaming quality (original file, or 320 / 192 / 128 kbps for a slow link)
+│   ├── Download quality (original file by default, or 320 / 192 / 128 kbps; independent of Streaming quality)
 │   ├── Cache size (off / 1 / 4 / 16 GB for tracks cached while streaming; off caches nothing new but keeps what is cached)
+│   ├── Replace cached copies (off by default; on prefers a better stream when the server is not marked down)
 │   ├── Sleep timer
 │   ├── Language
 │   └── About / Update / Reset

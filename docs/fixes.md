@@ -1,6 +1,6 @@
 # Fixes from NOTES.md: plan
 
-> Status: **a plan; steps marked ✅ in the phase tables are built** (phases 2, 3 and 4 are, with their docs; the "Today" column below says what the device did when the notes were checked). It turns the notes in [NOTES.md](../NOTES.md) into work groups:
+> Status: **a plan; steps marked ✅ in the phase tables are built** (phases 2–5 are, with their docs; phase 5 real-server listening checks remain pending; the "Today" column below says what the device did when the notes were checked). It turns the notes in [NOTES.md](../NOTES.md) into work groups:
 > discovery first where the cause or the design is not known, fixes where it is. The rules are in
 > [navigation.md](navigation.md), the code is described in [architecture.md](architecture.md),
 > streaming in [streaming.md](streaming.md), the queue in [queue.md](queue.md).
@@ -362,7 +362,7 @@ and a better copy replaces a worse one when the user asks for it.
 | ✅ 5.4 | **The automatic cache keeps the streamed quality:** its job uses the Streaming quality and records it. | Streaming at 128: the cached track is fetched at 128 and recorded as 128; at original it is the original, as now. |
 | ✅ 5.5 | **Download keeps or replaces a copy** ([rules](#download-quality-and-the-cache)). | A track cached at 128 and Download at original: it is fetched again and the manifest says 0. Cached at 320 and Download at 128: not fetched, pinned. Before the new file is complete the old one plays. |
 | ✅ 5.6 | **Replace cached copies** (`cache.upgrade`, off · on, [rules](#download-quality-and-the-cache)). | On: a copy at 128 with Streaming at original opens the stream URL and is replaced. A stream that fails to open plays the copy at the same place and marks the server down. Off: the copy plays. Server marked down: the copy plays. A replaced pinned copy stays pinned. |
-| 5.7 | **Docs for phase 5 as built:** architecture.md (cache, manifest), navigation.md where the build differs from 5.1, streaming.md (phase 3 as built: quality), SPEC. | – |
+| ✅ 5.7 | **Docs for phase 5 as built:** architecture.md (cache, manifest), navigation.md where the build differs from 5.1, streaming.md (phase 3 as built: quality), SPEC. | – |
 
 **Device check (manual):** set Streaming quality to 128 and play a track for a minute:
 the cache has it at 128 (no second download of the original). Download the album at
@@ -500,8 +500,10 @@ Filled in by phase 1. Facts checked while writing this plan (2026-10-28):
 - Before phase 3, destruction dropped queued/running HTTP requests and scrobble failures
   were only logged. Phase 3 added bounded draining and the durable outbox; current
   test-server measurements are in [1.2](#12-scrobbles-at-exit-and-now-playing).
-- Downloads and the automatic cache use `download?id=` (the original); `CachedTrack` has no
-  quality.
+- Before phase 5, downloads and the automatic cache used `download?id=` (the
+  original), and `CachedTrack` recorded no quality. Phase 5 added independent
+  Download quality, caching at the opened stream quality, a manifest bitrate and
+  optional upgrades with local fallback.
 - `album_merge.cpp` and `library.cpp` each have a case fold for Latin-1, Extended-A, Greek
   and Cyrillic. The sort's also drops Latin-1 accents and folds ё to е; the keys' does
   neither. Neither folds Ό Ύ Ώ or ς.
