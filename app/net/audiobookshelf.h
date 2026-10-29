@@ -55,6 +55,9 @@ public:
     // GET /api/items/<id>?expanded=1
     RequestId book(std::string albumId, std::function<void(Error, RemoteBook)> done) override;
     Catalogue catalogue() const override { return Catalogue::Books; }
+    bool syncsProgress() const override { return true; }
+    RequestId progress(std::string albumId, std::function<void(Error, std::optional<RemoteProgress>)> done) override;
+    void saveProgress(std::string albumId, RemoteProgress progress, std::function<void(Error)> done = {}) override;
     // No playlists: an empty list, and creating one is Error::Server.
     RequestId playlists(Done<RemotePlaylist> done) override;
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override;
@@ -72,7 +75,7 @@ private:
     struct Reply {
         Error error = Error::None;
         std::variant<std::monostate, ServerInfo, std::vector<RemoteAlbum>, std::vector<RemoteArtist>,
-                     std::vector<RemoteFolder>, std::vector<audiobookshelf::Library>, RemoteBook>
+                     std::vector<RemoteFolder>, std::vector<audiobookshelf::Library>, RemoteBook, std::optional<RemoteProgress>>
             data;
         bool more = false;
     };
@@ -82,9 +85,10 @@ private:
         std::vector<std::pair<RequestId, Reply>> ready;
     };
 
-    // Sends GET `path` for request `id`: its callback `done` waits in waiting_. A request that goes
+    // Sends GET `path`, or PATCH with patchBody: `done` waits in waiting_. A request that goes
     // in two steps (ping, a list of the default library) sends the second under the same id.
-    void send(RequestId id, const std::string& path, Parser parse, std::function<void(Reply)> done);
+    void send(RequestId id, const std::string& path, Parser parse, std::function<void(Reply)> done,
+              std::optional<std::string> patchBody = std::nullopt, bool missingProgressIsNone = false);
     // Answers request `id` from poll() with no HTTP request.
     void answer(RequestId id, std::function<void(Reply)> done, Reply reply);
     template <class T, class P> void sendList(RequestId id, const std::string& path, P parse, Done<T> done);

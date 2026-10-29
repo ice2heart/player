@@ -764,3 +764,26 @@ TEST(Subsonic, ItsCatalogueIsMusic) {
     Server server;
     EXPECT_EQ(server.subsonic->catalogue(), oap::MusicServer::Catalogue::Music);
 }
+
+TEST(Subsonic, ProgressIsUnsupportedAndSendsNoRequest) {
+    Server s;
+    EXPECT_FALSE(s.subsonic->syncsProgress());
+    int read = 0, saved = 0;
+    s.subsonic->progress("a", [&](Error error, std::optional<oap::RemoteProgress> value) {
+        ++read;
+        EXPECT_EQ(error, Error::Server);
+        EXPECT_FALSE(value);
+    });
+    s.subsonic->saveProgress("a", {}, [&](Error error) { ++saved; EXPECT_EQ(error, Error::Server); });
+    s.subsonic->saveProgress("a", {});
+    EXPECT_EQ(read, 0);
+    EXPECT_EQ(saved, 0);
+    s.subsonic->poll();
+    EXPECT_EQ(read, 1);
+    EXPECT_EQ(saved, 1);
+    EXPECT_TRUE(s.http->calls.empty());
+    auto id = s.subsonic->progress("a", [&](Error, std::optional<oap::RemoteProgress>) { ++read; });
+    s.subsonic->cancel(id);
+    s.subsonic->poll();
+    EXPECT_EQ(read, 1);
+}

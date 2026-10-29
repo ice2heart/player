@@ -144,6 +144,19 @@ MusicServer::RequestId Subsonic::list(const std::string& method, const Params& p
         });
 }
 
+MusicServer::RequestId Subsonic::progress(std::string, std::function<void(Error, std::optional<RemoteProgress>)> done) {
+    RequestId id = ++lastId_;
+    waiting_[id] = [done = std::move(done)](Reply reply) { done(reply.error, std::nullopt); };
+    std::lock_guard lock(inbox_->mutex);
+    inbox_->ready.emplace_back(id, Reply{configured() ? Error::Server : Error::NotConfigured, {}, false});
+    return id;
+}
+
+void Subsonic::saveProgress(std::string, RemoteProgress, std::function<void(Error)> done) {
+    if (!done) return;
+    progress({}, [done = std::move(done)](Error error, std::optional<RemoteProgress>) { done(error); });
+}
+
 MusicServer::RequestId Subsonic::ping(std::function<void(Error, ServerInfo)> done) {
     return request(
         "ping", {},

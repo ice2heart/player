@@ -4,12 +4,14 @@
 #include "net/percent_encode.h"
 
 #include <algorithm>
+#include <cstdio>
 
 namespace oap {
 
 namespace {
 
 constexpr int kHttpOkFirst = 200, kHttpOkLast = 299, kHttpUnauthorized = 401;
+constexpr int kHttpNotFound = 404;
 constexpr char kIdSeparator = '/'; // RemoteTrack ids are "<item id>/<ino>"
 constexpr const char* kNewest = "newest";
 constexpr const char* kAlphabetical = "alphabeticalByName";
@@ -39,19 +41,24 @@ void Audiobookshelf::answer(RequestId id, std::function<void(Reply)> done, Reply
     inbox_->ready.emplace_back(id, std::move(reply));
 }
 
-void Audiobookshelf::send(RequestId id, const std::string& path, Parser parse, std::function<void(Reply)> done) {
+void Audiobookshelf::send(RequestId id, const std::string& path, Parser parse, std::function<void(Reply)> done,
+                         std::optional<std::string> patchBody, bool missingProgressIsNone) {
     if (!configured()) return answer(id, std::move(done), Reply{Error::NotConfigured, {}, false});
     waiting_[id] = std::move(done);
-    http_->get(id, config_.url + path, {"Authorization: Bearer " + config_.apiKey},
-               [inbox = inbox_, parse = std::move(parse), id](Http::Response response) {
-                   Reply reply;
-                   if (!response.reached) reply.error = Error::Unreachable;
-                   else if (response.status == kHttpUnauthorized) reply.error = Error::BadLogin;
-                   else if (response.status < kHttpOkFirst || response.status > kHttpOkLast) reply.error = Error::Server;
-                   else reply = parse(response.body);
-                   std::lock_guard lock(inbox->mutex);
-                   inbox->ready.emplace_back(id, std::move(reply));
-               });
+    auto handler = [inbox = inbox_, parse = std::move(parse), id, missingProgressIsNone](Http::Response response) {
+        Reply reply;
+        if (!response.reached) reply.error = Error::Unreachable;
+        else if (response.status == kHttpUnauthorized) reply.error = Error::BadLogin;
+        else if (response.status == kHttpNotFound && missingProgressIsNone)
+            reply.data = std::optional<RemoteProgress>{};
+        else if (response.status < kHttpOkFirst || response.status > kHttpOkLast) reply.error = Error::Server;
+        else reply = parse(response.body);
+        std::lock_guard lock(inbox->mutex);
+        inbox->ready.emplace_back(id, std::move(reply));
+    };
+    Http::Headers headers{"Authorization: Bearer " + config_.apiKey};
+    if (patchBody) http_->patch(id, config_.url + path, std::move(headers), std::move(*patchBody), std::move(handler));
+    else http_->get(id, config_.url + path, std::move(headers), std::move(handler));
 }
 
 template <class T, class P>
@@ -204,6 +211,39 @@ MusicServer::RequestId Audiobookshelf::book(std::string albumId, std::function<v
             else done(Error::None, std::move(*book));
         });
     return id;
+}
+
+MusicServer::RequestId Audiobookshelf::progress(std::string albumId,
+        std::function<void(Error, std::optional<RemoteProgress>)> done) {
+    RequestId id = ++lastId_;
+    send(id, "/api/me/progress/" + percentEncode(albumId),
+         [](const std::string& body) {
+             auto result = audiobookshelf::parseProgress(body);
+             return Reply{result.error, std::move(result.progress), false};
+         },
+         [done = std::move(done)](Reply reply) {
+             auto* progress = std::get_if<std::optional<RemoteProgress>>(&reply.data);
+             if (reply.error != Error::None || !progress)
+                 done(reply.error == Error::None ? Error::Server : reply.error, std::nullopt);
+             else done(Error::None, std::move(*progress));
+         }, std::nullopt, true);
+    return id;
+}
+
+void Audiobookshelf::saveProgress(std::string albumId, RemoteProgress progress, std::function<void(Error)> done) {
+    RequestId id = ++lastId_;
+    auto complete = [done = std::move(done)](Reply reply) {
+        if (reply.error != Error::None)
+            std::fprintf(stderr, "Audiobookshelf: progress save failed (%d)\n", static_cast<int>(reply.error));
+        if (done) done(reply.error);
+    };
+    auto body = audiobookshelf::progressBody(progress);
+    if (!body) {
+        answer(id, std::move(complete), Reply{configured() ? Error::Server : Error::NotConfigured, {}, false});
+        return;
+    }
+    send(id, "/api/me/progress/" + percentEncode(albumId), [](const std::string&) { return Reply{}; },
+         std::move(complete), std::move(body));
 }
 
 MusicServer::RequestId Audiobookshelf::playlists(Done<RemotePlaylist> done) { return noItems<RemotePlaylist>(std::move(done)); }

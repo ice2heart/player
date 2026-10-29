@@ -12,6 +12,7 @@
 using oap::RemoteAlbum;
 using oap::RemoteTrack;
 using Server = oap::MusicServer;
+using Error = Server::Error;
 using oap::test::FakeMusicServer;
 using Kind = FakeMusicServer::Kind;
 
@@ -359,4 +360,86 @@ TEST(FakeMusicServer, CatalogueIsMusicUnlessTheTestSaysBooks) {
     EXPECT_EQ(server.catalogue(), Server::Catalogue::Music);
     server.catalogueKind = Server::Catalogue::Books;
     EXPECT_EQ(server.catalogue(), Server::Catalogue::Books);
+}
+
+TEST(FakeMusicServer, ProgressRecordsReadsSavesAndHeldAcknowledgements) {
+    FakeMusicServer server;
+    EXPECT_FALSE(server.syncsProgress());
+    server.progressSync = true;
+    EXPECT_TRUE(server.syncsProgress());
+    int calls = 0;
+    auto id = server.progress("book", [&](Error error, std::optional<oap::RemoteProgress> value) {
+        ++calls;
+        EXPECT_EQ(error, Error::None);
+        ASSERT_TRUE(value);
+        EXPECT_DOUBLE_EQ(value->seconds, 35);
+        EXPECT_EQ(value->updated, 1234567890123LL);
+    });
+    EXPECT_EQ(server.lastRequest().kind, Kind::Progress);
+    EXPECT_EQ(server.lastRequest().arg, "book");
+    server.poll();
+    EXPECT_EQ(calls, 0);
+    EXPECT_TRUE(server.replyProgress(id, oap::RemoteProgress{35, 100, false, 1234567890123LL}));
+    EXPECT_EQ(calls, 0);
+    server.poll();
+    EXPECT_EQ(calls, 1);
+    int saved = 0;
+    server.holdProgressSaves = true;
+    server.saveProgress("book", {35, 100, false, 1234567890123LL}, [&](Error error) {
+        ++saved;
+        EXPECT_EQ(error, Error::Unreachable);
+    });
+    ASSERT_EQ(server.progressSaves.size(), 1u);
+    EXPECT_EQ(server.progressSaves[0].albumId, "book");
+    EXPECT_DOUBLE_EQ(server.progressSaves[0].progress.seconds, 35);
+    EXPECT_DOUBLE_EQ(server.progressSaves[0].progress.duration, 100);
+    EXPECT_FALSE(server.progressSaves[0].progress.finished);
+    EXPECT_EQ(server.progressSaves[0].progress.updated, 1234567890123LL);
+    server.poll();
+    EXPECT_EQ(saved, 0);
+    EXPECT_TRUE(server.answerProgressSave(Error::Unreachable));
+    EXPECT_EQ(saved, 0);
+    server.poll();
+    EXPECT_EQ(saved, 1);
+    EXPECT_FALSE(server.answerProgressSave());
+    server.holdProgressSaves = false;
+    server.saveProgress("book", {100, 100, true, 1234567890124LL}, [&](Error error) {
+        ++saved;
+        EXPECT_EQ(error, Error::None);
+    });
+    server.poll();
+    EXPECT_EQ(saved, 2);
+    EXPECT_EQ(server.progressSaves.size(), 2u);
+    EXPECT_TRUE(server.progressSaves[1].progress.finished);
+}
+
+TEST(FakeMusicServer, ProgressMissingFailedCancelledAndNotConfiguredMatchTheContract) {
+    FakeMusicServer server;
+    int calls = 0;
+    auto callback = [&](Error error, std::optional<oap::RemoteProgress> value) {
+        EXPECT_EQ(error, calls == 0 ? Error::None : calls == 1 ? Error::Server : Error::NotConfigured);
+        EXPECT_FALSE(value);
+        ++calls;
+    };
+    auto id = server.progress("new", callback);
+    EXPECT_TRUE(server.replyProgress(id, std::nullopt));
+    server.poll();
+    id = server.progress("bad", callback);
+    EXPECT_TRUE(server.fail(id, Error::Server));
+    server.poll();
+    id = server.progress("cancel", callback);
+    EXPECT_TRUE(server.replyProgress(id, oap::RemoteProgress{}));
+    server.cancel(id);
+    server.poll();
+    EXPECT_EQ(calls, 2);
+    server.isConfigured = false;
+    server.progress("a", callback);
+    int saved = 0;
+    server.saveProgress("a", {}, [&](Error error) { ++saved; EXPECT_EQ(error, Error::NotConfigured); });
+    EXPECT_EQ(calls, 2);
+    EXPECT_EQ(saved, 0);
+    server.poll();
+    EXPECT_EQ(calls, 3);
+    EXPECT_EQ(saved, 1);
+    EXPECT_TRUE(server.progressSaves.empty());
 }

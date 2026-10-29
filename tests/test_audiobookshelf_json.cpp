@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <limits>
 
 using namespace oap::audiobookshelf;
 using oap::test::audiobookshelfFixture;
@@ -198,4 +199,36 @@ TEST(AudiobookshelfJson, FixturesHoldNeitherTheTestKeyNorAToken) {
         if (!key.empty()) EXPECT_EQ(body.find(key), std::string::npos) << name;
     }
     EXPECT_GE(files, 9);
+}
+
+TEST(AudiobookshelfJson, ProgressRejectsMalformedMissingAndNonFiniteFields) {
+    for (const std::string& body : {std::string("not json"), std::string("{}"),
+            std::string(R"({"duration":10,"isFinished":false,"lastUpdate":1000})"),
+            std::string(R"({"currentTime":-1,"duration":10,"isFinished":false,"lastUpdate":1000})"),
+            std::string(R"({"currentTime":1,"duration":-10,"isFinished":false,"lastUpdate":1000})"),
+            std::string(R"({"currentTime":1,"duration":10,"isFinished":false,"lastUpdate":-1})"),
+            std::string(R"({"currentTime":".nan","duration":10,"isFinished":false,"lastUpdate":1000})"),
+            std::string(R"({"currentTime":1,"duration":".inf","isFinished":false,"lastUpdate":1000})")}) {
+        auto result = parseProgress(body);
+        EXPECT_EQ(result.error, Error::Server) << body;
+        EXPECT_FALSE(result.progress) << body;
+    }
+    auto finished = parseProgress(R"({"currentTime":0,"duration":0,"isFinished":true,"lastUpdate":0})");
+    ASSERT_TRUE(finished.progress);
+    EXPECT_TRUE(finished.progress->finished);
+    EXPECT_EQ(finished.error, Error::None);
+}
+
+TEST(AudiobookshelfJson, ProgressBodyHandlesUnknownDurationFinishedAndInvalidNumbers) {
+    for (auto progress : {oap::RemoteProgress{0, 0, false, 0}, {5, 0, true, 0}, {200, 100, false, 0}}) {
+        auto encoded = progressBody(progress);
+        ASSERT_TRUE(encoded);
+        const auto fraction = encoded->find("\"progress\":");
+        ASSERT_NE(fraction, std::string::npos);
+        EXPECT_DOUBLE_EQ(std::stod(encoded->substr(fraction + 11)), progress.finished || progress.duration > 0 ? 1 : 0);
+    }
+    for (auto progress : {oap::RemoteProgress{-1, 10, false, 0}, {1, -10, false, 0},
+                          {std::numeric_limits<double>::quiet_NaN(), 10, false, 0},
+                          {1, std::numeric_limits<double>::infinity(), false, 0}})
+        EXPECT_FALSE(progressBody(progress));
 }

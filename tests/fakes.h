@@ -350,7 +350,7 @@ inline std::vector<ServerLink> linkTo(const Settings& settings, MusicServer& ser
 // A fake that is not configured does not record a scrobble (like Subsonic).
 class FakeMusicServer : public MusicServer {
 public:
-    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Book, Playlists, PlaylistTracks, CreatePlaylist };
+    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Book, Progress, Playlists, PlaylistTracks, CreatePlaylist };
     struct Request {
         RequestId id = 0;
         Kind kind = Kind::Ping;
@@ -383,6 +383,36 @@ public:
         return add(BookDone{std::move(done)}, Kind::Book, std::move(albumId));
     }
     Catalogue catalogue() const override { return catalogueKind; }
+    bool syncsProgress() const override { return progressSync; }
+    RequestId progress(std::string albumId, std::function<void(Error, std::optional<RemoteProgress>)> done) override {
+        return add(std::move(done), Kind::Progress, std::move(albumId));
+    }
+    void saveProgress(std::string albumId, RemoteProgress progress, std::function<void(Error)> done = {}) override {
+        if (!isConfigured) {
+            if (done) ready_.emplace_back(0, [done = std::move(done)] { done(Error::NotConfigured); });
+            return;
+        }
+        progressSaves.push_back({std::move(albumId), progress});
+        if (!done) return;
+        if (holdProgressSaves) heldProgressSaves_.push_back(std::move(done));
+        else ready_.emplace_back(0, [done = std::move(done), error = progressSaveError] { done(error); });
+    }
+    bool answerProgressSave(Error error = Error::None) {
+        if (heldProgressSaves_.empty()) return false;
+        ready_.emplace_back(0, [done = std::move(heldProgressSaves_.front()), error] { done(error); });
+        heldProgressSaves_.erase(heldProgressSaves_.begin());
+        return true;
+    }
+    void dropHeldProgressSaves() { heldProgressSaves_.clear(); }
+    bool replyProgress(RequestId id, std::optional<RemoteProgress> progress) {
+        auto it = pending_.find(id);
+        if (it == pending_.end()) return false;
+        auto* done = std::get_if<ProgressDone>(&it->second);
+        if (!done) throw std::logic_error("FakeMusicServer::replyProgress: not a progress request");
+        ready_.emplace_back(id, [cb = std::move(*done), progress] { cb(Error::None, progress); });
+        pending_.erase(it);
+        return true;
+    }
     RequestId playlists(Done<RemotePlaylist> done) override { return add(std::move(done), Kind::Playlists); }
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override {
         return add(std::move(done), Kind::PlaylistTracks, std::move(playlistId));
@@ -519,6 +549,11 @@ public:
         }
     };
     std::vector<Scrobble> scrobbles; // every scrobble() call, in order
+    struct ProgressSave { std::string albumId; RemoteProgress progress; };
+    std::vector<ProgressSave> progressSaves;
+    bool progressSync = false;
+    Error progressSaveError = Error::None;
+    bool holdProgressSaves = false;
     bool isConfigured = true;
     Catalogue catalogueKind = Catalogue::Music; // what catalogue() says
     std::string streamHost = "stream"; // "fake://<streamHost>/<id>": what tells two fakes' streams apart
@@ -529,6 +564,8 @@ public:
 
 private:
     std::vector<std::function<void(Error)>> heldScrobbles_;
+    std::vector<std::function<void(Error)>> heldProgressSaves_;
+    using ProgressDone = std::function<void(Error, std::optional<RemoteProgress>)>;
     using PingDone = std::function<void(Error, ServerInfo)>;
     using VersionDone = std::function<void(Error, std::string)>;
     struct CreateDone { // a type of its own: VersionDone has the same signature
@@ -538,7 +575,7 @@ private:
         std::function<void(Error, RemoteBook)> call;
     };
     using Callback =
-        std::variant<PingDone, VersionDone, CreateDone, BookDone, Done<RemoteAlbum>, Done<RemoteFolder>, Done<RemoteArtist>, Done<RemoteTrack>,
+        std::variant<PingDone, VersionDone, CreateDone, BookDone, ProgressDone, Done<RemoteAlbum>, Done<RemoteFolder>, Done<RemoteArtist>, Done<RemoteTrack>,
                  Done<RemotePlaylist>>;
 
     template <class F> RequestId add(F done, Kind kind, std::string arg = {}, int offset = 0, int size = 0, std::string folder = {}) {
@@ -569,6 +606,9 @@ private:
     }
     static std::function<void()> failure(CreateDone cb, Error error) {
         return [cb = std::move(cb.call), error] { cb(error, {}); };
+    }
+    static std::function<void()> failure(ProgressDone cb, Error error) {
+        return [cb = std::move(cb), error] { cb(error, std::nullopt); };
     }
     static std::function<void()> failure(BookDone cb, Error error) {
         return [cb = std::move(cb.call), error] { cb(error, {}); };

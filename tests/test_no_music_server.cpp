@@ -106,3 +106,24 @@ TEST(NoMusicServer, BookFinishesWithNotConfiguredAndAnEmptyBookOnTheNextPoll) {
     EXPECT_EQ(cancelledCalls, 0);
     EXPECT_EQ(server.catalogue(), MusicServer::Catalogue::Music);
 }
+
+TEST(NoMusicServer, ProgressIsNotConfiguredAndAcknowledgedFromPoll) {
+    NoMusicServer server;
+    EXPECT_FALSE(server.syncsProgress());
+    int read = 0, saved = 0;
+    server.progress("a", [&](Error error, std::optional<oap::RemoteProgress> value) {
+        ++read;
+        EXPECT_EQ(error, Error::NotConfigured);
+        EXPECT_FALSE(value);
+    });
+    server.saveProgress("a", {}, [&](Error error) { ++saved; EXPECT_EQ(error, Error::NotConfigured); });
+    server.saveProgress("a", {});
+    EXPECT_EQ(read, 0);
+    EXPECT_EQ(saved, 0);
+    server.poll();
+    EXPECT_EQ(read, 1);
+    EXPECT_EQ(saved, 1);
+    server.cancel(server.progress("a", [&](Error, std::optional<oap::RemoteProgress>) { ++read; }));
+    server.poll();
+    EXPECT_EQ(read, 1);
+}

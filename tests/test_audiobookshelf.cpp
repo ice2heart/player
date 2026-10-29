@@ -8,6 +8,7 @@
 #include "subsonic_fixtures.h" // PrintTo for Error
 
 #include <gtest/gtest.h>
+#include <limits>
 
 #include <memory>
 #include <string>
@@ -42,12 +43,13 @@ public:
         std::string url;
         Headers headers;
         Handler handler;
+        std::string method = "GET", body;
     };
     void get(Id id, std::string url, Headers headers, Handler handler) override {
         calls.push_back({id, std::move(url), std::move(headers), std::move(handler)});
     }
-    void patch(Id, std::string, Headers, std::string, Handler) override {
-        ADD_FAILURE() << "Unexpected PATCH";
+    void patch(Id id, std::string url, Headers headers, std::string body, Handler handler) override {
+        calls.push_back({id, std::move(url), std::move(headers), std::move(handler), "PATCH", std::move(body)});
     }
     void cancel(Id id) override { cancelled.push_back(id); }
 
@@ -643,4 +645,139 @@ TEST(Audiobookshelf, DestroyedWithRequestsInFlightIsSafe) {
     s->abs->book("a", BookResult().callback());
     s->abs->albums("newest", 0, 10, ListResult<RemoteAlbum>().callback());
     s.reset();
+}
+
+TEST(Audiobookshelf, ProgressReadsTheTimelineAnd404MeansNoSavedPlace) {
+    Server s;
+    EXPECT_TRUE(s.abs->syncsProgress());
+    int calls = 0;
+    auto receive = [&](Error error, std::optional<oap::RemoteProgress> progress) {
+        EXPECT_EQ(error, Error::None);
+        if (++calls == 1) {
+            ASSERT_TRUE(progress);
+            EXPECT_DOUBLE_EQ(progress->seconds, 1234.5);
+            EXPECT_DOUBLE_EQ(progress->duration, 22141.167955);
+            EXPECT_FALSE(progress->finished);
+            EXPECT_EQ(progress->updated, 1793260800123LL);
+        } else EXPECT_FALSE(progress);
+    };
+    s.abs->progress("item /one", receive);
+    ASSERT_EQ(s.http->calls.size(), 1u);
+    EXPECT_EQ(s.http->url(0), kBase + "/api/me/progress/item%20%2Fone");
+    EXPECT_EQ(s.http->calls[0].method, "GET");
+    EXPECT_EQ(s.http->calls[0].headers, Http::Headers{"Authorization: Bearer " + kKey});
+    s.http->answer(0, 200, audiobookshelfFixture("progress.json"));
+    EXPECT_EQ(calls, 0);
+    s.abs->poll();
+    EXPECT_EQ(calls, 1);
+    s.abs->progress("new", receive);
+    s.http->answer(1, 404, "Not found");
+    s.abs->poll();
+    EXPECT_EQ(calls, 2);
+}
+
+TEST(Audiobookshelf, ProgressErrorsAndCancellationKeepNoPlace) {
+    Server s;
+    for (long status : {0, 401, 500, 200}) {
+        int calls = 0;
+        s.abs->progress("a", [&](Error error, std::optional<oap::RemoteProgress> value) {
+            ++calls;
+            EXPECT_EQ(error, status == 0 ? Error::Unreachable : status == 401 ? Error::BadLogin : Error::Server);
+            EXPECT_FALSE(value);
+        });
+        auto n = s.http->calls.size() - 1;
+        if (!status) s.http->unreachable(n);
+        else s.http->answer(n, status, "{}");
+        s.abs->poll();
+        EXPECT_EQ(calls, 1);
+    }
+    int cancelled = 0;
+    auto id = s.abs->progress("a", [&](Error, std::optional<oap::RemoteProgress>) { ++cancelled; });
+    s.http->answer(4, 200, audiobookshelfFixture("progress.json"));
+    s.abs->cancel(id);
+    s.abs->poll();
+    EXPECT_EQ(cancelled, 0);
+    EXPECT_EQ(s.http->cancelled, std::vector<Http::Id>{id});
+}
+
+TEST(Audiobookshelf, SaveProgressPatchesJsonAndAcknowledgesOnlyFromPoll) {
+    Server s;
+    int calls = 0;
+    s.abs->saveProgress("item /one", {1234.5, 4000, false, 1793260800123LL}, [&](Error error) {
+        EXPECT_EQ(error, Error::None);
+        ++calls;
+    });
+    ASSERT_EQ(s.http->calls.size(), 1u);
+    const auto& request = s.http->calls[0];
+    EXPECT_EQ(request.method, "PATCH");
+    EXPECT_EQ(request.url, kBase + "/api/me/progress/item%20%2Fone");
+    EXPECT_EQ(request.headers, Http::Headers{"Authorization: Bearer " + kKey});
+    EXPECT_NE(request.body.find("\"currentTime\": 1234.5"), std::string::npos);
+    EXPECT_NE(request.body.find("\"duration\": 4000"), std::string::npos);
+    const auto fraction = request.body.find("\"progress\":");
+    ASSERT_NE(fraction, std::string::npos);
+    EXPECT_DOUBLE_EQ(std::stod(request.body.substr(fraction + 11)), 1234.5 / 4000);
+    EXPECT_NE(request.body.find("\"isFinished\": false"), std::string::npos);
+    // Quoted keys make the flow map JSON, not just YAML accepted by this test.
+    EXPECT_NE(request.body.find("\"currentTime\":"), std::string::npos);
+    s.http->answer(0, 204, "");
+    EXPECT_EQ(calls, 0);
+    s.abs->poll();
+    s.abs->poll();
+    EXPECT_EQ(calls, 1);
+    s.abs->saveProgress("done", {4000, 4000, true, 0}); // no callback is valid
+    const auto& finished = s.http->calls[1].body;
+    EXPECT_NE(finished.find("\"isFinished\": true"), std::string::npos);
+    EXPECT_NE(finished.find("\"progress\": 1"), std::string::npos);
+    s.http->answer(1, 200, "{}");
+    s.abs->poll();
+}
+
+TEST(Audiobookshelf, SaveProgressFailureReportsOnlyItsKindAndAcknowledgesTheError) {
+    Server s;
+    for (long status : {0, 401, 404, 500}) {
+        int calls = 0;
+        Error result = Error::None;
+        testing::internal::CaptureStderr();
+        s.abs->saveProgress("secret-book", {30, 100, false, 0}, [&](Error error) { ++calls; result = error; });
+        auto n = s.http->calls.size() - 1;
+        if (status) s.http->answer(n, status, kKey + " response-secret");
+        else s.http->unreachable(n);
+        EXPECT_EQ(calls, 0);
+        s.abs->poll();
+        auto logged = testing::internal::GetCapturedStderr();
+        EXPECT_EQ(calls, 1);
+        EXPECT_EQ(result, !status ? Error::Unreachable : status == 401 ? Error::BadLogin : Error::Server);
+        EXPECT_NE(logged.find("progress save failed"), std::string::npos);
+        for (const auto& secret : {kKey, kBase, std::string("secret-book"), std::string("response-secret")})
+            EXPECT_EQ(logged.find(secret), std::string::npos);
+    }
+}
+
+TEST(Audiobookshelf, ProgressWithoutConfigurationAndInvalidSavesSendNothing) {
+    auto c = config();
+    c.apiKey.clear();
+    Server absent(c);
+    int read = 0, saved = 0;
+    absent.abs->progress("a", [&](Error error, std::optional<oap::RemoteProgress> value) {
+        ++read;
+        EXPECT_EQ(error, Error::NotConfigured);
+        EXPECT_FALSE(value);
+    });
+    absent.abs->saveProgress("a", {0, 0, false, 0}, [&](Error error) { ++saved; EXPECT_EQ(error, Error::NotConfigured); });
+    EXPECT_EQ(read, 0);
+    EXPECT_EQ(saved, 0);
+    absent.abs->poll();
+    EXPECT_EQ(read, 1);
+    EXPECT_EQ(saved, 1);
+    EXPECT_TRUE(absent.http->calls.empty());
+    Server s;
+    int invalid = 0;
+    s.abs->saveProgress("a", {std::numeric_limits<double>::infinity(), 100, false, 0}, [&](Error error) {
+        ++invalid;
+        EXPECT_EQ(error, Error::Server);
+    });
+    s.abs->poll();
+    EXPECT_EQ(invalid, 1);
+    EXPECT_TRUE(s.http->calls.empty());
 }

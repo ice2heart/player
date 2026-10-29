@@ -25,6 +25,9 @@ public:
     RequestId albumTracks(std::string albumId, Done<RemoteTrack> done) override;
     RequestId book(std::string albumId, std::function<void(Error, RemoteBook)> done) override;
     Catalogue catalogue() const override { return Catalogue::Music; }
+    bool syncsProgress() const override { return false; }
+    RequestId progress(std::string albumId, std::function<void(Error, std::optional<RemoteProgress>)> done) override;
+    void saveProgress(std::string albumId, RemoteProgress progress, std::function<void(Error)> done = {}) override;
     RequestId playlists(Done<RemotePlaylist> done) override;
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override;
     RequestId createPlaylist(std::string name, std::vector<std::string> trackIds, std::function<void(Error, std::string)> done) override;

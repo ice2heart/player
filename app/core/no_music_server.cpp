@@ -25,6 +25,12 @@ MusicServer::RequestId NoMusicServer::albumTracks(std::string, Done<RemoteTrack>
 MusicServer::RequestId NoMusicServer::book(std::string, std::function<void(Error, RemoteBook)> done) {
     return add([done = std::move(done)] { done(Error::NotConfigured, {}); });
 }
+MusicServer::RequestId NoMusicServer::progress(std::string, std::function<void(Error, std::optional<RemoteProgress>)> done) {
+    return add([done = std::move(done)] { done(Error::NotConfigured, std::nullopt); });
+}
+void NoMusicServer::saveProgress(std::string, RemoteProgress, std::function<void(Error)> done) {
+    if (done) add([done = std::move(done)] { done(Error::NotConfigured); });
+}
 MusicServer::RequestId NoMusicServer::playlists(Done<RemotePlaylist> done) { return fail(std::move(done)); }
 MusicServer::RequestId NoMusicServer::playlistTracks(std::string, Done<RemoteTrack> done) { return fail(std::move(done)); }
 MusicServer::RequestId NoMusicServer::createPlaylist(std::string, std::vector<std::string>, std::function<void(Error, std::string)> done) {

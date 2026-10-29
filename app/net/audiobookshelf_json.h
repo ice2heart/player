@@ -48,6 +48,14 @@ Parsed<RemoteAlbum> parseAuthorBooks(std::string_view body);
 // GET /api/items/<id>?expanded=1: the files (ids "<item id>/<ino>") and the chapters.
 BookResult parseBook(std::string_view body);
 
+struct ProgressResult {
+    Error error = Error::None;
+    std::optional<RemoteProgress> progress; // empty on an error
+};
+ProgressResult parseProgress(std::string_view body);
+// JSON PATCH body, or none for a non-finite or negative position/duration.
+std::optional<std::string> progressBody(const RemoteProgress& progress);
+
 // Milliseconds since 1970 as ISO 8601 UTC ("2026-10-21T08:09:10Z"); empty for 0 or less.
 std::string isoTime(long long millis);
 

@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cmath>
+#include <limits>
 
 namespace oap::audiobookshelf {
 
@@ -176,6 +178,42 @@ BookResult parseBook(std::string_view body) {
         result.error = Error::Server;
     }
     return result;
+}
+
+ProgressResult parseProgress(std::string_view body) {
+    ProgressResult result;
+    YAML::Node doc = open(body, result.error);
+    if (result.error != Error::None) return result;
+    try {
+        RemoteProgress progress;
+        progress.seconds = child(doc, "currentTime").as<double>();
+        progress.duration = child(doc, "duration").as<double>();
+        progress.finished = child(doc, "isFinished").as<bool>();
+        progress.updated = child(doc, "lastUpdate").as<std::int64_t>();
+        if (!std::isfinite(progress.seconds) || !std::isfinite(progress.duration) ||
+            progress.seconds < 0 || progress.duration < 0 || progress.updated < 0) {
+            result.error = Error::Server;
+        } else result.progress = progress;
+    } catch (const YAML::Exception&) {
+        result.error = Error::Server;
+    }
+    return result;
+}
+
+std::optional<std::string> progressBody(const RemoteProgress& progress) {
+    if (!std::isfinite(progress.seconds) || !std::isfinite(progress.duration) ||
+        progress.seconds < 0 || progress.duration < 0) return std::nullopt;
+    const double fraction = progress.finished ? 1 : progress.duration > 0
+        ? std::clamp(progress.seconds / progress.duration, 0.0, 1.0) : 0;
+    YAML::Emitter out;
+    out.SetDoublePrecision(std::numeric_limits<double>::max_digits10);
+    out << YAML::Flow << YAML::BeginMap
+        << YAML::Key << YAML::DoubleQuoted << "currentTime" << YAML::Value << progress.seconds
+        << YAML::Key << YAML::DoubleQuoted << "duration" << YAML::Value << progress.duration
+        << YAML::Key << YAML::DoubleQuoted << "progress" << YAML::Value << fraction
+        << YAML::Key << YAML::DoubleQuoted << "isFinished" << YAML::Value << progress.finished
+        << YAML::EndMap;
+    return std::string(out.c_str());
 }
 
 // Days since 1970 to a civil date (Howard Hinnant's algorithm), so no OS time functions are needed.
