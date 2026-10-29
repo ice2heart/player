@@ -79,6 +79,47 @@ TEST_F(TrackCacheTest, ManifestRoundTrips) {
     EXPECT_EQ(loaded[1].lastPlayed, 0);
 }
 
+TEST_F(TrackCacheTest, CachedBitrateRoundTrips) {
+    CachedTrack original = track("original", "original.flac");
+    CachedTrack low = track("low", "low.mp3");
+    low.bitrate = 128;
+    CachedTrack high = track("high", "high.mp3");
+    high.bitrate = 320;
+    ASSERT_TRUE(cache().save(listOf(album("al1"), {original, low, high})));
+    const auto loaded = cache().load(album("al1")).tracks;
+    ASSERT_EQ(loaded.size(), 3u);
+    EXPECT_EQ(loaded[0].bitrate, 0);
+    EXPECT_EQ(loaded[1].bitrate, 128);
+    EXPECT_EQ(loaded[2].bitrate, 320);
+}
+
+TEST_F(TrackCacheTest, LegacyManifestDefaultsToOriginalAndAddsBitrateOnSave) {
+    TrackCache c = cache();
+    const std::string head = "oap-cache 2\nlist\talbum\tal1\tWeather\tBand\n";
+    const std::string row = "s1\t01.flac\tStorm\t181.500\t\t1\t1700000000";
+    writeFile(c.manifestFile(album("al1")), head + row + "\n");
+    writeFile(c.listFolder(album("al1")) / "01.flac", "audio");
+    CachedList loaded = c.load(album("al1"));
+    ASSERT_EQ(loaded.tracks.size(), 1u);
+    EXPECT_EQ(loaded.tracks[0].bitrate, 0);
+    EXPECT_EQ(diskFiles().read(c.manifestFile(album("al1"))), head + row + "\n") << "load never migrates on disk";
+    ASSERT_TRUE(c.save(loaded));
+    EXPECT_EQ(diskFiles().read(c.manifestFile(album("al1"))), head + row + "\t0\n");
+    const auto saved = c.load(album("al1"));
+    ASSERT_EQ(saved.tracks.size(), 1u);
+    EXPECT_EQ(saved.tracks[0].bitrate, 0);
+    EXPECT_TRUE(c.find("s1")) << "the legacy file still plays";
+}
+
+TEST_F(TrackCacheTest, InvalidBitrateSpoilsTheManifest) {
+    TrackCache c = cache();
+    const std::string row = "oap-cache 2\nlist\talbum\tal1\tWeather\tBand\ns1\t01.mp3\tStorm\t1.000\t\t0\t0\t";
+    for (const std::string& bitrate : {"", "-1", "128kbps", "99999999999999999999999999", "2147483648", "128\textra"}) {
+        writeFile(c.manifestFile(album("al1")), row + bitrate + "\n");
+        EXPECT_TRUE(c.load(album("al1")).source.id.empty()) << bitrate;
+    }
+}
+
 TEST_F(TrackCacheTest, AServerBooksChaptersRoundTripInOrderBesideTheTracks) {
     CachedList list = listOf(album("b1"), {track("f1", "f1.mp3"), track("f2", "f2.mp3")}, "Dune", "Herbert");
     list.chapters = {{"Intro", 0}, {"Tab\there\nand back\\slash", 100.5}, {"", 230.25}};

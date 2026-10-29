@@ -23,6 +23,7 @@ struct CachedTrack {
     std::string changed;      // column of the format: empty, or kPartialMark for a track of a download that has not finished
     bool pinned = false;      // a download the user asked for; the automatic cache evicts only unpinned tracks
     int64_t lastPlayed = 0;   // wall time (seconds since 1970) it last played, 0: never; for eviction
+    int bitrate = 0;          // kbps of the cached transcode; 0: original (also for older manifest rows)
 };
 
 // The mark in `CachedTrack::changed` of the tracks of a download the user asked for that is not over (running, failed
@@ -48,7 +49,8 @@ struct CachedList {
 // playlist with the same id apart). Each list folder has its audio files and a
 // `manifest.tsv`, written atomically, that also holds the list's kind, id, name
 // and artist, and for a server book its chapters (`chapter` lines between the list line and the tracks). Manifest format 2; a format 1 manifest (before lists had names,
-// never shipped) is read as empty. Plain `std::filesystem`: the cache needs no
+// never shipped) is read as empty. The final track column is bitrate (kbps, 0 for original);
+// older seven-column track rows read as original. Plain `std::filesystem`: the cache needs no
 // clock and no network.
 class TrackCache {
 public:

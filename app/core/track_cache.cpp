@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -21,7 +22,8 @@ constexpr size_t kListColumns = 5;
 constexpr const char* kChapterTag = "chapter"; // a line of a server book's chapter: chapter, start, title
 constexpr size_t kChapterColumns = 3;
 constexpr const char* kPartSuffix = ".part";
-constexpr size_t kColumns = 7;
+constexpr size_t kLegacyColumns = 7;
+constexpr size_t kColumns = 8;
 constexpr size_t kHostLimit = 40; // characters of the host kept in a server key
 constexpr uint64_t kFnvOffset = 14695981039346656037ULL;
 constexpr uint64_t kFnvPrime = 1099511628211ULL;
@@ -111,7 +113,7 @@ std::vector<std::string> splitTabs(const std::string& line) {
 
 bool parseLine(const std::string& line, CachedTrack& track) {
     const std::vector<std::string> cells = splitTabs(line);
-    if (cells.size() != kColumns) return false;
+    if (cells.size() != kLegacyColumns && cells.size() != kColumns) return false;
     double duration = 0;
     int64_t lastPlayed = 0;
     if (!unescape(cells[0], track.id) || !unescape(cells[1], track.file) || !unescape(cells[2], track.title) ||
@@ -121,6 +123,12 @@ bool parseLine(const std::string& line, CachedTrack& track) {
     track.duration = duration;
     track.pinned = cells[5] == "1";
     track.lastPlayed = lastPlayed;
+    track.bitrate = 0;
+    if (cells.size() == kColumns) {
+        const auto& cell = cells[7];
+        auto [end, error] = std::from_chars(cell.data(), cell.data() + cell.size(), track.bitrate);
+        if (error != std::errc{} || end != cell.data() + cell.size() || track.bitrate < 0) return false;
+    }
     return !track.id.empty() && plainFileName(track.file);
 }
 
@@ -150,7 +158,7 @@ CachedList parseManifest(const std::string& text) {
     if (!std::getline(in, line) || line != kManifestHeader || !std::getline(in, line) || !parseListLine(line, list))
         return {};
     while (std::getline(in, line)) {
-        RemoteChapter chapter; // (a track line has seven cells, so a track whose id is "chapter" is not taken for this)
+        RemoteChapter chapter; // (a track line has seven or eight cells, so an id of "chapter" is not taken for this)
         if (parseChapterLine(line, chapter)) {
             if (!list.tracks.empty()) return {}; // chapters come before the tracks
             list.chapters.push_back(std::move(chapter));
@@ -258,7 +266,8 @@ bool TrackCache::save(const CachedList& list) const {
         char duration[32];
         std::snprintf(duration, sizeof duration, "%.3f", t.duration);
         text += escape(t.id) + '\t' + escape(t.file) + '\t' + escape(t.title) + '\t' + duration + '\t' +
-                escape(t.changed) + '\t' + (t.pinned ? '1' : '0') + '\t' + std::to_string(t.lastPlayed) + '\n';
+                escape(t.changed) + '\t' + (t.pinned ? '1' : '0') + '\t' + std::to_string(t.lastPlayed) + '\t' +
+                std::to_string(t.bitrate) + '\n';
     }
     if (!files_->writeAtomically(manifestFile(list.source), text)) return false;
     if (damaged) removeUnlisted(folder, list);
