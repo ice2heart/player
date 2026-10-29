@@ -535,7 +535,7 @@ Home
 │   ├── Recently added → <albums>      (newest first, at most 50; "No new albums")
 │   ├── Recently played → <albums>     (last played first, at most 50; "Nothing played yet")
 │   └── Refresh library            (rescans the files and syncs the server catalogue, see section 8)
-├── <server name>, one per server in config order (Streaming: lists from the server, see below; Home builds the entries from `servers_`, `streamingMenu(link)` takes the link, default name Server / Server N)
+├── <server name>, one per server in config order (Streaming: lists from the server, see below; Home builds the entries from `servers_`, `serverMenu(link)` opens `booksMenu(link)` when the link's `catalogue()` is `Books`, else `streamingMenu(link)`; default name Server / Server N)
 │   ├── Recently added → <albums>  (one page of 500)
 │   ├── Albums A to Z → <albums>   (pages of 500, the next one fetched while the server has more)
 │   ├── Artists → <artist> → <albums>
@@ -725,6 +725,13 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   version or folder is stored. `replaceServer()` / `saveItems()` write only what changed, so an unchanged
   list writes no index. Library lists them like folder books; `openServerBook()` asks `book()` for these
   servers and `albumTracks()` for the others.
+- **The Books server menu (audiobookshelf.md 2.7).** `booksMenu(link)` is Recently added and Books A to Z
+  (`openAlbumList(..., books=true)`: the Streaming list machinery with `bookItems()`, "No books"), Authors
+  (`openAuthors()`: `artists()`, then `artistAlbums()`), Downloaded and Server status. A book opens
+  `openBookPage()`, a remote list whose request is `book()`; `bookPage()` builds Play book, Download book
+  (`startDownload(..., unit "file")`, so the progress counts files) and the chapters from the already loaded
+  `RemoteBook`, with no second request. It plays through `serverBookOf()` under the Library id
+  `<server key>:album:<id>`, so the place (`pos:` + id) is shared with Library; a chapter plays at its file and start.
 - **Server chapters (audiobookshelf.md 2.6).** `openServerBook()` passes `RemoteBook::chapters` to
   `serverBookOf()`, which places them with `serverChaptersOf()`: a file starts where the `durations`
   before it add up to (what Audiobookshelf calls `startOffset`), so `Book::chapters` holds

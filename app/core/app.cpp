@@ -1362,7 +1362,7 @@ std::vector<MenuItem> App::homeMenu() {
     items.push_back(submenu("Music", [this] { return musicMenu(); }));
     // One entry per server, in config order; with none set up, one that says so.
     for (size_t link = 0; link < std::max<size_t>(servers_.size(), 1); ++link)
-        items.push_back(submenu(linkName(link), [this, link] { return streamingMenu(link); }));
+        items.push_back(submenu(linkName(link), [this, link] { return serverMenu(link); }));
     items.push_back(submenu("Podcasts", [this] {
         return std::vector<MenuItem>{action("No podcasts yet", [this] { say("Podcast support is coming later."); })};
     }));
@@ -1715,6 +1715,114 @@ const std::string& App::linkName(size_t link) const {
     return link < servers_.size() ? servers_[link].name : none;
 }
 
+// A Books server (Audiobookshelf) has its own menu; any other server, and a link that is not usable, the Streaming one.
+std::vector<MenuItem> App::serverMenu(size_t link) {
+    if (serverAt(link).configured() && serverAt(link).catalogue() == MusicServer::Catalogue::Books) return booksMenu(link);
+    return streamingMenu(link);
+}
+
+std::vector<MenuItem> App::booksMenu(size_t link) {
+    std::vector<MenuItem> items;
+    items.push_back(action("Recently added", [this, link] {
+        openAlbumList(link, "Recently added", "newest", kAlbumPageSize, false, false, true);
+    }));
+    items.push_back(action("Books A to Z", [this, link] {
+        openAlbumList(link, "Books A to Z", "alphabeticalByName", kAlbumPageSize, true, true, true);
+    }));
+    items.push_back(action("Authors", [this, link] { openAuthors(link); }));
+    if (trackCacheOf(link).enabled()) items.push_back(submenu("Downloaded", [this, link] { return downloadedMenu(link); }));
+    MenuItem status = action("Server status", [this, link] { checkServer(link); });
+    status.value = [this, link] { return serverDown(link) ? std::string("not reachable") : std::string(); };
+    items.push_back(std::move(status));
+    return items;
+}
+
+void App::openAuthors(size_t link) {
+    auto toItems = [this, link](const std::vector<RemoteArtist>& authors) {
+        std::vector<MenuItem> out;
+        for (const RemoteArtist& a : authors) {
+            MenuItem item = action(a.name, [this, a, link] {
+                openRemoteList(link, a.name,
+                               fetchPages<RemoteAlbum>(
+                                   [this, link, id = a.id](int, MusicServer::Done<RemoteAlbum> done) {
+                                       return serverAt(link).artistAlbums(id, std::move(done));
+                                   },
+                                   [this, link](const std::vector<RemoteAlbum>& books) { return bookItems(books, link); }),
+                               0, "No books", "The server has no books by " + a.name + ".");
+            });
+            item.okHint = "open";
+            if (a.albumCount > 0) item.value = [n = size_t(a.albumCount)] { return countValue(n, "book"); };
+            out.push_back(std::move(item));
+        }
+        return out;
+    };
+    openRemoteList(link, "Authors",
+                   fetchPages<RemoteArtist>(
+                       [this, link](int, MusicServer::Done<RemoteArtist> done) { return serverAt(link).artists(std::move(done)); },
+                       toItems),
+                   0, "No authors", "The server has no authors yet. Add books to the server, then come back.", ListOrder::ByArtist);
+}
+
+// "Title, Author": the author is the item's value, spoken after the title.
+std::vector<MenuItem> App::bookItems(const std::vector<RemoteAlbum>& books, size_t link) {
+    std::vector<MenuItem> items;
+    for (const RemoteAlbum& b : books) {
+        MenuItem item = action(b.name, [this, b, link] { openBookPage(b, link); });
+        item.okHint = "open";
+        if (!b.artist.empty()) item.value = [author = b.artist] { return author; };
+        items.push_back(std::move(item));
+    }
+    return items;
+}
+
+// The book's page loads the book (files and chapters) like any list from the server.
+void App::openBookPage(const RemoteAlbum& book, size_t link) {
+    openRemoteList(link, book.name,
+                   [this, link, book](int, PageDone done) {
+                       return serverAt(link).book(book.id, [this, link, book, done](MusicServer::Error error, RemoteBook remote) {
+                           done(error, error == MusicServer::Error::None ? bookPage(book, remote, link) : std::vector<MenuItem>{}, false);
+                       });
+                   },
+                   0, "No chapters", "This book has no chapters on the server.");
+}
+
+// Play book, Download book where downloads can work, then the chapters: the server's, else one per file.
+// The book plays under its Library id (`<server key>:album:<id>`), so both share the place.
+std::vector<MenuItem> App::bookPage(const RemoteAlbum& album, const RemoteBook& remote, size_t link) {
+    if (remote.tracks.empty()) return {};
+    const std::string ref = LibraryIndex::seenRef(servers_[link].key, SeenKind::Album, album.id);
+    auto book = std::make_shared<const Book>(serverBookOf(ref, album.name, album.artist, album.id, remote.tracks, link, remote.chapters));
+    auto play = [this, book](size_t file, double position) {
+        std::uint64_t screen = screens_.back().id;
+        playServerBook(*book, file, position, [this, screen] { enterPlayerFrom(screen); });
+    };
+    std::vector<MenuItem> items;
+    MenuItem all = action("Play book", [this, play, book] {
+        if (book_) rememberPosition(); // the place of this book, if it is the one playing, is saved only now
+        auto [file, pos] = savedPlace(*book);
+        play(file, pos);
+    });
+    const size_t chapters = book->chapters.empty() ? book->files.size() : book->chapters.size();
+    all.value = [chapters] { return countValue(chapters, "chapter"); };
+    items.push_back(std::move(all));
+    if (canDownloadFrom(link))
+        items.push_back(action("Download book", [this, link, album, tracks = std::make_shared<const std::vector<RemoteTrack>>(remote.tracks)] {
+            startDownload(link, album.name, album.artist, *tracks, {RemoteSource::Kind::Album, album.id}, {}, "file");
+        }));
+    auto chapter = [&](std::string label, size_t file, double start) {
+        MenuItem item = action(std::move(label), [play, file, start] { play(file, start); });
+        item.okHint = "play";
+        items.push_back(std::move(item));
+    };
+    if (!book->chapters.empty()) {
+        for (const Book::Chapter& c : book->chapters) chapter(c.title, c.file, c.start);
+    } else {
+        for (size_t i = 0; i < book->files.size(); ++i)
+            chapter(book->titles[i].empty() ? "Chapter " + std::to_string(i + 1) : book->titles[i], i, 0);
+    }
+    return items;
+}
+
 std::vector<MenuItem> App::streamingMenu(size_t link) {
     if (!serverAt(link).configured()) {
         if (serverConfigured(config_)) // set up, but not as a server this player can use
@@ -1876,14 +1984,18 @@ void App::showStatus(std::uint64_t screenId) {
 }
 
 void App::openAlbumList(size_t link, const std::string& title, const std::string& listType, int pageSize, bool paged,
-                        bool byName) {
+                        bool byName, bool books) {
     openRemoteList(link, title,
                    fetchPages<RemoteAlbum>(
                        [this, link, listType, pageSize](int offset, MusicServer::Done<RemoteAlbum> done) {
                            return serverAt(link).albums(listType, offset, pageSize, std::move(done));
                        },
-                       [this, link](const std::vector<RemoteAlbum>& albums) { return albumItems(albums, true, link); }),
-                   paged ? pageSize : 0, "No albums", "The server has no music yet. Add music to the server, then come back.",
+                       [this, link, books](const std::vector<RemoteAlbum>& albums) {
+                           return books ? bookItems(albums, link) : albumItems(albums, true, link);
+                       }),
+                   paged ? pageSize : 0, books ? "No books" : "No albums",
+                   books ? "The server has no books yet. Add books to the server, then come back."
+                         : "The server has no music yet. Add music to the server, then come back.",
                    byName ? ListOrder::ByName : ListOrder::None);
 }
 
@@ -4437,7 +4549,7 @@ bool App::canDownloadFrom(size_t link) const {
 
 std::string App::downloadProgress() const {
     if (!download_) return "";
-    return "Downloading, " + std::to_string(download_->finished) + " of " + countValue(download_->total, "track");
+    return "Downloading, " + std::to_string(download_->finished) + " of " + countValue(download_->total, download_->unit);
 }
 
 namespace {
@@ -4552,7 +4664,7 @@ void App::sayDownloadBusy(const RemoteSource& source, size_t link) {
 // download that failed has been dropped, so OK goes on with what is missing:
 // tracks already whole are skipped and the .part of the failed one continues.
 void App::startDownload(size_t link, const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
-                        const RemoteSource& source, const std::function<void()>& started) {
+                        const RemoteSource& source, const std::function<void()>& started, const char* unit) {
     if (download_) {
         sayDownloadBusy(source, link);
         return;
@@ -4566,6 +4678,7 @@ void App::startDownload(size_t link, const std::string& title, const std::string
     job.source = source;
     job.title = title;
     job.artist = artist;
+    job.unit = unit;
     bool pinned = false; // a track the automatic cache kept now belongs to the user
     std::uintmax_t needed = 0;
     for (size_t i = 0; i < tracks.size(); ++i) {

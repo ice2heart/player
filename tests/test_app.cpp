@@ -15678,3 +15678,349 @@ TEST_F(TwoServerPlayTest, LeavingTheQueueWhileSavingToTheSecondServerCancelsItsR
     hold(Button::Home);
     EXPECT_FALSE(second.replyCreated(id)) << "cancelled on the server it was asked of";
 }
+
+// ---------------------------------------------------------------- the Books server menu
+
+namespace {
+RemoteTrack bookFile(const std::string& id, double seconds) { return {id, id, "Gibson", "Neuromancer", seconds, 0, "mp3", 5}; }
+} // namespace
+
+class BooksMenuTest : public DownloadTest {
+protected:
+    void SetUp() override {
+        DownloadTest::SetUp();
+        server.catalogueKind = MusicServer::Catalogue::Books;
+        settings.setString("server.type", "audiobookshelf");
+    }
+    static RemoteAlbum book(const std::string& id, const std::string& title, const std::string& author = "Gibson") {
+        return {id, title, author, 0};
+    }
+    std::string bookRef(const std::string& id) const {
+        return LibraryIndex::seenRef(TrackCache::serverKey("https://music.example", "bob"), SeenKind::Album, id);
+    }
+    // Two files (200 s and 180 s) and three chapters: Intro and Middle in file 1, End in file 2 at 30 s.
+    static RemoteBook threeChapters() {
+        RemoteBook b;
+        b.tracks = {bookFile("f1", 200), bookFile("f2", 180)};
+        b.chapters = {{"Intro", 0}, {"Middle", 100}, {"End", 230}};
+        return b;
+    }
+    // Home > Server > Recently added > Neuromancer; the book has loaded.
+    void openNeuromancer(RemoteBook remote = threeChapters()) {
+        openList("Recently added");
+        answer(std::vector<RemoteAlbum>{book("b1", "Neuromancer")});
+        open("Neuromancer");
+        ASSERT_EQ(server.lastRequest().kind, Kind::Book);
+        ASSERT_TRUE(server.replyBook(server.lastRequest().id, std::move(remote)));
+        app->tick();
+    }
+};
+
+TEST_F(BooksMenuTest, HomeOpensTheBooksMenuNotStreaming) {
+    openServer();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Books A to Z", "Authors", "Downloaded", "Server status"}));
+}
+
+TEST_F(BooksMenuTest, WithoutACacheFolderThereIsNoDownloaded) {
+    cache.clear();
+    openServer();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Books A to Z", "Authors", "Server status"}));
+}
+
+TEST_F(BooksMenuTest, AMusicServerStillOpensStreaming) {
+    server.catalogueKind = MusicServer::Catalogue::Music;
+    openServer();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Random albums", "Downloaded", "Server status"}));
+}
+
+TEST_F(BooksMenuTest, RecentlyAddedIsOnePageOf500NewestBooksSpokenWithTheirAuthor) {
+    openList("Recently added");
+    EXPECT_EQ(speech.last(), "Recently added. Loading, 1 of 1");
+    EXPECT_EQ(server.lastRequest().kind, Kind::Albums);
+    EXPECT_EQ(server.lastRequest().arg, "newest");
+    EXPECT_EQ(server.lastRequest().size, 500);
+    EXPECT_EQ(server.lastRequest().folder, "");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Still loading.");
+    answer(std::vector<RemoteAlbum>{book("b1", "Neuromancer"), book("b2", "Dune", "Herbert")}, true);
+    EXPECT_EQ(speech.last(), "Neuromancer, Gibson, 1 of 2");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Neuromancer", "Dune"}));
+    EXPECT_EQ(requestsOf(Kind::Albums), 1u) << "one page only, whatever `more` says";
+}
+
+TEST_F(BooksMenuTest, RecentlyAddedErrorOffersTryAgain) {
+    openList("Recently added");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again"}));
+    EXPECT_EQ(speech.last(), "Server not reachable, 1 of 2");
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Loading, 1 of 1");
+    answer(std::vector<RemoteAlbum>{book("b1", "Neuromancer")});
+    EXPECT_EQ(speech.last(), "Neuromancer, Gibson, 1 of 1");
+}
+
+TEST_F(BooksMenuTest, RecentlyAddedEmptySaysNoBooks) {
+    openList("Recently added");
+    answer(std::vector<RemoteAlbum>{});
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No books"}));
+    EXPECT_EQ(speech.last(), "No books, 1 of 1");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "The server has no books yet. Add books to the server, then come back.");
+}
+
+TEST_F(BooksMenuTest, BooksAToZLoadsLoadingThenTheFirstBook) {
+    openList("Books A to Z");
+    EXPECT_EQ(speech.last(), "Books A to Z. Loading, 1 of 1");
+    EXPECT_EQ(server.lastRequest().arg, "alphabeticalByName");
+    answer(std::vector<RemoteAlbum>{book("b1", "Dune", "Herbert")});
+    EXPECT_EQ(speech.last(), "Dune, Herbert, 1 of 1");
+}
+
+TEST_F(BooksMenuTest, BooksAToZAsksTheSecondPageWhileThereIsMore) {
+    openList("Books A to Z");
+    answer(std::vector<RemoteAlbum>{book("b1", "A1"), book("b2", "A2")}, true);
+    ASSERT_EQ(requestsOf(Kind::Albums), 2u);
+    EXPECT_EQ(server.lastRequest().offset, 2);
+    EXPECT_EQ(server.lastRequest().size, 500);
+    answer(std::vector<RemoteAlbum>{book("b3", "B1")}, false);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"A1", "A2", "B1"}));
+    EXPECT_EQ(requestsOf(Kind::Albums), 2u) << "no third page when the server has no more";
+}
+
+TEST_F(BooksMenuTest, BooksAToZErrorAndEmpty) {
+    openList("Books A to Z");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::BadLogin));
+    app->tick();
+    EXPECT_EQ(labels().front(), "Wrong user name or password");
+    EXPECT_EQ(labels()[1], "Try again");
+    press(Button::Down);
+    press(Button::Ok);
+    answer(std::vector<RemoteAlbum>{});
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No books"}));
+}
+
+TEST_F(BooksMenuTest, AuthorsListLoadsAndAnAuthorListsOnlyTheirBooks) {
+    openList("Authors");
+    EXPECT_EQ(speech.last(), "Authors. Loading, 1 of 1");
+    EXPECT_EQ(server.lastRequest().kind, Kind::Artists);
+    answer(std::vector<RemoteArtist>{{"a1", "Gibson", 2}, {"a2", "Herbert", 1}});
+    EXPECT_EQ(speech.last(), "Gibson, 2 books, 1 of 2");
+    open("Gibson");
+    EXPECT_EQ(speech.last(), "Gibson. Loading, 1 of 1");
+    ASSERT_EQ(server.lastRequest().kind, Kind::ArtistAlbums);
+    EXPECT_EQ(server.lastRequest().arg, "a1");
+    answer(std::vector<RemoteAlbum>{book("b1", "Neuromancer"), book("b3", "Count Zero")});
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Neuromancer", "Count Zero"}));
+    EXPECT_EQ(speech.last(), "Neuromancer, Gibson, 1 of 2");
+}
+
+TEST_F(BooksMenuTest, AuthorsErrorAndEmpty) {
+    openList("Authors");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Server));
+    app->tick();
+    EXPECT_EQ(labels().front(), "Server error");
+    press(Button::Down);
+    press(Button::Ok);
+    answer(std::vector<RemoteArtist>{});
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No authors"}));
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "The server has no authors yet. Add books to the server, then come back.");
+}
+
+TEST_F(BooksMenuTest, AnAuthorWithNoBooksSaysNoBooks) {
+    openList("Authors");
+    answer(std::vector<RemoteArtist>{{"a1", "Gibson", 0}});
+    open("Gibson");
+    answer(std::vector<RemoteAlbum>{});
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No books"}));
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "The server has no books by Gibson.");
+}
+
+TEST_F(BooksMenuTest, ABookOpensOnPlayBookDownloadBookAndItsChapters) {
+    openList("Recently added");
+    answer(std::vector<RemoteAlbum>{book("b1", "Neuromancer")});
+    open("Neuromancer");
+    EXPECT_EQ(speech.last(), "Neuromancer. Loading, 1 of 1");
+    EXPECT_EQ(server.lastRequest().kind, Kind::Book);
+    EXPECT_EQ(server.lastRequest().arg, "b1");
+    EXPECT_EQ(requestsOf(Kind::AlbumTracks), 0u);
+    ASSERT_TRUE(server.replyBook(server.lastRequest().id, threeChapters()));
+    app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play book", "Download book", "Intro", "Middle", "End"}));
+    EXPECT_EQ(speech.last(), "Play book, 3 chapters, 1 of 5");
+}
+
+TEST_F(BooksMenuTest, ABookWithoutServerChaptersListsItsFiles) {
+    RemoteBook b;
+    b.tracks = {bookFile("f1", 200), bookFile("f2", 180)};
+    b.tracks[0].title = "Part one";
+    b.tracks[1].title = "";
+    ASSERT_NO_FATAL_FAILURE(openNeuromancer(b));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play book", "Download book", "Part one", "Chapter 2"}));
+}
+
+TEST_F(BooksMenuTest, NoDownloadBookWithoutACacheFolder) {
+    cache.clear();
+    ASSERT_NO_FATAL_FAILURE(openNeuromancer());
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play book", "Intro", "Middle", "End"}));
+}
+
+TEST_F(BooksMenuTest, ABookThatFailsToLoadOffersTryAgain) {
+    openList("Recently added");
+    answer(std::vector<RemoteAlbum>{book("b1", "Neuromancer")});
+    open("Neuromancer");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_EQ(labels().front(), "Server not reachable");
+    press(Button::Down);
+    press(Button::Ok);
+    EXPECT_EQ(requestsOf(Kind::Book), 2u);
+    ASSERT_TRUE(server.replyBook(server.lastRequest().id, threeChapters()));
+    app->tick();
+    EXPECT_EQ(labels().front(), "Play book");
+}
+
+TEST_F(BooksMenuTest, ABookWithNoFilesSaysNoChapters) {
+    ASSERT_NO_FATAL_FAILURE(openNeuromancer(RemoteBook{}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No chapters"}));
+}
+
+TEST_F(BooksMenuTest, PlayBookStartsAtTheStartWithNoSavedPlace) {
+    ASSERT_NO_FATAL_FAILURE(openNeuromancer());
+    press(Button::Ok);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(app->screens().back().kind, Screen::Kind::BookPlayer);
+    EXPECT_EQ(player.file, "fake://stream/f1");
+    EXPECT_DOUBLE_EQ(player.pos, 0);
+}
+
+TEST_F(BooksMenuTest, PlayBookResumesTheSavedPlaceOfTheLibraryBook) {
+    state.setString("pos:" + bookRef("b1"), "1:42.5");
+    ASSERT_NO_FATAL_FAILURE(openNeuromancer());
+    press(Button::Ok);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, "fake://stream/f2");
+    EXPECT_DOUBLE_EQ(player.pos, 42.5);
+    EXPECT_EQ(app->nowPlaying().title, "Neuromancer");
+}
+
+TEST_F(BooksMenuTest, PlayBookOnTheBookThatIsPlayingKeepsTheProgressMadeSinceItOpened) {
+    ASSERT_NO_FATAL_FAILURE(openNeuromancer());
+    press(Button::Ok);
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    player.pos = 50;
+    press(Button::Home); // back to the book's page; the book plays on
+    ASSERT_EQ(level().title, "Neuromancer");
+    press(Button::Ok);
+    EXPECT_EQ(player.file, "fake://stream/f1");
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+}
+
+TEST_F(BooksMenuTest, OkOnAChapterPlaysTheBookFromThatChapter) {
+    ASSERT_NO_FATAL_FAILURE(openNeuromancer());
+    press(Button::Down);
+    press(Button::Down);
+    press(Button::Down);
+    press(Button::Down);
+    EXPECT_EQ(speech.last(), "End, 5 of 5");
+    press(Button::Ok);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, "fake://stream/f2");
+    EXPECT_DOUBLE_EQ(player.pos, 30);
+    EXPECT_EQ(app->nowPlaying().chapter, "End");
+}
+
+TEST_F(BooksMenuTest, OkOnTheThirdChapterOfThreeInOneFileSeeksWithinIt) {
+    RemoteBook b;
+    b.tracks = {bookFile("f1", 600)};
+    b.chapters = {{"One", 0}, {"Two", 200}, {"Three", 400}};
+    ASSERT_NO_FATAL_FAILURE(openNeuromancer(b));
+    open("Two");
+    EXPECT_EQ(player.file, "fake://stream/f1");
+    EXPECT_DOUBLE_EQ(player.pos, 200);
+}
+
+TEST_F(BooksMenuTest, ThePlaceKeptByPlayBookIsTheOneLibraryResumes) {
+    ASSERT_NO_FATAL_FAILURE(openNeuromancer());
+    open("End");
+    player.pos = 50;
+    app->shutdown();
+    EXPECT_EQ(state.getString("pos:" + bookRef("b1")), "1:50.0");
+}
+
+TEST_F(BooksMenuTest, TheBookPageIsNotRebuiltWhenYouComeBackFromThePlayer) {
+    ASSERT_NO_FATAL_FAILURE(openNeuromancer());
+    press(Button::Down);
+    press(Button::Down); // Intro
+    const size_t asked = server.requests.size();
+    press(Button::Ok);
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    press(Button::Home);
+    ASSERT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(level().title, "Neuromancer");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play book", "Download book", "Intro", "Middle", "End"}));
+    EXPECT_EQ(server.requests.size(), asked) << "no new request";
+}
+
+TEST_F(BooksMenuTest, LeavingABookPageWhileItLoadsDropsTheLateAnswer) {
+    openList("Recently added");
+    answer(std::vector<RemoteAlbum>{book("b1", "Neuromancer")});
+    open("Neuromancer");
+    auto id = server.lastRequest().id;
+    press(Button::Home);
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), id), server.cancelled.end());
+    EXPECT_FALSE(server.replyBook(id, threeChapters()));
+    speech.said.clear();
+    app->tick();
+    EXPECT_TRUE(speech.said.empty());
+}
+
+TEST_F(BooksMenuTest, LeavingABooksListWhileItLoadsCancelsTheRequest) {
+    openList("Books A to Z");
+    auto id = server.lastRequest().id;
+    press(Button::Home);
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), id), server.cancelled.end());
+    EXPECT_FALSE(server.reply(id, std::vector<RemoteAlbum>{book("b1", "Late")}));
+}
+
+TEST_F(BooksMenuTest, AListIsNotRebuiltWhenYouComeBackToIt) {
+    openList("Recently added");
+    answer(std::vector<RemoteAlbum>{book("b1", "Neuromancer")});
+    open("Neuromancer");
+    press(Button::Home); // up one level
+    EXPECT_EQ(level().title, "Recently added");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Neuromancer"}));
+    EXPECT_EQ(requestsOf(Kind::Albums), 1u);
+}
+
+TEST_F(BooksMenuTest, DownloadBookCountsFilesAndFetchesEveryFileOfTheBook) {
+    ASSERT_NO_FATAL_FAILURE(openNeuromancer());
+    open("Download book");
+    EXPECT_EQ(speech.last(), "Downloading, 0 of 2 files.");
+    ASSERT_EQ(downloader.requests.size(), 1u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "f1");
+    open("Download book");
+    EXPECT_EQ(speech.last(), "Downloading, 0 of 2 files.") << "OK again says the same, with the count so far";
+    finishLast();
+    ASSERT_EQ(downloader.requests.size(), 2u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "f2");
+}
+
+TEST_F(BooksMenuTest, ADownloadOfAnAlbumStillCountsTracks) {
+    server.catalogueKind = MusicServer::Catalogue::Music;
+    openAlbum();
+    startDownload();
+    EXPECT_EQ(speech.last(), "Downloading, 0 of 3 tracks.");
+}
+
+TEST_F(BooksMenuTest, ServerStatusStillReportsOnTheBooksMenu) {
+    openServer();
+    open("Server status");
+    EXPECT_EQ(speech.last(), "Checking the server.");
+    ASSERT_TRUE(server.replyPing(server.lastRequest().id, {"Audiobookshelf", "2.37.2"}));
+    app->tick();
+    EXPECT_EQ(speech.last(), "Connected to Audiobookshelf 2.37.2.");
+}

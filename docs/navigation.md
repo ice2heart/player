@@ -618,11 +618,12 @@ Music
 - **Streaming stays a separate Home entry.** It keeps its own lists as above, except
   Playlists, which is in Music.
 
-### Books server menu (phase 2, planned)
+### Books server menu
 
 An Audiobookshelf server ([audiobookshelf.md](audiobookshelf.md)) is a Books server. Its Home
 entry has this menu instead of the Streaming one; a Subsonic server keeps the Streaming menu.
-Nothing here is built yet.
+The menu, the lists and the book page are built; **Download book** starts the download and counts
+files ("Downloading, 0 of 24 files."), but playing a downloaded book offline is not built yet.
 
 ```
 <server name>

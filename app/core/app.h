@@ -229,7 +229,13 @@ private:
     std::optional<Book> resumableBook(const std::string& path) const;
     MusicServer& serverAt(size_t link); // servers_[link]; the stand-in when there is no list
     const std::string& linkName(size_t link) const; // what Home calls it
-    std::vector<MenuItem> streamingMenu(size_t link); // the browsing menu of servers_[link]
+    std::vector<MenuItem> serverMenu(size_t link);    // Home's entry of servers_[link]: the Books menu or the Streaming menu
+    std::vector<MenuItem> streamingMenu(size_t link); // the browsing menu of a Music server
+    std::vector<MenuItem> booksMenu(size_t link);     // the browsing menu of a Books server (catalogue() == Books)
+    void openAuthors(size_t link);
+    void openBookPage(const RemoteAlbum& book, size_t link); // the book's page: Play book, Download book, chapters
+    std::vector<MenuItem> bookItems(const std::vector<RemoteAlbum>& books, size_t link);
+    std::vector<MenuItem> bookPage(const RemoteAlbum& book, const RemoteBook& remote, size_t link);
     std::vector<MenuItem> sleepTimerMenu();
     size_t sleepTimerIndex() const;
     std::vector<MenuItem> settingsMenu();
@@ -368,7 +374,8 @@ private:
     void requestPage(std::uint64_t screenId, int offset, bool waiting);
     void onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<MenuItem> items, bool more);
     void showStatus(std::uint64_t screenId); // Loading, the error, or why it is empty, after the loaded items
-    void openAlbumList(size_t link, const std::string& title, const std::string& listType, int pageSize, bool paged, bool byName = false);
+    void openAlbumList(size_t link, const std::string& title, const std::string& listType, int pageSize, bool paged, bool byName = false,
+                       bool books = false); // `books`: a Books server's list, its items are books
     // `playedId`: the index item to mark as played when it plays (Music).
     // `focusTrack`: the id of the track to open on, once the list has loaded.
     void openRemoteAlbum(const RemoteAlbum& album, const std::string& playedId = {}, const std::string& focusTrack = {},
@@ -396,10 +403,11 @@ private:
         size_t next = 0;        // the item being fetched
         size_t total = 0;       // tracks in the list (a track listed twice counts once)
         size_t finished = 0;    // of those, whole in the cache
+        const char* unit = "track"; // what the progress counts: a book is counted in files
         Downloader::RequestId request = 0;
     };
     void startDownload(size_t link, const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
-                       const RemoteSource& source, const std::function<void()>& started = {}); // `started`: once the job is going
+                       const RemoteSource& source, const std::function<void()>& started = {}, const char* unit = "track"); // `started`: once the job is going
     void sayDownloadBusy(const RemoteSource& source, size_t link);
     bool downloading(const RemoteSource& source, size_t link) const; // that list of that server is the download that runs
     void fetchNextTrack();
