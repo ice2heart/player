@@ -1,7 +1,7 @@
-# Button remap: draft plan
+# Button remap: plan
 
-> Status: investigation complete; implementation has not started. Main mapping
-> confirmed; proposed implementation parameters are below. Current contract: [navigation.md](navigation.md).
+> Status: mapping and implementation parameters confirmed on 2026-10-29;
+> the contract is recorded before code. Implementation steps remain below. Contract: [navigation.md](navigation.md).
 > Implementation references: [architecture.md](architecture.md).
 
 Simplify navigation after UX testing: Back/Forward become the primary list keys;
@@ -33,7 +33,8 @@ held OK exposes Options; Up/Down are unused.
   Options input remains an alias.
 - Short Esc at Home returns to a loaded player, even paused, without resuming it.
   Held Esc at Home stays Home. Up/Down/Talk are silent during normal use.
-- Ordinary menu steps retain the existing Menu wrap setting.
+- Ordinary menu steps retain the existing Menu wrap setting. Ten-item and end
+  jumps clamp at the boundary regardless of Menu wrap.
 - Back keeps the current convention: after more than 3 seconds in a track/chapter,
   restart it; otherwise move to the previous track/chapter.
 - A remote-list end jump stops at the loaded boundary and never fetches remaining
@@ -42,7 +43,7 @@ held OK exposes Options; Up/Down are unused.
   Do not say this at the true end of a fully loaded list. Loading/error status
   rows retain their own announcements rather than promising Load more prematurely.
 
-## Proposed seeking parameters
+## Confirmed seeking parameters
 
 - Light hold starts at the configured long-press threshold (600 ms by default).
   Menu deep-then-hold uses that threshold measured from the initial light press.
@@ -56,7 +57,7 @@ held OK exposes Options; Up/Down are unused.
 - Use one movement earcon when seeking starts and one edge earcon on reaching a
   known boundary; announce the final position on release. Do not queue speech on
   each repeat. Confirm responsiveness and usefulness in local/remote device trials.
-- These are initial implementation parameters for review, not measured UX results.
+- These are approved initial implementation parameters, not measured UX results.
   Transcoded streams may need a slower cadence if reopening cannot keep up.
 
 ## Findings and reuse
@@ -84,7 +85,7 @@ Goal: use the requested mapping in both front ends, with reliable stop-on-releas
 
 | # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
 |---|---|---|
-| 1.1 | **Contract first.** Record the confirmed mapping and settle the proposed parameters below, then update navigation.md before code. Specify timing, boundaries, feedback and inactive buttons. | Walk through menus, player, Home and Options with the agreed mapping. |
+| ✅ 1.1 | **Contract first.** Record the confirmed mapping and parameters, then update navigation.md before code. Specify timing, boundaries, feedback and inactive buttons. | Walk through menus, player, Home and Options with the agreed mapping. |
 | 1.2 | **Gesture lifecycle.** Extend GestureDetector and App input handling for light/deep holds and release. Preserve volume, Play, Power and Hold behavior. | No short action after a hold/deep action; deep after light hold; easing off deep; release order/bounce; cancellation on Hold, sleep, screen change and shutdown. |
 | 1.3 | **Menu and Options mapping.** Move single-item navigation to Back/Forward, deep to 10 items, hold to ends; held OK opens existing Options; implement Esc return from Home; disable Up/Down/Talk in normal use. Remote end jumps stop at loaded items and announce when more pages remain. | Sorted and unsorted lists, empty/single-item lists, boundaries/wrap, remote loading/error rows, partial-list end speaks the continuation line without fetching, fully loaded end omits it, held OK never activates the item, Options nesting, paused/current/no-player Home return. |
 | 1.4 | **Player mapping.** Short Back/Forward uses chapter/track movement with the existing Back restart convention; holds seek at the agreed rates. Preserve prior play/pause state and stop seeking on release or cancellation. Retire step-unit controls and obsolete skip settings. | Back before/at/after the 3-second threshold; chapters within/across files, queue tracks, paused seeking, both rates/directions, boundaries, unknown duration, pending/failed opens, no trailing track skip, old saved unit keys harmless. |
@@ -97,7 +98,7 @@ while seeking; verify volume repeat and held Play remain usable without sight.
 Jump to the loaded end of a paged remote list, hear the continuation line, activate
 Load more, and verify the line disappears once the actual end is loaded.
 
-## Parameters to review before implementation
+## Open questions
 
-- Proposed boundary rule: 10-item and end jumps clamp, regardless of Menu wrap.
-  Review this and the proposed seeking parameters before implementation.
+None blocking implementation. Seeking responsiveness and usefulness, especially
+for transcoded streams, remain device-trial checks rather than measured results.
