@@ -68,7 +68,13 @@ void Servers::finish(std::chrono::milliseconds deadline) {
     for (auto& server : servers_)
         if (auto* subsonic = dynamic_cast<Subsonic*>(server.get()))
             threads.emplace_back([subsonic, deadline] { subsonic->finish(deadline); });
+        else if (auto* books = dynamic_cast<Audiobookshelf*>(server.get()))
+            threads.emplace_back([books, deadline] { books->finishTransport(deadline); });
     for (std::thread& thread : threads) thread.join();
+    // Progress acknowledgements touch App's shared state map: deliver them on
+    // this thread only, after all transport drains and scrobble callbacks ended.
+    for (auto& server : servers_)
+        if (auto* books = dynamic_cast<Audiobookshelf*>(server.get())) books->finish(std::chrono::milliseconds(0));
 #else
     (void)deadline;
 #endif

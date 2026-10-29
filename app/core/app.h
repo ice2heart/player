@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -604,6 +605,22 @@ private:
     // pre-opened one if it is that track at that quality, else a new one.
     MusicServer::Stream remoteStream(size_t file);
     MusicServer::Stream newStream(size_t file); // from the server, with the length it lists
+    struct ProgressSave {
+        size_t link = 0;
+        std::string album, position, stamp;
+        RemoteProgress progress;
+    };
+    void recordProgress(bool finished = false);
+    void pushProgress();
+    void sendProgress(const std::string& id, ProgressSave save);
+    void retryProgress();
+    void checkProgress(Clock::TimePoint now);
+    std::map<std::string, ProgressSave> progressOut_, progressQueued_;
+    std::vector<std::pair<size_t, MusicServer::RequestId>> progressRetries_;
+    std::optional<Clock::TimePoint> progressHeardSince_;
+    Clock::TimePoint::duration progressHeard_{};
+    std::string progressBook_;
+    double progressLast_ = 0;
     void rememberPosition(); // in the state map only, written by saveOnExit()
     double place() const;    // where the loaded track is, open or not
     std::string playerStatus() const;     // the title, then playerStatusBody()
@@ -834,6 +851,8 @@ private:
 
     std::deque<std::string> speechLog_;
     std::array<std::array<int, kGestureCount>, kButtonCount> usage_{};
+    // Save requests outlive App; callbacks first check this token on the UI thread.
+    std::shared_ptr<int> progressLifetime_ = std::make_shared<int>(0);
 };
 
 } // namespace oap

@@ -25,6 +25,9 @@ namespace oap {
 namespace {
 constexpr const char* kVersion = "0.1";
 constexpr size_t kSpeechLogSize = 100;
+constexpr std::chrono::seconds kProgressInterval{60};
+constexpr double kProgressMovement = 5;
+constexpr std::int64_t kProgressMillisPerSecond = 1000;
 
 // Setting keys
 constexpr const char* kSpeechRate = "speech.rate";
@@ -324,6 +327,7 @@ void App::start() {
     startSync(); // silent: the saved server items stay if it fails
     loadScrobbles(); // what was heard and not taken by its server (a cut power, an exit) is sent now
     sendScrobbles();
+    retryProgress();
 
     // The music queue of queue.tsv is in the music player now, closed. Whichever player was used last has
     // "Now playing" on Home; a book that was last is opened below, which parks the music queue.
@@ -719,6 +723,8 @@ void App::shutdown() {
     if (shutDown_) return; // the player is closed now: a second save would write its place as 0
     shutDown_ = true;
     saveOnExit();
+    for (auto [link, request] : progressRetries_) serverAt(link).cancel(request);
+    progressRetries_.clear();
     cancelResume();
     if (download_) servers_[download_->link].downloader.cancel(download_->request); // the .part stays: OK on Download goes on from it
     download_.reset();
@@ -801,6 +807,7 @@ void App::tick() {
     if (fileFinished) onFileFinished();
     checkBuffering(now);
     checkScrobble(now);
+    checkProgress(now);
     checkAutoCache();
     pumpAutoCache();
 
@@ -1232,6 +1239,7 @@ void App::saveConfig() {
 // to spare the flash. A crash or power loss loses the place since the last exit.
 void App::saveOnExit() {
     rememberPosition();
+    pushProgress();
     if (volumeChanged_) saveConfig();
     saveState();
     saveQueue();
@@ -3590,6 +3598,10 @@ void App::restorePrevious() {
 // back; a book of the same kind replaces the loaded one and leaves the parked one alone.
 App::OpenResult App::switchTo(const Book& book, bool music, size_t file, double position, bool autoplay,
                               Then opened, std::optional<Queue> queue, bool continuing) {
+    pushProgress(); // the book being replaced keeps its last heard place on its server
+    progressBook_.clear();
+    progressHeardSince_.reset();
+    progressHeard_ = {};
     dropPendingOpen(); // a failure goes back to what was loaded before it
     cancelMarkPing();  // Play's answer is for the queue that was loaded
     // A queue edited by hand that this one replaces is kept once this one has opened.
@@ -3825,7 +3837,10 @@ void App::onOpened(bool autoplay, Origin origin, const Then& opened) {
     bool goesOn = scrobble_ && (origin == Origin::Resume || origin == Origin::Restore);
     if (!trackRemote(fileIndex_)) scrobble_.reset();
     else if (!goesOn) startTrackPlay();
-    if (autoplay) player_.play();
+    if (autoplay) {
+        player_.play();
+        if (book_ && state_.getString("finished:" + book_->path.string()) == "1") recordProgress();
+    }
     if (opened) opened();
 }
 
@@ -3929,6 +3944,7 @@ void App::play() {
     if (int rewind = resumeRewind()) player_.seek(player_.position() - rewind);
     pausedAt_.reset();
     player_.play();
+    if (book_ && state_.getString("finished:" + book_->path.string()) == "1") recordProgress();
     earcons_.play(Earcon::Play);
 }
 
@@ -3967,7 +3983,7 @@ std::optional<size_t> App::linkToCheck() {
 // A submission is kept first, then sent: it leaves the outbox only when the server answers it.
 void App::submitScrobble(size_t link, const std::string& trackId) {
     if (link >= servers_.size() || servers_[link].key.empty() || !servers_[link].server.configured()) return;
-    outbox_.push_back({servers_[link].key, trackId, static_cast<std::int64_t>(clock_.wallTime()) * 1000});
+    outbox_.push_back({servers_[link].key, trackId, static_cast<std::int64_t>(clock_.wallTime()) * kProgressMillisPerSecond});
     if (outbox_.size() > kMaxScrobbles) outbox_.erase(outbox_.begin(), outbox_.end() - kMaxScrobbles);
     saveScrobbles();
     sendScrobbles();
@@ -4179,6 +4195,7 @@ void App::pause(bool announce) {
     player_.pause();
     pausedAt_ = clock_.now();
     rememberPosition();
+    pushProgress();
     if (announce) say("Paused.");
 }
 
@@ -4430,6 +4447,7 @@ void App::onFileFinished() {
         OpenResult result = loadFile(target, 0, true, Origin::Next, {}, failedHere);
         if (result != OpenResult::Failed || (remote && !music_)) return;
     }
+    recordProgress(true);
     player_.pause();
     // The first entry waits closed when it is a server track, or a queue entry that cannot play now.
     if (trackRemote(0) || (music_ && trackCount() > 0 && availability(0, Origin::Next) != Availability::Yes)) {
@@ -4440,6 +4458,7 @@ void App::onFileFinished() {
         loadFile(0, 0, false, Origin::Next); // next play starts the book again
     }
     rememberPosition();
+    pushProgress();
     earcons_.play(Earcon::Close);
     say(music_ ? "End of queue. Press play to start again." : "End of book. Press play to start again.");
 }
@@ -5024,10 +5043,151 @@ MusicServer::Stream App::newStream(size_t file) {
     return stream;
 }
 
+// Record only in memory. Whole seconds remain wall-clock seconds, even if two places
+// are recorded in the same second; invalidate the acknowledgement in that case.
+void App::recordProgress(bool finished) {
+    if (!book_ || music_ || !book_->serverBook) return;
+    const std::string id = book_->path.string();
+    const std::string position = std::to_string(fileIndex_) + ":" + tenths(place());
+    const bool sync = book_->link < servers_.size() && serverAt(book_->link).syncsProgress();
+    if (!sync) { state_.setString("pos:" + id, position); return; }
+    const bool wasFinished = state_.getString("finished:" + id) == "1";
+    // End-of-book resets the local resume place to the beginning. Keep its
+    // completion until the user actually starts listening again.
+    if (!finished && wasFinished && !player_.playing()) {
+        state_.setString("pos:" + id, position);
+        return;
+    }
+    if (state_.getString("pos:" + id) == position && wasFinished == finished &&
+        !state_.getString("posat:" + id).empty()) return;
+    state_.setString("pos:" + id, position);
+    if (finished) state_.setString("finished:" + id, "1");
+    else state_.erase("finished:" + id);
+    const auto at = static_cast<std::int64_t>(clock_.wallTime());
+    state_.setString("posat:" + id, std::to_string(at));
+    // Keep pushed as the last successful wall timestamp. This extra bit tracks
+    // a changed place in the same wall second, or after the wall clock went back.
+    state_.setString("pushdirty:" + id, "1");
+}
+
+void App::pushProgress() {
+    if (!book_ || music_ || !book_->serverBook || pendingOpen_ ||
+        book_->link >= servers_.size() || !serverAt(book_->link).syncsProgress() || !book_->source) return;
+    rememberPosition();
+    const std::string id = book_->path.string();
+    ProgressSave save;
+    save.link = book_->link;
+    save.album = book_->source->id;
+    save.position = state_.getString("pos:" + id);
+    save.stamp = state_.getString("posat:" + id);
+    if (save.stamp.empty() || (save.stamp == state_.getString("pushed:" + id) && state_.getString("pushdirty:" + id) != "1")) return;
+    save.progress.finished = state_.getString("finished:" + id) == "1";
+    for (double duration : book_->durations) save.progress.duration += duration;
+    save.progress.seconds = save.progress.finished ? save.progress.duration : bookTime(fileIndex_, place());
+    save.progress.updated = static_cast<std::int64_t>(clock_.wallTime()) * kProgressMillisPerSecond;
+    sendProgress(id, std::move(save));
+}
+
+void App::sendProgress(const std::string& id, ProgressSave save) {
+    if (auto it = progressOut_.find(id); it != progressOut_.end()) {
+        if (it->second.position != save.position || it->second.stamp != save.stamp ||
+            it->second.progress.finished != save.progress.finished) progressQueued_[id] = std::move(save);
+        return;
+    }
+    progressOut_[id] = save;
+    const std::weak_ptr<int> lifetime = progressLifetime_;
+    serverAt(save.link).saveProgress(save.album, save.progress, [this, lifetime, id, save](MusicServer::Error error) {
+        if (lifetime.expired()) return;
+        progressOut_.erase(id);
+        const bool same = state_.getString("posat:" + id) == save.stamp &&
+            state_.getString("pos:" + id) == save.position &&
+            (state_.getString("finished:" + id) == "1") == save.progress.finished;
+        if (error == MusicServer::Error::None && same) {
+            state_.setString("pushed:" + id, save.stamp);
+            state_.erase("pushdirty:" + id);
+            if (shutDown_ || sleeping_ || quit_) saveState();
+        }
+        auto next = progressQueued_.find(id);
+        if (next != progressQueued_.end()) {
+            ProgressSave queued = std::move(next->second);
+            progressQueued_.erase(next);
+            if (!shutDown_ && !quit_) sendProgress(id, std::move(queued));
+        }
+    });
+}
+
+void App::checkProgress(TimePoint now) {
+    if (!book_ || music_ || !book_->serverBook || book_->link >= servers_.size() ||
+        !serverAt(book_->link).syncsProgress() || pendingOpen_) {
+        progressHeardSince_.reset();
+        return;
+    }
+    const std::string id = book_->path.string();
+    if (id != progressBook_) {
+        progressBook_ = id;
+        progressHeard_ = {};
+        progressLast_ = bookTime(fileIndex_, place());
+        progressHeardSince_.reset();
+    }
+    if (!player_.playing() || player_.buffering()) { progressHeardSince_.reset(); return; }
+    if (progressHeardSince_) progressHeard_ += now - *progressHeardSince_;
+    progressHeardSince_ = now;
+    if (progressHeard_ < kProgressInterval) return;
+    const double at = bookTime(fileIndex_, place());
+    if (std::abs(at - progressLast_) < kProgressMovement) return;
+    pushProgress();
+    progressLast_ = at;
+    progressHeard_ = {};
+}
+
+// Startup retries are silent and never change playback. Durations are fetched
+// because the index keeps no per-file timeline for server books.
+void App::retryProgress() {
+    const std::weak_ptr<int> lifetime = progressLifetime_;
+    for (const auto& [key, stamp] : state_.values()) {
+        if (!key.starts_with("posat:")) continue;
+        const std::string id = key.substr(6);
+        const std::string pushed = state_.getString("pushed:" + id);
+        try { if (state_.getString("pushdirty:" + id) != "1" && !pushed.empty() && std::stoll(stamp) <= std::stoll(pushed)) continue; }
+        catch (...) { continue; }
+        const auto on = serverRefOf({id});
+        if (!on || !serverAt(on->link).configured() || !serverAt(on->link).syncsProgress()) continue;
+        const std::string position = state_.getString("pos:" + id);
+        const bool finished = state_.getString("finished:" + id) == "1";
+        const size_t link = on->link;
+        const std::string prefix = LibraryIndex::seenRef(servers_[link].key, SeenKind::Album, "");
+        if (!on->ref.starts_with(prefix)) continue;
+        const std::string album = on->ref.substr(prefix.size());
+        const auto request = serverAt(link).book(album, [this, lifetime, id, stamp, position, finished, link, album](MusicServer::Error error, RemoteBook book) {
+            if (lifetime.expired() || shutDown_ || error != MusicServer::Error::None || book.tracks.empty() ||
+                state_.getString("posat:" + id) != stamp || state_.getString("pos:" + id) != position ||
+                (state_.getString("finished:" + id) == "1") != finished) return;
+            ProgressSave save;
+            save.link = link; save.album = album; save.position = position; save.stamp = stamp;
+            save.progress.finished = finished;
+            try {
+                const auto colon = position.find(':');
+                if (colon == std::string::npos) return;
+                const size_t file = std::stoul(position.substr(0, colon));
+                if (file >= book.tracks.size()) return;
+                save.progress.seconds = std::stod(position.substr(colon + 1));
+                for (size_t i = 0; i < book.tracks.size(); ++i) {
+                    save.progress.duration += book.tracks[i].duration;
+                    if (i < file) save.progress.seconds += book.tracks[i].duration;
+                }
+                if (finished) save.progress.seconds = save.progress.duration;
+                save.progress.updated = std::stoll(stamp) * kProgressMillisPerSecond;
+            } catch (...) { return; }
+            sendProgress(id, std::move(save));
+        });
+        progressRetries_.push_back({link, request});
+    }
+}
+
 void App::rememberPosition() {
     if (book_ && book_->serverBook) { // its place, like a local book's; no last_stream
         if (!player_.isOpen() && !pendingOpen_ && !reopenAt_) return;
-        state_.setString("pos:" + book_->path.string(), std::to_string(fileIndex_) + ":" + tenths(place()));
+        recordProgress();
         return;
     }
     if (!book_ || music_ || !player_.isOpen()) return;
@@ -5165,6 +5325,14 @@ void App::powerOff() {
 
 void App::restart(bool saveFirst) {
     if (saveFirst) saveOnExit();
+    for (auto [link, request] : progressRetries_) serverAt(link).cancel(request);
+    progressRetries_.clear();
+    progressLifetime_ = std::make_shared<int>(0);
+    progressOut_.clear();
+    progressQueued_.clear();
+    progressBook_.clear();
+    progressHeardSince_.reset();
+    progressHeard_ = {};
     shutDown_ = false;
     cancelMarkPing(); // Play's answer must not start the music of the queue that is gone
     pendingOpen_.reset();

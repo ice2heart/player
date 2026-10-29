@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <set>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -69,6 +70,11 @@ public:
     void scrobble(const std::string&, bool, std::optional<std::int64_t>, std::function<void(Error)>) override {}
     void poll() override;
 
+    // Exit: transport drains can run in parallel. finish() delivers only save
+    // acknowledgements, on its caller, after the worker has stopped.
+    void finishTransport(std::chrono::milliseconds deadline);
+    void finish(std::chrono::milliseconds deadline);
+
     static constexpr int kMaxPageSize = 500;
 
 private:
@@ -103,6 +109,8 @@ private:
     std::shared_ptr<Inbox> inbox_ = std::make_shared<Inbox>();
     RequestId lastId_ = 0;
     std::unordered_map<RequestId, std::function<void(Reply)>> waiting_; // UI thread only
+    std::set<RequestId> progressSaveIds_;
+    bool transportFinished_ = false;
     std::string libraryId_;                                             // the library to use, once known (UI thread only)
     std::unique_ptr<Http> http_; // reset first in the destructor
 };

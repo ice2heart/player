@@ -16426,3 +16426,275 @@ TEST_F(BookDownloadTest, NothingSpokenOrSavedByABookDownloadHoldsAUrl) {
     std::string text((std::istreambuf_iterator<char>(manifest)), std::istreambuf_iterator<char>());
     for (const char* bad : {"http", "://", "token", "sesame"}) EXPECT_EQ(text.find(bad), std::string::npos) << text;
 }
+
+// Progress pushes are observed at the server and through the saved state, not
+// through App internals. The fake wall clock deliberately stays in one second.
+class BookProgressPushTest : public BooksServerTest {
+protected:
+    void SetUp() override { BooksServerTest::SetUp(); server.progressSync = true; }
+    void restartFromDisk() {
+        app.reset();
+        player = FakePlayer{};
+        state.load();
+        start(false);
+    }
+    void answerRetry() {
+        ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters()));
+        app->tick();
+    }
+};
+
+TEST_F(BookProgressPushTest, PausePushesTheFileOffsetAndWritesNoDiskUntilExit) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 150;
+    hold(Button::Forward); // file 2, thirty seconds in
+    press(Button::PlayPause);
+    ASSERT_EQ(server.progressSaves.size(), 1u);
+    EXPECT_EQ(server.progressSaves[0].albumId, "b1");
+    EXPECT_DOUBLE_EQ(server.progressSaves[0].progress.seconds, 230);
+    EXPECT_DOUBLE_EQ(server.progressSaves[0].progress.duration, 380);
+    EXPECT_FALSE(server.progressSaves[0].progress.finished);
+    EXPECT_EQ(stateFile.saves, 0);
+    app->tick(); // acknowledgement remains in memory
+    EXPECT_EQ(state.getString("pushed:" + ref("b1")), state.getString("posat:" + ref("b1")));
+    EXPECT_EQ(stateFile.saves, 0);
+    app->shutdown();
+    EXPECT_EQ(stateFile.onDisk("pos:" + ref("b1")), "1:30.0");
+    EXPECT_EQ(stateFile.onDisk("posat:" + ref("b1")), "1700000000");
+    EXPECT_EQ(stateFile.onDisk("pushed:" + ref("b1")), "1700000000");
+}
+
+TEST_F(BookProgressPushTest, PeriodicPushWaitsSixtyPlaybackSecondsAndFiveSecondsOfMovement) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 59;
+    idle(59s);
+    EXPECT_TRUE(server.progressSaves.empty());
+    player.pos = 60;
+    idle(1s);
+    ASSERT_EQ(server.progressSaves.size(), 1u);
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 60);
+    app->tick();
+    player.pos = 64;
+    idle(60s);
+    EXPECT_EQ(server.progressSaves.size(), 1u);
+    player.pos = 65;
+    idle(1s);
+    EXPECT_EQ(server.progressSaves.size(), 2u);
+    EXPECT_EQ(stateFile.saves, 0);
+}
+
+TEST_F(BookProgressPushTest, FailedPushRetriesAfterRestartButAnAcknowledgedPushDoesNot) {
+    server.progressSaveError = MusicServer::Error::Unreachable;
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 42;
+    press(Button::PlayPause);
+    app->tick();
+    EXPECT_NE(state.getString("pushed:" + ref("b1")), state.getString("posat:" + ref("b1")));
+    app->shutdown();
+    restartFromDisk();
+    server.progressSaveError = MusicServer::Error::None;
+    ASSERT_NO_FATAL_FAILURE(answerRetry());
+    ASSERT_EQ(server.progressSaves.size(), 3u); // pause, exit retry, startup retry
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 42);
+    app->tick();
+    app->shutdown();
+    const size_t books = countOf(Kind::Book);
+    restartFromDisk();
+    EXPECT_EQ(countOf(Kind::Book), books) << "acknowledged saved place needs no metadata request";
+}
+
+TEST_F(BookProgressPushTest, LeavingForAnotherBookAndSleepAndExitPushTheirLatestPlace) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 18;
+    hold(Button::Home);
+    open("Library");
+    open("Alpha");
+    ASSERT_EQ(server.progressSaves.size(), 1u);
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 18);
+    hold(Button::Home);
+    open("Library");
+    open("Dune");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters()));
+    app->tick();
+    player.pos = 35;
+    press(Button::Power);
+    ASSERT_EQ(server.progressSaves.size(), 2u);
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 35);
+    EXPECT_GT(stateFile.saves, 0);
+    app->tick();
+    EXPECT_EQ(stateFile.onDisk("pushed:" + ref("b1")), stateFile.onDisk("posat:" + ref("b1")));
+    press(Button::Power); // wake
+    press(Button::PlayPause);
+    player.pos = 50;
+    app->shutdown();
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 50);
+    server.poll(); // final acknowledgement, while App is alive
+    EXPECT_EQ(stateFile.onDisk("pushed:" + ref("b1")), stateFile.onDisk("posat:" + ref("b1")));
+}
+
+TEST_F(BookProgressPushTest, EndOfBookPushesFinishedAndAnOfflineCompletionSurvivesRestart) {
+    server.progressSaveError = MusicServer::Error::Unreachable;
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.atEnd = true;
+    app->tick(); // next file
+    player.pos = 180;
+    player.atEnd = true;
+    app->tick();
+    ASSERT_FALSE(server.progressSaves.empty());
+    EXPECT_TRUE(server.progressSaves.back().progress.finished);
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 380);
+    EXPECT_EQ(state.getString("pos:" + ref("b1")), "0:0.0");
+    app->tick();
+    app->shutdown();
+    restartFromDisk();
+    ASSERT_NO_FATAL_FAILURE(answerRetry());
+    EXPECT_TRUE(server.progressSaves.back().progress.finished);
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 380);
+}
+
+TEST_F(BookProgressPushTest, LateAcknowledgementCannotMarkANewerSameSecondPlaceAsPushed) {
+    server.holdProgressSaves = true;
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 10;
+    press(Button::PlayPause);
+    press(Button::PlayPause);
+    player.pos = 20;
+    press(Button::PlayPause);
+    EXPECT_EQ(server.progressSaves.size(), 1u) << "saves for one book are serial";
+    ASSERT_TRUE(server.answerProgressSave());
+    app->tick();
+    EXPECT_NE(state.getString("pushed:" + ref("b1")), state.getString("posat:" + ref("b1")));
+    ASSERT_EQ(server.progressSaves.size(), 2u);
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 20);
+    ASSERT_TRUE(server.answerProgressSave());
+    app->tick();
+    EXPECT_EQ(state.getString("pushed:" + ref("b1")), state.getString("posat:" + ref("b1")));
+    player.pos = 25; // seek while paused, in the very same wall second
+    app->shutdown();
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 25);
+    EXPECT_EQ(stateFile.onDisk("pushdirty:" + ref("b1")), "1");
+    app.reset();
+    const auto saved = state.values();
+    ASSERT_TRUE(server.answerProgressSave());
+    server.poll(); // a destroyed App is never touched
+    EXPECT_EQ(state.values(), saved);
+}
+
+TEST_F(BookProgressPushTest, StaleStartupMetadataNeverOverwritesANewerPlayedPlace) {
+    state.setString("pos:" + ref("b1"), "0:10.0");
+    state.setString("posat:" + ref("b1"), "1699999990");
+    state.setString("pushed:" + ref("b1"), "1699999989");
+    start();
+    const auto retry = lastOf(Kind::Book);
+    syncBooks({book("b1", "Dune")});
+    open("Library");
+    open("Dune");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters()));
+    app->tick();
+    player.pos = 50;
+    press(Button::PlayPause);
+    ASSERT_TRUE(server.replyBook(retry, twoFilesThreeChapters()));
+    app->tick();
+    ASSERT_EQ(server.progressSaves.size(), 1u);
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 50);
+}
+
+TEST_F(BookProgressPushTest, ABackwardWallClockKeepsTheLastAcknowledgementAndRetriesDirtyProgress) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 10;
+    press(Button::PlayPause);
+    app->tick();
+    ASSERT_EQ(state.getString("pushed:" + ref("b1")), "1700000000");
+    server.progressSaveError = MusicServer::Error::Unreachable;
+    clock.setWallTime(1699999900);
+    player.pos = 20;
+    app->shutdown();
+    server.poll();
+    EXPECT_EQ(stateFile.onDisk("pushed:" + ref("b1")), "1700000000");
+    EXPECT_EQ(stateFile.onDisk("posat:" + ref("b1")), "1699999900");
+    EXPECT_EQ(stateFile.onDisk("pushdirty:" + ref("b1")), "1");
+    restartFromDisk();
+    const size_t saves = server.progressSaves.size();
+    ASSERT_NO_FATAL_FAILURE(answerRetry());
+    EXPECT_EQ(server.progressSaves.size(), saves + 1);
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 20);
+}
+
+TEST_F(BookProgressPushTest, AServerThatDoesNotSyncNeverGetsProgressOrTimestampKeys) {
+    server.progressSync = false;
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 42;
+    idle(60s);
+    press(Button::PlayPause);
+    app->shutdown();
+    EXPECT_TRUE(server.progressSaves.empty());
+    EXPECT_TRUE(stateFile.onDisk("posat:" + ref("b1")).empty());
+    EXPECT_EQ(stateFile.onDisk("pos:" + ref("b1")), "0:42.0");
+}
+
+TEST_F(BookProgressPushTest, PlaybackAfterCompletionClearsFinishedAndPushesTheNewPlace) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.atEnd = true;
+    app->tick();
+    player.pos = 180;
+    player.atEnd = true;
+    app->tick();
+    app->tick();
+    ASSERT_TRUE(server.progressSaves.back().progress.finished);
+    press(Button::PlayPause);
+    player.pos = 12;
+    press(Button::PlayPause);
+    EXPECT_FALSE(server.progressSaves.back().progress.finished);
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 12);
+    EXPECT_TRUE(state.getString("finished:" + ref("b1")).empty());
+}
+
+TEST_F(BookProgressPushTest, PausedTimeDoesNotCountTowardsThePeriodicPlaybackInterval) {
+    settings.setInt("power.auto_sleep_min", 0);
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 30;
+    idle(30s);
+    press(Button::PlayPause);
+    app->tick();
+    const size_t saves = server.progressSaves.size();
+    idle(10min);
+    press(Button::PlayPause);
+    app->tick(); // establish the resumed playback interval
+    player.pos = 59;
+    idle(29s);
+    EXPECT_EQ(server.progressSaves.size(), saves);
+    player.pos = 60;
+    idle(1s);
+    EXPECT_EQ(server.progressSaves.size(), saves + 1);
+}
+
+TEST_F(BookProgressPushTest, StartupMetadataFailureIsSilentAndLeavesProgressPending) {
+    state.setString("pos:" + ref("b1"), "1:30.0");
+    state.setString("posat:" + ref("b1"), "1700000000");
+    start();
+    speech.said.clear();
+    ASSERT_TRUE(server.fail(lastOf(Kind::Book), MusicServer::Error::Unreachable));
+    app->tick();
+    EXPECT_TRUE(server.progressSaves.empty());
+    EXPECT_TRUE(speech.said.empty());
+    EXPECT_TRUE(state.getString("pushed:" + ref("b1")).empty());
+}
+
+TEST_F(BookProgressPushTest, ExitWithAnOlderSaveOutstandingKeepsTheLatestPlaceForRestart) {
+    server.holdProgressSaves = true;
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 10;
+    press(Button::PlayPause);
+    player.pos = 20;
+    app->shutdown();
+    ASSERT_EQ(server.progressSaves.size(), 1u);
+    ASSERT_TRUE(server.answerProgressSave());
+    server.poll();
+    EXPECT_EQ(server.progressSaves.size(), 1u) << "no follow-up after the exit transport stops";
+    EXPECT_EQ(stateFile.onDisk("pos:" + ref("b1")), "0:20.0");
+    EXPECT_EQ(stateFile.onDisk("pushdirty:" + ref("b1")), "1");
+    restartFromDisk();
+    ASSERT_NO_FATAL_FAILURE(answerRetry());
+    ASSERT_EQ(server.progressSaves.size(), 2u);
+    EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 20);
+}

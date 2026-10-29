@@ -122,7 +122,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/frontend/held_buttons.{h,cpp}` | `HeldButtons`: counts the inputs holding each button, so App gets `keyUp` only when the last one lets go. |
 | `app/core/no_music_server.{h,cpp}` | `NoMusicServer`: the `MusicServer` `App` uses when it is given no server (config.yaml sets up none, or none this build can use: another `type`, or a build without `OAP_BUILD_NET`); `configured()` is false and every request finishes with `NotConfigured` on the next `poll()`. |
 | `app/core/no_downloader.{h,cpp}` | `NoDownloader`: the `Downloader` `App` uses with no server; every download finishes with `NotConfigured` on the next `poll()` and writes nothing. |
-| `app/frontend/make_music_server.{h,cpp}` | `makeServers(config)` gives a `Servers` that owns the objects behind the `ServerLink`s both front ends give `App` (`links()`): for each entry of `serverConfigs()` a `Subsonic` and an `HttpDownloader` (type `subsonic`), or an `Audiobookshelf` and an `HttpDownloader` whose URL source is the server's `stream()` URL (type `audiobookshelf` with an `api_key`; without one, no link and the line `servers: Audiobookshelf needs api_key`), when built with `OAP_BUILD_NET` (`OAP_HAVE_NET`). An entry of another type, or any entry in a build without network support, gets no link and a line on stderr (`server: type 'plex' is not supported; streaming is off`, or the one about `OAP_BUILD_NET=OFF`); what `serverConfigs()` ignored (a `server:` next to `servers:`, a repeated server) is printed too. A link's name is the entry's `name`, else "Server" when one entry is set up, else "Server N" by its place among the entries; its key is `TrackCache::serverKey(url, user)`. `Servers::finish(deadline)` lets every Subsonic server finish its requests at exit (Audiobookshelf has nothing to finish). Its own library, `oapmusicserver`, so `oapfrontend` keeps no dependencies. |
+| `app/frontend/make_music_server.{h,cpp}` | `makeServers(config)` gives a `Servers` that owns the objects behind the `ServerLink`s both front ends give `App` (`links()`): for each entry of `serverConfigs()` a `Subsonic` and an `HttpDownloader` (type `subsonic`), or an `Audiobookshelf` and an `HttpDownloader` whose URL source is the server's `stream()` URL (type `audiobookshelf` with an `api_key`; without one, no link and the line `servers: Audiobookshelf needs api_key`), when built with `OAP_BUILD_NET` (`OAP_HAVE_NET`). An entry of another type, or any entry in a build without network support, gets no link and a line on stderr (`server: type 'plex' is not supported; streaming is off`, or the one about `OAP_BUILD_NET=OFF`); what `serverConfigs()` ignored (a `server:` next to `servers:`, a repeated server) is printed too. A link's name is the entry's `name`, else "Server" when one entry is set up, else "Server N" by its place among the entries; its key is `TrackCache::serverKey(url, user)`. `Servers::finish(deadline)` lets every Subsonic and Audiobookshelf server finish its requests at exit; Audiobookshelf save acknowledgements are delivered on the caller after transport threads join. Its own library, `oapmusicserver`, so `oapfrontend` keeps no dependencies. |
 | `app/frontend/gamepad.{h,cpp}` | `GamepadMapper`: game controller buttons → device buttons, with the layout in `defaultGamepadLayout()`. Used by the simulator (SDL) and headless (evdev). |
 | `app/frontend/pick_font.{h,cpp}` | `pickFont(candidates, exists)`: the first of the candidates for which `exists` is true (a parameter, so tests need no files). The simulator's font choice is in section 10. |
 | `app/sim/main.cpp` | Simulator: window, key mapping, visualisation. |
@@ -745,6 +745,25 @@ screen closes. The user-visible rules are in [navigation.md](navigation.md#lists
   the place is one. `syncDownloads()` makes no Cached (Music) item for a Books server: its downloads are books.
   `openServerBook()` saves the place of the book that plays before reading the saved place, so reopening it from Library
   keeps the progress made since it opened.
+- **Pushing a server book's place (audiobookshelf.md 3.3).** A server that `syncsProgress()`
+  receives the position on the book's timeline (preceding file durations plus seconds in the current
+  file), its duration and completion on pause, replacement, sleep, exit and each 60 seconds of
+  playback with at least 5 seconds of movement. Paused and buffering time do not count. All position
+  state stays in memory until exit or sleep. `posat:<id>` is the wall second of the recorded place;
+  `pushed:<id>` is the timestamp last successfully acknowledged. `pushdirty:<id>` preserves pending
+  changes made in that same second or after a clock correction; a matching acknowledgement clears it.
+  `finished:<id>` keeps an offline completion even though local resume resets to the beginning; actual
+  playback clears it. These keys share the existing book id (`<server key>:album:<id>`), never a URL.
+  Startup silently asks `book()` for pending places' file durations and sends the stored timeline
+  position; failed or stale metadata answers leave it pending. A late save answer can acknowledge
+  only the same timestamp, file position and completion, and never touches a destroyed App (weak
+  lifetime token). Saves of one book are serial; a newer snapshot waits behind an outstanding save.
+  If exit ends that queue before the newest snapshot is sent, it remains dirty for startup retry.
+  `Servers::finish()` drains Audiobookshelf transports in parallel with Subsonic; after joins it
+  delivers only progress-save acknowledgements on the caller thread (`Audiobookshelf::finish()`),
+  so completed exit saves can update the persisted marker without concurrent state-map writes.
+  Browsing callbacks never run during this drain. Real-server listening and offline retry need a
+  device check; pulling a place and Continue listening remain steps 3.4 and 3.5.
 - **Server chapters (audiobookshelf.md 2.6).** `openServerBook()` passes `RemoteBook::chapters` to
   `serverBookOf()`, which places them with `serverChaptersOf()`: a file starts where the `durations`
   before it add up to (what Audiobookshelf calls `startOffset`), so `Book::chapters` holds

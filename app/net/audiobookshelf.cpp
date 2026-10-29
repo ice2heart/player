@@ -33,6 +33,30 @@ Audiobookshelf::~Audiobookshelf() {
     http_.reset(); // stop the HTTP thread first: its handlers hold the inbox
 }
 
+void Audiobookshelf::finishTransport(std::chrono::milliseconds deadline) {
+    if (transportFinished_) return;
+    http_->finish(deadline);
+    transportFinished_ = true;
+}
+
+void Audiobookshelf::finish(std::chrono::milliseconds deadline) {
+    finishTransport(deadline);
+    std::vector<std::pair<RequestId, Reply>> batch;
+    {
+        std::lock_guard lock(inbox_->mutex);
+        batch.swap(inbox_->ready);
+    }
+    for (auto& [id, reply] : batch) {
+        auto it = waiting_.find(id);
+        if (it == waiting_.end() || !progressSaveIds_.contains(id)) continue;
+        auto done = std::move(it->second);
+        waiting_.erase(it);
+        done(std::move(reply));
+    }
+    waiting_.clear(); // an aborted or browsing callback cannot run after finish
+    progressSaveIds_.clear();
+}
+
 bool Audiobookshelf::configured() const { return !config_.url.empty() && !config_.apiKey.empty(); }
 
 void Audiobookshelf::answer(RequestId id, std::function<void(Reply)> done, Reply reply) {
@@ -232,7 +256,9 @@ MusicServer::RequestId Audiobookshelf::progress(std::string albumId,
 
 void Audiobookshelf::saveProgress(std::string albumId, RemoteProgress progress, std::function<void(Error)> done) {
     RequestId id = ++lastId_;
-    auto complete = [done = std::move(done)](Reply reply) {
+    progressSaveIds_.insert(id);
+    auto complete = [this, id, done = std::move(done)](Reply reply) {
+        progressSaveIds_.erase(id);
         if (reply.error != Error::None)
             std::fprintf(stderr, "Audiobookshelf: progress save failed (%d)\n", static_cast<int>(reply.error));
         if (done) done(reply.error);

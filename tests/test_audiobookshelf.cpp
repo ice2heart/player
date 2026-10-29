@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 #include <limits>
+#include <thread>
 
 #include <memory>
 #include <string>
@@ -52,6 +53,9 @@ public:
         calls.push_back({id, std::move(url), std::move(headers), std::move(handler), "PATCH", std::move(body)});
     }
     void cancel(Id id) override { cancelled.push_back(id); }
+    void finish(std::chrono::milliseconds deadline) override { finishDeadline = deadline; ++finishes; }
+    int finishes = 0;
+    std::chrono::milliseconds finishDeadline{};
 
     void answer(std::size_t call, long status, std::string body) {
         Http::Response response;
@@ -780,4 +784,29 @@ TEST(Audiobookshelf, ProgressWithoutConfigurationAndInvalidSavesSendNothing) {
     s.abs->poll();
     EXPECT_EQ(invalid, 1);
     EXPECT_TRUE(s.http->calls.empty());
+}
+
+TEST(Audiobookshelf, ExitDrainDeliversOnlySaveAcknowledgementsOnTheCallingThread) {
+    Server s;
+    const auto caller = std::this_thread::get_id();
+    int saves = 0, reads = 0;
+    s.abs->progress("book", [&](Error, std::optional<oap::RemoteProgress>) { ++reads; });
+    s.abs->saveProgress("book", {10, 100, false, 0}, [&](Error error) {
+        EXPECT_EQ(error, Error::None);
+        EXPECT_EQ(std::this_thread::get_id(), caller);
+        ++saves;
+    });
+    s.http->answer(0, 200, audiobookshelfFixture("progress.json"));
+    s.http->answer(1, 200, "{}");
+    std::thread drain([&] { s.abs->finishTransport(std::chrono::milliseconds(123)); });
+    drain.join();
+    EXPECT_EQ(saves, 0);
+    EXPECT_EQ(reads, 0);
+    s.abs->finish(std::chrono::milliseconds(0));
+    EXPECT_EQ(s.http->finishes, 1);
+    EXPECT_EQ(s.http->finishDeadline.count(), 123);
+    EXPECT_EQ(saves, 1);
+    EXPECT_EQ(reads, 0);
+    s.abs->poll();
+    EXPECT_EQ(reads, 0);
 }
