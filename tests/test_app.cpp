@@ -149,6 +149,14 @@ protected:
         app->keyUp(b);
     }
 
+    void deep(Button b) {
+        const Button second = b == Button::Back ? Button::BackDeep : Button::ForwardDeep;
+        app->keyDown(b);
+        app->keyDown(second);
+        app->keyUp(second);
+        app->keyUp(b);
+    }
+
     void hold(Button b) {
         app->keyDown(b);
         clock.advance(700ms);
@@ -179,7 +187,7 @@ protected:
     // Moves down the current menu until `label` is selected, then presses OK.
     void open(const std::string& label) {
         for (size_t i = 0; i < level().items.size() && level().items[level().index].label != label; ++i)
-            press(Button::Down);
+            press(Button::Forward);
         ASSERT_EQ(level().items[level().index].label, label);
         press(Button::Ok);
     }
@@ -294,32 +302,40 @@ TEST_F(AppTest, InvalidSavedPositionStartsFromTheBeginning) {
 
 // ---------------------------------------------------------------- menus
 
-TEST_F(AppTest, UpAndDownMoveThroughTheMenuAndWrap) {
+TEST_F(AppTest, BackAndForwardMoveThroughTheMenuAndWrap) {
     start();
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Music, 2 of 7");
     EXPECT_EQ(sounds.last(), Earcon::Move);
-    press(Button::Up);
-    press(Button::Up);
+    press(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(speech.last(), "Help, 7 of 7");
+    EXPECT_EQ(sounds.last(), Earcon::Wrap);
+    press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Library, 1 of 7");
     EXPECT_EQ(sounds.last(), Earcon::Wrap);
 }
 
 TEST_F(AppTest, NoWrapWhenWrapAroundIsOff) {
     settings.setInt("menu.wrap", 0);
     start();
-    press(Button::Up);
+    press(Button::Back);
     EXPECT_EQ(level().index, 0u);
     EXPECT_EQ(sounds.last(), Earcon::Edge);
     EXPECT_EQ(speech.last(), "Library, 1 of 7");
+    hold(Button::Forward);
+    press(Button::Forward);
+    EXPECT_EQ(level().index, 6u);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "Help, 7 of 7");
 }
 
-TEST_F(AppTest, LongPressDownJumpsToLastItemOnce) {
+TEST_F(AppTest, LongPressForwardJumpsToLastItemOnce) {
     start();
-    hold(Button::Down);
+    hold(Button::Forward);
     EXPECT_EQ(level().index, 6u);
     EXPECT_EQ(speech.last(), "Help, 7 of 7");
-    const auto& usage = app->buttonUsage()[size_t(Button::Down)];
+    const auto& usage = app->buttonUsage()[size_t(Button::Forward)];
     EXPECT_EQ(usage[size_t(Gesture::Long)], 1);
     EXPECT_EQ(usage[size_t(Gesture::Short)], 0);
 }
@@ -327,32 +343,34 @@ TEST_F(AppTest, LongPressDownJumpsToLastItemOnce) {
 TEST_F(AppTest, EveryKeyInterruptsSpeech) {
     start();
     int before = speech.stops;
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.stops, before + 1);
 }
 
 TEST_F(AppTest, ExpertVerbosityLeavesOutThePosition) {
     settings.setInt("verbosity", 2);
     start();
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Music");
 }
 
 TEST_F(AppTest, BeginnerVerbosityAddsAHint) {
     settings.setInt("verbosity", 0);
     start();
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Music, 2 of 7. Press OK to open.");
 }
 
-TEST_F(AppTest, OkOpensSubmenuAndLongOkGoesBack) {
+TEST_F(AppTest, OkOpensSubmenuAndLongOkOffersOptions) {
     start();
     press(Button::Ok);
     EXPECT_EQ(level().title, "Library");
     EXPECT_EQ(speech.last(), "Library. Alpha, 2 parts, 1 of 2");
     hold(Button::Ok);
-    EXPECT_EQ(app->screens().size(), 1u);
-    EXPECT_EQ(sounds.last(), Earcon::Close);
+    EXPECT_EQ(level().title, "Library");
+    EXPECT_EQ(speech.last(), "No options.");
+    EXPECT_TRUE(player.opened.empty()) << "held OK never activates Alpha";
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
 }
 
 TEST_F(AppTest, ASettingOpensOnItsCurrentValue) {
@@ -361,7 +379,7 @@ TEST_F(AppTest, ASettingOpensOnItsCurrentValue) {
     open("Volume");
     EXPECT_EQ(level().title, "Volume");
     EXPECT_EQ(speech.last(), "Volume. 70 percent, current, 15 of 21");
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "75 percent, 16 of 21");
 }
 
@@ -369,7 +387,7 @@ TEST_F(AppTest, ChoosingAValueFromTheListSavesItAppliesItAndGoesBack) {
     start();
     open("Settings");
     open("Speech rate");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
     EXPECT_EQ(configFile.onDisk("speech.rate"), "250") << "written at once";
@@ -382,7 +400,7 @@ TEST_F(AppTest, LeavingAValueListChangesNothing) {
     start();
     open("Settings");
     open("Volume");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Home);
     EXPECT_EQ(level().title, "Settings");
     EXPECT_EQ(settings.getInt("volume", 70), 70);
@@ -393,14 +411,14 @@ TEST_F(AppTest, RightInSettingsChangesNoSetting) {
     start();
     open("Settings"); // Speech rate, then Volume, ... 12 items in all
     press(Button::Forward);
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Back);
     press(Button::Forward);
     EXPECT_EQ(settings.getInt("speech.rate", 220), 220);
     EXPECT_EQ(settings.getInt("volume", 70), 70);
     EXPECT_EQ(speech.rate, 220);
     EXPECT_FLOAT_EQ(volume.volume, 0.7f);
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(configFile.saves, 0) << "nothing was changed, so nothing is written";
     EXPECT_EQ(stateFile.saves, 0);
 }
@@ -410,10 +428,10 @@ TEST_F(AppTest, ASettingIsOnlyChangedInItsList) {
     open("Settings"); // Speech rate
     press(Button::Forward);
     press(Button::Back);
-    ASSERT_EQ(level().index, 0u) << "Left from 10 is back at the first item";
+    ASSERT_EQ(level().index, 0u) << "Back returns to the first setting";
     press(Button::Ok);
     EXPECT_EQ(level().title, "Speech rate");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(settings.getInt("speech.rate", 0), 250);
     EXPECT_EQ(speech.rate, 250);
@@ -423,46 +441,42 @@ TEST_F(AppTest, ASettingIsOnlyChangedInItsList) {
 TEST_F(AppTest, RightInAListThatIsNotSortedByNameMovesTenItems) {
     start();
     open("Settings"); // 14 items
-    press(Button::Forward);
+    deep(Button::Forward);
     EXPECT_EQ(level().index, 10u);
     EXPECT_EQ(sounds.last(), Earcon::Move);
     EXPECT_EQ(speech.last(), "Download quality, original file, 11 of 14") << "no letter: the list is not sorted by name";
-    press(Button::Forward);
+    deep(Button::Forward);
     EXPECT_EQ(level().index, 13u) << "stops at the last item";
     EXPECT_EQ(sounds.last(), Earcon::Move);
-    press(Button::Back);
+    deep(Button::Back);
     EXPECT_EQ(level().index, 3u);
-    press(Button::Back);
+    deep(Button::Back);
     EXPECT_EQ(level().index, 0u) << "stops at the first item";
     EXPECT_EQ(sounds.last(), Earcon::Move);
 }
 
-TEST_F(AppTest, TheTenItemJumpHasEdgesAndWrapsWhenWrapAroundIsOn) {
-    settings.setInt("menu.wrap", 0);
-    start();
-    open("Settings");
-    press(Button::Back);
-    EXPECT_EQ(level().index, 0u);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Speech rate, 220 words per minute, 1 of 14");
-    hold(Button::Down); // last
-    press(Button::Forward);
-    EXPECT_EQ(level().index, 13u);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 14 of 14");
-
-    hold(Button::Up);
-    open("Menu wrap around"); // turn wrapping on in the list
-    press(Button::Down);
-    press(Button::Ok);
-    ASSERT_EQ(settings.getInt("menu.wrap", 0), 1);
-    hold(Button::Down);
-    press(Button::Forward);
-    EXPECT_EQ(level().index, 0u) << "wrapped to the first item";
-    EXPECT_EQ(sounds.last(), Earcon::Wrap);
-    press(Button::Back);
-    EXPECT_EQ(level().index, 13u) << "and back to the last";
-    EXPECT_EQ(sounds.last(), Earcon::Wrap);
+TEST_F(AppTest, TenItemAndEndJumpsClampRegardlessOfWrap) {
+    for (int wrap : {0, 1}) {
+        settings.setInt("menu.wrap", wrap);
+        start();
+        open("Settings");
+        deep(Button::Back);
+        EXPECT_EQ(level().index, 0u);
+        EXPECT_EQ(sounds.last(), Earcon::Edge);
+        hold(Button::Forward);
+        EXPECT_EQ(level().index, 13u);
+        deep(Button::Forward);
+        EXPECT_EQ(level().index, 13u);
+        EXPECT_EQ(sounds.last(), Earcon::Edge);
+        hold(Button::Forward);
+        EXPECT_EQ(level().index, 13u);
+        EXPECT_EQ(sounds.last(), Earcon::Edge);
+        hold(Button::Back);
+        EXPECT_EQ(level().index, 0u);
+        hold(Button::Back);
+        EXPECT_EQ(level().index, 0u);
+        EXPECT_EQ(sounds.last(), Earcon::Edge);
+    }
 }
 
 TEST_F(AppTest, LeftAndRightAlwaysMakeASound) {
@@ -490,15 +504,18 @@ TEST_F(AppTest, HomeGoesBackToTheScreenYouCameFrom) {
     EXPECT_EQ(labels().front(), "Now playing") << "Home is rebuilt when returned to";
     EXPECT_EQ(speech.last(), "Library, 2 of 8") << "and stays on the same item";
     press(Button::Home);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(app->screens().size(), 1u);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_TRUE(player.playing());
 }
 
-TEST_F(AppTest, HoldingOkGoesBackLikeHome) {
+TEST_F(AppTest, HeldOkInABookOffersOptionsWithoutLeaving) {
     playAlpha();
+    const auto before = player.file;
     hold(Button::Ok);
-    EXPECT_EQ(app->mode(), App::Mode::Menu);
-    EXPECT_EQ(level().title, "Library");
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(speech.last(), "No options.");
+    EXPECT_EQ(player.file, before);
+    EXPECT_TRUE(player.playing());
 }
 
 TEST_F(AppTest, ReturningToAListWithRepeatedLabelsKeepsThePlace) {
@@ -508,7 +525,7 @@ TEST_F(AppTest, ReturningToAListWithRepeatedLabelsKeepsThePlace) {
     open("Music");
     open("Albums A to Z");
     open("Twins");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok); // the second "Song"
     ASSERT_EQ(player.file, (music / "Twins" / "02 - Song.mp3").string());
     press(Button::Home);
@@ -583,12 +600,6 @@ TEST_F(AppTest, HelpButtonsDescribesEachButton) {
     EXPECT_FALSE(app->keyDescriber());
 }
 
-TEST_F(AppTest, TalkSaysNotAvailable) {
-    start();
-    press(Button::Talk);
-    EXPECT_EQ(speech.last(), "Voice input is not available yet.");
-    EXPECT_EQ(sounds.last(), Earcon::Error);
-}
 
 // ---------------------------------------------------------------- playback
 
@@ -723,255 +734,6 @@ TEST_F(AppTest, VolumeStopsAtMaximum) {
     press(Button::VolumeUp);
     EXPECT_EQ(settings.getInt("volume", 0), 100);
     EXPECT_EQ(speech.last(), "Maximum volume.");
-}
-
-// ---------------------------------------------------------------- the step unit
-
-TEST_F(AppTest, UpAndDownInAPlayerDoNotChangeTheVolume) {
-    playAlpha();
-    press(Button::Down);
-    press(Button::Up);
-    press(Button::Down);
-    hold(Button::Down);
-    EXPECT_EQ(settings.getInt("volume", -1), -1);
-    EXPECT_FLOAT_EQ(volume.volume, 0.7f);
-}
-
-TEST_F(AppTest, SkipIsTheFirstUnitAndUpFromItPlaysTheEdgeSound) {
-    playAlpha();
-    player.pos = 100;
-    press(Button::Up);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Skip");
-    press(Button::Forward);
-    EXPECT_DOUBLE_EQ(player.pos, 130) << "still the skip of Settings";
-}
-
-TEST_F(AppTest, DownFromSkipSaysTrackAndRightStartsTheNextTrack) {
-    start();
-    open("Music");
-    open("Albums A to Z");
-    open("Road Trip");
-    open("Sunrise");
-    player.pos = 40;
-    press(Button::Down);
-    EXPECT_EQ(speech.last(), "Track");
-    EXPECT_EQ(sounds.last(), Earcon::Move);
-    press(Button::Forward);
-    EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
-    EXPECT_EQ(speech.last(), "Highway");
-    player.pos = 40;
-    press(Button::Back);
-    EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string()) << "well into it: back to its start";
-    EXPECT_DOUBLE_EQ(player.pos, 0);
-    player.pos = 0;
-    press(Button::Back);
-    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
-}
-
-TEST_F(AppTest, UpGoesBackToThePreviousUnit) {
-    start();
-    open("Music");
-    open("Albums A to Z");
-    open("Road Trip");
-    open("Sunrise");
-    press(Button::Down);
-    press(Button::Down);
-    EXPECT_EQ(speech.last(), "Album");
-    press(Button::Up);
-    EXPECT_EQ(speech.last(), "Track");
-    EXPECT_EQ(sounds.last(), Earcon::Move);
-}
-
-TEST_F(AppTest, TheMusicUnitsEndAtAlbum) {
-    start();
-    open("Music");
-    open("Albums A to Z");
-    open("Road Trip");
-    open("Sunrise");
-    press(Button::Down);
-    press(Button::Down);
-    press(Button::Down);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Album") << "heard again, and not moved on";
-    press(Button::Up);
-    EXPECT_EQ(speech.last(), "Track");
-}
-
-TEST_F(AppTest, TheBookUnitsAreSkipChapterAndTenMinutes) {
-    playAlpha();
-    press(Button::Down);
-    EXPECT_EQ(speech.last(), "Chapter");
-    press(Button::Down);
-    EXPECT_EQ(speech.last(), "10 minutes");
-    press(Button::Down);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "10 minutes");
-}
-
-TEST_F(AppTest, HoldingUpOrDownInAPlayerMovesOneUnitOnly) {
-    playAlpha();
-    hold(Button::Down);
-    EXPECT_EQ(speech.last(), "Chapter") << "not a jump to the last unit";
-    hold(Button::Up);
-    EXPECT_EQ(speech.last(), "Skip");
-}
-
-TEST_F(AppTest, ChapterUnitMovesABookToTheNextPart) {
-    playAlpha();
-    press(Button::Down);
-    press(Button::Forward);
-    EXPECT_EQ(player.file, alphaFile(2));
-    press(Button::Forward);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Last chapter.");
-}
-
-TEST_F(AppTest, TenMinutesMovesABookSixHundredSeconds) {
-    playAlpha();
-    player.length = 3000;
-    player.pos = 100;
-    press(Button::Down);
-    press(Button::Down);
-    press(Button::Forward);
-    EXPECT_DOUBLE_EQ(player.pos, 700);
-    press(Button::Back);
-    EXPECT_DOUBLE_EQ(player.pos, 100);
-    press(Button::Back);
-    EXPECT_DOUBLE_EQ(player.pos, 0);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-}
-
-TEST_F(AppTest, TenMinutesPastTheEndOfAFilePlaysTheEdgeSound) {
-    playAlpha();
-    player.length = 500;
-    player.pos = 100;
-    press(Button::Down);
-    press(Button::Down);
-    press(Button::Forward);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_LT(player.pos, 500);
-}
-
-TEST_F(AppTest, AnnouncesTenMinutesWhilePaused) {
-    playAlpha();
-    player.length = 3000;
-    press(Button::Down);
-    press(Button::Down);
-    press(Button::PlayPause);
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Forward 10 minutes.");
-}
-
-TEST_F(AppTest, AlbumUnitGoesToTheFirstTrackOfTheNextAlbumOfPlayAll) {
-    start();
-    open("Music");
-    open("Play all");
-    ASSERT_EQ(player.file, (music / "Lullaby.mp3").string());
-    press(Button::Down);
-    press(Button::Down);
-    ASSERT_EQ(speech.last(), "Album");
-    press(Button::Forward);
-    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
-    EXPECT_EQ(speech.last(), "Road Trip");
-    EXPECT_EQ(sounds.last(), Earcon::Move);
-    app->tick();
-    press(Button::Forward);
-    EXPECT_EQ(sounds.last(), Earcon::Edge) << "no album after the last";
-    EXPECT_EQ(speech.last(), "Last album.");
-    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
-    press(Button::Back);
-    EXPECT_EQ(player.file, (music / "Lullaby.mp3").string());
-    press(Button::Back);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "First album.");
-}
-
-TEST_F(AppTest, AlbumUnitFromTheMiddleOfAnAlbumGoesToTheNextAlbumsFirstTrack) {
-    start();
-    open("Music");
-    open("Play all");
-    player.atEnd = true;
-    app->tick(); // Sunrise
-    player.atEnd = true;
-    app->tick(); // Highway
-    ASSERT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
-    press(Button::Down);
-    press(Button::Down);
-    press(Button::Back);
-    EXPECT_EQ(player.file, (music / "Lullaby.mp3").string());
-}
-
-TEST_F(AppTest, AlbumUnitInAOneAlbumListPlaysTheEdgeSound) {
-    start();
-    open("Music");
-    open("Albums A to Z");
-    open("Road Trip");
-    open("Sunrise");
-    press(Button::Down);
-    press(Button::Down);
-    press(Button::Forward);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Last album.");
-    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
-    press(Button::Back);
-    EXPECT_EQ(speech.last(), "First album.");
-}
-
-TEST_F(AppTest, DeepPressChangesTrackWhateverTheUnit) {
-    playAlpha();
-    press(Button::Down);
-    press(Button::Down); // 10 minutes
-    player.pos = 100;
-    app->keyDown(Button::Forward);
-    app->keyUp(Button::Forward);
-    hold(Button::Forward);
-    EXPECT_EQ(player.file, alphaFile(2)) << "a hold goes to the next part, not 600 s on";
-}
-
-TEST_F(AppTest, EachPlayerKeepsItsOwnUnit) {
-    playAlpha();
-    press(Button::Down); // book: Chapter
-    hold(Button::Home);
-    open("Music");
-    open("Play all");
-    press(Button::Down);
-    EXPECT_EQ(speech.last(), "Track") << "the music unit started at Skip";
-    EXPECT_EQ(state.getString("unit.music"), "1");
-    EXPECT_EQ(state.getString("unit.book"), "1");
-}
-
-TEST_F(AppTest, TheUnitSurvivesSleepAndARestart) {
-    playAlpha();
-    press(Button::Down);
-    press(Button::Down); // book: 10 minutes
-    press(Button::Power);
-    EXPECT_EQ(stateFile.onDisk("unit.book"), "2");
-    start(false);
-    ASSERT_EQ(app->mode(), App::Mode::Player);
-    player.length = 3000;
-    player.pos = 100;
-    press(Button::Forward);
-    EXPECT_DOUBLE_EQ(player.pos, 700) << "the 10 minutes unit came back";
-}
-
-TEST_F(AppTest, ASavedUnitOutOfRangeIsTheNearestUnit) {
-    state.setString("unit.book", "9");
-    playAlpha();
-    press(Button::Down);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "10 minutes");
-    state.setString("unit.book", "-4");
-    press(Button::Up);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Skip");
-}
-
-TEST_F(AppTest, NoUnitIsWrittenUntilOneIsChosen) {
-    playAlpha();
-    app->shutdown();
-    EXPECT_EQ(stateFile.onDisk("unit.book"), "");
-    EXPECT_EQ(stateFile.onDisk("unit.music"), "");
 }
 
 TEST_F(AppTest, KeyDescriberNamesTheStepUnitForUpAndDown) {
@@ -1314,16 +1076,18 @@ TEST_F(AppTest, DeepPressJumpsToTheNextChapterAtOnce) {
     EXPECT_EQ(player.pos, 0);
 }
 
-TEST_F(AppTest, PushingDeeperAfterALongPressDoesNotJumpAgain) {
+TEST_F(AppTest, PushingDeeperAfterAnEndJumpStaysClamped) {
     start();
     open("Settings");
     app->keyDown(Button::Forward);
     clock.advance(700ms);
-    app->tick(); // long press: one jump
+    app->tick();
+    ASSERT_EQ(level().index, 13u);
     app->keyDown(Button::ForwardDeep);
+    EXPECT_EQ(level().index, 13u);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
     app->keyUp(Button::ForwardDeep);
     app->keyUp(Button::Forward);
-    EXPECT_EQ(level().index, 10u) << "a second jump would have reached the last item";
 }
 
 TEST_F(AppTest, DeepPressInAMenuJumpsOnce) {
@@ -1345,7 +1109,7 @@ TEST_F(AppTest, HoldingRightInAMenuJumpsOnceWithNoRepeat) {
     clock.advance(5s); // still held
     app->tick();
     app->keyUp(Button::Forward);
-    EXPECT_EQ(level().index, 10u);
+    EXPECT_EQ(level().index, 13u);
 }
 
 TEST_F(AppTest, ChaptersListOpensOnTheCurrentChapter) {
@@ -1378,7 +1142,7 @@ TEST_F(AppTest, EmbeddedChaptersInASingleFileBook) {
     player.embedded = {{"Intro", 0}, {"Middle", 100}, {"End", 200}};
     start();
     press(Button::Ok);   // Library
-    press(Button::Down); // Beta
+    press(Button::Forward); // Beta
     press(Button::Ok);
     ASSERT_EQ(player.file, beta().string());
     player.pos = 150;
@@ -1410,9 +1174,9 @@ TEST_F(AppTest, MusicMenuIsPlayAllArtistsAlbumsAToZAndRefresh) {
     open("Albums A to Z");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Road Trip"}));
     EXPECT_EQ(speech.last(), "Albums A to Z. Lullaby, 1 of 2");
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Road Trip, 2 tracks, 2 of 2");
-    press(Button::Up);
+    press(Button::Back);
     press(Button::Ok); // a loose track plays straight away
     EXPECT_EQ(app->mode(), App::Mode::Player);
     EXPECT_EQ(player.file, (music / "Lullaby.mp3").string());
@@ -1526,7 +1290,7 @@ TEST_F(AppTest, SleepTimerAtEndOfALooseTrack) {
     press(Button::Ok); // wake
     hold(Button::Home);
     open("Settings");
-    hold(Button::Down);
+    hold(Button::Forward);
     EXPECT_EQ(speech.last(), "Sleep timer, off, 14 of 14");
 }
 
@@ -1560,7 +1324,7 @@ TEST_F(AppTest, RestartAfterLocalMusicResumesTheMusicQueueAndKeepsTheBook) {
     EXPECT_EQ(valueOf(level().items[0]), "Road Trip");
     EXPECT_EQ(labels()[1], "Continue");
     EXPECT_EQ(valueOf(level().items[1]), "Alpha");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(player.file, alphaFile(1));
     EXPECT_DOUBLE_EQ(player.pos, 20) << "the book kept its place";
@@ -1583,7 +1347,7 @@ TEST_F(AppTest, ABookThenMusicThenTheBookAgainEachResumeWhereTheyWere) {
     ASSERT_EQ(labels()[0], "Now playing");
     ASSERT_EQ(labels()[1], "Continue");
     EXPECT_EQ(valueOf(level().items[1]), "Alpha") << "the book is the other player";
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(app->mode(), App::Mode::Player);
     EXPECT_EQ(app->screens().back().kind, Screen::Kind::BookPlayer);
@@ -1593,7 +1357,7 @@ TEST_F(AppTest, ABookThenMusicThenTheBookAgainEachResumeWhereTheyWere) {
     hold(Button::Home);
     EXPECT_EQ(valueOf(level().items[0]), "Alpha") << "the player used last comes first";
     EXPECT_EQ(labels()[1], "Continue");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(app->screens().back().kind, Screen::Kind::MusicPlayer);
     EXPECT_EQ(player.file, musicFile);
@@ -1643,7 +1407,7 @@ TEST_F(AppTest, ContinueThatCannotOpenKeepsThePlayerThatWasLoaded) {
     const std::string musicFile = player.file;
     hold(Button::Home);
     player.unopenable = {alphaFile(1), alphaFile(2)};
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_TRUE(speech.heard("Cannot open 01 - Storm.mp3"));
     EXPECT_EQ(player.file, musicFile) << "the music is loaded again";
@@ -1724,7 +1488,7 @@ TEST_F(AppTest, LibraryAndMusicListTheSavedIndexBeforeTheScanIsDelivered) {
     open("Albums A to Z");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Old Album"}));
     press(Button::Ok);
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(player.file, (base / "saved" / "b.mp3").string()) << "the album plays the files of the index";
 }
@@ -1778,8 +1542,8 @@ TEST_F(AppTest, ABookAddedOnDiskAppearsAfterTheScanIsDelivered) {
     deliverScan();
     open("Library");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta", "Gamma"}));
-    press(Button::Down);
-    press(Button::Down);
+    press(Button::Forward);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(player.file, (root / "Gamma" / "01.mp3").string());
     EXPECT_TRUE(indexStore.items.count("local:book:" + (root / "Gamma").string())) << "and it is saved";
@@ -1813,7 +1577,7 @@ TEST_F(AppTest, TwoFoldersTaggedAsOneAlbumGiveOneAlbum) {
     EXPECT_EQ(speech.last(), "Albums A to Z. Big Album, 2 tracks, 1 of 3");
     press(Button::Ok);
     EXPECT_EQ(labels(), (std::vector<std::string>{"a", "b"}));
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(player.file, (music / "Big Album CD2" / "b.mp3").string());
 }
@@ -1863,8 +1627,8 @@ TEST_F(AppTest, AnAlbumNameOfTwoArtistsIsTwoAlbumsAndOneArtistsSpellingsAreOne) 
     open("Music");
     open("Albums A to Z");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Greatest Hits", "Greatest Hits", "Live", "Lullaby", "Road Trip"}));
-    press(Button::Down);
-    press(Button::Down);
+    press(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Live, 2 tracks, 3 of 5");
 }
 
@@ -1907,7 +1671,7 @@ TEST_F(AppTest, AFolderOfUntaggedFilesIsOneAlbumWithTheNameOfTheFolder) {
     open("Music");
     open("Albums A to Z");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Lullaby", "Mix", "Road Trip"}));
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Mix, 3 tracks, 2 of 3");
     press(Button::Ok);
     EXPECT_EQ(labels(), (std::vector<std::string>{"z", "x", "y"}));
@@ -3452,31 +3216,35 @@ TEST_F(StreamingTest, AnAnswerForArtistsDoesNotFillRandomAlbumsOpenedAfterIt) {
     EXPECT_EQ(speech.last(), "Weather, Band, 1 of 1");
 }
 
-TEST_F(StreamingTest, AlbumsAToZLoadsTheNextPageWhileTheServerHasMore) {
+TEST_F(StreamingTest, AlbumsAToZWaitsForLoadMoreAndAnnouncesTheLoadedBoundary) {
     openList("Albums A to Z");
-    EXPECT_EQ(server.lastRequest().arg, "alphabeticalByName");
-    EXPECT_EQ(server.lastRequest().size, 500);
-    answer(someAlbums("A", 500), /*more=*/true);
-    EXPECT_EQ(speech.last(), "A 1, Band, 1 of 500");
-    ASSERT_EQ(requestsOf(Kind::Albums), 2u) << "the next page, in the background";
-    EXPECT_EQ(server.lastRequest().arg, "alphabeticalByName");
+    answer(someAlbums("A", 500), true);
+    ASSERT_EQ(requestsOf(Kind::Albums), 1u);
+    EXPECT_EQ(labels().back(), "Load more");
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Load more, 501 of 501. More items are available. Load more to continue.");
+    deep(Button::Forward);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(requestsOf(Kind::Albums), 1u) << "end jumps never request a page";
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Loading, 501 of 501");
+    ASSERT_EQ(requestsOf(Kind::Albums), 2u);
     EXPECT_EQ(server.lastRequest().offset, 500);
     EXPECT_EQ(server.lastRequest().size, 500);
-    press(Button::Down);
-    speech.said.clear();
-    answer(someAlbums("B", 1), /*more=*/false);
-    EXPECT_TRUE(speech.said.empty()) << "a later page is added silently";
-    EXPECT_EQ(labels().size(), 501u);
-    EXPECT_EQ(labels().back(), "B 1");
-    EXPECT_EQ(level().index, 1u) << "the user stays where they are";
-    EXPECT_EQ(requestsOf(Kind::Albums), 2u) << "no more pages";
-    hold(Button::Down);
+    EXPECT_EQ(server.lastRequest().arg, "alphabeticalByName");
+    answer(someAlbums("B", 1), false);
     EXPECT_EQ(speech.last(), "B 1, Band, 501 of 501");
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "B 1, Band, 501 of 501");
+    EXPECT_EQ(requestsOf(Kind::Albums), 2u);
+    hold(Button::Back);
+    EXPECT_EQ(speech.last(), "A 1, Band, 1 of 501");
 }
 
 TEST_F(StreamingTest, TheNextPageStartsAfterWhatCame) {
     openList("Albums A to Z");
     answer(someAlbums("A", 2), /*more=*/true); // a server that sends shorter pages
+    open("Load more");
     EXPECT_EQ(server.lastRequest().offset, 2) << "nothing is skipped";
 }
 
@@ -3489,7 +3257,9 @@ TEST_F(StreamingTest, AFirstPageWithoutMoreLoadsNoOther) {
 TEST_F(StreamingTest, ALaterPageFillsTheListSilentlyWhenTheUserHasGoneDeeper) {
     openList("Albums A to Z");
     answer(someAlbums("A", 1), /*more=*/true);
+    open("Load more");
     auto page2 = server.lastRequest().id;
+    hold(Button::Back);
     open("A 1"); // the album's tracks are loading
     ASSERT_TRUE(server.reply(page2, someAlbums("B", 1)));
     speech.said.clear();
@@ -3522,7 +3292,7 @@ TEST_F(StreamingTest, RecentlyAddedIsOnePage) {
 TEST_F(StreamingTest, ReturningToALoadedListKeepsItWithoutAskingAgain) {
     openList("Recently added");
     answer(someAlbums("N", 3));
-    press(Button::Down);
+    press(Button::Forward);
     open("N 2");
     press(Button::Home);
     EXPECT_EQ(labels(), (std::vector<std::string>{"N 1", "N 2", "N 3"}));
@@ -3552,12 +3322,14 @@ TEST_F(StreamingTest, AnErrorIsAListWithTryAgain) {
 TEST_F(StreamingTest, AFailedLaterPageCanBeTriedAgain) {
     openList("Albums A to Z");
     answer(someAlbums("A", 2), /*more=*/true);
+    open("Load more");
     ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Server));
+    hold(Button::Back);
     speech.said.clear();
     app->tick();
     EXPECT_TRUE(speech.said.empty()) << "the user is on a loaded item";
     EXPECT_EQ(labels(), (std::vector<std::string>{"A 1", "A 2", "Server error", "Try again"}));
-    hold(Button::Down);
+    hold(Button::Forward);
     press(Button::Ok); // Try again
     EXPECT_EQ(speech.last(), "Loading, 3 of 3");
     EXPECT_EQ(server.lastRequest().offset, 2);
@@ -3777,7 +3549,7 @@ TEST_F(TwoServersTest, TheSecondServersStatusIsNotMarkedDownWithTheFirstAndItsAn
     ASSERT_TRUE(speech.heard("Cannot play Storm Front. Server not reachable."));
     press(Button::Home);
     open("Audiobooks");
-    for (int i = 0; i < 4; ++i) press(Button::Down);
+    for (int i = 0; i < 4; ++i) press(Button::Forward);
     EXPECT_EQ(speech.last(), "Server status, 5 of 5");
     press(Button::Ok);
     ASSERT_TRUE(second.replyPing(second.lastRequest().id, {"audiobookshelf", "2.37.2"}));
@@ -3785,7 +3557,7 @@ TEST_F(TwoServersTest, TheSecondServersStatusIsNotMarkedDownWithTheFirstAndItsAn
     press(Button::Home);
     hold(Button::Home);
     open("Navidrome");
-    for (int i = 0; i < 4; ++i) press(Button::Down);
+    for (int i = 0; i < 4; ++i) press(Button::Forward);
     EXPECT_EQ(speech.last(), "Server status, not reachable, 5 of 5");
 }
 
@@ -3941,14 +3713,14 @@ TEST_F(StreamingTest, ServerStatusSaysNotReachableWhileTheServerIsMarkedDownAndA
     press(Button::Home);
     open("Server");
     ASSERT_EQ(level().title, "Server");
-    for (int i = 0; i < 4; ++i) press(Button::Down);
+    for (int i = 0; i < 4; ++i) press(Button::Forward);
     EXPECT_EQ(speech.last(), "Server status, not reachable, 5 of 5");
     press(Button::Ok);
     ASSERT_TRUE(server.replyPing(server.lastRequest().id, {"navidrome", "0.64.2"}));
     app->tick();
     EXPECT_EQ(speech.last(), "Connected to Navidrome 0.64.2.");
-    press(Button::Up);
-    press(Button::Down);
+    press(Button::Back);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Server status, 5 of 5") << "the answer cleared the mark";
 }
 
@@ -3958,19 +3730,19 @@ TEST_F(StreamingTest, ServerStatusStaysNotReachableWhenThePingDoesNotAnswer) {
     EXPECT_FALSE(app->playRemote("Weather", weather(), 0));
     press(Button::Home);
     open("Server");
-    for (int i = 0; i < 4; ++i) press(Button::Down);
+    for (int i = 0; i < 4; ++i) press(Button::Forward);
     press(Button::Ok);
     ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable));
     app->tick();
     EXPECT_EQ(speech.last(), "Server not reachable.");
-    press(Button::Up);
-    press(Button::Down);
+    press(Button::Back);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Server status, not reachable, 5 of 5");
 }
 
 TEST_F(StreamingTest, ServerStatusSaysNothingExtraWhileTheServerIsNotMarkedDown) {
     openServer();
-    for (int i = 0; i < 4; ++i) press(Button::Down);
+    for (int i = 0; i < 4; ++i) press(Button::Forward);
     EXPECT_EQ(speech.last(), "Server status, 5 of 5");
 }
 
@@ -4043,7 +3815,7 @@ TEST_F(StreamingTest, KeysAreAnsweredWhileATrackOpens) {
     EXPECT_EQ(speech.last(), "Loading.");
     EXPECT_TRUE(player.opening());
     EXPECT_EQ(level().title, "Weather") << "the user stays in the list meanwhile";
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Sunshine, 4 of 4");
     press(Button::PlayPause);
     EXPECT_EQ(speech.last(), "Paused.") << "it will not play once it has opened";
@@ -4296,9 +4068,9 @@ TEST_F(ResumeStreamTest, WithTheServerDownResumeSaysServerNotReachableAndStaysRe
     EXPECT_EQ(sounds.last(), Earcon::Error);
     EXPECT_TRUE(player.opened.empty());
     EXPECT_EQ(app->mode(), App::Mode::Menu);
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Library, 2 of 8");
-    press(Button::Up);
+    press(Button::Back);
     press(Button::Ok); // the server is back: try again
     answer(weather());
     EXPECT_EQ(player.file, "fake://stream/t2");
@@ -4357,7 +4129,7 @@ TEST_F(ResumeStreamTest, TheSameTrackTwiceInAPlaylistResumesTheOneThatPlayed) {
     indexPlaylist("p1", "Road", 4);
     openPlaylist("Road");
     answer(tracks);
-    press(Button::Up); // the second Rain, the last item
+    press(Button::Back); // the second Rain, the last item
     press(Button::Ok);
     ASSERT_EQ(app->nowPlaying().chapterIndex, 3);
     reboot({}, true, "playlist", "p1");
@@ -4546,7 +4318,7 @@ TEST_F(ResumeStreamTest, AParkedStreamComesBackAtItsTrackAndPlace) {
     hold(Button::Home);
     ASSERT_EQ(labels()[1], "Continue");
     EXPECT_EQ(valueOf(level().items[1]), "Weather");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(player.file, "fake://stream/t2");
     EXPECT_DOUBLE_EQ(player.pos, 42);
@@ -4566,7 +4338,7 @@ TEST_F(ResumeStreamTest, TheStreamKeepsItsPlaceWhileABookPlaysAndAfterARestart) 
     hold(Button::Home);
     EXPECT_EQ(valueOf(level().items[1]), "Weather");
     std::size_t requests = server.requests.size();
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(server.requests.size(), requests) << "the parked queue is here: no list to load";
     EXPECT_EQ(player.file, "fake://stream/t2");
@@ -4590,7 +4362,7 @@ TEST_F(ResumeStreamTest, ContinueWhileTheSavedStreamLoadsDropsItsLateAnswer) {
     ASSERT_EQ(labels()[1], "Continue");
     press(Button::Ok); // Now playing: loads the stream
     auto id = server.lastRequest().id;
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok); // Continue: the book
     EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), id), server.cancelled.end());
     EXPECT_EQ(player.file, alphaFile(1));
@@ -4619,7 +4391,7 @@ TEST_F(ResumeStreamTest, APendingOpenThatIsDroppedBringsBackTheParkedPlayer) {
     ASSERT_EQ(labels()[1], "Continue") << "the stream that was parked is still there";
     EXPECT_EQ(valueOf(level().items[1]), "Weather");
     player.holdStreams = false;
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(player.file, "fake://stream/t2") << "at the track it was parked on";
     EXPECT_DOUBLE_EQ(player.pos, 42);
@@ -4846,12 +4618,12 @@ TEST_F(AppTest, ScreenChangeDuringPollSuppressesAlreadyQueuedRepeats) {
     playAlpha();
     app->keyDown(Button::VolumeUp);
     const float afterPress = volume.volume;
-    app->keyDown(Button::Ok); // its Long changes screen in this same tick
-    idle(600ms); // poll also returns a volume Repeat, after OK in button order
+    app->keyDown(Button::Home); // its Long changes screen in this same tick
+    idle(600ms); // poll also returns a volume Repeat, after Home in button order
     EXPECT_FLOAT_EQ(volume.volume, afterPress);
-    app->keyUp(Button::Ok);
+    app->keyUp(Button::Home);
     app->keyUp(Button::VolumeUp);
-    EXPECT_EQ(level().title, "Library");
+    EXPECT_EQ(level().title, "Home");
 }
 
 TEST_F(AppTest, ReturningToPreviousScreenCancelsOtherHeldKeys) {
@@ -4920,7 +4692,7 @@ TEST_F(AppTest, HoldSwitchBlocksEverythingButPower) {
     start();
     app->setHold(true);
     EXPECT_EQ(speech.last(), "Buttons locked.");
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(level().index, 0u);
     EXPECT_EQ(speech.last(), "Locked.");
     EXPECT_EQ(sounds.last(), Earcon::Error);
@@ -4971,9 +4743,9 @@ TEST_F(AppTest, PowerSleepsAndAnyKeyWakes) {
 TEST_F(AppTest, SleepTimerSleepsAfterDeadline) {
     playAlpha();
     press(Button::Ok);   // Player menu
-    press(Button::Down); // Sleep timer
+    press(Button::Forward); // Sleep timer
     press(Button::Ok);
-    press(Button::Down); // 1 minute
+    press(Button::Forward); // 1 minute
     press(Button::Ok);
     EXPECT_TRUE(speech.heard("Sleep timer set to 1 minute."));
     idle(55s);
@@ -4988,7 +4760,7 @@ TEST_F(AppTest, SleepTimerIsInSettings) {
     playAlpha();
     hold(Button::Home);
     open("Settings");
-    hold(Button::Down);
+    hold(Button::Forward);
     EXPECT_EQ(speech.last(), "Sleep timer, off, 14 of 14");
     press(Button::Ok);
     open("15 minutes");
@@ -5020,7 +4792,7 @@ TEST_F(AppTest, SleepTimerListOpensOnTheTimerThatIsSet) {
 TEST_F(AppTest, EndOfChapterIsOfferedOnlyWhenSomethingIsLoaded) {
     start();
     open("Settings");
-    hold(Button::Down);
+    hold(Button::Forward);
     press(Button::Ok); // Sleep timer
     EXPECT_EQ(labels(), (std::vector<std::string>{"Off", "1 minute", "15 minutes", "30 minutes", "45 minutes", "1 hour"}));
     hold(Button::Home);
@@ -5028,7 +4800,7 @@ TEST_F(AppTest, EndOfChapterIsOfferedOnlyWhenSomethingIsLoaded) {
     open("Alpha");
     hold(Button::Home);
     open("Settings");
-    hold(Button::Down);
+    hold(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(labels().back(), "End of chapter");
 }
@@ -5057,7 +4829,7 @@ TEST_F(AppTest, NoAutoSleepWhilePlayingOrSpeaking) {
 TEST_F(AppTest, HoldingPowerAgainReturnsToThePowerMenu) {
     start();
     hold(Button::Power);
-    press(Button::Down); // Power off
+    press(Button::Forward); // Power off
     hold(Button::Power);
     EXPECT_EQ(app->screens().size(), 2u) << "not a second Power menu on top";
     EXPECT_EQ(level().title, "Power");
@@ -5081,7 +4853,7 @@ TEST_F(AppTest, PowerOffFromPowerMenu) {
     player.pos = 33;
     hold(Button::Power);
     EXPECT_EQ(level().title, "Power");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_TRUE(app->quitRequested());
     EXPECT_FALSE(player.playing());
@@ -6199,7 +5971,7 @@ protected:
             openList("Recently added");
         }
         answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}, {"al2", "Rain Songs", "Band", 3}});
-        press(Button::Down);
+        press(Button::Forward);
         press(Button::Options);
         ASSERT_EQ(level().title, "Options, Rain Songs");
     }
@@ -6574,7 +6346,7 @@ TEST_F(DownloadTest, WhereAmIInThePlayerSaysTheProgressToo) {
     openAlbum();
     startDownload();
     finishLast();
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok); // Storm Front plays
     ASSERT_EQ(app->mode(), App::Mode::Player);
     hold(Button::PlayPause);
@@ -6939,11 +6711,11 @@ TEST_F(DownloadedTest, TheListMatchesTheManifestsByName) {
     openDownloaded();
     EXPECT_EQ(labels(), (std::vector<std::string>{"Autumn", "Mixed", "Road songs", "weather"}));
     EXPECT_EQ(speech.last(), "Downloaded. Autumn, 1 of 4") << "no value to speak";
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Mixed, Band, 2 of 4");
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Road songs, playlist, 3 of 4");
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "weather, Zed, 4 of 4");
 }
 
@@ -7043,7 +6815,7 @@ TEST_F(DownloadedTest, HomeLeavesTheDeleteListWithoutDeleting) {
     RemoteSource al = seedWeather();
     openDownload("Weather");
     open("Delete download");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Home);
     EXPECT_TRUE(fs::exists(store().listFolder(al) / "t1.mp3"));
 }
@@ -7053,7 +6825,7 @@ TEST_F(DownloadedTest, ConfirmingDeletesTheFolderAndTheListUpdates) {
     seed(albumSource("al2"), "Zodiac", "Band", {{"z1", "Fish"}});
     openDownload("Weather");
     open("Delete download");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok); // Yes, delete
     EXPECT_FALSE(fs::exists(store().listFolder(al)));
     EXPECT_TRUE(fs::exists(store().listFolder(albumSource("al2")) / "z1.mp3")) << "another list is not touched";
@@ -7067,7 +6839,7 @@ TEST_F(DownloadedTest, DeletingTheLastListLeavesTheEmptyMessage) {
     seedWeather();
     openDownload("Weather");
     open("Delete download");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(labels(), (std::vector<std::string>{"No downloads"}));
     EXPECT_EQ(speech.last(), "Deleted Weather. No downloads, 1 of 1");
@@ -7078,7 +6850,7 @@ TEST_F(DownloadedTest, DeletingAPlaylistKeepsTheAlbumWithTheSameId) {
     RemoteSource pl = seed(playlistSource("7"), "Playlist seven", "", {{"p1", "Two"}});
     openDownload("Playlist seven");
     open("Delete download");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_FALSE(fs::exists(store().listFolder(pl)));
     EXPECT_EQ(labels(), (std::vector<std::string>{"Album seven"}));
@@ -7095,7 +6867,7 @@ TEST_F(DownloadedTest, DeletedTracksStopPlayingFromTheirFiles) {
     open("Downloaded");
     open("Weather");
     open("Delete download");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     ASSERT_FALSE(fs::exists(store().listFolder(al)));
     ASSERT_TRUE(app->playRemote("Next", {{"x1", "Ex", "Band", "Next", 100, 1}, {"t2", "Rain", "Band", "Weather", 180, 2}}, 0));
@@ -7113,7 +6885,7 @@ TEST_F(DownloadedTest, TheListThatIsLoadedInThePlayerCannotBeDeleted) {
     ASSERT_EQ(app->mode(), App::Mode::Player);
     press(Button::Home); // back to the list
     open("Delete download");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_TRUE(fs::exists(store().listFolder(al) / "t1.mp3"));
     EXPECT_EQ(speech.last(), "Cannot delete Weather while it is loaded in the player. Play something else first.");
@@ -7131,7 +6903,7 @@ TEST_F(DownloadedTest, AnotherListCanBeDeletedWhileOneIsLoaded) {
     press(Button::Home);
     open("Weather");
     open("Delete download");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(labels(), (std::vector<std::string>{"Zodiac"}));
     EXPECT_TRUE(fs::exists(store().listFolder(other) / "z1.mp3"));
@@ -7149,7 +6921,7 @@ TEST_F(DownloadedTest, DeletingTheListThatDownloadsCancelsTheDownload) {
     open("Downloaded");
     open("Weather");
     open("Delete download");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_NE(std::find(downloader.cancelled.begin(), downloader.cancelled.end(), running), downloader.cancelled.end());
     EXPECT_FALSE(fs::exists(store().listFolder(albumSource("al1"))));
@@ -7170,7 +6942,7 @@ TEST_F(DownloadedTest, DeletingAnotherListLeavesTheRunningDownloadAlone) {
     open("Downloaded");
     open("Zodiac");
     open("Delete download");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_TRUE(downloader.cancelled.empty());
     EXPECT_EQ(downloader.pendingCount(), 1u);
@@ -7238,8 +7010,8 @@ TEST_F(OfflineTest, ALoadErrorOffersDownloadedAndItPlaysFromTheFiles) {
     app->tick();
     EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again", "Downloaded"}));
     EXPECT_EQ(speech.last(), "Server not reachable, 1 of 3");
-    press(Button::Down);
-    press(Button::Down);
+    press(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Downloaded, 3 of 3");
     press(Button::Ok);
     open("Weather");
@@ -7264,7 +7036,7 @@ TEST_F(OfflineTest, TryAgainDropsDownloadedAndTheListFillsWithoutIt) {
     openList("Recently added");
     ASSERT_TRUE(server.fail(server.lastRequest().id, FakeMusicServer::Error::Unreachable));
     app->tick();
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok); // Try again
     EXPECT_EQ(labels(), (std::vector<std::string>{"Loading"}));
     answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
@@ -7371,7 +7143,7 @@ TEST_F(OfflineTest, LeavingHomeWhileTheFallbackWaitsForTheServerDropsIt) {
     unpin(al);
     press(Button::Ok);
     auto id = server.lastRequest().id;
-    press(Button::Down); // another screen or item: the user has moved on
+    press(Button::Forward); // another screen or item: the user has moved on
     press(Button::Ok);
     EXPECT_FALSE(server.fail(id, FakeMusicServer::Error::Unreachable)) << "the request was cancelled";
     app->tick();
@@ -7421,8 +7193,8 @@ TEST_F(MusicPlaylistsTest, ListsIndexedAndDownloadedPlaylistsSortedWithTheirTrac
     EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "chill", "Road Trip"}));
     EXPECT_EQ(values(), (std::vector<std::string>{"2 tracks", "3 tracks", "12 tracks"}));
     EXPECT_EQ(speech.last(), "Playlists. Alpha, 2 tracks, 1 of 3");
-    press(Button::Down);
-    press(Button::Down);
+    press(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Road Trip, 12 tracks, 3 of 3");
     EXPECT_EQ(listRequests(), 0u) << "a local menu: the server is not asked";
 }
@@ -7527,7 +7299,7 @@ TEST_F(MusicPlaylistsTest, WithTheServerDownAPlaylistThatIsNotDownloadedOffersTr
     app->tick();
     EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again", "Downloaded"}));
     EXPECT_EQ(speech.last(), "Server not reachable, 1 of 3");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok); // Try again
     EXPECT_EQ(labels(), (std::vector<std::string>{"Loading"}));
     EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
@@ -7549,18 +7321,18 @@ TEST_F(MusicPlaylistsTest, AnEmptyListSaysNoPlaylistsAndOkSaysWhatToDo) {
     EXPECT_EQ(speech.last(), "Make a playlist on the server, or save the queue as a playlist.");
 }
 
-TEST_F(MusicPlaylistsTest, LeftAndRightJumpByLetter) {
+TEST_F(MusicPlaylistsTest, BackAndForwardVisitEveryPlaylist) {
     indexPlaylist("p1", "Alpha", 1);
     indexPlaylist("p2", "Beta", 1);
     indexPlaylist("p3", "Bravo", 1);
     indexPlaylist("p4", "Delta", 1);
     openPlaylists();
     press(Button::Forward);
-    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 2 of 4");
+    EXPECT_EQ(speech.last(), "Beta, 1 track, 2 of 4");
     press(Button::Forward);
-    EXPECT_EQ(speech.last(), "D. Delta, 1 track, 4 of 4");
+    EXPECT_EQ(speech.last(), "Bravo, 1 track, 3 of 4");
     press(Button::Back);
-    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 2 of 4");
+    EXPECT_EQ(speech.last(), "Beta, 1 track, 2 of 4");
 }
 
 TEST_F(MusicPlaylistsTest, StreamingHasNoPlaylistsButDownloadedStillListsTheDownloadedOnes) {
@@ -9268,7 +9040,7 @@ protected:
     std::string albumInfo(const std::string& name) {
         open("Music");
         open("Albums A to Z");
-        while (level().items[level().index].label != name) press(Button::Down);
+        while (level().items[level().index].label != name) press(Button::Forward);
         press(Button::Options);
         open("Album info");
         std::string said = speech.last();
@@ -9637,7 +9409,7 @@ TEST_F(MusicTreeTest, ArtistsListLocalAndServerArtistsOnceEachSortedWithoutArtic
     EXPECT_EQ(labels(), (std::vector<std::string>{"ABBA", "The Alpha", "Aphex Twin", "Band", "The Beatles", "Агата Кристи", "Би-2",
                                                   "Unknown artist"}))
         << "Band and band are one, The Alpha sorts under A, Cyrillic after Latin, the album with no artist last";
-    for (int i = 0; i < 3; ++i) press(Button::Down);
+    for (int i = 0; i < 3; ++i) press(Button::Forward);
     EXPECT_EQ(speech.last(), "Band, 2 albums, 4 of 8");
 }
 
@@ -9691,7 +9463,7 @@ TEST_F(MusicTreeTest, AServerAlbumShowsLoadingThenItsTracks) {
     EXPECT_EQ(labels().back(), "Sunshine") << "no Album info at the end";
     EXPECT_NE(std::find(labels().begin(), labels().end(), "Rain"), labels().end());
     EXPECT_EQ(speech.last(), "Play album, 3 tracks, 1 of " + std::to_string(labels().size()));
-    press(Button::Up); // the last track
+    press(Button::Back); // the last track
     press(Button::Ok);
     EXPECT_EQ(player.file, "fake://stream/t3");
     expectNoUrlSpoken(speech);
@@ -9704,7 +9476,7 @@ TEST_F(MusicTreeTest, WithTheServerUnreachableAServerAlbumGivesTheErrorAndALocal
     ASSERT_NO_FATAL_FAILURE(fail(Kind::AlbumTracks, MusicServer::Error::Unreachable));
     EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again"})) << "no tracks";
     EXPECT_EQ(speech.last(), "Server not reachable, 1 of 2");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok); // Try again
     EXPECT_EQ(labels(), (std::vector<std::string>{"Loading"}));
     ASSERT_NO_FATAL_FAILURE(answerTracks(weather()));
@@ -9887,11 +9659,11 @@ TEST_F(RecentMusicTest, AGenreListsTheAlbumsOfBothSourcesAndNamesThatDifferInCas
     ASSERT_EQ(labels().size(), 2u) << "Rock, rock and ROCK are one genre; albums with no genre have none";
     EXPECT_EQ(labels().front(), "Jazz");
     EXPECT_EQ(speech.last(), "Genres. Jazz, 1 album, 1 of 2");
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_NE(speech.last().find(", 3 albums, 2 of 2"), std::string::npos) << speech.last();
     press(Button::Ok);
     EXPECT_EQ(labels(), (std::vector<std::string>{"Blues Night", "Road Trip", "Weather"})) << "the local album and two server albums";
-    press(Button::Down); // Road Trip: on the device, it opens at once
+    press(Button::Forward); // Road Trip: on the device, it opens at once
     press(Button::Ok);
     EXPECT_EQ(labels().front(), "Sunrise");
     EXPECT_EQ(countOf(Kind::AlbumTracks), 0u);
@@ -10114,8 +9886,8 @@ TEST_F(ServerBookTest, TheFolderAlbumsAreInLibraryAfterTheLocalBooksAndNotInMusi
     ASSERT_TRUE(level().items[2].value);
     EXPECT_EQ(level().items[2].value(), "on the server");
     EXPECT_EQ(speech.last(), "Library. Alpha, 2 parts, 1 of 3");
-    press(Button::Down);
-    press(Button::Down);
+    press(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Dune, on the server, 3 of 3");
     hold(Button::Home);
     open("Music");
@@ -10487,8 +10259,8 @@ TEST_F(BooksServerTest, LibraryListsTheBooksAfterTheLocalOnesWithOnTheServer) {
     EXPECT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta", "Dune", "Zeta"}));
     ASSERT_TRUE(level().items[2].value);
     EXPECT_EQ(level().items[2].value(), "on the server");
-    press(Button::Down);
-    press(Button::Down);
+    press(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Dune, on the server, 3 of 4");
 }
 
@@ -11117,7 +10889,7 @@ TEST_F(ServerBookResumeTest, ContinueOnAParkedServerBookMakesItTheBookToResumeAf
     hold(Button::Home);
     ASSERT_EQ(level().items[1].label, "Continue");
     state.setString("last_book", "/somewhere/else"); // as if another book had played meanwhile
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(state.getString("last_book"), ref("b1"));
 }
@@ -11337,7 +11109,7 @@ TEST_F(ServerBookResumeTest, NothingSpokenOrSavedHoldsAUrlOnTheResumePaths) {
 
 // Music with these albums, besides Lullaby and Road Trip: 7 Seconds, Abba Gold, Aria, Beta, Dune,
 // Dusk and Zeta. Albums A to Z is then: 7 Seconds, Abba Gold, Aria, Beta, Dune, Dusk, Lullaby,
-// Road Trip, Zeta. Its letters: # (7 Seconds), A (2), B, D (2), L, R, Z.
+// Road Trip, Zeta.
 class MenuJumpTest : public MusicTreeTest {
 protected:
     void SetUp() override {
@@ -11351,267 +11123,89 @@ protected:
         open("Albums A to Z");
     }
     void goTo(const std::string& label) { // from the first item
-        hold(Button::Up);
-        for (size_t i = 0; i < level().items.size() && level().items[level().index].label != label; ++i) press(Button::Down);
+        hold(Button::Back);
+        for (size_t i = 0; i < level().items.size() && level().items[level().index].label != label; ++i) press(Button::Forward);
         ASSERT_EQ(level().items[level().index].label, label);
     }
 };
 
-TEST_F(MenuJumpTest, RightGoesToTheFirstItemOfTheNextLetterAndSpeaksIt) {
-    openAlbums();
-    goTo("Abba Gold");
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 4 of 9");
-    EXPECT_EQ(sounds.last(), Earcon::Move);
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "D. Dune, 1 track, 5 of 9");
-    press(Button::Forward);
-    EXPECT_EQ(speech.last().rfind("L. Lullaby", 0), 0u) << "Dusk is the same letter as Dune: " << speech.last();
-}
-
-TEST_F(MenuJumpTest, RightFromTheMiddleOfALetterGoesToTheNextOne) {
-    openAlbums();
-    goTo("Aria");
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 4 of 9");
-    goTo("Dusk");
-    press(Button::Forward);
-    EXPECT_EQ(speech.last().rfind("L. Lullaby", 0), 0u) << speech.last();
-}
-
-TEST_F(MenuJumpTest, LeftGoesToTheFirstItemOfThePreviousLetterAlsoFromTheMiddleOfOne) {
-    openAlbums();
-    goTo("Dusk"); // the middle of D
-    press(Button::Back);
-    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 4 of 9") << "not Dune, the start of its own letter";
-    EXPECT_EQ(sounds.last(), Earcon::Move);
-    press(Button::Back);
-    EXPECT_EQ(speech.last(), "A. Abba Gold, 1 track, 2 of 9") << "the first of A, not Aria";
-    goTo("Dune");
-    press(Button::Back);
-    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 4 of 9");
-}
-
-TEST_F(MenuJumpTest, DigitsAreAGroupBeforeTheLetters) {
+TEST_F(MenuJumpTest, SortedListsMoveOneOrTenWithoutLetterAnnouncements) {
+    for (int i = 0; i < 20; ++i) localAlbum("Extra " + std::to_string(i), "Band", "Extra " + std::to_string(i));
     openAlbums();
     press(Button::Forward);
-    EXPECT_EQ(speech.last(), "A. Abba Gold, 1 track, 2 of 9") << "from 7 Seconds";
-    press(Button::Back);
-    EXPECT_EQ(speech.last(), "Number. 7 Seconds, 1 track, 1 of 9");
-}
-
-TEST_F(MenuJumpTest, TheEndsPlayTheEdgeSoundWhenWrappingIsOff) {
-    settings.setInt("menu.wrap", 0);
-    openAlbums();
-    press(Button::Back);
-    EXPECT_EQ(level().index, 0u);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "7 Seconds, 1 track, 1 of 9");
-    goTo("Zeta");
+    EXPECT_EQ(speech.last(), "Abba Gold, 1 track, 2 of 29");
     press(Button::Forward);
-    EXPECT_EQ(level().index, 8u);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Zeta, 1 track, 9 of 9");
-    goTo("Road Trip"); // the second to last letter: not an edge
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Z. Zeta, 1 track, 9 of 9");
-    EXPECT_EQ(sounds.last(), Earcon::Move);
-    goTo("Abba Gold");
-    press(Button::Back);
-    EXPECT_EQ(speech.last(), "Number. 7 Seconds, 1 track, 1 of 9") << "the first letter is not an edge";
-    EXPECT_EQ(sounds.last(), Earcon::Move);
+    EXPECT_EQ(speech.last(), "Aria, 1 track, 3 of 29");
+    deep(Button::Forward);
+    EXPECT_EQ(level().index, 12u);
+    EXPECT_EQ(speech.last(), level().items[12].label + ", 1 track, 13 of 29");
+    deep(Button::Back);
+    EXPECT_EQ(speech.last(), "Aria, 1 track, 3 of 29");
+    hold(Button::Back);
+    EXPECT_EQ(speech.last(), "7 Seconds, 1 track, 1 of 29");
 }
 
-TEST_F(MenuJumpTest, WrapAroundWrapsTheJump) {
-    openAlbums(); // menu.wrap is on by default
-    goTo("Zeta");
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Number. 7 Seconds, 1 track, 1 of 9");
-    EXPECT_EQ(sounds.last(), Earcon::Wrap);
-    press(Button::Back);
-    EXPECT_EQ(speech.last(), "Z. Zeta, 1 track, 9 of 9") << "Left from the first letter goes to the first item of the last letter";
-    EXPECT_EQ(sounds.last(), Earcon::Wrap);
-}
-
-TEST_F(MenuJumpTest, ALastLetterWithSeveralItemsWrapsToItsFirst) {
-    localAlbum("Zulu", "Band", "Zulu");
+TEST_F(MenuJumpTest, DeepThenHoldUsesInitialDeadlineAndDoesNotRepeat) {
+    for (int i = 0; i < 20; ++i) localAlbum("Extra " + std::to_string(i), "Band", "Extra " + std::to_string(i));
     openAlbums();
-    goTo("Abba Gold");
-    press(Button::Back); // 7 Seconds
-    press(Button::Back); // wraps
-    EXPECT_EQ(speech.last(), "Z. Zeta, 1 track, 9 of 10") << "the first of Z, not Zulu";
-}
-
-TEST_F(MenuJumpTest, HoldingOrPressingDeeperJumpsOnceAndDoesNotRepeat) {
-    openAlbums();
-    goTo("Abba Gold");
-    hold(Button::Forward);
-    EXPECT_EQ(speech.last(), "B. Beta, 1 track, 4 of 9");
-    size_t said = speech.said.size();
     app->keyDown(Button::Forward);
+    clock.advance(100ms);
     app->keyDown(Button::ForwardDeep);
+    EXPECT_EQ(level().index, 10u);
+    clock.advance(499ms);
+    app->tick();
+    EXPECT_EQ(level().index, 10u);
+    clock.advance(1ms);
+    app->tick();
+    EXPECT_EQ(level().index, 28u);
+    const auto said = speech.said.size();
     clock.advance(5s);
     app->tick();
     app->keyUp(Button::ForwardDeep);
     app->keyUp(Button::Forward);
-    EXPECT_EQ(speech.said.size(), said + 1);
-    EXPECT_EQ(speech.last(), "D. Dune, 1 track, 5 of 9");
+    EXPECT_EQ(speech.said.size(), said) << "no repeating end jump or trailing short action";
+    app->keyDown(Button::Back);
+    app->keyDown(Button::BackDeep);
+    EXPECT_EQ(level().index, 18u);
+    clock.advance(600ms);
+    app->tick();
+    EXPECT_EQ(level().index, 0u);
+    app->keyUp(Button::BackDeep);
+    app->keyUp(Button::Back);
 }
 
-TEST_F(MenuJumpTest, ExpertVerbosityLeavesOutThePositionButKeepsTheLetter) {
-    settings.setInt("verbosity", 2);
-    openAlbums();
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "A. Abba Gold, 1 track");
-}
-
-TEST_F(MenuJumpTest, TheLibraryJumpsByLetter) {
-    touch(root / "Dune" / "01.mp3");
-    touch(root / "Dust" / "01.mp3");
+TEST_F(MenuJumpTest, EmptyAndSingleItemListsHaveStableBoundaries) {
+    std::filesystem::remove_all(root / "Alpha");
+    std::filesystem::remove(beta());
     start();
     open("Library");
-    ASSERT_EQ(labels(), (std::vector<std::string>{"Alpha", "Beta", "Dune", "Dust"}));
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "B. Beta, 2 of 4");
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "D. Dune, 3 of 4");
-}
-
-TEST_F(MenuJumpTest, ArtistsJumpByLetterIgnoringArticlesWithOtherScriptsAndUnknownArtistAfterTheLatinOnes) {
-    localAlbum("Abbey", "The Beatles", "Abbey");
-    localAlbum("Ночь", "Агата Кристи", "Ночь");
-    localAlbum("Другой", "Би-2", "Другой");
-    localAlbum("Alone", "The Alpha", "Alone");
-    start();
-    open("Music");
-    open("Artists");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"The Alpha", "Band", "The Beatles", "Агата Кристи", "Би-2", "Unknown artist"}));
-    press(Button::Forward);
-    EXPECT_EQ(speech.last().rfind("B. Band", 0), 0u) << "The Alpha is under A: " << speech.last();
-    press(Button::Forward);
-    EXPECT_EQ(speech.last().rfind("\xD0\xB0. \xD0\x90", 0), 0u) << "the Cyrillic group after B, The Beatles skipped: " << speech.last();
-    press(Button::Forward);
-    EXPECT_EQ(speech.last().rfind("\xD0\xB1. \xD0\x91\xD0\xB8-2", 0), 0u) << speech.last();
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Unknown artist, 2 albums, 6 of 6") << "spoken by name, with no letter";
-    press(Button::Back);
-    EXPECT_EQ(speech.last().rfind("\xD0\xB1. ", 0), 0u) << speech.last();
-    press(Button::Forward);
-    press(Button::Forward);
-    EXPECT_EQ(sounds.last(), Earcon::Wrap);
-    EXPECT_EQ(speech.last().rfind("A. The Alpha", 0), 0u) << speech.last();
-}
-
-TEST_F(MenuJumpTest, AnArtistNamedUnknownArtistHasItsLetterAndOnlyTheRealOneHasNone) {
-    localAlbum("Odd", "Unknown artist", "Odd");
-    start();
-    open("Music");
-    open("Artists");
-    ASSERT_EQ(labels(), (std::vector<std::string>{"Band", "Unknown artist", "Unknown artist"}));
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "U. Unknown artist, 1 album, 2 of 3") << "tagged with that name: sorted and spoken like any artist";
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Unknown artist, 2 albums, 3 of 3") << "the albums with no artist: no letter";
-}
-
-TEST_F(MenuJumpTest, AnArtistsAlbumsAndTheGenresJumpByLetter) {
-    for (const char* name : {"Dune", "Dusk", "Beta", "Zeta"}) {
-        TrackTags t = tags.tags.at(music / name / "1.mp3");
-        t.genre = std::string(name) == "Zeta" ? "Jazz" : "Rock";
-        tags.tags[music / name / "1.mp3"] = t;
+    ASSERT_EQ(labels(), (std::vector<std::string>{"Library is empty"}));
+    for (Button key : {Button::Back, Button::Forward}) {
+        press(key);
+        EXPECT_EQ(speech.last(), "Library is empty, 1 of 1");
+        deep(key);
+        EXPECT_EQ(speech.last(), "Library is empty, 1 of 1");
+        hold(key);
+        EXPECT_EQ(speech.last(), "Library is empty, 1 of 1");
+        EXPECT_EQ(sounds.last(), Earcon::Edge);
     }
-    start();
-    open("Music");
-    open("Artists");
-    open("Band");
-    press(Button::Forward);
-    EXPECT_EQ(speech.last().rfind("A. Abba Gold", 0), 0u) << "the albums of an artist are sorted by title: " << speech.last();
     press(Button::Home);
-    press(Button::Home);
-    open("Genres");
-    ASSERT_EQ(labels(), (std::vector<std::string>{"Jazz", "Rock"}));
-    press(Button::Forward);
-    EXPECT_EQ(speech.last().rfind("R. Rock", 0), 0u) << "the genres are sorted by name: " << speech.last();
-    press(Button::Ok);
-    ASSERT_EQ(labels(), (std::vector<std::string>{"Beta", "Dune", "Dusk"}));
-    press(Button::Forward);
-    EXPECT_EQ(speech.last().rfind("D. Dune", 0), 0u) << speech.last();
-    press(Button::Forward);
-    EXPECT_EQ(sounds.last(), Earcon::Wrap) << "Dusk is the same letter as Dune";
-    EXPECT_EQ(speech.last().rfind("B. Beta", 0), 0u) << speech.last();
+    open("Podcasts");
+    for (Button key : {Button::Back, Button::Forward}) {
+        deep(key);
+        EXPECT_EQ(speech.last(), "No podcasts yet, 1 of 1");
+        EXPECT_EQ(sounds.last(), Earcon::Edge);
+        hold(key);
+        EXPECT_EQ(speech.last(), "No podcasts yet, 1 of 1");
+        EXPECT_EQ(sounds.last(), Earcon::Edge);
+    }
 }
 
-TEST_F(MenuJumpTest, ARecentlyAddedListIsNotSortedByNameSoItJumpsByTen) {
-    start();
-    open("Music");
-    open("Recently added");
-    ASSERT_GT(level().items.size(), 1u);
-    press(Button::Forward);
-    EXPECT_EQ(level().index, level().items.size() - 1) << "9 albums: to the last, with no letter";
-    EXPECT_EQ(speech.last().find(". "), std::string::npos) << speech.last();
-}
-
-TEST_F(MenuJumpTest, AServerListSortedByNameJumpsByLetterAndALongOneByTen) {
-    start();
-    open("Server");
-    open("Albums A to Z");
-    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteAlbum>{album("1", "Apple"), album("2", "Avocado"), album("3", "Banana")}));
-    app->tick();
-    ASSERT_EQ(level().index, 0u);
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "B. Banana, Band, 3 of 3");
-    press(Button::Back);
-    EXPECT_EQ(speech.last(), "A. Apple, Band, 1 of 3");
-}
-
-TEST_F(MenuJumpTest, ARemoteArtistsListJumpsByLetterIgnoringArticles) {
-    start();
-    open("Server");
-    open("Artists");
-    RemoteArtist a{"a", "Apple", 1}, b{"b", "The Avocado", 1}, c{"c", "Banana", 1};
-    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteArtist>{a, b, c}));
-    app->tick();
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "B. Banana, 1 album, 3 of 3") << "The Avocado is under A";
-}
-
-TEST_F(MenuJumpTest, TheStatusRowsOfAServerListThatFailedAreOutsideTheLetters) {
-    start();
-    open("Server");
-    open("Albums A to Z");
-    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteAlbum>{album("1", "Apple"), album("2", "Banana")}, /*more=*/true));
-    app->tick();
-    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable)); // the next page
-    app->tick();
-    ASSERT_EQ(labels(), (std::vector<std::string>{"Apple", "Banana", "Server not reachable", "Try again"}));
-    press(Button::Forward);
-    EXPECT_EQ(speech.last().rfind("B. Banana", 0), 0u) << speech.last();
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Server not reachable, 3 of 4") << "no letter on a status row";
-    press(Button::Forward);
-    EXPECT_EQ(sounds.last(), Earcon::Wrap) << "the status rows are one group, the last";
-    EXPECT_EQ(speech.last().rfind("A. Apple", 0), 0u) << speech.last();
-    press(Button::Back);
-    EXPECT_EQ(speech.last(), "Server not reachable, 3 of 4") << "wraps to the first of the last group";
-    press(Button::Back);
-    EXPECT_EQ(speech.last().rfind("B. Banana", 0), 0u) << speech.last();
-}
-
-TEST_F(MenuJumpTest, AServerListThatIsNotSortedByNameJumpsByTenWithNoLetter) {
-    start();
-    open("Server");
-    open("Recently added");
-    std::vector<RemoteAlbum> albums;
-    for (int i = 1; i <= 25; ++i) albums.push_back(album(std::to_string(i), "Album " + std::to_string(i)));
-    ASSERT_TRUE(server.reply(server.lastRequest().id, std::move(albums)));
-    app->tick();
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Album 11, Band, 11 of 25");
-    press(Button::Forward);
-    press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Album 25, Band, 25 of 25") << "stops at the last item";
-    press(Button::Back);
-    EXPECT_EQ(speech.last(), "Album 15, Band, 15 of 25");
+TEST_F(MenuJumpTest, ExpertSortedListSpeaksTheDestinationWithoutPositionOrLetter) {
+    settings.setInt("verbosity", 2);
+    openAlbums();
+    deep(Button::Forward);
+    EXPECT_EQ(speech.last(), "Zeta, 1 track");
 }
 
 // ---------------------------------------------------------------- the music queue
@@ -11661,12 +11255,6 @@ protected:
     void trackEnds() {
         player.atEnd = true;
         app->tick();
-    }
-    // Down to the Album unit.
-    void albumUnit() {
-        press(Button::Down);
-        press(Button::Down);
-        ASSERT_EQ(speech.last(), "Album");
     }
 };
 
@@ -11774,7 +11362,7 @@ TEST_F(MusicQueueTest, TheQueueListHasTheEntriesOfTheQueue) {
     open("Queue");
     EXPECT_EQ(queueEntries(), (std::vector<std::string>{"Storm", "Rain", "Calm"}));
     EXPECT_EQ(level().index, 0u);
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok); // Rain
     finishOpen();
     EXPECT_EQ(player.file, "fake://stream/t2");
@@ -11837,69 +11425,8 @@ TEST_F(MusicQueueTest, ALocalTrackIsNeverScrobbledButAServerTrackInTheSameQueueI
     expectNoUrlSpoken(speech);
 }
 
-TEST_F(MusicQueueTest, TheAlbumUnitGoesToTheFirstEntryOfTheNextAlbumInTheQueue) {
-    start_();
-    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm", "Alpha"), localEntry(alphaFile(2), "Calm", "Alpha"),
-                                         remoteEntry("t1", "Rain", "Weather"), remoteEntry("t2", "Snow", "Weather"),
-                                         localEntry((roadTrip() / "01 - Sunrise.mp3").string(), "Sunrise", "Road Trip")}));
-    albumUnit();
-    press(Button::Forward);
-    finishOpen();
-    EXPECT_EQ(player.file, "fake://stream/t1") << "the first of Weather";
-    EXPECT_EQ(speech.last(), "Weather");
-    EXPECT_EQ(sounds.last(), Earcon::Move);
-    trackEnds(); // Snow, in the middle of Weather
-    finishOpen();
-    ASSERT_EQ(player.file, "fake://stream/t2");
-    press(Button::Forward);
-    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
-    EXPECT_EQ(speech.last(), "Road Trip");
-    press(Button::Forward);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Last album.");
-    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
-    press(Button::Back);
-    finishOpen();
-    EXPECT_EQ(player.file, "fake://stream/t1") << "the first of the album before";
-    EXPECT_EQ(speech.last(), "Weather");
-    trackEnds(); // Snow again
-    finishOpen();
-    press(Button::Back);
-    EXPECT_EQ(player.file, alphaFile(1)) << "from the middle of Weather: the first of Alpha";
-    EXPECT_EQ(speech.last(), "Alpha");
-    trackEnds(); // Calm, in the middle of the first album
-    ASSERT_EQ(player.file, alphaFile(2));
-    press(Button::Back);
-    EXPECT_EQ(sounds.last(), Earcon::Edge) << "no album before the first, even from its middle";
-    EXPECT_EQ(speech.last(), "First album.");
-    EXPECT_EQ(player.file, alphaFile(2));
-}
 
-TEST_F(MusicQueueTest, TheAlbumUnitOfAPlaylistMovesBetweenTheAlbumsOfItsTracks) {
-    start_();
-    std::vector<RemoteTrack> playlist = {{"p1", "One", "Band", "Red", 100, 1},
-                                         {"p2", "Two", "Band", "Red", 100, 2},
-                                         {"p3", "Three", "Band", "Blue", 100, 3}};
-    ASSERT_TRUE(app->playRemote("Mix", playlist, 0));
-    finishOpen();
-    albumUnit();
-    press(Button::Forward);
-    finishOpen();
-    EXPECT_EQ(player.file, "fake://stream/p3");
-    EXPECT_EQ(speech.last(), "Blue");
-}
 
-TEST_F(MusicQueueTest, AServerAlbumIsOneAlbumWhateverItsTracksSayTheirAlbumIs) {
-    start_();
-    std::vector<RemoteTrack> tracks = {{"d1", "One", "Band", "Weather", 100, 1}, {"d2", "Two", "Band", "Weather (Disc 2)", 100, 2}};
-    ASSERT_TRUE(app->playRemote("Weather", tracks, 0, RemoteSource{RemoteSource::Kind::Album, "al1"}));
-    finishOpen();
-    albumUnit();
-    press(Button::Forward);
-    EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_EQ(speech.last(), "Last album.");
-    EXPECT_EQ(player.file, "fake://stream/d1");
-}
 
 TEST_F(MusicQueueTest, LocalFilesThatCannotBeOpenedLeaveTheServerTrackThatWasPlayingForPlay) {
     start_();
@@ -11931,7 +11458,7 @@ TEST_F(MusicQueueTest, TheMusicQueueIsKeptWhenABookTakesTheTurnAndContinueBrings
     ASSERT_EQ(app->screens().back().kind, Screen::Kind::BookPlayer);
     hold(Button::Home);
     ASSERT_EQ(labels()[1], "Continue");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     finishOpen();
     ASSERT_EQ(app->screens().back().kind, Screen::Kind::MusicPlayer);
@@ -12118,17 +11645,6 @@ TEST_F(UnavailableTest, PreviousWithNothingPlayableBeforeItSaysFirstTrack) {
     EXPECT_FALSE(speech.heard("Rain, source unavailable.")) << "nothing is skipped when nothing plays";
 }
 
-TEST_F(UnavailableTest, TheAlbumUnitSaysTheAlbumThatPlaysWhenTheNextOneIsSkipped) {
-    start_();
-    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm", "One"),
-                                         ofServer("https://other.example", "ann", "t2", "Rain"),
-                                         localEntry(alphaFile(2), "Calm", "Three")}));
-    albumUnit();
-    press(Button::Forward);
-    EXPECT_TRUE(speech.heard("Cannot play Rain. Server not set up."));
-    EXPECT_EQ(player.file, alphaFile(2));
-    EXPECT_EQ(speech.last(), "Three");
-}
 
 TEST_F(UnavailableTest, PlayAsksTheServerWhenTheQueueWaitsAtAMissingFileWithServerTracksBehindIt) {
     rainBreaksOff(); // the server is marked down; the queue waits at Rain
@@ -12604,7 +12120,7 @@ protected:
 
 TEST_F(OptionsTest, OptionsOnALocalTrackOpensItsActionsAndPlayNowReplacesTheQueue) {
     openRoadTrip();
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Options);
     EXPECT_EQ(speech.last(), "Options, Highway. Play now, 1 of 3");
     EXPECT_EQ(sounds.last(), Earcon::Open);
@@ -12625,7 +12141,7 @@ TEST_F(OptionsTest, PlayNextOnALocalTrackPutsItAfterTheCurrentEntry) {
     hold(Button::Home);
     open("Music");
     open("Albums A to Z");
-    while (level().items[level().index].label != "Lullaby") press(Button::Down); // a loose track
+    while (level().items[level().index].label != "Lullaby") press(Button::Forward); // a loose track
     options("Play next");
     EXPECT_EQ(speech.last(), "Added Lullaby. 3 in queue.");
     EXPECT_EQ(level().title, "Albums A to Z");
@@ -12651,7 +12167,7 @@ TEST_F(OptionsTest, PlayNowOnALocalAlbumReplacesTheQueueWithAllItsTracks) {
     hold(Button::Home);
     open("Music");
     open("Albums A to Z");
-    while (level().items[level().index].label != "Road Trip") press(Button::Down);
+    while (level().items[level().index].label != "Road Trip") press(Button::Forward);
     press(Button::Options);
     EXPECT_EQ(speech.last(), "Options, Road Trip. Play now, 1 of 4");
     press(Button::Ok);
@@ -12665,12 +12181,12 @@ TEST_F(OptionsTest, PlayNextAndAddToQueueOnALocalAlbumPutTheTracksAfterTheCurren
     start();
     open("Music");
     open("Albums A to Z");
-    while (level().items[level().index].label != "Lullaby") press(Button::Down);
+    while (level().items[level().index].label != "Lullaby") press(Button::Forward);
     press(Button::Ok); // Lullaby plays
     hold(Button::Home);
     open("Music");
     open("Albums A to Z");
-    while (level().items[level().index].label != "Road Trip") press(Button::Down);
+    while (level().items[level().index].label != "Road Trip") press(Button::Forward);
     options("Play next");
     EXPECT_EQ(speech.last(), "Added Road Trip, 2 tracks. 3 in queue.");
     EXPECT_EQ(level().title, "Albums A to Z");
@@ -12709,17 +12225,17 @@ TEST_F(OptionsTest, ARemoteTrackIsPlayedNowPlayedNextAndAddedAlone) {
     playRoadTrip();
     hold(Button::Home);
     openWeather();
-    while (level().items[level().index].label != "Rain") press(Button::Down);
+    while (level().items[level().index].label != "Rain") press(Button::Forward);
     options("Play next");
     EXPECT_EQ(speech.last(), "Added Rain. 3 in queue.");
     EXPECT_EQ(level().title, "Weather");
-    while (level().items[level().index].label != "Sunshine") press(Button::Down);
+    while (level().items[level().index].label != "Sunshine") press(Button::Forward);
     options("Add to queue");
     EXPECT_EQ(speech.last(), "Added Sunshine. 4 in queue.");
     EXPECT_EQ(queue(), (std::vector<std::string>{"Sunrise", "Rain", "Highway", "Sunshine"}));
     hold(Button::Home);
     openWeather();
-    while (level().items[level().index].label != "Sunshine") press(Button::Down);
+    while (level().items[level().index].label != "Sunshine") press(Button::Forward);
     options("Play now");
     EXPECT_EQ(speech.last(), "Loading.");
     EXPECT_EQ(level().title, "Weather") << "back in the list at once";
@@ -12833,7 +12349,7 @@ TEST_F(OptionsTest, PlayNextWithNothingLoadedMakesAQueuePausedAtItsFirstEntry) {
     start();
     open("Music");
     open("Albums A to Z");
-    while (level().items[level().index].label != "Road Trip") press(Button::Down);
+    while (level().items[level().index].label != "Road Trip") press(Button::Forward);
     options("Play next");
     EXPECT_EQ(speech.last(), "Added Road Trip, 2 tracks. Press play.");
     EXPECT_EQ(level().title, "Albums A to Z");
@@ -12847,7 +12363,7 @@ TEST_F(OptionsTest, PlayNextWithNothingLoadedMakesAQueuePausedAtItsFirstEntry) {
 TEST_F(OptionsTest, AddToQueueWithNothingLoadedOpensNoStreamUntilPlay) {
     start();
     openWeather();
-    while (level().items[level().index].label != "Rain") press(Button::Down);
+    while (level().items[level().index].label != "Rain") press(Button::Forward);
     options("Add to queue");
     EXPECT_EQ(speech.last(), "Added Rain. Press play.");
     EXPECT_FALSE(player.isOpen());
@@ -12865,7 +12381,7 @@ TEST_F(OptionsTest, AnAudiobookKeepsPlayingWhileTracksAreAddedAndTheyWaitForCont
     hold(Button::Home);
     open("Music");
     open("Albums A to Z");
-    while (level().items[level().index].label != "Road Trip") press(Button::Down);
+    while (level().items[level().index].label != "Road Trip") press(Button::Forward);
     options("Add to queue");
     EXPECT_EQ(speech.last(), "Added Road Trip, 2 tracks. 2 in queue.");
     EXPECT_TRUE(player.playing());
@@ -12882,7 +12398,7 @@ TEST_F(OptionsTest, TracksAddedWhileABookPlaysJoinTheQueueThatWaits) {
         hold(Button::Home);
         open("Music");
         open("Albums A to Z");
-        while (level().items[level().index].label != "Road Trip") press(Button::Down);
+        while (level().items[level().index].label != "Road Trip") press(Button::Forward);
         options(action);
     }
     EXPECT_EQ(speech.last(), "Added Road Trip, 2 tracks. 4 in queue.");
@@ -12944,7 +12460,7 @@ TEST_F(OptionsTest, ChoosingAnotherActionWhileLoadingCancelsTheFirstRequest) {
     openServerAlbums();
     options("Add to queue");
     auto first = server.lastRequest().id;
-    press(Button::Up);
+    press(Button::Back);
     press(Button::Ok); // Play next
     EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), first), server.cancelled.end());
     answer(weather());
@@ -12993,13 +12509,13 @@ TEST_F(OptionsTest, TheBeginnerHintNamesOptions) {
     hold(Button::Home);
     open("Music");
     open("Albums A to Z");
-    while (level().items[level().index].label != "Road Trip") press(Button::Down);
-    press(Button::Up);
-    press(Button::Down);
+    while (level().items[level().index].label != "Road Trip") press(Button::Forward);
+    press(Button::Back);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Road Trip, 2 tracks, 2 of 2. Press OK to open, Options for more.");
     hold(Button::Home);
     open("Music");
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Artists, 2 of 8. Press OK to open.") << "no options, no mention";
 }
 
@@ -13012,7 +12528,7 @@ TEST_F(OptionsTest, ARemoteTrackAndAlbumHaveTheHintToo) {
     EXPECT_EQ(speech.last(), "Weather, Band, 1 of 1. Press OK to open, Options for more.");
     press(Button::Ok);
     answer(weather());
-    while (level().items[level().index].label != "Rain") press(Button::Down);
+    while (level().items[level().index].label != "Rain") press(Button::Forward);
     EXPECT_EQ(speech.last(), "Rain, 4 of 5. Press OK to play, Options for more.");
 }
 
@@ -13021,7 +12537,7 @@ TEST_F(OptionsTest, AServerOnlyAlbumInMusicHasOptionsToo) {
     sync({album("al1", "Weather")});
     open("Music");
     open("Albums A to Z");
-    while (level().items[level().index].label != "Weather") press(Button::Down);
+    while (level().items[level().index].label != "Weather") press(Button::Forward);
     options("Add to queue");
     EXPECT_EQ(server.lastRequest().arg, "al1");
     answer(weather());
@@ -13041,7 +12557,7 @@ TEST_F(OptionsTest, ADownloadedTrackInTheQueueProtectsItsListFromDeletion) {
     open("Downloaded");
     open("Weather");
     open("Delete download");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "Cannot delete Weather while it is loaded in the player. Play something else first.");
     EXPECT_TRUE(fs::exists(downloadedFile("al9", 1)));
@@ -13052,7 +12568,7 @@ TEST_F(OptionsTest, PlayNowOnAnAlbumOfMusicMarksItAsPlayed) {
     hold(Button::Home);
     open("Music");
     open("Albums A to Z");
-    while (level().items[level().index].label != "Road Trip") press(Button::Down);
+    while (level().items[level().index].label != "Road Trip") press(Button::Forward);
     options("Play now");
     hold(Button::Home);
     open("Music");
@@ -13069,7 +12585,7 @@ protected:
         hold(Button::Home);
         open("Music");
         open("Albums A to Z");
-        while (level().items[level().index].label != label) press(Button::Down);
+        while (level().items[level().index].label != label) press(Button::Forward);
     }
     void playNowOn(const std::string& label) {
         inAlbums(label);
@@ -13269,7 +12785,7 @@ TEST_F(PlayerOptionsTest, ContinuingAnEditedParkedQueueDoesNotOfferItAsItsOwnPre
     open("Alpha"); // the book plays; the edited music queue waits
     hold(Button::Home);
     ASSERT_EQ(labels()[1], "Continue");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     ASSERT_EQ(app->screens().back().kind, Screen::Kind::MusicPlayer);
     press(Button::Ok);
@@ -13738,7 +13254,7 @@ protected:
         open("Queue");
     }
     void select(const std::string& label) {
-        for (size_t i = 0; i < level().items.size() && level().items[level().index].label != label; ++i) press(Button::Down);
+        for (size_t i = 0; i < level().items.size() && level().items[level().index].label != label; ++i) press(Button::Forward);
         ASSERT_EQ(level().items[level().index].label, label);
     }
     // In the Queue list: Options on the entry `label`, then `item`.
@@ -13781,7 +13297,7 @@ TEST_F(QueueListTest, OpensOnTheCurrentEntryAndSaysCurrent) {
     ASSERT_NO_FATAL_FAILURE(openQueue());
     EXPECT_EQ(speech.last(), "Queue. T5, current, 5 of 32") << "30 entries, Save as playlist and Clear queue";
     EXPECT_EQ(level().index, 4u);
-    press(Button::Down);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "T6, 6 of 32") << "only the current entry says current";
 }
 
@@ -14804,7 +14320,7 @@ TEST_F(KeepQueueTest, AParkedMusicQueueSurvivesARestartWhileABookPlays) {
     EXPECT_EQ(valueOf(level().items[0]), "Alpha");
     ASSERT_EQ(labels()[1], "Continue");
     EXPECT_EQ(valueOf(level().items[1]), "Mixed");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(player.file, "fake://stream/t2");
     EXPECT_DOUBLE_EQ(player.pos, 33);
@@ -14996,7 +14512,7 @@ protected:
     void removeFromQueue(const std::string& label) {
         press(Button::Ok);
         open("Queue");
-        for (size_t i = 0; i < level().items.size() && level().items[level().index].label != label; ++i) press(Button::Down);
+        for (size_t i = 0; i < level().items.size() && level().items[level().index].label != label; ++i) press(Button::Forward);
         ASSERT_EQ(level().items[level().index].label, label);
         press(Button::Options);
         open("Remove");
@@ -15128,8 +14644,8 @@ TEST_F(TwoServerPlayTest, APreOpenedTrackOfOneServerIsNotTakenForTheSameIdOnTheO
     ASSERT_EQ(player.preloads, (std::vector<std::string>{"fake://books/t1"})); // Dune is next
     press(Button::Ok);
     open("Queue");
-    press(Button::Down);
-    press(Button::Down);
+    press(Button::Forward);
+    press(Button::Forward);
     press(Button::Ok); // Storm, the first server's t1
     finishOpen();
     EXPECT_EQ(player.file, "fake://stream/t1") << "not the stream pre-opened for the other server's t1";
@@ -15849,7 +15365,7 @@ TEST_F(TwoServerDownloadTest, LeavingTheScreenCancelsTheResumeOnTheSecondServer)
     start();
     open("Now playing");
     const auto id = second.lastRequest().id;
-    press(Button::Down); // a new screen or a move: the request is dropped
+    press(Button::Forward); // a new screen or a move: the request is dropped
     open("Library");
     EXPECT_NE(std::find(second.cancelled.begin(), second.cancelled.end(), id), second.cancelled.end());
     EXPECT_TRUE(server.cancelled.empty());
@@ -16130,7 +15646,7 @@ TEST_F(TwoServerCatalogueTest, OptionsOfAnAlbumOfTheSecondServerInMusicLoadItFro
     ASSERT_NO_FATAL_FAILURE(syncOf(second, "w1", {album("b1", "Calm")}));
     open("Music");
     open("Albums A to Z");
-    for (size_t i = 0; i < level().items.size() && level().items[level().index].label != "Calm"; ++i) press(Button::Down);
+    for (size_t i = 0; i < level().items.size() && level().items[level().index].label != "Calm"; ++i) press(Button::Forward);
     ASSERT_EQ(level().items[level().index].label, "Calm");
     press(Button::Options);
     open("Play now");
@@ -16467,7 +15983,7 @@ TEST_F(BooksMenuTest, RecentlyAddedErrorOffersTryAgain) {
     app->tick();
     EXPECT_EQ(labels(), (std::vector<std::string>{"Server not reachable", "Try again"}));
     EXPECT_EQ(speech.last(), "Server not reachable, 1 of 2");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "Loading, 1 of 1");
     answer(std::vector<RemoteAlbum>{book("b1", "Neuromancer")});
@@ -16491,15 +16007,21 @@ TEST_F(BooksMenuTest, BooksAToZLoadsLoadingThenTheFirstBook) {
     EXPECT_EQ(speech.last(), "Dune, Herbert, 1 of 1");
 }
 
-TEST_F(BooksMenuTest, BooksAToZAsksTheSecondPageWhileThereIsMore) {
+TEST_F(BooksMenuTest, BooksAToZLoadsMoreOnlyWhenChosen) {
     openList("Books A to Z");
     answer(std::vector<RemoteAlbum>{book("b1", "A1"), book("b2", "A2")}, true);
+    ASSERT_EQ(requestsOf(Kind::Albums), 1u);
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Load more, 3 of 3. More items are available. Load more to continue.");
+    press(Button::Ok);
     ASSERT_EQ(requestsOf(Kind::Albums), 2u);
     EXPECT_EQ(server.lastRequest().offset, 2);
     EXPECT_EQ(server.lastRequest().size, 500);
     answer(std::vector<RemoteAlbum>{book("b3", "B1")}, false);
     EXPECT_EQ(labels(), (std::vector<std::string>{"A1", "A2", "B1"}));
-    EXPECT_EQ(requestsOf(Kind::Albums), 2u) << "no third page when the server has no more";
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "B1, Gibson, 3 of 3");
+    EXPECT_EQ(requestsOf(Kind::Albums), 2u);
 }
 
 TEST_F(BooksMenuTest, BooksAToZErrorAndEmpty) {
@@ -16508,7 +16030,7 @@ TEST_F(BooksMenuTest, BooksAToZErrorAndEmpty) {
     app->tick();
     EXPECT_EQ(labels().front(), "Wrong user name or password");
     EXPECT_EQ(labels()[1], "Try again");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     answer(std::vector<RemoteAlbum>{});
     EXPECT_EQ(labels(), (std::vector<std::string>{"No books"}));
@@ -16534,7 +16056,7 @@ TEST_F(BooksMenuTest, AuthorsErrorAndEmpty) {
     ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Server));
     app->tick();
     EXPECT_EQ(labels().front(), "Server error");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     answer(std::vector<RemoteArtist>{});
     EXPECT_EQ(labels(), (std::vector<std::string>{"No authors"}));
@@ -16588,7 +16110,7 @@ TEST_F(BooksMenuTest, ABookThatFailsToLoadOffersTryAgain) {
     ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable));
     app->tick();
     EXPECT_EQ(labels().front(), "Server not reachable");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     EXPECT_EQ(requestsOf(Kind::Book), 2u);
     ASSERT_TRUE(server.replyBook(server.lastRequest().id, threeChapters()));
@@ -16634,10 +16156,10 @@ TEST_F(BooksMenuTest, PlayBookOnTheBookThatIsPlayingKeepsTheProgressMadeSinceItO
 
 TEST_F(BooksMenuTest, OkOnAChapterPlaysTheBookFromThatChapter) {
     ASSERT_NO_FATAL_FAILURE(openNeuromancer());
-    press(Button::Down);
-    press(Button::Down);
-    press(Button::Down);
-    press(Button::Down);
+    press(Button::Forward);
+    press(Button::Forward);
+    press(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "End, 5 of 5");
     press(Button::Ok);
     EXPECT_EQ(app->mode(), App::Mode::Player);
@@ -16666,8 +16188,8 @@ TEST_F(BooksMenuTest, ThePlaceKeptByPlayBookIsTheOneLibraryResumes) {
 
 TEST_F(BooksMenuTest, TheBookPageIsNotRebuiltWhenYouComeBackFromThePlayer) {
     ASSERT_NO_FATAL_FAILURE(openNeuromancer());
-    press(Button::Down);
-    press(Button::Down); // Intro
+    press(Button::Forward);
+    press(Button::Forward); // Intro
     const size_t asked = server.requests.size();
     press(Button::Ok);
     ASSERT_EQ(app->mode(), App::Mode::Player);
@@ -16864,8 +16386,8 @@ TEST_F(BookDownloadTest, WhereAmIInThePlayerSaysTheFilesToo) {
     ASSERT_NO_FATAL_FAILURE(openPage(manyParts(24)));
     open("Download book");
     for (int i = 0; i < 3; ++i) ASSERT_NO_FATAL_FAILURE(finishFile());
-    press(Button::Up);
-    press(Button::Up); // Play book
+    press(Button::Back);
+    press(Button::Back); // Play book
     press(Button::Ok);
     ASSERT_EQ(app->mode(), App::Mode::Player);
     hold(Button::PlayPause);
@@ -16996,7 +16518,7 @@ TEST_F(BookDownloadTest, ABookDownloadedOnlyPartlyOpensFromDownloadedAsOnTheServ
     EXPECT_EQ(speech.last(), "Dune. Loading, 1 of 1");
     ASSERT_NO_FATAL_FAILURE(fail(Kind::Book, MusicServer::Error::Unreachable));
     EXPECT_EQ(labels().front(), "Server not reachable");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoParts()));
     app->tick();
@@ -17774,7 +17296,7 @@ TEST_F(BooksMenuTest, ContinueListeningLoadsItsFirstBookWithAuthorAndKeepsTheLis
     answer(std::vector<RemoteAlbum>{book("b1", "Neuromancer"), book("b2", "Dune", "Herbert")});
     EXPECT_EQ(labels(), (std::vector<std::string>{"Neuromancer", "Dune"}));
     EXPECT_EQ(speech.last(), "Neuromancer, Gibson, 1 of 2");
-    press(Button::Down);
+    press(Button::Forward);
     press(Button::Ok);
     ASSERT_TRUE(server.replyBook(server.lastRequest().id, threeChapters())); app->tick();
     EXPECT_EQ(app->mode(), App::Mode::Player);
@@ -17866,4 +17388,108 @@ TEST_F(BookDownloadTest, ContinueListeningUsesDownloadedFilesAndStillFollowsTheS
     ASSERT_TRUE(server.replyProgress(lastOf(Kind::Progress), RemoteProgress{210, 380, false, 1699999990000LL})); app->tick();
     EXPECT_EQ(player.file, fileOf(2));
     EXPECT_DOUBLE_EQ(player.pos, 10);
+}
+
+TEST_F(AppTest, InactiveKeysDoNotInterruptSpeakMoveOrChangePlayback) {
+    start();
+    for (bool inPlayer : {false, true}) {
+        if (inPlayer) { open("Library"); open("Alpha"); }
+        const auto said = speech.said.size();
+        const auto stopped = speech.stops;
+        const auto played = sounds.played.size();
+        const auto file = player.file;
+        const auto index = level().index;
+        player.pos = 42;
+        for (Button key : {Button::Up, Button::Down, Button::Talk}) { press(key); hold(key); }
+        EXPECT_EQ(speech.said.size(), said);
+        EXPECT_EQ(speech.stops, stopped);
+        EXPECT_EQ(sounds.played.size(), played);
+        EXPECT_EQ(level().index, index);
+        EXPECT_EQ(player.file, file);
+        EXPECT_EQ(player.pos, 42);
+        EXPECT_EQ(player.playing(), inPlayer);
+    }
+}
+
+TEST_F(AppTest, HomeReturnsToLoadedPlayingOrPausedPlayerWithoutResumingIt) {
+    playAlpha();
+    for (bool paused : {false, true}) {
+        if (paused) press(Button::PlayPause);
+        player.pos = 42;
+        hold(Button::Home);
+        ASSERT_EQ(level().title, "Home");
+        hold(Button::Home);
+        EXPECT_EQ(level().title, "Home");
+        press(Button::Home);
+        EXPECT_EQ(app->mode(), App::Mode::Player);
+        EXPECT_EQ(player.playing(), !paused);
+        EXPECT_EQ(player.file, alphaFile(1));
+        EXPECT_EQ(player.pos, 42);
+    }
+}
+
+TEST_F(AppTest, HomeWithoutLoadedPlayerStaysHomeWithFeedback) {
+    start();
+    speech.said.clear();
+    press(Button::Home);
+    EXPECT_EQ(level().title, "Home");
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_EQ(speech.last(), "Home. Library, 1 of 7");
+    hold(Button::Home);
+    EXPECT_EQ(level().title, "Home");
+    EXPECT_TRUE(player.opened.empty());
+}
+
+TEST_F(AppTest, HeldOkOpensItemAndPlayerOptionsWithoutActivationOrNesting) {
+    start();
+    open("Music"); open("Albums A to Z");
+    hold(Button::Ok); // Lullaby's Options, without starting it
+    ASSERT_EQ(level().title, "Options, Lullaby");
+    EXPECT_TRUE(player.opened.empty());
+    const auto depth = app->screens().size();
+    hold(Button::Ok);
+    EXPECT_EQ(speech.last(), "No options.");
+    EXPECT_EQ(app->screens().size(), depth);
+    press(Button::Options);
+    EXPECT_EQ(speech.last(), "No options.");
+    EXPECT_EQ(app->screens().size(), depth);
+    press(Button::Home);
+    open("Road Trip"); open("Sunrise");
+    hold(Button::Ok);
+    EXPECT_EQ(level().title, "Options, Sunrise");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Go to album", "Album info"}));
+    EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string());
+    press(Button::Home);
+    press(Button::Ok);
+    EXPECT_EQ(level().title, "Player menu");
+}
+
+TEST_F(StreamingTest, LoadingAndErrorBoundaryJumpsKeepTheirOwnAnnouncements) {
+    openList("Albums A to Z");
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Loading, 1 of 1");
+    answer(someAlbums("A", 2), true);
+    hold(Button::Back);
+    EXPECT_EQ(speech.last(), "A 1, Band, 1 of 3. More items are available. Load more to continue.");
+    open("Load more");
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Loading, 3 of 3");
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Server));
+    app->tick();
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "Try again, 4 of 4");
+    hold(Button::Back);
+    EXPECT_EQ(speech.last(), "A 1, Band, 1 of 4");
+    EXPECT_EQ(requestsOf(Kind::Albums), 2u);
+}
+
+TEST_F(StreamingTest, EmptyNextPageStopsOfferingLoadMoreEvenWhenServerSaysMore) {
+    openList("Albums A to Z");
+    answer(someAlbums("A", 1), true);
+    open("Load more");
+    answer(std::vector<RemoteAlbum>{}, true);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"A 1"}));
+    hold(Button::Forward);
+    EXPECT_EQ(speech.last(), "A 1, Band, 1 of 1");
+    EXPECT_EQ(requestsOf(Kind::Albums), 2u);
 }

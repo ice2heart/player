@@ -32,9 +32,8 @@ constexpr std::int64_t kProgressMillisPerSecond = 1000;
 // Setting keys
 constexpr const char* kSpeechRate = "speech.rate";
 constexpr const char* kVolume = "volume";
-constexpr int kMenuJump = 10; // items Left / Right move in a list that is not sorted by name
+constexpr int kMenuJump = 10; // items moved by a deep Back / Forward press
 constexpr const char* kUnknownArtist = "Unknown artist";
-const std::string kNoLetter = "\x01"; // starts the group of an item that is spoken without a letter
 constexpr int kVolumeStep = 5; // percent per press of a volume key
 constexpr const char* kVerbosity = "verbosity"; // 0 beginner, 1 normal, 2 expert
 constexpr const char* kSkipBack = "skip.back";
@@ -779,7 +778,7 @@ void App::onGesture(ButtonEvent ev) {
     if (locked_[static_cast<size_t>(ev.button)] ||
         (ev.button == Button::Back && locked_[static_cast<size_t>(Button::BackDeep)]) ||
         (ev.button == Button::Forward && locked_[static_cast<size_t>(Button::ForwardDeep)])) return;
-    if ((ev.button == Button::Back || ev.button == Button::Forward) &&
+    if (mode() == Mode::Player && (ev.button == Button::Back || ev.button == Button::Forward) &&
         (ev.gesture == Gesture::Long || ev.gesture == Gesture::Deep)) {
         if (std::exchange(navigationActed_[static_cast<size_t>(ev.button)], true)) return;
     }
@@ -873,7 +872,8 @@ void App::onButton(ButtonEvent ev) {
         wake();
         return;
     }
-    // Any other key interrupts speech. A repeat does so only when the volume moves (in
+    if (!keyDescriber_ && (ev.button == Button::Up || ev.button == Button::Down || ev.button == Button::Talk)) return;
+    // Any other active key interrupts speech. A repeat does so only when the volume moves (in
     // changeVolume), so "Maximum volume." is not cut off by the repeat that follows it.
     if (ev.gesture != Gesture::Repeat) tts_.stop();
 
@@ -886,10 +886,6 @@ void App::onButton(ButtonEvent ev) {
     case Button::Power:
         if (ev.gesture == Gesture::Short) sleep("Going to sleep.");
         else openPowerMenu();
-        return;
-    case Button::Talk:
-        earcons_.play(Earcon::Error);
-        say("Voice input is not available yet.");
         return;
     case Button::PlayPause:
         if (ev.gesture == Gesture::Short) togglePlay();
@@ -910,55 +906,23 @@ void App::onButton(ButtonEvent ev) {
     else handleMenu(ev);
 }
 
-// OK goes in, Home goes out, Left / Right jump in a long list (docs/navigation.md).
+// Short OK selects, held OK opens Options, and Back / Forward move in menus.
 void App::handleMenu(ButtonEvent ev) {
     if (screens_.empty()) {
         goHome();
         return;
     }
-    Screen& screen = screens_.back();
-    bool longPress = ev.gesture == Gesture::Long;
-
     switch (ev.button) {
-    case Button::Up:
-    case Button::Down: {
-        if (screen.items.empty()) {
-            earcons_.play(Earcon::Edge);
-            say(screen.title + ", empty.");
-            return;
-        }
-        long count = long(screen.items.size());
-        if (longPress) {
-            screen.index = ev.button == Button::Up ? 0 : size_t(count - 1);
-            earcons_.play(Earcon::Move);
-        } else {
-            long next = long(screen.index) + (ev.button == Button::Up ? -1 : 1);
-            if (next < 0 || next >= count) {
-                if (!config_.getInt(kMenuWrap, 1)) {
-                    earcons_.play(Earcon::Edge);
-                    say(itemSpeech(screen));
-                    return;
-                }
-                next = (next + count) % count;
-                earcons_.play(Earcon::Wrap);
-            } else {
-                earcons_.play(Earcon::Move);
-            }
-            screen.index = size_t(next);
-        }
-        say(itemSpeech(screen));
-        return;
-    }
     case Button::Back:
-    case Button::Forward: // short, long and deep all jump once
-        jump(ev.button == Button::Back ? -1 : 1);
+    case Button::Forward:
+        moveMenu(ev.button == Button::Back ? -1 : 1, ev.gesture);
         return;
     case Button::Ok:
-        if (longPress) back();
+        if (ev.gesture == Gesture::Long) openOptions();
         else activate();
         return;
     case Button::Home:
-        if (longPress) goHome();
+        if (ev.gesture == Gesture::Long) goHome();
         else back();
         return;
     default:
@@ -980,7 +944,7 @@ void App::handlePlayer(ButtonEvent ev) {
         changeStepUnit(ev.button == Button::Up ? -1 : 1);
         return;
     case Button::Ok:
-        if (ev.gesture == Gesture::Long) back();
+        if (ev.gesture == Gesture::Long) openOptions();
         else openMenu("Player menu", [this] { return playerMenu(); });
         return;
     case Button::Home:
@@ -1111,77 +1075,48 @@ void App::activate() {
     }
 }
 
-// The group an item of a list sorted by name falls in, for the jump: its first letter. An item
-// in no letter (the status rows of a list from the server, "Unknown artist") is a group of its
-// own that starts with kNoLetter.
-std::string App::itemGroup(const Screen& screen, size_t i) const {
-    auto list = remoteLists_.find(screen.id);
-    if (list != remoteLists_.end() && i >= list->second.loaded) return kNoLetter + "status";
-    const std::string& label = screen.items[i].label;
-    if (screen.order == ListOrder::ByArtist) {
-        if (screen.items[i].unlettered) return kNoLetter + label;
-        return nameGroup(artistSortName(label));
-    }
-    return nameGroup(label);
-}
-
-// Left / Right in a menu: to the first item of the previous / next letter in a list sorted by
-// name, else kMenuJump items back / forward. The ends play the edge sound, or wrap.
-void App::jump(int direction) {
+// Single steps follow Menu wrap; deep and held jumps clamp, regardless of sorting.
+void App::moveMenu(int direction, Gesture gesture) {
     Screen& screen = screens_.back();
     if (screen.items.empty()) {
         earcons_.play(Earcon::Edge);
         say(screen.title + ", empty.");
         return;
     }
-    long count = long(screen.items.size());
-    long from = long(screen.index);
-    bool sorted = screen.order != ListOrder::None;
-    long target = from; // stays on the item when there is nowhere to go
+    const long count = long(screen.items.size());
+    const long from = long(screen.index);
+    long target;
     bool wrapped = false;
-    if (sorted) {
-        auto firstOf = [&](long i) { // the first item of the group of item i
-            std::string group = itemGroup(screen, size_t(i));
-            while (i > 0 && itemGroup(screen, size_t(i - 1)) == group) --i;
-            return i;
-        };
-        if (direction > 0) {
-            std::string group = itemGroup(screen, size_t(from));
-            long next = from;
-            while (next < count && itemGroup(screen, size_t(next)) == group) ++next;
-            if (next < count) target = next;
-        } else if (long start = firstOf(from); start > 0) {
-            target = firstOf(start - 1);
-        }
-        if (target == from && config_.getInt(kMenuWrap, 1) && count > 1) {
-            target = direction > 0 ? 0 : firstOf(count - 1);
-            wrapped = target != from;
-        }
-    } else {
+    if (gesture == Gesture::Long) {
+        target = direction < 0 ? 0 : count - 1;
+    } else if (gesture == Gesture::Deep) {
         target = std::clamp(from + direction * kMenuJump, 0L, count - 1);
-        if (target == from && config_.getInt(kMenuWrap, 1) && count > 1) {
-            target = direction > 0 ? 0 : count - 1;
-            wrapped = true;
+    } else {
+        target = from + direction;
+        if (target < 0 || target >= count) {
+            if (count > 1 && config_.getInt(kMenuWrap, 1)) {
+                target = (target + count) % count;
+                wrapped = true;
+            } else target = from;
         }
-    }
-    if (target == from) {
-        earcons_.play(Earcon::Edge);
-        say(itemSpeech(screen));
-        return;
     }
     screen.index = size_t(target);
-    earcons_.play(wrapped ? Earcon::Wrap : Earcon::Move);
+    earcons_.play(wrapped ? Earcon::Wrap : target == from ? Earcon::Edge : Earcon::Move);
     std::string text = itemSpeech(screen);
-    if (sorted) {
-        std::string group = itemGroup(screen, screen.index);
-        if (group == "#") group = "Number";
-        if (!group.starts_with(kNoLetter)) text = group + ". " + text;
-    }
+    auto list = remoteLists_.find(screen.id);
+    if (gesture != Gesture::Short && (target == 0 || target == count - 1) &&
+        list != remoteLists_.end() && list->second.more && !list->second.waiting &&
+        list->second.error == MusicServer::Error::None)
+        text += ". More items are available. Load more to continue.";
     say(text);
 }
 
 void App::back() {
     if (screens_.size() <= 1) {
+        if (book_) {
+            enterPlayer();
+            return;
+        }
         earcons_.play(Earcon::Edge);
         if (!screens_.empty()) say(screens_.back().title + ". " + itemSpeech(screens_.back()));
         return;
@@ -1961,7 +1896,7 @@ App::FetchPage App::fetchPages(std::function<MusicServer::RequestId(int offset, 
 }
 
 // Opens at once with "Loading"; onPage() fills it in. With a page size, the
-// following pages are fetched in the background while the server has more.
+// following pages are requested only through the Load more item.
 void App::openRemoteList(size_t link, const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
                          std::string emptyHelp, ListOrder order, std::string focusKey) {
     pushScreen({Screen::Kind::Menu, title, {}, {}}); // no build: popScreen() keeps what has loaded
@@ -2019,7 +1954,8 @@ void App::onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<M
                              std::make_move_iterator(items.end()));
         list.loaded += count;
         // The next page starts after what came, whatever size the server sends.
-        if (list.pageSize > 0 && more && count > 0) requestPage(screenId, list.offset + int(count), false);
+        list.more = list.pageSize > 0 && more && count > 0;
+        list.offset += int(count);
     }
     showStatus(screenId);
     if (onLoading) screen->index = std::min(focus, screen->items.size() - 1);
@@ -2030,7 +1966,7 @@ void App::onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<M
     say(itemSpeech(*screen));
 }
 
-// After what has loaded comes one of: the error and "Try again", "Loading", or
+// After what has loaded comes one of: the error and "Try again", "Loading", "Load more", or
 // why the list is empty. So the list is never empty.
 void App::showStatus(std::uint64_t screenId) {
     auto it = remoteLists_.find(screenId);
@@ -2055,6 +1991,16 @@ void App::showStatus(std::uint64_t screenId) {
         if (hasDownloads(list.link)) items.push_back(submenu("Downloaded", [this, link = list.link] { return downloadedMenu(link); }));
     } else if (list.waiting) {
         items.push_back(action("Loading", [this] { say("Still loading."); }));
+    } else if (list.more) {
+        items.push_back(action("Load more", [this, screenId] {
+            auto next = remoteLists_.find(screenId);
+            Screen* screen = findScreen(screenId);
+            if (next == remoteLists_.end() || !screen || next->second.waiting || !next->second.more) return;
+            requestPage(screenId, next->second.offset, true);
+            showStatus(screenId);
+            screen->index = screen->items.size() - 1;
+            say(itemSpeech(*screen));
+        }));
     } else if (list.loaded == 0) {
         items.push_back(action(list.emptyLabel, [this, help = list.emptyHelp] { say(help); }));
     }

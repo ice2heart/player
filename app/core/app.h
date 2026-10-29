@@ -147,8 +147,7 @@ private:
     void closeScreens(size_t keep);     // all but the first `keep`, cancelling their requests
     Screen* findScreen(std::uint64_t id); // nullptr once it has left the stack
     void activate();
-    void jump(int direction);                              // Left / Right in a menu
-    std::string itemGroup(const Screen& screen, size_t i) const; // the letter group of an item in a list sorted by name
+    void moveMenu(int direction, Gesture gesture); // Back / Forward: one, ten, or end
     void back();
     void popScreen(); // back() without a sound or speech
     void goHome();
@@ -360,11 +359,12 @@ private:
     struct RemoteList {
         FetchPage fetch;
         size_t link = 0;                   // the server its requests go to (servers_), to cancel them there
-        int pageSize = 0;                  // > 0: fetch the next page while the server says there is more
+        int pageSize = 0;                  // > 0: offer Load more while the server says there is more
         std::string emptyLabel, emptyHelp; // what an empty list says, and what to do
         size_t loaded = 0;                 // the first items of the screen; a status item may follow
         MusicServer::RequestId request = 0; // the page being loaded, 0 when none
         int offset = 0;                     // of that page, or of the page that failed
+        bool more = false;                  // a next page is available through Load more
         bool waiting = false;               // the user waits for it: a "Loading" item is shown
         std::string focusKey;               // the item (MenuItem::key) to open on when it has loaded
         MusicServer::Error error = MusicServer::Error::None; // the last page failed

@@ -2,9 +2,9 @@
 
 > Status: this contract includes the approved [button-remap.md](button-remap.md)
 > mapping and parameters, recorded before code in step 1.1. The gesture lifecycle
-> is built (step 1.2); steps 1.3–1.5 implement menu/player mapping and help.
-> Until those steps finish,
-> the build still uses the previous step-unit and letter-jump controls;
+> and menu/Options mapping are built (steps 1.2–1.3); steps 1.4–1.5 implement
+> player seeking and help. Until those steps finish, the player still uses the
+> previous saved/default step unit and held/deep chapter controls;
 > [architecture.md](architecture.md) describes that build.
 > The two players, queue, Options actions, server menus, progress sync, download
 > quality and cache quality are built. Star / Unstar is not built
@@ -435,8 +435,8 @@ server alone. All the rules below hold for every server.
   Held Back / Forward reaches the first / last item of what has loaded. End
   jumps never fetch more pages; keep Load more accessible when more pages remain,
   with the continuation announcement specified above. Loading/error rows retain
-  their own announcements. The previous build fetched following pages in the
-  background; button-remap.md 1.3 implements the loaded-boundary contract.
+  their own announcements. Choose Load more with short OK to request the next
+  page; returning to loaded items while it runs leaves them usable.
 - **A list from the server is not rebuilt when you come back to it.** It keeps
   what has loaded and the selected item, so going back does not wait on the
   network again. This is the one exception to "a menu is rebuilt".
