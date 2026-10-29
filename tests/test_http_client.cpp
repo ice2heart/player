@@ -92,6 +92,10 @@ public:
         std::lock_guard lock(mutex_);
         return requestLine_;
     }
+    std::string requestBody() {
+        std::lock_guard lock(mutex_);
+        return requestBody_;
+    }
     // The whole request head (request line and headers), as received.
     std::string requestHead() {
         std::lock_guard lock(mutex_);
@@ -112,17 +116,28 @@ private:
         if (connection < 0) return;
         std::string request;
         char buffer[4096];
-        while (request.find("\r\n\r\n") == std::string::npos && !stopping()) {
+        std::size_t headEnd = std::string::npos;
+        std::size_t contentLength = 0;
+        while (!stopping()) {
             pollfd fd{connection, POLLIN, 0};
             if (::poll(&fd, 1, 20) <= 0) continue;
             auto n = read(connection, buffer, sizeof buffer);
             if (n <= 0) break;
             request.append(buffer, std::size_t(n));
+            if (headEnd == std::string::npos) {
+                auto split = request.find("\r\n\r\n");
+                if (split == std::string::npos) continue;
+                headEnd = split + 4;
+                auto length = request.find("\r\nContent-Length: ");
+                if (length < split) contentLength = std::stoull(request.substr(length + 18));
+            }
+            if (request.size() >= headEnd + contentLength) break;
         }
         {
             std::unique_lock lock(mutex_);
             requestLine_ = request.substr(0, request.find("\r\n"));
-            requestHead_ = request;
+            requestHead_ = request.substr(0, headEnd);
+            if (headEnd != std::string::npos) requestBody_ = request.substr(headEnd);
             requestSeen_ = true;
             changed_.wait(lock, [this] { return released_ || stop_; });
             if (released_ && !stop_) {
@@ -148,6 +163,7 @@ private:
     std::atomic<bool> requestSeen_{false};
     std::string requestLine_;
     std::string requestHead_;
+    std::string requestBody_;
     std::thread thread_;
 };
 
@@ -207,6 +223,42 @@ TEST(HttpClient, SendsTheGivenHeaders) {
     auto head = server.requestHead();
     EXPECT_NE(head.find("\r\nAuthorization: Bearer s3cret-key\r\n"), std::string::npos) << head;
     EXPECT_NE(head.find("\r\nX-Other: two\r\n"), std::string::npos) << head;
+}
+
+TEST(HttpClient, PatchSendsMethodHeadersAndJsonBody) {
+    LocalServer server(httpResponse(200, "{\"ok\":true}"));
+    HttpClient client;
+    Outcome outcome;
+    // A long body forces the server to read beyond its first buffer; the NUL
+    // checks that the explicit size, rather than strlen, controls the upload.
+    std::string body = "{\"padding\":\"" + std::string(9000, 'x') + "\"}";
+    body.push_back('\0');
+    body += "tail";
+    client.patch(1, server.url("/api/me/progress/book"), {"Authorization: Bearer fake-key"}, body, outcome.handler());
+    ASSERT_TRUE(waitFor([&] { return outcome.done(); }));
+    EXPECT_TRUE(outcome.response->reached);
+    EXPECT_EQ(outcome.response->status, 200);
+    EXPECT_EQ(outcome.response->body, "{\"ok\":true}");
+    EXPECT_EQ(server.requestLine(), "PATCH /api/me/progress/book HTTP/1.1");
+    auto head = server.requestHead();
+    EXPECT_NE(head.find("\r\nAuthorization: Bearer fake-key\r\n"), std::string::npos);
+    EXPECT_NE(head.find("\r\nContent-Type: application/json\r\n"), std::string::npos);
+    EXPECT_EQ(server.requestBody(), body);
+}
+
+TEST(HttpClient, ACancelledPatchHandlerDoesNotRun) {
+    LocalServer held(httpResponse(200, "late"), /*hold=*/true);
+    LocalServer quick(httpResponse(200, "quick"));
+    HttpClient client;
+    Outcome cancelled, other;
+    client.patch(1, held.url(), {}, "{}", cancelled.handler());
+    ASSERT_TRUE(waitFor([&] { return held.requestSeen(); }));
+    client.cancel(1);
+    client.get(2, quick.url(), {}, other.handler());
+    ASSERT_TRUE(waitFor([&] { return other.done(); }));
+    held.release(); // the worker has processed cancellation before this answer arrives
+    client.finish(1s); // drain every remaining handler before checking
+    EXPECT_FALSE(cancelled.done());
 }
 
 TEST(HttpClient, ARequestWithoutHeadersSendsNone) {

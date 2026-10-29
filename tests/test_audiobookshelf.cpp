@@ -46,6 +46,9 @@ public:
     void get(Id id, std::string url, Headers headers, Handler handler) override {
         calls.push_back({id, std::move(url), std::move(headers), std::move(handler)});
     }
+    void patch(Id, std::string, Headers, std::string, Handler) override {
+        ADD_FAILURE() << "Unexpected PATCH";
+    }
     void cancel(Id id) override { cancelled.push_back(id); }
 
     void answer(std::size_t call, long status, std::string body) {

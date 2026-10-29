@@ -13,7 +13,7 @@
 
 namespace oap {
 
-// Asynchronous HTTP GET, as Subsonic needs it. Tests stand in a fake.
+// Asynchronous HTTP GET and JSON PATCH. Tests stand in a fake.
 // URLs carry credentials: implementations never log or print them.
 class Http {
 public:
@@ -32,6 +32,7 @@ public:
 
     virtual ~Http() = default;
     virtual void get(Id id, std::string url, Headers headers, Handler handler) = 0;
+    virtual void patch(Id id, std::string url, Headers headers, std::string body, Handler handler) = 0;
     // Stop request `id` and drop its handler. Best effort: an answer that is
     // already in may still reach the handler, so callers that must not see it
     // (Subsonic) check for themselves.
@@ -62,8 +63,9 @@ public:
     HttpClient& operator=(const HttpClient&) = delete;
 
     void get(Id id, std::string url, Headers headers, Handler handler) override;
+    void patch(Id id, std::string url, Headers headers, std::string body, Handler handler) override;
     void cancel(Id id) override;
-    // Rejects new get()s (their handlers never run), waits until the queued and
+    // Rejects new requests (their handlers never run), waits until the queued and
     // running requests are answered (their handlers run) or `deadline` has passed,
     // then aborts what is left and stops the worker. The destructor is still safe after it.
     // Call it once, from one thread, never from a handler.
@@ -75,7 +77,10 @@ private:
         std::string url;
         Headers headers;
         Handler handler;
+        bool patch = false;
+        std::string body;
     };
+    void enqueue(Job job);
     void run();
 
     Options options_;

@@ -24,6 +24,7 @@ struct Transfer {
     Http::Handler handler;
     curl_slist* headers = nullptr; // owned; freed after the handle
     std::string body;
+    std::string requestBody; // CURLOPT_POSTFIELDS borrows this until the transfer ends
     std::size_t maxBody = 0;
 };
 
@@ -63,10 +64,19 @@ HttpClient::~HttpClient() {
 }
 
 void HttpClient::get(Id id, std::string url, Headers headers, Handler handler) {
+    enqueue({id, std::move(url), std::move(headers), std::move(handler), false, {}});
+}
+
+void HttpClient::patch(Id id, std::string url, Headers headers, std::string body, Handler handler) {
+    headers.push_back("Content-Type: application/json");
+    enqueue({id, std::move(url), std::move(headers), std::move(handler), true, std::move(body)});
+}
+
+void HttpClient::enqueue(Job job) {
     {
         std::lock_guard lock(mutex_);
         if (finishing_) return; // too late: nothing is sent
-        queue_.push_back({id, std::move(url), std::move(headers), std::move(handler)});
+        queue_.push_back(std::move(job));
     }
     curl_multi_wakeup(multiOf(multi_));
 }
@@ -135,6 +145,12 @@ void HttpClient::run() {
         }
         if (transfer->headers) curl_easy_setopt(easy, CURLOPT_HTTPHEADER, transfer->headers);
         curl_easy_setopt(easy, CURLOPT_URL, job.url.c_str());
+        if (job.patch) {
+            transfer->requestBody = std::move(job.body);
+            curl_easy_setopt(easy, CURLOPT_POSTFIELDS, transfer->requestBody.data());
+            curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(transfer->requestBody.size()));
+            curl_easy_setopt(easy, CURLOPT_CUSTOMREQUEST, "PATCH");
+        }
         curl_easy_setopt(easy, CURLOPT_PRIVATE, transfer.get());
         curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, onData);
         curl_easy_setopt(easy, CURLOPT_WRITEDATA, transfer.get());
