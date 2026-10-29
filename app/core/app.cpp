@@ -444,6 +444,7 @@ void App::dropUnsetServers() {
 
 namespace {
 std::string downloadedName(const CachedList& list); // below, with the downloaded lists
+bool isWholeDownload(const CachedList& list, const std::vector<RemoteTrack>& onDisk);
 }
 
 // The pinned albums of the caches are the Cached items of the index. A download carries the
@@ -457,6 +458,8 @@ void App::syncDownloads() {
         const TrackCache& store = trackCacheOf(link);
         if (!store.enabled()) continue;
         const std::string& key = servers_[link].key;
+        // Everything a Books server has downloaded is a book: listed in its Downloaded, never in Music.
+        if (servers_[link].server.catalogue() == MusicServer::Catalogue::Books) continue;
         bool catalogue = false;
         for (const auto& [id, item] : index_.items())
             if (item.source == IndexItem::Source::Server && LibraryIndex::refOnServer(item.seenOn, key)) catalogue = true;
@@ -1805,10 +1808,21 @@ std::vector<MenuItem> App::bookPage(const RemoteAlbum& album, const RemoteBook& 
     const size_t chapters = book->chapters.empty() ? book->files.size() : book->chapters.size();
     all.value = [chapters] { return countValue(chapters, "chapter"); };
     items.push_back(std::move(all));
-    if (canDownloadFrom(link))
-        items.push_back(action("Download book", [this, link, album, tracks = std::make_shared<const std::vector<RemoteTrack>>(remote.tracks)] {
-            startDownload(link, album.name, album.artist, *tracks, {RemoteSource::Kind::Album, album.id}, {}, "file");
+    // What is on the disk decides: a book whose every file is there has nothing to download (a file the server has
+    // added since is one to fetch), and any download can be deleted.
+    const RemoteSource source{RemoteSource::Kind::Album, album.id};
+    const TrackCache& store = trackCacheOf(link);
+    const CachedList cached = store.enabled() ? store.load(source) : CachedList{};
+    const std::vector<RemoteTrack> onDisk = completeTracks(store, source, cached);
+    const bool whole = isWholeDownload(cached, onDisk) &&
+                       std::all_of(remote.tracks.begin(), remote.tracks.end(), [&](const RemoteTrack& t) {
+                           return std::any_of(onDisk.begin(), onDisk.end(), [&](const RemoteTrack& d) { return d.id == t.id; });
+                       });
+    if (canDownloadFrom(link) && !whole)
+        items.push_back(action("Download book", [this, link, album, shared = std::make_shared<const RemoteBook>(remote)] {
+            startDownload(link, album.name, album.artist, shared->tracks, {RemoteSource::Kind::Album, album.id}, {}, "file", shared->chapters);
         }));
+    if (!onDisk.empty()) items.push_back(deleteDownloadItem(source, album.name, link));
     auto chapter = [&](std::string label, size_t file, double start) {
         MenuItem item = action(std::move(label), [play, file, start] { play(file, start); });
         item.okHint = "play";
@@ -2467,14 +2481,35 @@ bool App::hasDownloads(size_t link) const {
 // Read from disk each time the menu is built, so it shows what changed meanwhile.
 std::vector<MenuItem> App::downloadedMenu(size_t link) {
     std::vector<MenuItem> items;
-    for (const CachedList& list : trackCacheOf(link).lists(true)) { // what the user downloaded, not the automatic cache
-        MenuItem item = submenu(downloadedName(list), [this, source = list.source, link] { return downloadedListMenu(source, link); });
+    const TrackCache& store = trackCacheOf(link);
+    const bool books = serverAt(link).catalogue() == MusicServer::Catalogue::Books;
+    for (const CachedList& list : store.lists(true)) { // what the user downloaded, not the automatic cache
+        MenuItem item;
+        if (books && list.source.kind == RemoteSource::Kind::Album) {
+            // A book that is whole plays from its files; one cut short opens as on the server (its files and chapters
+            // are asked for: "Loading", "Server not reachable", Try again), where Download book goes on with it.
+            const CachedList full = store.load(list.source); // lists() leaves out the files that are not whole
+            if (isWholeDownload(full, completeTracks(store, list.source, full))) {
+                item = submenu(downloadedName(list), [this, source = list.source, link] { return downloadedBookMenu(source, link); });
+            } else {
+                RemoteAlbum album;
+                album.id = list.source.id;
+                album.name = downloadedName(list);
+                album.artist = list.artist;
+                item = action(album.name, [this, album, link] { openBookPage(album, link); });
+                item.okHint = "open";
+            }
+        } else {
+            item = submenu(downloadedName(list), [this, source = list.source, link] { return downloadedListMenu(source, link); });
+        }
         std::string about = list.source.kind == RemoteSource::Kind::Playlist ? "playlist" : list.artist;
         if (!about.empty()) item.value = [about] { return about; };
         items.push_back(std::move(item));
     }
     if (items.empty())
-        items.push_back(action("No downloads", [this] { say("Nothing is downloaded. Choose Download album in an album."); }));
+        items.push_back(action("No downloads", [this, books] {
+            say(books ? "Nothing is downloaded. Choose Download book in a book." : "Nothing is downloaded. Choose Download album in an album.");
+        }));
     return items;
 }
 
@@ -2486,15 +2521,32 @@ std::vector<MenuItem> App::downloadedListMenu(const RemoteSource& source, size_t
     std::vector<RemoteTrack> tracks = completeTracks(store, source, list);
     if (tracks.empty()) return {action("No tracks", [this] { say("The tracks of this download are gone from the disk."); })};
     std::string title = downloadedName(list);
-    // A dangerous action: behind a list that opens on Cancel.
-    MenuItem del = submenu("Delete download", [this, source, title, link] {
+    return trackItems(title, tracks, source.kind == RemoteSource::Kind::Album ? "Play album" : "Play playlist", source,
+                      list.artist, deleteDownloadItem(source, title, link), {}, link);
+}
+
+// A dangerous action: behind a list that opens on Cancel.
+MenuItem App::deleteDownloadItem(const RemoteSource& source, const std::string& title, size_t link) {
+    return submenu("Delete download", [this, source, title, link] {
         return std::vector<MenuItem>{
             action("Cancel", [this] { back(); }),
             action("Yes, delete", [this, source, title, link] { deleteDownload(source, title, link); }),
         };
     });
-    return trackItems(title, tracks, source.kind == RemoteSource::Kind::Album ? "Play album" : "Play playlist", source,
-                      list.artist, std::move(del), {}, link);
+}
+
+// A downloaded book of a Books server, from its files and the chapters its manifest kept: the book's page as the
+// server gives it, with no question to the server.
+std::vector<MenuItem> App::downloadedBookMenu(const RemoteSource& source, size_t link) {
+    const TrackCache& store = trackCacheOf(link);
+    const CachedList list = store.load(source);
+    RemoteBook remote{completeTracks(store, source, list), list.chapters};
+    if (remote.tracks.empty()) return {action("No tracks", [this] { say("The files of this download are gone from the disk."); })};
+    RemoteAlbum album;
+    album.id = source.id;
+    album.name = downloadedName(list);
+    album.artist = list.artist;
+    return bookPage(album, remote, link);
 }
 
 // ---------------------------------------------------------- Music > Playlists
@@ -3353,7 +3405,8 @@ void App::openServerBook(const IndexItem& item) {
     CachedList cached = store.enabled() ? store.load(source) : CachedList{};
     std::vector<RemoteTrack> onDisk = completeTracks(store, source, cached);
     if (isWholeDownload(cached, onDisk)) {
-        Book book = serverBookOf(ref, item.title, item.artist, albumId, onDisk, link); // no chapters: a download keeps none yet (2.8)
+        Book book = serverBookOf(ref, item.title, item.artist, albumId, onDisk, link, cached.chapters); // the manifest kept the chapters
+        if (book_) rememberPosition(); // the book that plays may be this one: its place is saved only now
         auto [file, pos] = savedPlace(book);
         playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
         return;
@@ -3379,6 +3432,7 @@ void App::openServerBook(const IndexItem& item) {
             return;
         }
         Book book = serverBookOf(ref, title, author, albumId, tracks, link, remote.chapters);
+        if (book_) rememberPosition();
         auto [file, pos] = savedPlace(book);
         playServerBook(book, file, pos, [this, screen] { enterPlayerFrom(screen); });
     };
@@ -4631,6 +4685,7 @@ bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, co
         cached.name = update.title;
         cached.artist = update.artist;
     }
+    if (update.chapters) cached.chapters = *update.chapters;
     std::string fileName = downloadFileName(track);
     CachedTrack entry{track.id, fileName, track.title, track.duration, update.order ? kPartialMark : "", update.pinned,
                       update.playedAt >= kEarliestPlayTime ? update.playedAt : 0};
@@ -4664,7 +4719,8 @@ void App::sayDownloadBusy(const RemoteSource& source, size_t link) {
 // download that failed has been dropped, so OK goes on with what is missing:
 // tracks already whole are skipped and the .part of the failed one continues.
 void App::startDownload(size_t link, const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
-                        const RemoteSource& source, const std::function<void()>& started, const char* unit) {
+                        const RemoteSource& source, const std::function<void()>& started, const char* unit,
+                        const std::vector<RemoteChapter>& chapters) {
     if (download_) {
         sayDownloadBusy(source, link);
         return;
@@ -4679,6 +4735,7 @@ void App::startDownload(size_t link, const std::string& title, const std::string
     job.title = title;
     job.artist = artist;
     job.unit = unit;
+    job.chapters = chapters;
     bool pinned = false; // a track the automatic cache kept now belongs to the user
     std::uintmax_t needed = 0;
     for (size_t i = 0; i < tracks.size(); ++i) {
@@ -4752,7 +4809,7 @@ void App::onTrackDownloaded(Downloader::Result result) {
     case Downloader::Result::Server: failDownload(track, item.number, "Server error"); return;
     case Downloader::Result::Disk: failDownload(track, item.number, "Cannot write the file"); return;
     }
-    if (!addToManifest(job.source, track, {job.title, job.artist, true, true, 0, &job.order}, job.link)) {
+    if (!addToManifest(job.source, track, {job.title, job.artist, true, true, 0, &job.order, &job.chapters}, job.link)) {
         std::error_code ec; // the whole file is in place but unlisted: nothing would count or evict it
         std::filesystem::remove(trackDestination(job.source, track, job.link), ec);
         failDownload(track, item.number, "Cannot write the file");
@@ -4765,11 +4822,15 @@ void App::onTrackDownloaded(Downloader::Result result) {
 
 // Spoken once; the download is dropped. OK on Download again tries what is missing.
 void App::failDownload(const RemoteTrack& track, size_t number, const std::string& reason) {
-    if (download_) failedPart_ = trackDestination(download_->source, track, download_->link) + ".part";
+    std::string unit = "track"; // a file of a book has no title worth speaking: it is "file 3"
+    if (download_) {
+        failedPart_ = trackDestination(download_->source, track, download_->link) + ".part";
+        unit = download_->unit;
+    }
     download_.reset();
     if (sleeping_) return;
     earcons_.play(Earcon::Error);
-    std::string name = track.title.empty() ? "track " + std::to_string(number) : track.title;
+    std::string name = track.title.empty() ? unit + " " + std::to_string(number) : track.title;
     say("Cannot download " + name + ". " + reason + ".");
 }
 

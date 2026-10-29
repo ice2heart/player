@@ -11,6 +11,7 @@
 
 using oap::CachedList;
 using oap::CachedTrack;
+using oap::RemoteChapter;
 using oap::RemoteSource;
 using oap::TrackCache;
 using oap::test::diskFiles;
@@ -76,6 +77,74 @@ TEST_F(TrackCacheTest, ManifestRoundTrips) {
     EXPECT_EQ(loaded[1].changed, "");
     EXPECT_FALSE(loaded[1].pinned);
     EXPECT_EQ(loaded[1].lastPlayed, 0);
+}
+
+TEST_F(TrackCacheTest, AServerBooksChaptersRoundTripInOrderBesideTheTracks) {
+    CachedList list = listOf(album("b1"), {track("f1", "f1.mp3"), track("f2", "f2.mp3")}, "Dune", "Herbert");
+    list.chapters = {{"Intro", 0}, {"Tab\there\nand back\\slash", 100.5}, {"", 230.25}};
+    ASSERT_TRUE(cache().save(list));
+    CachedList loaded = cache().load(album("b1"));
+    ASSERT_EQ(loaded.chapters.size(), 3u);
+    EXPECT_EQ(loaded.chapters[0].title, "Intro");
+    EXPECT_DOUBLE_EQ(loaded.chapters[0].start, 0);
+    EXPECT_EQ(loaded.chapters[1].title, list.chapters[1].title);
+    EXPECT_DOUBLE_EQ(loaded.chapters[1].start, 100.5);
+    EXPECT_EQ(loaded.chapters[2].title, "");
+    EXPECT_DOUBLE_EQ(loaded.chapters[2].start, 230.25);
+    ASSERT_EQ(loaded.tracks.size(), 2u) << "the tracks after the chapters are read";
+    EXPECT_EQ(loaded.tracks[1].id, "f2");
+    CachedList plain = listOf(album("al1"), {track("s1", "01.flac")});
+    ASSERT_TRUE(cache().save(plain));
+    EXPECT_TRUE(cache().load(album("al1")).chapters.empty()) << "an album has none";
+}
+
+TEST_F(TrackCacheTest, ATrackWhoseIdIsChapterIsATrackNotAChapterLine) {
+    TrackCache c = cache();
+    CachedList list = listOf(album("b1"), {track("chapter", "chapter.mp3")}, "Dune", "Herbert");
+    list.chapters = {{"Intro", 0}};
+    writeFile(c.listFolder(album("b1")) / "chapter.mp3", "audio");
+    ASSERT_TRUE(c.save(list));
+    CachedList loaded = c.load(album("b1"));
+    ASSERT_EQ(loaded.tracks.size(), 1u) << "the manifest is not read as damaged";
+    EXPECT_EQ(loaded.tracks[0].id, "chapter");
+    EXPECT_EQ(loaded.chapters.size(), 1u);
+}
+
+TEST_F(TrackCacheTest, ChaptersSurviveWhatRewritesAManifest) {
+    TrackCache c = cache();
+    CachedTrack t = track("f1", "f1.mp3");
+    t.pinned = true;
+    CachedTrack unpinned = track("f2", "f2.mp3");
+    CachedList list = listOf(album("b1"), {t, unpinned}, "Dune", "Herbert");
+    list.chapters = {{"Intro", 0}};
+    writeFile(c.listFolder(album("b1")) / "f1.mp3", "audio");
+    writeFile(c.listFolder(album("b1")) / "f2.mp3", "audio");
+    ASSERT_TRUE(c.save(list));
+    EXPECT_EQ(c.trim(0, {}, {}), 1u) << "the unpinned file goes";
+    ASSERT_EQ(c.load(album("b1")).tracks.size(), 1u);
+    ASSERT_EQ(c.load(album("b1")).chapters.size(), 1u) << "the manifest written by trim() keeps them";
+    EXPECT_EQ(c.lists(true).front().chapters.front().title, "Intro");
+}
+
+TEST_F(TrackCacheTest, ABadChapterLineSpoilsTheManifest) {
+    TrackCache c = cache();
+    writeFile(c.listFolder(album("b1")) / "f1.mp3", "audio");
+    const std::string head = "oap-cache 2\nlist\talbum\tb1\tDune\tHerbert\n";
+    const std::string row = "f1\tf1.mp3\tT\t1.000\t\t1\t0\n";
+    for (const std::string& bad : {
+             head + "chapter\tx\tIntro\n" + row,          // the start is not a number
+             head + "chapter\t1.000\n" + row,              // too few columns
+             head + "chapter\t1.000\tA\textra\n" + row,   // too many
+             head + "chapter\t1.000\tA\\x\n" + row,       // unknown escape
+             head + row + "chapter\t1.000\tAfter\n",      // chapters come before the tracks
+         }) {
+        writeFile(c.manifestFile(album("b1")), bad);
+        EXPECT_TRUE(c.load(album("b1")).source.id.empty()) << bad;
+    }
+    writeFile(c.manifestFile(album("b1")), head + "chapter\t1.000\tA\n" + row);
+    CachedList ok = c.load(album("b1"));
+    ASSERT_EQ(ok.chapters.size(), 1u);
+    EXPECT_EQ(ok.tracks.size(), 1u);
 }
 
 TEST_F(TrackCacheTest, SaveReplacesTheManifestAndLeavesNoTemporaryFile) {

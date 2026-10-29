@@ -18,6 +18,8 @@ constexpr const char* kManifestName = "manifest.tsv";
 constexpr const char* kManifestHeader = "oap-cache 2";
 constexpr const char* kListTag = "list"; // second line: list, kind, id, name, artist
 constexpr size_t kListColumns = 5;
+constexpr const char* kChapterTag = "chapter"; // a line of a server book's chapter: chapter, start, title
+constexpr size_t kChapterColumns = 3;
 constexpr const char* kPartSuffix = ".part";
 constexpr size_t kColumns = 7;
 constexpr size_t kHostLimit = 40; // characters of the host kept in a server key
@@ -97,12 +99,18 @@ bool plainFileName(const std::string& name) {
            name.find('\\') == std::string::npos && name != kManifestName;
 }
 
-bool parseLine(const std::string& line, CachedTrack& track) {
+// The cells of a tab-separated line; a trailing tab ends an empty cell.
+std::vector<std::string> splitTabs(const std::string& line) {
     std::vector<std::string> cells;
     std::string cell;
     std::istringstream in(line);
     while (std::getline(in, cell, '\t')) cells.push_back(cell);
     if (!line.empty() && line.back() == '\t') cells.emplace_back();
+    return cells;
+}
+
+bool parseLine(const std::string& line, CachedTrack& track) {
+    const std::vector<std::string> cells = splitTabs(line);
     if (cells.size() != kColumns) return false;
     double duration = 0;
     int64_t lastPlayed = 0;
@@ -119,17 +127,19 @@ bool parseLine(const std::string& line, CachedTrack& track) {
 const char* kindName(RemoteSource::Kind kind) { return kind == RemoteSource::Kind::Album ? "album" : "playlist"; }
 
 bool parseListLine(const std::string& line, CachedList& list) {
-    std::vector<std::string> cells;
-    std::string cell;
-    std::istringstream in(line);
-    while (std::getline(in, cell, '\t')) cells.push_back(cell);
-    if (!line.empty() && line.back() == '\t') cells.emplace_back();
+    const std::vector<std::string> cells = splitTabs(line);
     if (cells.size() != kListColumns || cells[0] != kListTag) return false;
     if (cells[1] == "album") list.source.kind = RemoteSource::Kind::Album;
     else if (cells[1] == "playlist") list.source.kind = RemoteSource::Kind::Playlist;
     else return false;
     return unescape(cells[2], list.source.id) && unescape(cells[3], list.name) && unescape(cells[4], list.artist) &&
            !list.source.id.empty();
+}
+
+bool parseChapterLine(const std::string& line, RemoteChapter& chapter) {
+    const std::vector<std::string> cells = splitTabs(line);
+    return cells.size() == kChapterColumns && cells[0] == kChapterTag && parseNumber(cells[1], chapter.start) &&
+           unescape(cells[2], chapter.title);
 }
 
 // The text of a manifest; a list with an empty id if any line is wrong.
@@ -140,6 +150,12 @@ CachedList parseManifest(const std::string& text) {
     if (!std::getline(in, line) || line != kManifestHeader || !std::getline(in, line) || !parseListLine(line, list))
         return {};
     while (std::getline(in, line)) {
+        RemoteChapter chapter; // (a track line has seven cells, so a track whose id is "chapter" is not taken for this)
+        if (parseChapterLine(line, chapter)) {
+            if (!list.tracks.empty()) return {}; // chapters come before the tracks
+            list.chapters.push_back(std::move(chapter));
+            continue;
+        }
         CachedTrack track;
         if (!parseLine(line, track)) return {};
         list.tracks.push_back(std::move(track));
@@ -233,6 +249,11 @@ bool TrackCache::save(const CachedList& list) const {
     text += '\n';
     text += std::string(kListTag) + '\t' + kindName(list.source.kind) + '\t' + escape(list.source.id) + '\t' +
             escape(list.name) + '\t' + escape(list.artist) + '\n';
+    for (const RemoteChapter& c : list.chapters) {
+        char start[32];
+        std::snprintf(start, sizeof start, "%.3f", c.start);
+        text += std::string(kChapterTag) + '\t' + start + '\t' + escape(c.title) + '\n';
+    }
     for (const CachedTrack& t : list.tracks) {
         char duration[32];
         std::snprintf(duration, sizeof duration, "%.3f", t.duration);

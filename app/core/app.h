@@ -404,10 +404,12 @@ private:
         size_t total = 0;       // tracks in the list (a track listed twice counts once)
         size_t finished = 0;    // of those, whole in the cache
         const char* unit = "track"; // what the progress counts: a book is counted in files
+        std::vector<RemoteChapter> chapters; // of a server book, kept in its manifest so it plays offline with them
         Downloader::RequestId request = 0;
     };
     void startDownload(size_t link, const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
-                       const RemoteSource& source, const std::function<void()>& started = {}, const char* unit = "track"); // `started`: once the job is going
+                       const RemoteSource& source, const std::function<void()>& started = {}, const char* unit = "track",
+                       const std::vector<RemoteChapter>& chapters = {}); // `started`: once the job is going
     void sayDownloadBusy(const RemoteSource& source, size_t link);
     bool downloading(const RemoteSource& source, size_t link) const; // that list of that server is the download that runs
     void fetchNextTrack();
@@ -418,6 +420,8 @@ private:
     std::string downloadProgress() const; // "Downloading, 3 of 9 tracks", empty when none runs
     std::vector<MenuItem> downloadedMenu(size_t link);                               // Streaming > Downloaded of servers_[link]
     std::vector<MenuItem> downloadedListMenu(const RemoteSource& source, size_t link); // one downloaded album or playlist of that server
+    std::vector<MenuItem> downloadedBookMenu(const RemoteSource& source, size_t link); // one downloaded book of a Books server
+    MenuItem deleteDownloadItem(const RemoteSource& source, const std::string& title, size_t link); // "Delete download", behind Cancel
     static std::vector<RemoteTrack> completeTracks(const TrackCache& store, const RemoteSource& source, const CachedList& list);
     bool hasDownloads(size_t link) const; // some list has a complete pinned track (a download of the user's): the error lists offer Downloaded
     void deleteDownload(const RemoteSource& source, const std::string& title, size_t link);
@@ -581,6 +585,7 @@ private:
         bool pinned = false;        // a download the user asked for
         std::int64_t playedAt = 0;  // wall time of the play that caused it, 0: none
         const std::vector<std::string>* order = nullptr; // a download: the list's order on the server
+        const std::vector<RemoteChapter>* chapters = nullptr; // a download: the chapters the manifest then holds
     };
     static bool markTracks(CachedList& cached, const char* mark);
     bool addToManifest(const RemoteSource& source, const RemoteTrack& track, const ManifestUpdate& update, size_t link);

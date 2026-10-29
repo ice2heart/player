@@ -622,18 +622,17 @@ Music
 
 An Audiobookshelf server ([audiobookshelf.md](audiobookshelf.md)) is a Books server. Its Home
 entry has this menu instead of the Streaming one; a Subsonic server keeps the Streaming menu.
-The menu, the lists and the book page are built; **Download book** starts the download and counts
-files ("Downloading, 0 of 24 files."), but playing a downloaded book offline is not built yet.
+The menu, the lists, the book page and downloading a book are built.
 
 ```
 <server name>
 ├── Recently added     → <books>      newest first, one page of 500
 ├── Books A to Z       → <books>      pages of 500
 ├── Authors            → <author> → <books>
-├── Downloaded         (as in Streaming, only where a cache folder is set up)
+├── Downloaded         the downloaded books (only where a cache folder is set up)
 └── Server status      "Connected to Audiobookshelf 2.37.2." or the error
 
-<book> → Play book · Download book · <chapters>
+<book> → Play book · Download book · Delete download · <chapters>
 ```
 
 - A book in these lists says its title and author ("Neuromancer, William Gibson").
@@ -641,7 +640,14 @@ files ("Downloading, 0 of 24 files."), but playing a downloaded book offline is 
   Library. OK on a chapter plays the book from that chapter. The chapters are the server's,
   and a chapter can span files.
 - **Download book** behaves like Download album ("Downloading, 0 of 24 files."), counting
-  files, not chapters.
+  files, not chapters; a file that fails is named by its title, else "file 3". It is not
+  offered once the book is whole on the device, and **Delete download** (behind Cancel, as for
+  an album) is offered once some of it is.
+- **Downloaded** lists the books, with the author as the value. A book that is whole opens
+  the same page from its files and the chapters the download kept, with no question to the
+  server, so it plays offline with the same place as in Library; a book cut short opens as on
+  the server ("Loading", "Server not reachable" and Try again), where Download book goes on.
+  A downloaded book is never in Music.
 - Library lists the books of every Books server after the local books, with the value "on the
   server". Books of two servers are not merged.
 - All the rules of [Lists from the server](#lists-from-the-server) hold: Loading, errors, Try

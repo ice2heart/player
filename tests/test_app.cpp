@@ -9779,6 +9779,19 @@ protected:
     }
 };
 
+TEST_F(BooksServerTest, OpeningTheBookThatPlaysAgainFromLibraryKeepsTheProgressMadeSinceItOpened) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    hold(Button::Forward); // Middle
+    player.pos = 150;
+    hold(Button::Home);
+    open("Library");
+    open("Dune");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters()));
+    app->tick();
+    EXPECT_EQ(player.file, "fake://stream/t1");
+    EXPECT_DOUBLE_EQ(player.pos, 150) << "not the place saved when it was opened";
+}
+
 TEST_F(BooksServerTest, LibraryListsTheBooksAfterTheLocalOnesWithOnTheServer) {
     start();
     syncBooks({book("b2", "Zeta"), book("b1", "Dune")});
@@ -16023,4 +16036,377 @@ TEST_F(BooksMenuTest, ServerStatusStillReportsOnTheBooksMenu) {
     ASSERT_TRUE(server.replyPing(server.lastRequest().id, {"Audiobookshelf", "2.37.2"}));
     app->tick();
     EXPECT_EQ(speech.last(), "Connected to Audiobookshelf 2.37.2.");
+}
+
+// ---------------------------------------------------------------- download a book (docs/audiobookshelf.md 2.8)
+
+class BookDownloadTest : public BooksServerTest {
+protected:
+    using Result = Downloader::Result;
+    static RemoteTrack part(const std::string& id, double seconds, const std::string& title = "") {
+        RemoteTrack t = file(id, seconds);
+        t.title = title;
+        t.suffix = "mp3";
+        t.size = 5;
+        return t;
+    }
+    // Two files (200 s and 180 s) and three chapters, as in BooksServerTest: Middle at 100 s goes into file 2, End is at 30 s there.
+    static RemoteBook twoParts(const std::string& title1 = "", const std::string& title2 = "") {
+        RemoteBook b;
+        b.tracks = {part("t1", 200, title1), part("t2", 180, title2)};
+        b.chapters = {{"Intro", 0}, {"Middle", 100}, {"End", 230}};
+        return b;
+    }
+    // `count` files of 100 s, 24 chapters of them.
+    static RemoteBook manyParts(int count) {
+        RemoteBook b;
+        for (int i = 1; i <= count; ++i) {
+            b.tracks.push_back(part("t" + std::to_string(i), 100, "Part " + std::to_string(i)));
+            b.chapters.push_back({"Chapter " + std::to_string(i), 100.0 * (i - 1)});
+        }
+        return b;
+    }
+    // Home > Server > Recently added > Dune, with its page loaded from `remote`.
+    void openPage(RemoteBook remote, bool boot = true) {
+        if (boot) {
+            start();
+            syncBooks({book("b1", "Dune")});
+        }
+        open("Server");
+        open("Recently added");
+        ASSERT_EQ(server.lastRequest().kind, Kind::Albums);
+        ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteAlbum>{book("b1", "Dune")}, false));
+        app->tick();
+        open("Dune");
+        ASSERT_EQ(server.lastRequest().kind, Kind::Book);
+        ASSERT_TRUE(server.replyBook(server.lastRequest().id, std::move(remote)));
+        app->tick();
+    }
+    void finishFile(Result result = Result::Ok) {
+        ASSERT_FALSE(downloader.requests.empty());
+        ASSERT_TRUE(downloader.finish(downloader.lastRequest().id, result, result == Result::Ok));
+        app->tick();
+    }
+    // The book is downloaded whole (every file arrives).
+    void downloadWhole(RemoteBook remote = twoParts()) {
+        const size_t files = remote.tracks.size();
+        ASSERT_NO_FATAL_FAILURE(openPage(std::move(remote)));
+        open("Download book");
+        for (size_t i = 0; i < files; ++i) ASSERT_NO_FATAL_FAILURE(finishFile());
+        EXPECT_EQ(speech.last(), "Download finished, Dune.");
+    }
+    // The device is switched off and on again with no network: the sync cannot reach the server.
+    void restartOffline() {
+        app->shutdown();
+        app.reset();
+        player = FakePlayer{};
+        speech.said.clear();
+        sounds.played.clear();
+        start(false);
+        ASSERT_NO_FATAL_FAILURE(deliverScan());
+        ASSERT_NO_FATAL_FAILURE(fail(Kind::CatalogueVersion, MusicServer::Error::Unreachable));
+        asked = server.requests.size();
+    }
+    std::string fileOf(int n) const { // the n-th file of Dune in its download
+        return (store().listFolder(albumSource("b1")) / ("t" + std::to_string(n) + ".mp3")).string();
+    }
+    void expectNothingAskedAndNoLoading() {
+        EXPECT_EQ(server.requests.size(), asked) << "nothing is asked of the server";
+        EXPECT_FALSE(speech.heard("Loading."));
+        for (const std::string& said : speech.said) EXPECT_EQ(said.find("not reachable"), std::string::npos) << said;
+    }
+    std::string bookKey(const std::string& id) const { return "pos:" + ref(id); }
+    size_t asked = 0;
+};
+
+TEST_F(BookDownloadTest, TheDownloaderGetsTheFilesInOrderIntoTheServersCacheFolderPinned) {
+    ASSERT_NO_FATAL_FAILURE(openPage(manyParts(24)));
+    open("Download book");
+    EXPECT_EQ(speech.last(), "Downloading, 0 of 24 files.");
+    for (int i = 1; i <= 3; ++i) {
+        ASSERT_EQ(downloader.requests.size(), size_t(i)) << "one at a time";
+        EXPECT_EQ(downloader.lastRequest().trackId, "t" + std::to_string(i));
+        EXPECT_EQ(downloader.lastRequest().dest, fileOf(i));
+        ASSERT_NO_FATAL_FAILURE(finishFile());
+    }
+    ASSERT_EQ(downloader.requests.size(), 4u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "t4");
+    const CachedList cached = store().load(albumSource("b1"));
+    ASSERT_EQ(cached.tracks.size(), 3u);
+    for (const CachedTrack& t : cached.tracks) EXPECT_TRUE(t.pinned) << t.id;
+    EXPECT_EQ(cached.name, "Dune");
+    EXPECT_EQ(cached.artist, "Author");
+}
+
+TEST_F(BookDownloadTest, WhereAmISaysHowManyFilesAreDownloaded) {
+    ASSERT_NO_FATAL_FAILURE(openPage(manyParts(24)));
+    open("Download book");
+    for (int i = 0; i < 3; ++i) ASSERT_NO_FATAL_FAILURE(finishFile());
+    hold(Button::PlayPause);
+    EXPECT_EQ(speech.last(), "Home, Server, Recently added, Dune. Download book, 2 of 26. Downloading, 3 of 24 files.");
+}
+
+TEST_F(BookDownloadTest, WhereAmIInThePlayerSaysTheFilesToo) {
+    ASSERT_NO_FATAL_FAILURE(openPage(manyParts(24)));
+    open("Download book");
+    for (int i = 0; i < 3; ++i) ASSERT_NO_FATAL_FAILURE(finishFile());
+    press(Button::Up);
+    press(Button::Up); // Play book
+    press(Button::Ok);
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    hold(Button::PlayPause);
+    EXPECT_NE(speech.last().find("Downloading, 3 of 24 files."), std::string::npos) << speech.last();
+}
+
+TEST_F(BookDownloadTest, TheManifestKeepsTheServerChaptersFromTheFirstFileOn) {
+    ASSERT_NO_FATAL_FAILURE(openPage(twoParts()));
+    open("Download book");
+    ASSERT_NO_FATAL_FAILURE(finishFile());
+    const CachedList cached = store().load(albumSource("b1"));
+    ASSERT_EQ(cached.chapters.size(), 3u) << "a download that fails after one file keeps them";
+    EXPECT_EQ(cached.chapters[1].title, "Middle");
+    EXPECT_DOUBLE_EQ(cached.chapters[1].start, 100);
+    EXPECT_EQ(cached.chapters[2].title, "End");
+    EXPECT_DOUBLE_EQ(cached.chapters[2].start, 230);
+}
+
+TEST_F(BookDownloadTest, AWholeDownloadPlaysFromLibraryWithTheServerDownAndNoLoadingWithItsServerChapters) {
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    ASSERT_NO_FATAL_FAILURE(restartOffline());
+    open("Library");
+    open("Dune");
+    expectNothingAskedAndNoLoading();
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, fileOf(1));
+    EXPECT_EQ(app->nowPlaying().chapterCount, 3) << "the server's chapters, not one per file";
+    hold(Button::Forward); // Middle: 100 s into file 1
+    EXPECT_EQ(player.file, fileOf(1));
+    EXPECT_DOUBLE_EQ(player.pos, 100);
+    hold(Button::Forward); // End: 30 s into file 2
+    EXPECT_EQ(player.file, fileOf(2));
+    EXPECT_DOUBLE_EQ(player.pos, 30);
+    app->shutdown();
+    EXPECT_EQ(state.getString("last_book"), ref("b1"));
+    EXPECT_EQ(state.getString(bookKey("b1")), "1:30.0");
+}
+
+TEST_F(BookDownloadTest, TheBooksMenuDownloadedListsTheBookAndPlaysItFromItsFilesWithItsChapters) {
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    ASSERT_NO_FATAL_FAILURE(restartOffline());
+    open("Server");
+    open("Downloaded");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Dune"}));
+    ASSERT_TRUE(level().items[0].value);
+    EXPECT_EQ(level().items[0].value(), "Author");
+    open("Dune");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play book", "Delete download", "Intro", "Middle", "End"}))
+        << "the chapters of the server, no Download book";
+    EXPECT_EQ(speech.last(), "Dune. Play book, 3 chapters, 1 of 5");
+    open("End");
+    expectNothingAskedAndNoLoading();
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, fileOf(2));
+    EXPECT_DOUBLE_EQ(player.pos, 30);
+}
+
+TEST_F(BookDownloadTest, PlayBookInDownloadedKeepsTheSamePlaceAsLibrary) {
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    ASSERT_NO_FATAL_FAILURE(restartOffline());
+    open("Server");
+    open("Downloaded");
+    open("Dune");
+    press(Button::Ok); // Play book
+    hold(Button::Forward);
+    player.pos = 77.5;
+    press(Button::Home);
+    hold(Button::Home);
+    open("Library");
+    open("Dune");
+    expectNothingAskedAndNoLoading();
+    EXPECT_EQ(player.file, fileOf(1));
+    EXPECT_DOUBLE_EQ(player.pos, 77.5) << "the Library place, `pos:" << ref("b1") << "`";
+    app->shutdown();
+    EXPECT_EQ(state.getString(bookKey("b1")), "0:77.5");
+    EXPECT_EQ(state.getString(bookKey("b1")).find("http"), std::string::npos);
+}
+
+TEST_F(BookDownloadTest, NowPlayingAfterARestartResumesTheDownloadedBookOfflineWithItsChapters) {
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    hold(Button::Home);
+    open("Library");
+    open("Dune");
+    hold(Button::Forward);
+    hold(Button::Forward); // End
+    player.pos = 42;
+    ASSERT_NO_FATAL_FAILURE(restartOffline());
+    ASSERT_EQ(level().items[0].label, "Now playing");
+    press(Button::Ok);
+    expectNothingAskedAndNoLoading();
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_EQ(player.file, fileOf(2));
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    EXPECT_EQ(app->nowPlaying().chapterCount, 3);
+    hold(Button::Back); // Previous chapter well into End: its start
+    EXPECT_DOUBLE_EQ(player.pos, 30);
+    hold(Button::Back);
+    EXPECT_EQ(player.file, fileOf(1)) << "Middle begins in file 1";
+    EXPECT_DOUBLE_EQ(player.pos, 100);
+}
+
+TEST_F(BookDownloadTest, ABookDownloadedOnlyPartlyAsksTheServerAndSaysItIsNotReachable) {
+    ASSERT_NO_FATAL_FAILURE(openPage(twoParts()));
+    open("Download book");
+    ASSERT_NO_FATAL_FAILURE(finishFile());
+    ASSERT_NO_FATAL_FAILURE(finishFile(Result::Unreachable));
+    ASSERT_NO_FATAL_FAILURE(restartOffline());
+    open("Library");
+    open("Dune");
+    EXPECT_EQ(speech.last(), "Loading.");
+    ASSERT_NO_FATAL_FAILURE(fail(Kind::Book, MusicServer::Error::Unreachable));
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    EXPECT_EQ(level().title, "Library");
+    EXPECT_EQ(app->mode(), App::Mode::Menu);
+    EXPECT_EQ(player.file, "");
+}
+
+TEST_F(BookDownloadTest, ABookDownloadedOnlyPartlyOpensFromDownloadedAsOnTheServerAndOffersTryAgain) {
+    ASSERT_NO_FATAL_FAILURE(openPage(twoParts()));
+    open("Download book");
+    ASSERT_NO_FATAL_FAILURE(finishFile());
+    ASSERT_NO_FATAL_FAILURE(finishFile(Result::Unreachable));
+    ASSERT_NO_FATAL_FAILURE(restartOffline());
+    open("Server");
+    open("Downloaded");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Dune"}));
+    open("Dune");
+    EXPECT_EQ(speech.last(), "Dune. Loading, 1 of 1");
+    ASSERT_NO_FATAL_FAILURE(fail(Kind::Book, MusicServer::Error::Unreachable));
+    EXPECT_EQ(labels().front(), "Server not reachable");
+    press(Button::Down);
+    press(Button::Ok);
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoParts()));
+    app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play book", "Download book", "Delete download", "Intro", "Middle", "End"}))
+        << "Download book goes on with the missing file";
+}
+
+TEST_F(BookDownloadTest, AWholeDownloadsPageOnTheServerHasNoDownloadBookButCanBeDeleted) {
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    hold(Button::Home);
+    ASSERT_NO_FATAL_FAILURE(openPage(twoParts(), false));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play book", "Delete download", "Intro", "Middle", "End"}));
+}
+
+TEST_F(BookDownloadTest, FilesThatVanishedFromTheDiskLeaveAMessageNotAnEmptyMenu) {
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    ASSERT_NO_FATAL_FAILURE(restartOffline());
+    open("Server");
+    open("Downloaded");
+    fs::remove(fileOf(1));
+    fs::remove(fileOf(2));
+    open("Dune");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No tracks"}));
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "The files of this download are gone from the disk.");
+}
+
+TEST_F(BookDownloadTest, AFileTheServerAddedSinceOffersDownloadBookAgainAndGoesOnWithIt) {
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    hold(Button::Home);
+    RemoteBook grown = twoParts();
+    grown.tracks.push_back(part("t3", 100));
+    grown.chapters.push_back({"Epilogue", 380});
+    ASSERT_NO_FATAL_FAILURE(openPage(grown, false));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play book", "Download book", "Delete download", "Intro", "Middle", "End", "Epilogue"}));
+    open("Download book");
+    EXPECT_EQ(speech.last(), "Downloading, 2 of 3 files.");
+    ASSERT_EQ(downloader.requests.size(), 3u);
+    EXPECT_EQ(downloader.lastRequest().trackId, "t3") << "only the new file";
+    ASSERT_NO_FATAL_FAILURE(finishFile());
+    EXPECT_EQ(store().load(albumSource("b1")).chapters.size(), 4u) << "and the chapters the server has now";
+}
+
+TEST_F(BookDownloadTest, ABookNotDownloadedHasNoDeleteDownload) {
+    ASSERT_NO_FATAL_FAILURE(openPage(twoParts()));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play book", "Download book", "Intro", "Middle", "End"}));
+}
+
+TEST_F(BookDownloadTest, DeletingADownloadedBookGoesBackToDownloadedAndRemovesTheFiles) {
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    ASSERT_NO_FATAL_FAILURE(restartOffline());
+    open("Server");
+    open("Downloaded");
+    open("Dune");
+    open("Delete download");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Cancel", "Yes, delete"}));
+    open("Yes, delete");
+    EXPECT_EQ(level().title, "Downloaded");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"No downloads"}));
+    EXPECT_FALSE(fs::exists(store().listFolder(albumSource("b1"))));
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Nothing is downloaded. Choose Download book in a book.");
+}
+
+TEST_F(BookDownloadTest, ABookThatIsLoadedInThePlayerCannotBeDeleted) {
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    hold(Button::Home);
+    open("Library");
+    open("Dune"); // plays from the disk
+    ASSERT_EQ(app->mode(), App::Mode::Player);
+    hold(Button::Home);
+    open("Server");
+    open("Downloaded");
+    open("Dune");
+    open("Delete download");
+    open("Yes, delete");
+    EXPECT_NE(speech.last().find("Cannot delete Dune while it is loaded in the player"), std::string::npos) << speech.last();
+    EXPECT_TRUE(fs::exists(fileOf(1)));
+}
+
+TEST_F(BookDownloadTest, ADownloadedBookStaysAbookAndIsNeverListedInMusicEvenWhenTheServerDroppedIt) {
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    app->shutdown();
+    app.reset();
+    start(false);
+    ASSERT_NO_FATAL_FAILURE(deliverScan());
+    answerVersion("");
+    answerAlbums({}); // the server has no books any more
+    for (const auto& [id, item] : indexStore.items) EXPECT_NE(item.source, IndexItem::Source::Cached) << id;
+    open("Music");
+    open("Albums A to Z");
+    for (const auto& label : labels()) EXPECT_NE(label, "Dune");
+    hold(Button::Home);
+    open("Server");
+    open("Downloaded");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Dune"})) << "still there to play and to delete";
+}
+
+TEST_F(BookDownloadTest, AFailedFileOfABookIsNamedByItsTitleOrElseAsAFile) {
+    RemoteBook remote = twoParts("Part one", "");
+    ASSERT_NO_FATAL_FAILURE(openPage(remote));
+    open("Download book");
+    ASSERT_NO_FATAL_FAILURE(finishFile(Result::Unreachable));
+    EXPECT_EQ(speech.last(), "Cannot download Part one. Server not reachable.");
+    open("Download book");
+    ASSERT_NO_FATAL_FAILURE(finishFile());
+    ASSERT_NO_FATAL_FAILURE(finishFile(Result::Server));
+    EXPECT_EQ(speech.last(), "Cannot download file 2. Server error.") << "no title: the file, not a track";
+}
+
+TEST_F(BookDownloadTest, NothingSpokenOrSavedByABookDownloadHoldsAUrl) {
+    ASSERT_NO_FATAL_FAILURE(downloadWhole());
+    ASSERT_NO_FATAL_FAILURE(restartOffline());
+    open("Library");
+    open("Dune");
+    app->shutdown();
+    for (const std::string& said : speech.said)
+        for (const char* bad : {"http", "://", "t=", "sesame", "music.example"}) EXPECT_EQ(said.find(bad), std::string::npos) << said;
+    for (const auto& [k, v] : state.values())
+        for (const char* bad : {"http", "://", "sesame", "music.example"}) {
+            EXPECT_EQ(k.find(bad), std::string::npos) << k;
+            EXPECT_EQ(v.find(bad), std::string::npos) << k << " = " << v;
+        }
+    std::ifstream manifest(store().manifestFile(albumSource("b1")));
+    std::string text((std::istreambuf_iterator<char>(manifest)), std::istreambuf_iterator<char>());
+    for (const char* bad : {"http", "://", "token", "sesame"}) EXPECT_EQ(text.find(bad), std::string::npos) << text;
 }

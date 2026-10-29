@@ -40,13 +40,14 @@ struct CachedList {
     std::string name;    // what the list is called, spoken in Downloaded
     std::string artist;  // an album's artist, may be empty
     std::vector<CachedTrack> tracks;
+    std::vector<RemoteChapter> chapters; // a server book's chapters on its timeline, kept for playing it offline; usually empty
 };
 
 // Tracks kept on disk for one server: <root>/<server key>/<kind>%3A<list id>/,
 // where a list is an album or a playlist (the kind keeps an album and a
 // playlist with the same id apart). Each list folder has its audio files and a
 // `manifest.tsv`, written atomically, that also holds the list's kind, id, name
-// and artist. Manifest format 2; a format 1 manifest (before lists had names,
+// and artist, and for a server book its chapters (`chapter` lines between the list line and the tracks). Manifest format 2; a format 1 manifest (before lists had names,
 // never shipped) is read as empty. Plain `std::filesystem`: the cache needs no
 // clock and no network.
 class TrackCache {
