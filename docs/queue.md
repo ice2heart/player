@@ -379,7 +379,7 @@ Phase 2 is built as planned, with these differences. The code is described in
 - **The Queue list counts its trailing items:** Save as playlist, Previous queue and Clear queue are items, so a
   queue of 30 is "5 of 32".
 
-### Later
+### Later and subsequent work
 
 - **Offline playlists** ("Keep on device" in the Options of a server playlist): download
   its tracks to the cache so the queue plays them from local files, and follow changes on
@@ -387,8 +387,7 @@ Phase 2 is built as planned, with these differences. The code is described in
   [streaming.md phase 3](streaming.md#phase-3-local-cache-and-downloads) and "Keep offline"
   in [phase 5](streaming.md#phase-5-sync-and-playlists), so it is built there. A queue
   entry already prefers a cached copy once that exists, and stays a remote track.
-- **Play queue sync** with the server (`savePlayQueue` / `getPlayQueue`), streaming.md
-  phase 5.
+- **Play queue sync** with the server is built in [streaming.md phase 5](streaming.md#phase-5-as-built); pending conditions and limits are in [deferred.md](deferred.md#pending-queue-sync).
 - Options for books (Add bookmark, Mark finished) and in the book player.
 
 ---

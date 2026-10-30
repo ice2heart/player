@@ -744,10 +744,9 @@ flight. Local write failures and server errors leave the list unchanged.
 A server edit invalidates that playlist's cached snapshot in `state.tsv` (written on exit
 or sleep). Music fetches its current tracks on the next open; the existing download remains
 available in Downloaded. A refreshed download without duplicate tracks can become current
-again; a playlist containing duplicates continues to use the server list because the
-existing manifest stores each track only once. A download started before a later edit
-cannot make that later snapshot current. Step 5.5 will address reconciliation and pin
-ownership.
+again; an explicit download containing duplicates continues to use the server list because its
+manifest stores each track only once (a kept-playlist snapshot preserves duplicate order). A download started before a later edit
+cannot make that later snapshot current. Kept playlists have separate ordered snapshots and shared pin ownership (section 10).
 
 **Catalogue per server (step 1.7):** see Server catalogue below. Music's playlists list those of every server (`playlistEntries()`, each with its link; `openPlaylist(link, ...)`), Save as playlist goes to the server of the first remote track of the queue (`Saving::link`; the other servers' tracks count as not saved), and a server book knows its link (`Book::link`, set by `serverBookOf()`; `trackLink()` returns it for the book player, `resumeLink_` is it while the book loads). There are no first-link shortcuts left (`server_`, `downloader_`, `trackCache()` are gone; with no list the stand-ins `noServer_` / `noDownloader_` are only polled). A scrobble in the outbox
 whose server is not set up stays in `scrobbles.tsv` (bounded by `kMaxScrobbles`) and is sent when that server is back.
@@ -1340,6 +1339,16 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   written (`scrobbleText_`): at most two writes per heard track. `loadScrobbles()` in `start()` reads it
   (a file over `kMaxScrobbleFileBytes`, not ours, or a damaged line gives no entries or skips the line; at most
   `kMaxScrobbles` newest). An empty path or no `TextFiles` keeps the outbox in memory only.
+- **Queue sync (streaming.md 5.7).** `App` observes queue and place changes, assigns a
+  wall timestamp and marks configured capable servers pending. `pumpQueueSync()` polls
+  servers in rounds, fetches before saving, filters each local queue to that server's track
+  references and defers when the current track cannot be represented. It accepts a newer
+  server queue without interrupting active music or a book and drops a late response after
+  a local edit. Successful saves are followed by a fetch to acknowledge the server version;
+  the acknowledgement prevents a known filtered echo from replacing the mixed local queue.
+  Subsonic uses `indexBasedQueue` when offered and rejects an ambiguous current duplicate
+  on legacy servers. [deferred.md](deferred.md#pending-queue-sync) describes conditions
+  that leave work pending and the limits of the server protocol.
 - **queue.tsv (queue.md step 2.8).** The music queue, written by `saveQueue()` in `saveOnExit()` (sleep, Power off,
   Restart, `shutdown()`) as text (`formatQueue()` in `app/core/queue_file.cpp`): a header `oap-queue<TAB>1`, then
   `title` (the list it came from), `shuffle`, `repeat`, `edited`, `position` (in the play order), `seconds` (in the
@@ -1566,13 +1575,12 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 - Bookmarks and podcasts (RSS). Audiobookshelf books, chapters, downloads and listening-progress
   sync are implemented ([audiobookshelf.md](audiobookshelf.md)); phase 3 still needs real-server
   and device listening checks, including the later-place notice and offline retry.
-- Streaming phase 5 in [streaming.md](streaming.md): sync. Phase 2a stars are built, with real-server listening checks pending. The limits of phase 4 (one library) are listed under "Known limits after
-  phase 4" there.
+- Streaming phase 5 playlist editing, kept playlists, book progress and queue sync are built; real-server and device checks remain pending. See [deferred.md](deferred.md) for deferred features, pending sync states and limits. Phase 2a stars are built, with real-server listening checks pending. The limits of phase 4 (one library) are listed under "Known limits after phase 4" in [streaming.md](streaming.md).
 - STT (Talk button): push-to-talk capture plus sherpa-onnx, Vosk or whisper.cpp.
 - Localisation of spoken strings; a choice of TTS voice. Kanji and Han text are read by the `cmn` voice; without it they are only named ("Japanese text", "Chinese text"): there is no reading table. Hebrew and Arabic need their voice, else they are named.
 - Hardware abstraction: simulated battery and storage snapshots and battery-event policy are built; hardware backends, headphone jack, Wi-Fi, Bluetooth and suspend remain planned in [hal.md](hal.md).
 - Queue: the Previous queue is not kept across a restart; a restored queue does not cache tracks
   automatically until another list plays;
   Save as playlist saves at most 150 tracks (a GET request) and has no renaming until STT or a keyboard;
-  play queue sync with the server and offline playlists are later (queue.md "Later").
+  queue sync and kept playlists are built (streaming.md phase 5).
 - The `AudioStream` mutex in the audio callback could become a lock-free ring.

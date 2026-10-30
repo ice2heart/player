@@ -3,7 +3,7 @@
 > Status: **phases 1 to 4 built** (stream and play, see [What phase 1 built differently](#what-phase-1-built-differently);
 > robust streaming, see [Phase 2](#phase-2-robust-streaming); local cache and downloads, see
 > [Phase 3 as built](#phase-3-as-built); one library of files and server, see
-> [Phase 4 as built](#phase-4-as-built)). Phase 2a stars are built (manual listening checks pending); phase 5 is a plan. The code is described in [architecture.md](architecture.md), and the
+> [Phase 4 as built](#phase-4-as-built)). Phase 2a stars are built (manual listening checks pending); phase 5 is implemented (manual checks pending). The code is described in [architecture.md](architecture.md), and the
 > rules for lists from the server are in [navigation.md](navigation.md#lists-from-the-server).
 > The music queue ([queue.md](queue.md) phase 2) changed some of it: tracks from any source play in one
 > queue, `queue.tsv` replaced `last_stream`, and a track that cannot play is skipped.
@@ -724,7 +724,7 @@ Audiobookshelf behaviour in navigation.md and SPEC §6.3.
 | ✅ 5.5 | **Keep playlists offline.** Persist the keep-offline choice, pin playlist tracks in the cache and reconcile them with later server changes without removing pins needed by other downloads. | Tests cover enabling and disabling, restart, added and removed tracks, overlapping pins, failed refresh and insufficient space. |
 | ✅ 5.6 | **Subsonic book progress.** Implement the existing `MusicServer` progress interface with Subsonic bookmarks per track, applying the agreed timestamp and chapter mapping. Reuse the existing book-player offer and progress persistence. | Net tests cover bookmark requests, timestamps, missing and malformed data and errors; App tests cover local and newer server positions, chapters, pause, stale callbacks and offline retry. |
 | ✅ 5.7 | **Play queue sync.** Add asynchronous `savePlayQueue` and `getPlayQueue` support with `indexBasedQueue`, and integrate it with the music queue using the agreed conflict and mixed-source rules. | Net tests cover request and response mapping including duplicate tracks and position; App tests cover a phone queue, a device queue, restart, offline and errors, and unsupported or local-only tracks. |
-| 5.8 | **Docs for phase 5 as built.** Update architecture.md, navigation.md, SPEC and this plan to describe the implementation and its limits. | – |
+| ✅ 5.8 | **Docs for phase 5 as built.** Update architecture.md, navigation.md, SPEC and this plan to describe the implementation and its limits. | – |
 
 **Device check (manual):** With a configured test server and a second client, create
 and edit a playlist on the device and verify its contents on the server; change a
@@ -805,6 +805,27 @@ server. Check the corresponding spoken feedback and Cancel on delete.
   online actions keep their existing failure feedback; they do not claim success
   or save an offline edit. The existing scrobble outbox and book progress retry
   remain separate.
+
+### Phase 5 as built
+
+- Music combines local M3U, downloaded and server playlists. The device creates generated
+  names, adds the current track, removes a selected occurrence and deletes behind Cancel.
+  Server removals fetch the current ordered list, including duplicates. Server edits require
+  connectivity; playlist renaming and offline edit replay remain deferred.
+- Keep offline has its own ordered snapshot and pin ownership. A successful refresh stages
+  the full replacement before releasing old pins; shared tracks use hard links and count
+  once for cache eviction. Errors preserve the last complete snapshot for retry.
+- Subsonic book progress maps per-track bookmarks to the book timeline and uses the existing
+  progress offer and retry flow. Track identities and durations protect cached books against
+  mismatched timelines. A pre-save check avoids overwriting a newer bookmark, subject to
+  the server read/write race documented in [deferred.md](deferred.md#implementation-limits).
+- Queue sync compares server and device timestamps, preserves duplicate occurrences with
+  index-based queues, and defers saves whose current track is not eligible for a server.
+  Untimestamped empty server queues leave uploads pending. A newer server queue does not
+  interrupt active playback; the queue and pending sync metadata persist on exit and sleep.
+- [Deferred work and pending sync](deferred.md) records the remaining feature deferrals,
+  operational pending states and protocol and filesystem limits. Automated checks passed;
+  the device and real-server checks above remain pending.
 
 ---
 

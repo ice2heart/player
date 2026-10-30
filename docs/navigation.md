@@ -648,7 +648,7 @@ server alone. All the rules below hold for every server.
   opens the track again where it stopped. The next track's stream opens in the
   background 10 s before the end, so tracks change without a wait.
 
-## Playlist editing and planned sync changes (streaming phase 5)
+## Playlist editing and sync (streaming phase 5)
 
 Playlist editing, Keep offline and queue sync are built.
 Music → Playlists combines local, downloaded and server playlists. Create playlist selects "On the
@@ -676,7 +676,8 @@ server and local timestamps, keeps the newer version and does not interrupt play
 If the current track has no reference on a server, its queue save waits until a
 track eligible for that server is current.
 An empty server queue without a usable timestamp leaves an upload pending, since it
-could represent a newer clear on another client.
+could represent a newer clear on another client. Other pending conditions and limits are
+listed in [deferred.md](deferred.md#pending-queue-sync).
 
 ## Music and Library
 
@@ -732,7 +733,7 @@ Music
   "Try again", "Downloaded" when offline). It opens with "Play playlist", then "Download
   playlist" where it can work, then the tracks and Delete playlist. An edited server playlist's
   old download remains available in Downloaded, while Music fetches the current track list;
-  see [Playlist editing](#playlist-editing-and-planned-sync-changes-streaming-phase-5).
+  see [Playlist editing](#playlist-editing-and-sync-streaming-phase-5).
   **Streaming no longer has Playlists**; Streaming → Downloaded still lists downloaded
   playlists. Playlists is also available when there is no music yet, so a playlist can be created.
   Options on a whole, current download use its files; an edited snapshot needs the server.
