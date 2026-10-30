@@ -242,7 +242,7 @@ split later, the bus and protocol need a separate design decision.
 | **stt**          | Planned: push-to-talk capture to commands or dictation. |
 | **library**      | Scans storage and parses metadata; the SQLite index holds items, tracks and playlists; history recovery needs phase 7 of fixes.md. Book positions live in `state.tsv`; bookmarks are planned. |
 | **sync**         | Talks to Subsonic and Audiobookshelf servers for built browsing, downloads and supported progress sync; podcast feeds are planned. |
-| **power**        | Built: software sleep and sleep timer. Planned: MCU, real battery status and hardware suspend/resume. |
+| **power**        | Built: software sleep and sleep timer, simulated power and storage snapshots, and battery-event warnings with save before supported critical power-off. Planned: MCU, real battery status and hardware suspend/resume. |
 | **settings**     | Persistent config (speech rate, voice, volume, language…) and the music server, in `config.yaml`; positions in `state.tsv`. |
 | **net**          | Built: server access and status. Wi-Fi management and connection announcements are planned. |
 
@@ -541,8 +541,10 @@ States:
   window visualises the menu stack, playback state, speech log and **per-button usage
   counts** (to decide how many buttons the hardware really needs). A `--script` mode
   replays button sequences. The window draws names in any script (`--font TTF` picks the font; by default a system font with Cyrillic and CJK glyphs). Most UI work happens here; validate device behavior with the Linux headless front end.
-- Hardware-abstraction layer for: input source, power/MCU, battery, Wi-Fi, Bluetooth,
-  audio routing. Plan: [docs/hal.md](docs/hal.md).
+- Hardware-abstraction foundations are built: an event queue, selectable simulated power
+  and storage snapshots, and battery-event handling. Simulator controls for changing
+  snapshots and real hardware backends remain planned. Input, Wi-Fi, Bluetooth and
+  audio routing are future HAL work: [docs/hal.md](docs/hal.md).
 - CI: unit tests for ui-core state machine (scripted key sequences → expected speech output
   as text), cross-compile for target, build Buildroot image.
 - **Testing with blind users** from the earliest prototype — mandatory, not optional.

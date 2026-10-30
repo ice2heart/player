@@ -1349,11 +1349,17 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   rebuildable; [fixes.md phase 7](fixes.md#phase-7-listening-reliability-and-durable-data)
   plans separating authoritative history/identity from regenerable metadata.
 
-HAL `Power` and `Storage` expose cached snapshots through `Services`. The simulated
-backends start at 80 percent and 10 GiB free, and their setters update the snapshots.
+HAL `Power` and `Storage` expose cached snapshots through `Services`. Status reports
+the battery percentage and whole GiB free, followed by the Wi-Fi placeholder and time.
+The simulated backends start at 80 percent and 10 GiB free, and their setters update the snapshots.
 `none` omits the corresponding Status phrase. Sim backends are separately linked
 only when selected; simulator presets select them. Hardware controls are planned for
-phase 3.
+phase 3; the setters do not themselves post battery events. On `BatteryChanged`,
+`App` announces each threshold at or below 20, 10 and 5 percent once, rearms on
+charging start, and announces charging start and full edges. At or below 3 percent
+it saves before requesting supported power-off, or interrupts speech to say “Battery
+critical.” The 5 percent warning also interrupts speech. Simulated power reports no
+power-off capability.
 
 ## 10. Simulator (`app/sim/main.cpp`)
 
@@ -1505,7 +1511,7 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   phase 4" there.
 - STT (Talk button): push-to-talk capture plus sherpa-onnx, Vosk or whisper.cpp.
 - Localisation of spoken strings; a choice of TTS voice. Kanji and Han text are read by the `cmn` voice; without it they are only named ("Japanese text", "Chinese text"): there is no reading table. Hebrew and Arabic need their voice, else they are named.
-- Hardware abstraction (battery, headphone jack, Wi-Fi, Bluetooth, suspend): planned in [hal.md](hal.md).
+- Hardware abstraction: simulated battery and storage snapshots and battery-event policy are built; hardware backends, headphone jack, Wi-Fi, Bluetooth and suspend remain planned in [hal.md](hal.md).
 - Queue: the Previous queue is not kept across a restart; a restored queue does not cache tracks
   automatically until another list plays;
   Save as playlist saves at most 150 tracks (a GET request) and has no renaming until STT or a keyboard;

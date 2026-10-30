@@ -1,12 +1,12 @@
 # Hardware Abstraction Layer (HAL) — Plan
 
-> Status: **plan, not implemented.** Last updated: 2026-10-30.
+> Status: **phase 1 implemented; later phases planned.** Last updated: 2026-10-30.
 > Context: [../SPEC.md](../SPEC.md) §3, §4.2, §6.4 · code as built: [architecture.md](architecture.md) · keys: [navigation.md](navigation.md).
 
 ## 1. Why
 
-`App` uses real audio and existing front-end input adapters, but hardware status is simulated. `statusReport()` says
-"Battery 80 percent, simulated", and the Wi-Fi menu speaks fixed strings. The device
+`App` uses real audio and existing front-end input adapters. Power and storage status
+come from selectable simulated snapshots, while the Wi-Fi menu speaks fixed strings. The device
 needs real battery, charger, headphone jack, Wi-Fi and Bluetooth, and the simulator and
 tests need controllable stand-ins for them. The HAL extends the pattern `services.h`
 already uses: **core declares interfaces, backends implement them, and tests use fakes.**
@@ -513,7 +513,7 @@ existing playback and input still work. The Wi-Fi placeholder remains until phas
 | ✅ 1.4 | **Backend selection.** Add `HalContext`, per-part CMake selection, generated registry and `sim-macos`/`sim-linux` presets. Initially no HAL sim factories exist: select none for each part, reject unavailable and unknown selections, and retain current input and audio paths until their migration steps. Add real sim factories with their interfaces in their scheduled steps. | Core-only and simulator configurations build; none omits the part; unavailable and unknown backends fail configuration. Verify that selected real factories alone are linked when the first sim factories are added in 1.5. |
 | ✅ 1.5 | **Power and storage status.** Add `Power` and `Storage` interfaces and sim/fake snapshots. Replace the hard-coded battery and filesystem-space status portions; omit missing parts and retain the existing Wi-Fi placeholder until step 5.3. | Status speaks the supplied battery percentage and free space; changing snapshots changes status; missing power or storage is omitted; only selected real factories are linked. |
 | ✅ 1.6 | **Battery events.** Handle `BatteryChanged` thresholds and charger edges as in §6; save before requesting power off at 3% when supported. | Crossing 20%, 10% and 5% announces once, charging rearms them; 3% saves and requests power off when supported, otherwise says "Battery critical". |
-| 1.7 | **Docs for phase 1 as built:** update architecture.md, navigation.md and SPEC. | – |
+| ✅ 1.7 | **Docs for phase 1 as built:** update architecture.md, navigation.md and SPEC. | – |
 
 **Device check (manual):** run the simulator, open System → Status, change the simulated
 battery and storage snapshots and hear the new values. Repeat with either part absent.

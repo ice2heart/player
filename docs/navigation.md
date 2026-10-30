@@ -205,8 +205,15 @@ contract require the phase 8 trial.
 
 ### Hardware-dependent menus and output loss
 
-HAL phase 1 replaces simulated battery and storage status with available snapshots;
-missing parts are omitted and the existing Wi-Fi placeholder remains until phase 5.
+System → Status speaks the battery percentage and whole GiB free from the selected
+HAL snapshots, omitting either phrase when that part is absent. It also says “Wi-Fi
+connected.” as a placeholder and reports the time. The simulator presets supply 80
+percent and 10 GiB free; interactive snapshot controls are planned for phase 3.
+Battery events announce 20, 10 and 5 percent once each, rearmed when charging
+starts; they also announce charging start and full. At 3 percent, the app saves
+before requesting power off if supported, or says “Battery critical.” The 5 percent
+and unsupported critical warnings interrupt current speech. The Wi-Fi placeholder
+remains until phase 5.
 Phase 3 adds Audio output when selection is supported, with Automatic, Speaker,
 Headphones and available Bluetooth outputs; each output retains its own volume.
 Losing headphones or Bluetooth while playing pauses and saves position, says
