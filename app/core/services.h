@@ -44,6 +44,24 @@ public:
     virtual bool writeAtomically(const std::filesystem::path& file, const std::string& contents) = 0;
 };
 
+struct LocalPlaylist {
+    std::string id;
+    std::string name;
+    std::vector<std::filesystem::path> tracks;
+    bool operator==(const LocalPlaylist&) const = default;
+};
+
+// Local playlist IDs are opaque and remain stable when their contents change.
+class LocalPlaylists {
+public:
+    virtual ~LocalPlaylists() = default;
+    virtual std::vector<LocalPlaylist> list() = 0;
+    virtual std::optional<LocalPlaylist> create(const std::string& name) = 0;
+    virtual bool add(const std::string& id, const std::filesystem::path& track) = 0;
+    virtual bool removeTrack(const std::string& id, std::size_t index) = 0;
+    virtual bool remove(const std::string& id) = 0;
+};
+
 // One track of a library item. `location` is a file path for a local or cached
 // track and the server's track id for a server track.
 struct IndexTrack {

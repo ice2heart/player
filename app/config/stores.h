@@ -1,11 +1,27 @@
 #pragma once
 
 #include "core/settings.h"
+#include "core/services.h"
 
 #include <filesystem>
 #include <string>
 
 namespace oap {
+
+// A folder of local M3U playlists. The caller supplies the library's playlists root.
+class DiskLocalPlaylists : public LocalPlaylists {
+public:
+    explicit DiskLocalPlaylists(std::filesystem::path root) : root_(std::move(root)) {}
+    std::vector<LocalPlaylist> list() override;
+    std::optional<LocalPlaylist> create(const std::string& name) override;
+    bool add(const std::string& id, const std::filesystem::path& track) override;
+    bool removeTrack(const std::string& id, std::size_t index) override;
+    bool remove(const std::string& id) override;
+private:
+    std::optional<LocalPlaylist> load(const std::string& id);
+    bool save(const LocalPlaylist& playlist);
+    std::filesystem::path root_;
+};
 
 // state.tsv: playback positions and the book to resume, as "key<TAB>value" lines.
 class TsvStore : public SettingsStore {

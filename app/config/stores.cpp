@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <iterator>
 #include <optional>
+#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -205,6 +206,107 @@ bool YamlStore::save(const SettingsMap& values) {
         return false;
     }
     return writeFileAtomically(file_, nestYaml(values));
+}
+
+namespace {
+bool playlistId(const std::string& id) {
+    std::filesystem::path path(id);
+    return !id.empty() && path.filename() == path && path.extension() == ".m3u" &&
+           id.find_first_of("\r\n") == std::string::npos;
+}
+
+bool playlistText(const std::string& text) {
+    return !text.empty() && text.find_first_of("\r\n") == std::string::npos;
+}
+
+bool localTrack(const std::filesystem::path& path) {
+    const auto text = path.string();
+    return playlistText(text) && text.find("://") == std::string::npos && text.front() != '#';
+}
+}
+
+std::optional<LocalPlaylist> DiskLocalPlaylists::load(const std::string& id) {
+    if (!playlistId(id)) return std::nullopt;
+    std::error_code ec;
+    auto file = root_ / id;
+    if (std::filesystem::is_symlink(file, ec) || ec || !std::filesystem::is_regular_file(file, ec) || ec)
+        return std::nullopt;
+    auto text = readFile(file);
+    if (!text) return std::nullopt;
+    LocalPlaylist playlist{id, std::filesystem::path(id).stem().string(), {}};
+    std::istringstream input(*text);
+    std::string line;
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("#PLAYLIST:", 0) == 0) {
+            auto name = line.substr(10);
+            if (playlistText(name)) playlist.name = name;
+        } else if (!line.empty() && line.front() != '#' && localTrack(line)) {
+            std::filesystem::path track(line);
+            if (track.is_relative()) track = (root_ / track).lexically_normal();
+            playlist.tracks.push_back(std::move(track));
+        }
+    }
+    if (input.bad()) return std::nullopt;
+    return playlist;
+}
+
+std::vector<LocalPlaylist> DiskLocalPlaylists::list() {
+    std::vector<LocalPlaylist> result;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(root_, ec), end; !ec && it != end; it.increment(ec)) {
+        auto playlist = load(it->path().filename().string());
+        if (playlist) result.push_back(std::move(*playlist));
+    }
+    std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
+    return result;
+}
+
+bool DiskLocalPlaylists::save(const LocalPlaylist& playlist) {
+    if (!playlistId(playlist.id) || !playlistText(playlist.name)) return false;
+    std::string text = "#EXTM3U\n#PLAYLIST:" + playlist.name + "\n";
+    for (const auto& track : playlist.tracks) {
+        if (!localTrack(track) || !track.is_absolute()) return false;
+        text += track.string() + "\n";
+    }
+    return writeFileAtomically(root_ / playlist.id, text);
+}
+
+std::optional<LocalPlaylist> DiskLocalPlaylists::create(const std::string& name) {
+    if (!playlistText(name)) return std::nullopt;
+    std::error_code ec;
+    std::filesystem::create_directories(root_, ec);
+    if (ec) return std::nullopt;
+    for (std::size_t i = 1; i != 0; ++i) {
+        LocalPlaylist playlist{"playlist-" + std::to_string(i) + ".m3u", name, {}};
+        auto status = std::filesystem::symlink_status(root_ / playlist.id, ec);
+        if (ec && ec != std::errc::no_such_file_or_directory) return std::nullopt;
+        if (status.type() != std::filesystem::file_type::not_found) continue;
+        if (!save(playlist)) return std::nullopt;
+        return playlist;
+    }
+    return std::nullopt;
+}
+
+bool DiskLocalPlaylists::add(const std::string& id, const std::filesystem::path& track) {
+    if (!track.is_absolute() || !localTrack(track)) return false;
+    auto playlist = load(id);
+    if (!playlist) return false;
+    playlist->tracks.push_back(track);
+    return save(*playlist);
+}
+
+bool DiskLocalPlaylists::removeTrack(const std::string& id, std::size_t index) {
+    auto playlist = load(id);
+    if (!playlist || index >= playlist->tracks.size()) return false;
+    playlist->tracks.erase(playlist->tracks.begin() + index);
+    return save(*playlist);
+}
+
+bool DiskLocalPlaylists::remove(const std::string& id) {
+    if (!load(id)) return false;
+    std::error_code ec;
+    return std::filesystem::remove(root_ / id, ec) && !ec;
 }
 
 } // namespace oap

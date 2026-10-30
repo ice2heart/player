@@ -32,6 +32,62 @@ constexpr fs::perms kOwnerOnly = fs::perms::owner_read | fs::perms::owner_write;
 
 } // namespace
 
+TEST_F(ConfigTest, LocalPlaylistsRoundTripDuplicatesAndDelete) {
+    DiskLocalPlaylists store(dir / "playlists");
+    auto first = store.create("Playlist, 27 October 14:05");
+    auto second = store.create("Playlist, 27 October 14:05");
+    ASSERT_TRUE(first && second);
+    EXPECT_NE(first->id, second->id);
+    auto a = dir / "music" / "one.mp3";
+    auto b = dir / "music" / "two.flac";
+    auto c = dir / "music" / "three.mp3";
+    ASSERT_TRUE(store.add(first->id, a));
+    ASSERT_TRUE(store.add(first->id, c));
+    ASSERT_TRUE(store.add(first->id, b));
+    ASSERT_TRUE(store.add(first->id, a));
+    DiskLocalPlaylists reopened(dir / "playlists");
+    auto lists = reopened.list();
+    ASSERT_EQ(lists.size(), 2u);
+    EXPECT_EQ(lists[0].name, first->name);
+    EXPECT_EQ(lists[0].tracks, (std::vector<fs::path>{a, c, b, a}));
+    ASSERT_TRUE(reopened.removeTrack(first->id, 1));
+    EXPECT_EQ(reopened.list()[0].tracks, (std::vector<fs::path>{a, b, a}));
+    EXPECT_FALSE(reopened.removeTrack(first->id, 3));
+    ASSERT_TRUE(reopened.remove(first->id));
+    EXPECT_FALSE(reopened.remove(first->id));
+    ASSERT_EQ(reopened.list().size(), 1u);
+    EXPECT_EQ(reopened.list()[0].id, second->id);
+}
+
+TEST_F(ConfigTest, LocalPlaylistsReadExternalM3uAndSkipUrls) {
+    auto root = dir / "playlists";
+    fs::create_directories(root);
+    write(root / "existing.m3u", "#EXTM3U\n#PLAYLIST:Road trip\n../music/a.mp3\nhttps://example.invalid/audio\n");
+    DiskLocalPlaylists store(root);
+    auto lists = store.list();
+    ASSERT_EQ(lists.size(), 1u);
+    EXPECT_EQ(lists[0].name, "Road trip");
+    EXPECT_EQ(lists[0].tracks, (std::vector<fs::path>{dir / "music/a.mp3"}));
+    EXPECT_FALSE(store.add(lists[0].id, "https://example.invalid/audio"));
+    EXPECT_FALSE(store.add(lists[0].id, "relative.mp3"));
+    EXPECT_FALSE(store.add("../outside.m3u", dir / "music/a.mp3"));
+}
+
+TEST_F(ConfigTest, LocalPlaylistWriteFailureLeavesOldContents) {
+    auto root = dir / "playlists";
+    DiskLocalPlaylists store(root);
+    auto playlist = store.create("Original");
+    ASSERT_TRUE(playlist);
+    const auto old = read(root / playlist->id);
+    fs::create_directory(root / (playlist->id + ".tmp"));
+    EXPECT_FALSE(store.add(playlist->id, dir / "a.mp3"));
+    EXPECT_EQ(read(root / playlist->id), old);
+    EXPECT_TRUE(store.list()[0].tracks.empty());
+    write(dir / "not-a-folder", "x");
+    DiskLocalPlaylists broken(dir / "not-a-folder" / "playlists");
+    EXPECT_FALSE(broken.create("No"));
+}
+
 // ---------------------------------------------------------------- YAML <-> dotted keys
 
 TEST_F(ConfigTest, NestedYamlBecomesDottedKeys) {
