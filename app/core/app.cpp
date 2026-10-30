@@ -295,15 +295,15 @@ MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn) {
 }
 } // namespace
 
-App::App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume,
-         std::vector<ServerLink> servers, LibraryStore& libraryStore, LibraryScanner& scanner, Settings& config, Settings& state,
-         Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot, std::filesystem::path cacheRoot,
-         TextFiles* files, std::filesystem::path queueFile, std::filesystem::path scrobbleFile)
-    : tts_(speech), player_(player), earcons_(sounds), volume_(volume), servers_(std::move(servers)),
-      index_(libraryStore), scanner_(scanner), config_(config), state_(state),
-      savedState_(state.values()), queueFile_(std::move(queueFile)), clock_(clock), libraryRoot_(std::move(libraryRoot)), musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)),
-      freeSpace_(spaceOnDisk), random_(clockRandom(clock)), lastActivity_(clock.now()) {
-    textFiles_ = files;
+App::App(Services services, std::filesystem::path libraryRoot, std::filesystem::path musicRoot,
+         std::filesystem::path cacheRoot, std::filesystem::path queueFile, std::filesystem::path scrobbleFile)
+    : tts_(services.speech), player_(services.player), earcons_(services.sounds), volume_(services.volume),
+      servers_(std::move(services.servers)), index_(services.libraryStore), scanner_(services.scanner),
+      config_(services.config), state_(services.state), savedState_(services.state.values()),
+      queueFile_(std::move(queueFile)), clock_(services.clock), libraryRoot_(std::move(libraryRoot)),
+      musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)), freeSpace_(spaceOnDisk),
+      random_(clockRandom(services.clock)), lastActivity_(services.clock.now()) {
+    textFiles_ = services.files;
     scrobbleFile_ = std::move(scrobbleFile);
     links_.resize(std::max<size_t>(1, servers_.size()));
 }

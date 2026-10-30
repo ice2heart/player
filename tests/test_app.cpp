@@ -116,7 +116,7 @@ protected:
 
     // Starts the App and, unless `scan` is false, lets its background scan finish.
     void start(bool scan = true) {
-        app = std::make_unique<App>(speech, player, sounds, volume, serverLinks(), indexStore, scanner, settings, state, clock, root, music, cache, textFiles, queueFile, scrobbleFile);
+        app = std::make_unique<App>(Services{speech, player, sounds, volume, serverLinks(), indexStore, scanner, settings, state, clock, textFiles}, root, music, cache, queueFile, scrobbleFile);
         app->start();
         if (scan) ASSERT_NO_FATAL_FAILURE(deliverScan());
     }
@@ -3467,8 +3467,7 @@ TEST_F(TwoServersTest, HomeSpeaksTheNameOfEachLink) {
     // makeServers names a link of several "Server N" by its place, and App speaks what it is given.
     auto links = serverLinks();
     links[0].name = "Server 1";
-    app = std::make_unique<App>(speech, player, sounds, volume, std::move(links), indexStore, scanner, settings, state, clock,
-                                root, music, cache, textFiles, queueFile, scrobbleFile);
+    app = std::make_unique<App>(Services{speech, player, sounds, volume, std::move(links), indexStore, scanner, settings, state, clock, textFiles}, root, music, cache, queueFile, scrobbleFile);
     app->start();
     ASSERT_NO_FATAL_FAILURE(deliverScan());
     EXPECT_EQ(labels().at(2), "Server 1");
@@ -5005,7 +5004,7 @@ TEST_F(AppTest, TheStreamingQualityIsSavedAndKeptAcrossARestart) {
     app.reset();
     Settings reloaded{&configFile}; // config.yaml as the next start reads it
     reloaded.load();
-    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(reloaded, server, downloader), indexStore, scanner, reloaded, state, clock, root, music);
+    app = std::make_unique<App>(Services{speech, player, sounds, volume, linkTo(reloaded, server, downloader), indexStore, scanner, reloaded, state, clock, nullptr}, root, music);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
     EXPECT_EQ(player.file, "fake://stream/t1?maxBitRate=320");
@@ -5880,7 +5879,7 @@ TEST_F(DownloadTest, NoDownloadItemWithoutACacheFolderAServerOrADownloader) {
 }
 
 TEST_F(DownloadTest, AnAppWithoutTextFilesHasNoCacheEvenWithAFolder) {
-    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(settings, server, downloader), indexStore, scanner, settings, state, clock, root, music, cache);
+    app = std::make_unique<App>(Services{speech, player, sounds, volume, linkTo(settings, server, downloader), indexStore, scanner, settings, state, clock, nullptr}, root, music, cache);
     app->start();
     open("Server");
     open("Recently added");
@@ -8222,7 +8221,7 @@ TEST_F(AutoCacheLimitTest, CachingATrackDoesNotScanTheManifestsAgainWhileTheCach
     cacheTrack("x", false, 100, 5, albumSource("other1"), "One");
     cacheTrack("y", false, 100, 5, albumSource("other2"), "Two");
     CountingFiles counting;
-    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(settings, server, downloader), indexStore, scanner, settings, state, clock, root, music, cache, &counting);
+    app = std::make_unique<App>(Services{speech, player, sounds, volume, linkTo(settings, server, downloader), indexStore, scanner, settings, state, clock, &counting}, root, music, cache);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
     listen(11s);
@@ -8298,7 +8297,7 @@ TEST_F(AutoCacheLimitTest, EvictionDoesNotMakeTheNextLookupScanTheManifestsAgain
     cacheTrack("a", false, 100, 5, albumSource("other1"), "One");
     cacheTrack("b", false, 100, 5, albumSource("other2"), "Two");
     CountingFiles counting;
-    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(settings, server, downloader), indexStore, scanner, settings, state, clock, root, music, cache, &counting);
+    app = std::make_unique<App>(Services{speech, player, sounds, volume, linkTo(settings, server, downloader), indexStore, scanner, settings, state, clock, &counting}, root, music, cache);
     app->setCacheGigabyte(10);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
@@ -8316,7 +8315,7 @@ TEST_F(AutoCacheLimitTest, PoweringOffTrimsOnce) {
     cacheTrack("a", false, 100, 5, albumSource("other1"), "One");
     cacheTrack("b", false, 100, 5, albumSource("other2"), "Two");
     CountingFiles counting;
-    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(settings, server, downloader), indexStore, scanner, settings, state, clock, root, music, cache, &counting);
+    app = std::make_unique<App>(Services{speech, player, sounds, volume, linkTo(settings, server, downloader), indexStore, scanner, settings, state, clock, &counting}, root, music, cache);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
     app->shutdown(); // the first exit scans, and the plays go to the manifests
@@ -8347,7 +8346,7 @@ TEST_F(AutoCacheLimitTest, TheSizeIsSavedAndKeptAcrossARestart) {
     Settings reloaded{&configFile};
     reloaded.load();
     EXPECT_EQ(reloaded.getInt("cache.limit_gb", 1), 4);
-    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(reloaded, server, downloader), indexStore, scanner, reloaded, state, clock, root, music, cache, &diskFiles());
+    app = std::make_unique<App>(Services{speech, player, sounds, volume, linkTo(reloaded, server, downloader), indexStore, scanner, reloaded, state, clock, &diskFiles()}, root, music, cache);
     app->start();
     open("Settings");
     open("Cache size");
@@ -8357,7 +8356,7 @@ TEST_F(AutoCacheLimitTest, TheSizeIsSavedAndKeptAcrossARestart) {
     app.reset();
     Settings off{&configFile};
     off.load();
-    app = std::make_unique<App>(speech, player, sounds, volume, linkTo(off, server, downloader), indexStore, scanner, off, state, clock, root, music, cache, &diskFiles());
+    app = std::make_unique<App>(Services{speech, player, sounds, volume, linkTo(off, server, downloader), indexStore, scanner, off, state, clock, &diskFiles()}, root, music, cache);
     app->start();
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1")));
     listen(60s);
@@ -17262,8 +17261,7 @@ TEST_F(BookProgressPullTest, AProgressReplyForADestroyedAppCannotAffectANewAppIn
     // change the new player. This avoids relying on freed memory to crash.
     App* storage = app.release();
     storage->~App();
-    app.reset(new (storage) App(speech, player, sounds, volume, serverLinks(), indexStore, scanner, settings, state,
-                               clock, root, music, cache, textFiles, queueFile, scrobbleFile));
+    app.reset(new (storage) App(Services{speech, player, sounds, volume, serverLinks(), indexStore, scanner, settings, state, clock, textFiles}, root, music, cache, queueFile, scrobbleFile));
     app->start();
     ASSERT_NO_FATAL_FAILURE(deliverScan());
     syncBooks({book("b1", "Dune")});

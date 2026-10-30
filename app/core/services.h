@@ -466,4 +466,20 @@ struct ServerLink {
     Downloader& downloader;
 };
 
+// Non-owning dependencies of App. The referenced objects and server targets
+// must outlive App; App takes ownership of the server links.
+struct Services {
+    Speech& speech;
+    MediaPlayer& player;
+    SoundEffects& sounds;
+    VolumeControl& volume;
+    std::vector<ServerLink> servers;
+    LibraryStore& libraryStore;
+    LibraryScanner& scanner;
+    Settings& config;
+    Settings& state;
+    Clock& clock;
+    TextFiles* files = nullptr;
+};
+
 } // namespace oap

@@ -68,10 +68,9 @@ public:
     // downloaded tracks (empty: none, and none without `files` either, which reads and
     // writes their manifests); it is left out of Library and Music
     // when it lies inside them.
-    App(Speech& speech, MediaPlayer& player, SoundEffects& sounds, VolumeControl& volume,
-        std::vector<ServerLink> servers, LibraryStore& libraryStore, LibraryScanner& scanner, Settings& config, Settings& state,
-        Clock& clock, std::filesystem::path libraryRoot, std::filesystem::path musicRoot, std::filesystem::path cacheRoot = {}, TextFiles* files = nullptr,
-        std::filesystem::path queueFile = {}, std::filesystem::path scrobbleFile = {});
+    App(Services services, std::filesystem::path libraryRoot, std::filesystem::path musicRoot,
+        std::filesystem::path cacheRoot = {}, std::filesystem::path queueFile = {},
+        std::filesystem::path scrobbleFile = {});
 
     // How much room is left on the disk of a folder, in bytes; none if that cannot
     // be told. Downloads check it before they start. The default asks
