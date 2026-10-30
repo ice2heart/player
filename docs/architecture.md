@@ -4,7 +4,7 @@
 > streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)),
 > plus phases 1 and 2 of [queue.md](queue.md): volume and Options buttons, separate music and book players,
 > and the music queue (local and server tracks mixed, skipped when unavailable, a server that fails checked until it answers), Options (Play now, Play next, Add to queue, Go to album, Album info),
-> Shuffle and Repeat (off, all, album, track; Add to queue mixed into a shuffled queue), the Queue list, the queue kept in `queue.tsv` and Save as playlist, and, from [fixes.md](fixes.md) phase 2, playlists in `library.db` and in Music, Download in Options and the player's name in "where am I?". Download quality, caching at the opened stream quality and optional cached-copy upgrades with local fallback are built (fixes.md phase 5); real-server listening checks remain pending. Star is not built (streaming.md 2a.1). Several servers, Audiobookshelf books, progress sync and Continue listening (audiobookshelf.md phases 1–3) are implemented; phase 3 real-server and device checks are pending. Last updated: 2026-10-29.
+> Shuffle and Repeat (off, all, album, track; Add to queue mixed into a shuffled queue), the Queue list, the queue kept in `queue.tsv` and Save as playlist, and, from [fixes.md](fixes.md) phase 2, playlists in `library.db` and in Music, Download in Options and the player's name in "where am I?". Download quality, caching at the opened stream quality and optional cached-copy upgrades with local fallback are built (fixes.md phase 5); real-server listening checks remain pending. Star is not built (streaming.md 2a.1). Several servers, Audiobookshelf books, progress sync and Continue listening (audiobookshelf.md phases 1–3) are implemented; phase 3 real-server and device checks are pending. Last updated: 2026-10-30.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
 
 ## 1. Overview
@@ -98,7 +98,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/earcons.{h,cpp}` | `Earcons`: UI sounds made from sine tones. |
 | `app/core/mixer.{h,cpp}` | `Mixer`: the three streams mixed into the output. |
 | `app/core/audio_stream.{h,cpp}` | `AudioStream`: thread-safe PCM FIFO with flush epochs. |
-| `app/core/library.{h,cpp}` | `Book` (also a remote list or, with `serverBook`, an audiobook of the server: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set; `albums` marks where each album of Play all starts, which the Album step unit uses), `scanLibrary(root, skip)`, which leaves out the cache folder `skip`, `appendBook()` (one more album at the end of a list like Play all, titles kept with their files), `naturalLess()` and `nameGroup()` (name grouping utility). |
+| `app/core/library.{h,cpp}` | `Book` (also a remote list or, with `serverBook`, an audiobook of the server: the server's track ids in `files`, server titles in `titles` and lengths in `durations`, `remote` set; `albums` marks where each album of Play all starts, retained as library metadata), `scanLibrary(root, skip)`, which leaves out the cache folder `skip`, `appendBook()` (one more album at the end of a list like Play all, titles kept with their files), `naturalLess()` and `nameGroup()` (name grouping utility). |
 | `app/core/track_cache.{h,cpp}` | `TrackCache`: downloaded tracks of one server in `<cache>/<server key>/<kind>%3A<list id>/`, where a list is an album or a playlist (the kind in the folder name keeps an album and a playlist with one id apart). Each list folder has the audio files and a `manifest.tsv` (header `oap-cache 2`, then a line `list<TAB>album|playlist<TAB>id<TAB>name<TAB>artist`, then for a downloaded server book a line `chapter<TAB>start seconds<TAB>title` per server chapter (`CachedList::chapters`; the book plays offline with them), then per track tab-separated: id, file, title, duration, a `changed` column (empty, or `kPartialMark` = "partial" on the tracks of a download that is not over; a download is never compared with the server), pinned `0`/`1`, last-played wall time, bitrate in kbps (0 = original; older seven-column rows read as original and gain the column on save); `\\`, `\t`, `\n`, `\r` escaped), read and written through the `TextFiles` interface of `services.h` (core does no file I/O of its own; `DiskTextFiles` in `app/config/` writes with `writeFileAtomically()`: temp file, `fsync`, rename, mode 0600; tests use the same on a temp folder). If `save()` finds a manifest that is there but not valid, it deletes the files in the folder that the new manifest does not name (never a `.part`, never another folder), so a damaged manifest leaves no orphans; a manifest that cannot be read at all (an I/O error) is not replaced (`save()` fails). A missing or corrupt manifest reads as empty, and so does a manifest of format 1 (it had no list line; no device ever held one) or one whose list line does not match its folder (a copied folder). `lists()` gives the lists with at least one complete track, sorted by name (`lists(true)`: only those with a complete pinned track, for Streaming > Downloaded); `trim(limit, played, keep, info)` writes play times into `lastPlayed` (the latest play replaces the old time; a time before `kEarliestPlayTime`, 2020-01-01, is a clock that was never set and is ignored) and evicts unpinned tracks and `.part` files (a `.part` first, then least recently played first), above the limit; `info` gives the evicted ids and the bytes left (section 5, "Automatic cache"); `remove()` deletes one list folder, only ever a direct child of the server's folder. `find(trackId)` returns the complete file of a track from any list (`index()` does it for every track in one pass, `completeFile()` for one manifest entry), never a `.part` file, a missing or empty file or a file named outside the folder. The server key is the host plus a hash of the URL (no login, no trailing slash) and the user name; list ids and the key are made filename-safe (`safeName()`), never holding a password or token. `App` takes the cache root, leaves it out of Library and Music, and plays from it (section 5, "Play from the cache"). |
 | `app/frontend/threaded_scanner.{h,cpp}` | `ThreadedScanner : LibraryScanner` (both front ends construct it with an `FfmpegTagReader` and pass it to `App`): one worker thread runs `scan(ScanRequest, Done)` jobs in order. A `ScanRequest` holds the library root, the music root, the cache folder to skip and the `previous` local items. The worker lists the roots with `scanLibrary()` (the same files the menus show, cache folder skipped), keeps the track of a file whose path, size and file time (`stat`, whole seconds) equal an entry in `previous` (same kind), and reads tags through `TagReader` only for the others; a file that is not a regular file is never opened (a FIFO would block). Output, all `Source::Local`, `firstSeen` and `lastPlayed` 0: a `Book` item per folder or loose file under the library root, id `local:book:<path>`, titled by the folder, a track per file (title from the tags, else the file name); `Music` items grouped by tags: id `local:album:<album artist or artist>\x1f<album>` (an album in several folders is one item; with no artist at all the id ends in `\x1f<folder>`, the album folder or a loose file's folder, so artistless albums of two folders stay two), and files without an album tag by the folder under the music root, id `local:folder:<path>`, titled by the folder name. `joinAlbums()` then makes one item of the items whose album, folded with `artistKey()`, is the same and whose artist is the same so folded and not empty, or which share a folder and one artist is the other with more words ("Band" and "Band feat. Guest"), or which share a folder and have no artist while the others there are one album. Two different album artists in one folder stay two items; a compilation without an album-artist tag stays split by track artist. The rule reads only what the index keeps, so kept tracks give the same items. The joined item keeps the id of its part with the most tracks in `previous` (else the first id), the artist with the most tracks, the `seenOn` of every part, and the earliest `firstSeen` and latest `lastPlayed` of the parts in `previous` (otherwise those are 0; `LibraryIndex::upsert` keeps the stored `firstSeen` of the kept id). A file whose tags cannot be read is listed with its file name as title. A book's tracks are in file order (`pathLess`); an album's are ordered by folder, then track number (none: last), then file name (the disc number is not stored). A scan that throws (the reader or an allocation) delivers nothing and the worker goes on. A file with a tag edit that keeps both size and whole-second time is not noticed; the books' files are probed too, once. Results are delivered from `poll()`; `cancel(id)` never waits (a queued scan is dropped, a running one stops after the file it reads) and the callback never runs; the destructor does the same and joins, so a read stuck on a hung mount can delay it. `FakeLibraryScanner` (tests/fakes.h) records requests and delivers only on `finish()` + `poll()`. |
 | `app/core/library_index.{h,cpp}` | `LibraryIndex` (owned by `App`, built on the `LibraryStore` it is given; see section 8): the library in memory, `IndexItem` (id, source local/server/cached, kind book/music/podcast, title, artist, album, genre, year, MusicBrainz id, first-seen and last-played wall times, tracks, `seenOn`) with `IndexTrack` (location, title, artist, number, duration, size, file time, `seenOn`). `playlists()` holds the server's playlists (`IndexPlaylist`: server key, id, name, song count, `changed`), kept apart from the items: `replacePlaylists(key, list)` replaces one server's, `addPlaylist()` adds one (Save as playlist), `playlistServers()` names the servers that have some, and `saveItems()` / `savePlaylists()` write the two parts (`save()` tries both). `seenOn` holds server references `<server key>:<album\|playlist\|track>:<id>` (`seenRef()`; `refOnServer()` finds the one for a server key), each at most once. Lookups by id, by track location, and by reference. `upsert()` merges (keeps first-seen, later last-played, and the references already there), `replaceSource()` is a scan, `replaceServer()` a sync of one server key. It loads and saves through `LibraryStore` in `services.h` (`load()`; `save(changed, removed)`), and `save()` hands over only the items that changed and the ones removed, nothing when none did. The SQLite store is `SqliteLibraryStore` in `app/library/`. |
@@ -338,10 +338,10 @@ key / GPIO ─► App::keyDown(b) ─► GestureDetector.press   ─► Deep / S
   Shutdown makes subsequent input inert; ticks still poll exit acknowledgements
   before returning without player work. Already-polled events from
   keys cancelled during the same tick are suppressed by the App's held-key locks.
-  Menus use this lifecycle for deep-then-hold movement. The legacy player actions
-  still use one action per hold/deep sequence via `navigationActed_` until
-  button-remap.md step 1.4 replaces that handler. `Light`, `Release` and `Cancel`
-  have no action side effects in the interim player handler.
+  Menus use this lifecycle for deep-then-hold movement; players use it to change
+  seek rate and stop on release or cancellation. New file opens also cancel held
+  navigation contacts (`cancelNavigation()`), so a natural track change cannot
+  start a hold in the next file; held volume and Play remain global.
 - **Repeat**: the volume keys (`VolumeUp`, `VolumeDown`) send a `Short` as soon as they go
   down, then a `Repeat` every `kRepeatInterval` (150 ms) after `kRepeatDelay` (400 ms), until
   they are let go. They have no long press and the release says nothing. `App` plays the
@@ -353,9 +353,23 @@ key / GPIO ─► App::keyDown(b) ─► GestureDetector.press   ─► Deep / S
   the later end jump at the initial hold deadline. Releasing does not move again.
   An end/deep jump at a partial remote boundary appends "More items are available.
   Load more to continue."; loading/error rows and fully loaded lists omit it.
-- **Interim player mapping:** short Back/Forward still uses the saved/default
-  step unit; Long/Deep still changes chapter/track until step 1.4. Up/Down no
-  longer selects units. Step 1.4 retires the old saved units and skip settings.
+- **Player movement and seeking:** short Back/Forward calls `stepChapter()` for
+  chapters or queue tracks; Back restarts after more than three seconds, otherwise
+  goes to the previous chapter/track. A light hold starts at Long press time and
+  seeks five seconds every 500 ms; Deep starts immediately at thirty seconds every
+  500 ms. `Seeking` retains the requested target and next deadline, so changing
+  stages adds no step or delay, even if decoder feedback lags. Long after Deep
+  does not reduce the rate; `Light` does. Seeking preserves play/pause and clamps
+  to the current file (unknown length permits forward seeks and clamps at zero).
+  One Move earcon starts seeking, and Edge sounds once at a boundary. Repeats
+  count as activity even while paused, and do not speak or resubmit an unchanged
+  boundary target; Release says the final
+  position, Cancel leaves speech to the new context. Automatic file completion
+  is suppressed while seeking. A seek to EOF keeps that file current after release
+  (`seekAtEnd_`), until seeking back, explicit chapter/track movement, Play, or a
+  new file; releasing must not advance the queue. Pending/closed/failed players
+  cannot start seeking and their held contacts stay cancelled. Step units and
+  Skip back / Skip forward settings are retired; old keys remain harmless.
 - **Options and return:** held OK calls `openOptions()` on menus and players;
   short OK still selects or opens the Player menu. Short Esc (`Button::Home`)
   at Home calls `enterPlayer()` when one is loaded, preserving play/pause and
@@ -380,9 +394,9 @@ The rules behind this table, and the checklist for new menus, are in
 | Play/Pause short | play / pause | | |
 | Play/Pause long | "Where am I?" | menu path + item | the player ("Music player." / "Book player."), the album and artist, chapter or track, time left (`playerIdentity()` + `playerStatusBody()`) |
 | Up / Down | silent in normal use | | |
-| Back / Forward short | | previous / next item (Menu wrap) | move back / forward by the step unit (skip, track or chapter, album or 10 minutes) |
-| Back / Forward long | | first / last item, clamped | previous / next chapter or track (interim, until step 1.4) |
-| Back / Forward deep | | ten items, clamped; continued hold reaches the end | previous / next chapter or track (interim) |
+| Back / Forward short | | previous / next item (Menu wrap) | previous / next chapter or track (Back restart rule) |
+| Back / Forward long | | first / last item, clamped | repeated 5-second seeks every 500 ms until released |
+| Back / Forward deep | | ten items, clamped; continued hold reaches the end | immediate repeated 30-second seeks; ease to light for normal rate |
 | OK short | | open / activate | player menu |
 | OK long | | selected item Options | playback Options |
 | Esc / Home short | | previous screen; at Home return to loaded player | previous screen |
@@ -580,8 +594,6 @@ Home
 │   ├── Speech rate      100–460 wpm
 │   ├── Volume           0–100 %
 │   ├── Verbosity        beginner / normal / expert
-│   ├── Skip back        5–60 s
-│   ├── Skip forward     5–120 s
 │   ├── Rewind on resume off / 2 / 5 / 10 s   (after a pause > 10 s)
 │   ├── Long press time  300–1500 ms
 │   ├── Menu wrap around on / off
@@ -1210,10 +1222,13 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 
 | File | Store | Keys |
 |------|-------|------|
-| `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `skip.back`, `skip.forward`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` and `downloads.bitrate` (kbps, 0 = the original file; download quality defaults to original), `cache.upgrade` (0 or 1; default 0), `cache.limit_gb` (0, 1, 4 or 16; default 1), and `servers.*` (or legacy `server.*`; see [audiobookshelf.md](audiobookshelf.md#configuration-a-list-of-servers)) |
-| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_player`: `music` or `book`, the player used last; `unit.music` / `unit.book`: the step unit of each player (0 Skip, 1 Track / Chapter, 2 Album / 10 minutes); `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.<server key>.version`: the catalogue version of the last sync with that server; `catalogue.<server key>.folder`: its `audiobook_folder` at that sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); syncing server books also use `posat:<id>` (recorded wall seconds), `pushed:<id>` (acknowledged timestamp), `pushdirty:<id>` (pending changed place) and `finished:<id>` (completion retained until playback restarts), where `<id>` is `<server key>:album:<album id>`; `last_stream.*` (`.server`, `.user`, `.kind`, `.id`, `.title`, `.track`, `.track_id`, `.pos`): only read, from a state.tsv of an older version (below); it is removed once a music queue plays |
+| `config.yaml` (`--config`; simulator `~/.config/oap-sim/`, headless `~/.config/oap/` or `$XDG_CONFIG_HOME/oap/`) | `YamlStore` | `speech.rate`, `volume`, `verbosity`, `rewind_on_resume`, `buttons.long_press_ms`, `menu.wrap`, `power.auto_sleep_min`, `streaming.bitrate` and `downloads.bitrate` (kbps, 0 = the original file; download quality defaults to original), `cache.upgrade` (0 or 1; default 0), `cache.limit_gb` (0, 1, 4 or 16; default 1), and `servers.*` (or legacy `server.*`; see [audiobookshelf.md](audiobookshelf.md#configuration-a-list-of-servers)) |
+| `state.tsv` (`--state`, default next to `config.yaml`) | `TsvStore` | `last_player`: `music` or `book`, the player used last; `last_book`: the book to resume on start (never music): a local book's absolute path, or a server book's item id `<server key>:album:<album id>` (4.12); `catalogue.<server key>.version`: the catalogue version of the last sync with that server; `catalogue.<server key>.folder`: its `audiobook_folder` at that sync (only when one is set); `pos:<book path>`: `"<file index>:<seconds>"` (a server book's key is `pos:<server key>:album:<album id>`); syncing server books also use `posat:<id>` (recorded wall seconds), `pushed:<id>` (acknowledged timestamp), `pushdirty:<id>` (pending changed place) and `finished:<id>` (completion retained until playback restarts), where `<id>` is `<server key>:album:<album id>`; `last_stream.*` (`.server`, `.user`, `.kind`, `.id`, `.title`, `.track`, `.track_id`, `.pos`): only read, from a state.tsv of an older version (below); it is removed once a music queue plays |
 | `scrobbles.tsv` (next to `state.tsv`; `defaultScrobbleFile()`) | `App` through `TextFiles` (`writeAtomically()`) | the scrobble outbox (`app/core/scrobble_file.{h,cpp}`), see below |
 | `queue.tsv` (next to `state.tsv`; `defaultQueueFile()`) | `App` through `TextFiles` (`writeAtomically()`) | the music queue (`app/core/queue_file.{h,cpp}`), see below |
+
+- Legacy `unit.music`, `unit.book`, `skip.back` and `skip.forward` keys are ignored
+  and preserved on ordinary saves; no migration-only write is performed.
 
 - `config.yaml` is nested YAML (`speech: {rate: 220}` is `speech.rate`). It is
   written only when a setting is chosen in its list (at once), on exit and sleep if the
@@ -1299,7 +1314,7 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
   "Now playing". With none on disk the error is spoken as in step 2.6. A whole
   download is not compared with the server, so a list changed there is not seen until
   it is played from a server list.
-- The volume keys change the volume in memory (`volumeChanged_`); it is written on exit and sleep, with the state. The step unit of each player is kept in memory and written to `state.tsv` with the rest of the state. Factory reset also writes `config.yaml` (server keys kept).
+- The volume keys change the volume in memory (`volumeChanged_`); it is written on exit and sleep, with the state. Factory reset also writes `config.yaml` (server keys kept).
 - **Factory reset** clears both, but keeps the `server.*` keys, and restarts
   without saving the position first, so it does not come back.
 - Every write is atomic (`writeFileAtomically`): `FILE.tmp` created with mode 0600,

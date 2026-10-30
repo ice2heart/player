@@ -127,7 +127,11 @@ public:
     void play() override { playing_ = isOpen_; } // like the real Player: nothing to play until open
     void pause() override { playing_ = false; }
     bool playing() const override { return playing_; }
-    void seek(double seconds) override { pos = seconds; }
+    void seek(double seconds) override {
+        seeks.push_back(seconds);
+        atEnd = false; // a new request makes the real Player unfinished until decoded
+        if (!deferSeeks) pos = seconds;
+    }
     // Like the real Player, a closed player is at 0 and has no length.
     double position() const override { return isOpen_ ? pos : 0; }
     double duration() const override { return !isOpen_ ? 0 : transcoded ? transcoded->duration : length; }
@@ -140,6 +144,8 @@ public:
     std::vector<std::string> opened;
     std::string file;
     std::optional<Transcoded> transcoded; // of the last open
+    std::vector<double> seeks;
+    bool deferSeeks = false; // decoder position can lag repeated requests
     double pos = 0;
     double length = 600;
     std::vector<Chapter> embedded;

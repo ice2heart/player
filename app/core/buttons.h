@@ -51,9 +51,12 @@ public:
     std::optional<ButtonEvent> release(Button button, Clock::time_point now);
     std::vector<ButtonEvent> poll(Clock::time_point now);
     // Suppress currently held contacts until up. Hold locking preserves Power.
-    std::vector<ButtonEvent> cancel(bool preservePower = false);
+    std::vector<ButtonEvent> cancel(bool preservePower = false) { return cancelContacts(preservePower, false); }
+    // A file change must suppress navigation contacts without stopping global keys.
+    std::vector<ButtonEvent> cancelNavigation() { return cancelContacts(false, true); }
 
 private:
+    std::vector<ButtonEvent> cancelContacts(bool preservePower, bool navigationOnly);
     struct State {
         bool down = false;
         bool consumed = false; // suppress Short after a long/deep action

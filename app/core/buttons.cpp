@@ -114,13 +114,14 @@ std::vector<ButtonEvent> GestureDetector::poll(Clock::time_point now) {
     return events;
 }
 
-std::vector<ButtonEvent> GestureDetector::cancel(bool preservePower) {
+std::vector<ButtonEvent> GestureDetector::cancelContacts(bool preservePower, bool navigationOnly) {
     std::vector<ButtonEvent> events;
     for (size_t i = 0; i < states_.size(); ++i) {
         const Button button = static_cast<Button>(i);
         if (shallowOf(button) || (preservePower && button == Button::Power)) continue;
         State& s = states_[i];
         auto deep = deepOf(button);
+        if (navigationOnly && !deep) continue;
         if (!s.down && !(deep && states_[static_cast<size_t>(*deep)].down)) continue;
         if (deep && s.consumed && !s.cancelled) events.push_back({button, Gesture::Cancel});
         s.cancelled = true;

@@ -36,8 +36,6 @@ constexpr int kMenuJump = 10; // items moved by a deep Back / Forward press
 constexpr const char* kUnknownArtist = "Unknown artist";
 constexpr int kVolumeStep = 5; // percent per press of a volume key
 constexpr const char* kVerbosity = "verbosity"; // 0 beginner, 1 normal, 2 expert
-constexpr const char* kSkipBack = "skip.back";
-constexpr const char* kSkipForward = "skip.forward";
 constexpr const char* kRewindOnResume = "rewind_on_resume";
 constexpr const char* kLongPress = "buttons.long_press_ms";
 constexpr const char* kMenuWrap = "menu.wrap";
@@ -51,14 +49,9 @@ constexpr const char* kLastBook = "last_book";
 constexpr const char* kLastPlayer = "last_player";
 constexpr const char* kPlayerMusic = "music";
 constexpr const char* kPlayerBook = "book";
-// The step unit (Up / Down in a player) of each player, in state.tsv: an index into the units below.
-constexpr const char* kUnitMusic = "unit.music";
-constexpr const char* kUnitBook = "unit.book";
-constexpr int kUnitSkip = 0, kUnitPart = 1, kUnitLarge = 2; // Skip; Track or Chapter; Album or 10 minutes
-const char* const kMusicUnits[] = {"Skip", "Track", "Album"};
-const char* const kBookUnits[] = {"Skip", "Chapter", "10 minutes"};
-constexpr int kUnitCount = 3;
-constexpr int kLargeBookStep = 600; // seconds: the "10 minutes" unit
+constexpr double kSeekStep = 5; // seconds per normal seek repeat
+constexpr double kDeepSeekStep = 30;
+constexpr std::chrono::milliseconds kSeekInterval{500};
 // The catalogue version of the server the index was last synced with (getArtists `lastModified`),
 // and the server key it belongs to. In state.tsv, never in config.yaml.
 constexpr const char* kOldCatalogueServer = "catalogue.server"; // before several servers: removed by the first sync
@@ -770,26 +763,33 @@ void App::keyUp(Button button) {
 }
 
 void App::onGesture(ButtonEvent ev) {
-    if (ev.gesture == Gesture::Release || ev.gesture == Gesture::Cancel) {
-        navigationActed_[static_cast<size_t>(ev.button)] = false;
-        return; // lifecycle endpoints are used by repeated seeking in step 1.4
+    if (ev.gesture == Gesture::Cancel || ev.gesture == Gesture::Release) {
+        if (seeking_ && seeking_->button == ev.button) finishSeeking(ev.gesture == Gesture::Release);
+        return;
     }
-    if (ev.gesture == Gesture::Light) return; // stage transition, no legacy action
     if (locked_[static_cast<size_t>(ev.button)] ||
         (ev.button == Button::Back && locked_[static_cast<size_t>(Button::BackDeep)]) ||
         (ev.button == Button::Forward && locked_[static_cast<size_t>(Button::ForwardDeep)])) return;
-    if (mode() == Mode::Player && (ev.button == Button::Back || ev.button == Button::Forward) &&
-        (ev.gesture == Gesture::Long || ev.gesture == Gesture::Deep)) {
-        if (std::exchange(navigationActed_[static_cast<size_t>(ev.button)], true)) return;
+    if (ev.gesture == Gesture::Light) {
+        if (seeking_ && seeking_->button == ev.button) seeking_->deep = false;
+        return;
     }
     onButton(ev);
 }
 
 void App::cancelGestures(bool preservePower) {
     for (const ButtonEvent& ev : gestures_.cancel(preservePower)) onGesture(ev);
-    navigationActed_.fill(false);
+    finishSeeking(false);
     for (size_t i = 0; i < kButtonCount; ++i)
         if (held_[i] && !(preservePower && static_cast<Button>(i) == Button::Power)) locked_[i] = true;
+}
+
+// File changes affect navigation holds, but volume and held Play remain global.
+void App::cancelNavigation() {
+    for (const ButtonEvent& ev : gestures_.cancelNavigation()) onGesture(ev);
+    finishSeeking(false);
+    for (Button button : {Button::Back, Button::Forward, Button::BackDeep, Button::ForwardDeep})
+        if (held_[static_cast<size_t>(button)]) locked_[static_cast<size_t>(button)] = true;
 }
 
 void App::setHold(bool on) {
@@ -828,8 +828,9 @@ void App::tick() {
 
     // The end of a file is the end of a chapter, even when the next chapter has the same number (a one-file
     // book or a loose track starts again), but for a server chapter that goes on in the next file.
-    if (book_ && player_.failed()) onStreamFailed();
-    bool fileFinished = book_ && player_.finished();
+    if (book_ && player_.failed()) { cancelNavigation(); onStreamFailed(); }
+    repeatSeeking(now);
+    bool fileFinished = book_ && !seeking_ && !seekAtEnd_ && player_.finished();
     const bool chapterFinished = fileFinished && chapterEndsWithFile(); // asked before the next file opens
     if (fileFinished) onFileFinished();
     checkBuffering(now);
@@ -935,14 +936,12 @@ void App::handlePlayer(ButtonEvent ev) {
     case Button::Back:
     case Button::Forward: {
         int dir = ev.button == Button::Back ? -1 : 1;
-        if (ev.gesture == Gesture::Short) stepByUnit(dir);
-        else stepChapter(dir); // long press, or the deep stage of a two-stage key
+        if (ev.gesture == Gesture::Short) {
+            cancelNavigation();
+            stepChapter(dir);
+        } else startSeeking(ev.button, ev.gesture == Gesture::Deep);
         return;
     }
-    case Button::Up:
-    case Button::Down: // one step, however long the key is held
-        changeStepUnit(ev.button == Button::Up ? -1 : 1);
-        return;
     case Button::Ok:
         if (ev.gesture == Gesture::Long) openOptions();
         else openMenu("Player menu", [this] { return playerMenu(); });
@@ -2826,8 +2825,6 @@ std::vector<MenuItem> App::settingsMenu() {
     items.push_back(choice("Volume", kVolume, range(0, 100, 5, " percent"), 70,
                            [this](int v) { volume_.setVolume(v / 100.0f); }));
     items.push_back(choice("Verbosity", kVerbosity, {{Beginner, "beginner"}, {Normal, "normal"}, {Expert, "expert"}}, Normal));
-    items.push_back(choice("Skip back", kSkipBack, seconds({5, 10, 15, 30, 60}), 10));
-    items.push_back(choice("Skip forward", kSkipForward, seconds({5, 10, 15, 30, 60, 120}), 30));
     items.push_back(choice("Rewind on resume", kRewindOnResume, seconds({0, 2, 5, 10}), 2));
     items.push_back(choice("Long press time", kLongPress, range(300, 1500, 100, " milliseconds"), 600,
                            [this](int v) { gestures_.setLongPress(std::chrono::milliseconds(v)); }));
@@ -3725,6 +3722,8 @@ App::OpenResult App::loadFile(size_t file, double position, bool autoplay, Origi
 // may still be opening on return (Pending), and finishPendingOpen() goes on.
 App::OpenResult App::openFile(size_t file, double position, bool autoplay, Origin origin, Then opened, Then undo,
                               SkippedRun skipped) {
+    cancelNavigation();
+    seekAtEnd_ = false;
     if (!book_) return OpenResult::Failed;
     // With Repeat all the entries after the last are the first ones again (not for a track chosen in a list,
     // which must not end up at the start): the scan wraps, and tries each entry once, so a queue with
@@ -3970,6 +3969,7 @@ int App::resumeRewind() const {
 }
 
 void App::play() {
+    seekAtEnd_ = false;
     if (book_ && !player_.isOpen() && reopenAt_) {
         // The track cannot be opened now (its server is marked down, or it is a file that is gone with the
         // server's tracks behind it): Play asks the server first, and goes on once it answers.
@@ -4252,86 +4252,63 @@ void App::pause(bool announce) {
     if (announce) say("Paused.");
 }
 
-void App::skip(int direction, int seconds) {
-    if (!player_.isOpen()) {
+// Hold seeking stays in one file. Keep our requested target: decoder feedback may
+// lag while a stream reopens, and a stage change must not add an immediate step.
+void App::startSeeking(Button button, bool deep) {
+    if (seeking_ && seeking_->button == button) {
+        // Long still arrives after an immediate Deep; it must not ease the rate.
+        if (deep) seeking_->deep = true;
+        return;
+    }
+    finishSeeking(false);
+    if (!book_ || pendingOpen_ || !player_.isOpen() || player_.failed()) {
+        cancelNavigation(); // a late stage/hold cannot start once the file finally opens
         earcons_.play(Earcon::Edge);
         return;
     }
-    int amount = seconds > 0 ? seconds : direction < 0 ? config_.getInt(kSkipBack, 10) : config_.getInt(kSkipForward, 30);
-    double target = player_.position() + direction * amount;
-    if (target < 0 || (player_.duration() > 0 && target >= player_.duration())) {
-        earcons_.play(Earcon::Edge);
-        target = std::clamp(target, 0.0, std::max(0.0, player_.duration() - 1));
-    } else {
-        earcons_.play(Earcon::Move);
-    }
-    player_.seek(target);
-    if (!player_.playing())
-        say((direction < 0 ? "Back " : "Forward ") + spokenDuration(amount) + ".");
-}
-
-int App::stepUnit() const {
-    int unit = state_.getInt(music_ ? kUnitMusic : kUnitBook, kUnitSkip);
-    return std::clamp(unit, 0, kUnitCount - 1);
-}
-
-// Down goes to the next unit and Up to the previous one, as in a menu, and speaks it. The
-// first and last unit play the edge sound (and are spoken again, so the press is heard).
-void App::changeStepUnit(int direction) {
-    int current = stepUnit();
-    int next = current + direction;
-    bool edge = next < 0 || next >= kUnitCount;
-    if (!edge) state_.setInt(music_ ? kUnitMusic : kUnitBook, next);
-    earcons_.play(edge ? Earcon::Edge : Earcon::Move);
-    say((music_ ? kMusicUnits : kBookUnits)[edge ? current : next]);
-}
-
-// A light press of Left / Right: moves by the unit of this player.
-void App::stepByUnit(int direction) {
-    switch (stepUnit()) {
-    case kUnitPart:
-        stepChapter(direction);
-        return;
-    case kUnitLarge:
-        if (music_) stepAlbum(direction);
-        else skip(direction, kLargeBookStep);
-        return;
-    default:
-        skip(direction);
-        return;
-    }
-}
-
-// To the first track of the previous / next album of the queue: a run of tracks of the same album (by its
-// name) in the play order. A list of one album has no other to go to.
-void App::stepAlbum(int direction) {
-    if (!book_ || queue_.empty()) {
-        earcons_.play(Earcon::Edge);
-        return;
-    }
-    const size_t last = queue_.size() - 1;
-    auto runStart = [this](size_t i) { // the first track of the album that track i is in
-        while (i > 0 && queue_.at(i - 1).album == queue_.at(i).album) --i;
-        return i;
-    };
-    size_t current = queue_.position();
-    size_t target = current;
-    if (direction > 0) {
-        while (target <= last && queue_.at(target).album == queue_.at(current).album) ++target;
-    } else {
-        target = runStart(current);
-        if (target > 0) target = runStart(target - 1);
-    }
-    if ((direction > 0 && target > last) || (direction < 0 && runStart(current) == 0)) {
-        earcons_.play(Earcon::Edge);
-        say(direction < 0 ? "First album." : "Last album.");
-        return;
-    }
-    if (!gotoChapter(int(target), Origin::Key)) return; // the error was said
+    seeking_ = Seeking{button, deep, false, player_.position(), clock_.now() + kSeekInterval};
     earcons_.play(Earcon::Move);
-    // The album of the track that plays: a later one when the queue skipped entries that cannot play.
-    const QueueEntry& playing = queue_.at(fileIndex_);
-    say(playing.album.empty() ? playing.title : playing.album);
+    seekStep();
+}
+
+void App::seekStep() {
+    if (!seeking_) return;
+    Seeking& seek = *seeking_;
+    const int direction = seek.button == Button::Back ? -1 : 1;
+    const double duration = player_.duration();
+    const double previous = seek.target;
+    const double requested = seek.target + direction * (seek.deep ? kDeepSeekStep : kSeekStep);
+    seek.target = std::max(0.0, requested);
+    if (duration > 0) seek.target = std::min(seek.target, duration);
+    seekAtEnd_ = duration > 0 && seek.target >= duration;
+    const bool edge = seek.target <= 0 || seekAtEnd_;
+    if (edge && !seek.edgeHeard) earcons_.play(Earcon::Edge);
+    seek.edgeHeard = edge;
+    if (seek.target != previous) player_.seek(seek.target);
+}
+
+void App::repeatSeeking(TimePoint now) {
+    if (!seeking_) return;
+    if (mode() != Mode::Player || pendingOpen_ || !player_.isOpen() || player_.failed()) {
+        cancelGestures();
+        return;
+    }
+    if (now >= seeking_->next) {
+        lastActivity_ = now; // a paused player is still being used while its key is held
+        seeking_->next = now + kSeekInterval;
+        seekStep();
+    }
+}
+
+void App::finishSeeking(bool announce) {
+    if (!seeking_) return;
+    const double target = seeking_->target;
+    if (player_.finished()) seekAtEnd_ = true;
+    seeking_.reset();
+    if (announce) {
+        tts_.stop();
+        say("Position, " + spokenDuration(target) + ".");
+    }
 }
 
 // The edge sound plays once per press: a held key repeating at its limit stays quiet.
@@ -4431,6 +4408,7 @@ bool App::gotoChapter(int index, Origin origin, Then opened) {
     auto list = chapters();
     if (index < 0 || index >= int(list.size())) return false;
     const ChapterRef& ch = list[size_t(index)];
+    seekAtEnd_ = false;
     auto arrived = [this, index, opened = std::move(opened)] {
         // The track that plays, which is a later one when the queue skipped entries that cannot play.
         if (sleepAtChapterEnd_ >= 0) sleepAtChapterEnd_ = filePerChapter() ? int(fileIndex_) : index;
@@ -4447,6 +4425,7 @@ bool App::gotoChapter(int index, Origin origin, Then opened) {
 }
 
 void App::stepChapter(int direction) {
+    seekAtEnd_ = false;
     auto list = chapters();
     int cur = currentChapter();
     int target = cur + direction;
@@ -4563,7 +4542,7 @@ void App::checkReadAhead() {
     // No length while it is closed or opening, nor for a stream that does not say (a
     // transcode the server lists no length for).
     const std::optional<size_t> upcoming = upcomingTrack();
-    bool wanted = player_.playing() && book_ && upcoming && trackRemote(*upcoming) && player_.duration() > 0 &&
+    bool wanted = !seeking_ && !seekAtEnd_ && player_.playing() && book_ && upcoming && trackRemote(*upcoming) && player_.duration() > 0 &&
                   (!music_ || availability(*upcoming, Origin::Next) == Availability::Yes) &&
                   player_.duration() - player_.position() <= std::chrono::duration<double>(kReadAhead).count();
     if (wanted) {
@@ -5259,6 +5238,7 @@ void App::useServerPlace(ServerPlace target) {
     if (target.file != fileIndex_ || !player_.isOpen())
         loadFile(target.file, target.position, willPlay(), Origin::Key, std::move(arrived));
     else {
+        seekAtEnd_ = false;
         player_.seek(target.position);
         arrived();
     }

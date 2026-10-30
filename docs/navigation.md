@@ -2,14 +2,13 @@
 
 > Status: this contract includes the approved [button-remap.md](button-remap.md)
 > mapping and parameters, recorded before code in step 1.1. The gesture lifecycle
-> and menu/Options mapping are built (steps 1.2–1.3); steps 1.4–1.5 implement
-> player seeking and help. Until those steps finish, the player still uses the
-> previous saved/default step unit and held/deep chapter controls;
-> [architecture.md](architecture.md) describes that build.
+> and menu/Options/player mapping are built (steps 1.2–1.4); step 1.5 updates
+> front-end help and references. [architecture.md](architecture.md) describes
+> the build; real listening checks remain pending.
 > The two players, queue, Options actions, server menus, progress sync, download
 > quality and cache quality are built. Star / Unstar is not built
 > ([streaming.md](streaming.md) 2a.1). Real-server and device listening checks
-> remain pending. Last updated: 2026-10-29.
+> remain pending. Last updated: 2026-10-30.
 
 Users can't see the menu, so they learn it from what each key does. A key that
 does one thing in one menu and something else in the next menu breaks that.
@@ -168,7 +167,9 @@ held Esc leaves the mode. Normal Hold locking and wake behavior remain unchanged
   seeking starts. Changing stages changes the step size without an extra step
   or resetting the next repeat deadline.
 - Preserve playing/paused state. Clamp within the current file; short presses
-  cross chapters/tracks/files. With unknown duration, clamp backward at zero
+  cross chapters/tracks/files. A seek to the file end stays in that file after
+  release; seeking backward, short navigation, or explicit Play resumes normal
+  end handling. With unknown duration, clamp backward at zero
   and permit forward seeking without an invented upper bound.
 - Play one movement earcon when seeking starts and one edge earcon on reaching
   a known boundary. Speak the final position on release, with no speech queued

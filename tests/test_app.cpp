@@ -393,7 +393,7 @@ TEST_F(AppTest, ChoosingAValueFromTheListSavesItAppliesItAndGoesBack) {
     EXPECT_EQ(configFile.onDisk("speech.rate"), "250") << "written at once";
     EXPECT_EQ(speech.rate, 250);
     EXPECT_EQ(level().title, "Settings");
-    EXPECT_EQ(speech.last(), "Speech rate, 250 words per minute, 1 of 14");
+    EXPECT_EQ(speech.last(), "Speech rate, 250 words per minute, 1 of 12");
 }
 
 TEST_F(AppTest, LeavingAValueListChangesNothing) {
@@ -404,7 +404,7 @@ TEST_F(AppTest, LeavingAValueListChangesNothing) {
     press(Button::Home);
     EXPECT_EQ(level().title, "Settings");
     EXPECT_EQ(settings.getInt("volume", 70), 70);
-    EXPECT_EQ(speech.last(), "Volume, 70 percent, 2 of 14");
+    EXPECT_EQ(speech.last(), "Volume, 70 percent, 2 of 12");
 }
 
 TEST_F(AppTest, RightInSettingsChangesNoSetting) {
@@ -444,12 +444,12 @@ TEST_F(AppTest, RightInAListThatIsNotSortedByNameMovesTenItems) {
     deep(Button::Forward);
     EXPECT_EQ(level().index, 10u);
     EXPECT_EQ(sounds.last(), Earcon::Move);
-    EXPECT_EQ(speech.last(), "Download quality, original file, 11 of 14") << "no letter: the list is not sorted by name";
+    EXPECT_EQ(speech.last(), "Replace cached copies, off, 11 of 12") << "no letter: the list is not sorted by name";
     deep(Button::Forward);
-    EXPECT_EQ(level().index, 13u) << "stops at the last item";
+    EXPECT_EQ(level().index, 11u) << "stops at the last item";
     EXPECT_EQ(sounds.last(), Earcon::Move);
     deep(Button::Back);
-    EXPECT_EQ(level().index, 3u);
+    EXPECT_EQ(level().index, 1u);
     deep(Button::Back);
     EXPECT_EQ(level().index, 0u) << "stops at the first item";
     EXPECT_EQ(sounds.last(), Earcon::Move);
@@ -464,12 +464,12 @@ TEST_F(AppTest, TenItemAndEndJumpsClampRegardlessOfWrap) {
         EXPECT_EQ(level().index, 0u);
         EXPECT_EQ(sounds.last(), Earcon::Edge);
         hold(Button::Forward);
-        EXPECT_EQ(level().index, 13u);
+        EXPECT_EQ(level().index, 11u);
         deep(Button::Forward);
-        EXPECT_EQ(level().index, 13u);
+        EXPECT_EQ(level().index, 11u);
         EXPECT_EQ(sounds.last(), Earcon::Edge);
         hold(Button::Forward);
-        EXPECT_EQ(level().index, 13u);
+        EXPECT_EQ(level().index, 11u);
         EXPECT_EQ(sounds.last(), Earcon::Edge);
         hold(Button::Back);
         EXPECT_EQ(level().index, 0u);
@@ -537,7 +537,7 @@ TEST_F(AppTest, AStoredValueBetweenOptionsIsSpokenAndItsListHasNoCurrentOne) {
     settings.setInt("speech.rate", 225); // between 220 and 250
     start();
     open("Settings");
-    EXPECT_EQ(speech.last(), "Settings. Speech rate, 225, 1 of 14");
+    EXPECT_EQ(speech.last(), "Settings. Speech rate, 225, 1 of 12");
     press(Button::Ok);
     EXPECT_EQ(level().index, 0u);
     for (const MenuItem& item : level().items) EXPECT_FALSE(item.value) << item.label << " is not the current value";
@@ -681,29 +681,35 @@ TEST_F(AppTest, AnUnopenableLastTrackEndsTheAlbum) {
     EXPECT_EQ(speech.last(), "End of queue. Press play to start again.");
 }
 
-TEST_F(AppTest, SkipForwardAndBack) {
+TEST_F(AppTest, ShortForwardAndBackMoveFilesWithTheThreeSecondRestartRule) {
     playAlpha();
-    player.pos = 100;
-    press(Button::Forward);
-    EXPECT_DOUBLE_EQ(player.pos, 130);
-    press(Button::Back);
-    EXPECT_DOUBLE_EQ(player.pos, 120);
+    for (double seconds : {2.99, 3.0, 3.01}) {
+        press(Button::Forward);
+        ASSERT_EQ(player.file, alphaFile(2));
+        player.pos = seconds;
+        press(Button::Back);
+        EXPECT_EQ(player.file, alphaFile(seconds > 3 ? 2 : 1));
+        EXPECT_DOUBLE_EQ(player.pos, 0);
+        if (seconds > 3) press(Button::Back);
+    }
 }
 
-TEST_F(AppTest, SkipBackClampsAtStart) {
+TEST_F(AppTest, ShortBackAtTheFirstChapterGivesBoundaryFeedback) {
     playAlpha();
     player.pos = 3;
     press(Button::Back);
-    EXPECT_DOUBLE_EQ(player.pos, 0);
+    EXPECT_DOUBLE_EQ(player.pos, 3);
+    EXPECT_EQ(speech.last(), "First chapter.");
     EXPECT_EQ(sounds.last(), Earcon::Edge);
 }
 
-TEST_F(AppTest, SkipWhilePausedIsAnnounced) {
+TEST_F(AppTest, ShortChapterMovementKeepsPausedPlaybackPaused) {
     playAlpha();
     press(Button::PlayPause);
-    EXPECT_EQ(speech.last(), "Paused.");
     press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Forward 30 seconds.");
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_EQ(speech.last(), "Calm");
+    EXPECT_FALSE(player.playing());
 }
 
 TEST_F(AppTest, VolumeKeysChangeVolumeInPlayer) {
@@ -1061,19 +1067,22 @@ TEST_F(AppTest, EndOfBookGoesBackToStartPaused) {
     EXPECT_EQ(speech.last(), "End of book. Press play to start again.");
 }
 
-TEST_F(AppTest, DeepPressJumpsToTheNextChapterAtOnce) {
+TEST_F(AppTest, DeepPressSeeksImmediatelyAndReleaseDoesNotChangeTracks) {
     playAlpha();
     player.pos = 42;
-    app->keyDown(Button::Forward); // first stage
+    app->keyDown(Button::Forward);
     app->keyDown(Button::ForwardDeep);
-    EXPECT_EQ(player.file, alphaFile(2)) << "no waiting for a long press";
-    EXPECT_EQ(speech.last(), "Calm");
-    clock.advance(700ms);
-    app->tick();
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_EQ(player.pos, 72);
+    idle(700ms);
+    EXPECT_EQ(player.pos, 102);
     app->keyUp(Button::ForwardDeep);
     app->keyUp(Button::Forward);
-    EXPECT_EQ(speech.last(), "Calm") << "releasing must not also skip or jump again";
-    EXPECT_EQ(player.pos, 0);
+    EXPECT_EQ(player.pos, 102);
+    EXPECT_EQ(speech.last(), "Position, 1 minute 42 seconds.");
+    idle(1s);
+    EXPECT_EQ(player.pos, 102);
+    EXPECT_EQ(player.file, alphaFile(1));
 }
 
 TEST_F(AppTest, PushingDeeperAfterAnEndJumpStaysClamped) {
@@ -1082,9 +1091,9 @@ TEST_F(AppTest, PushingDeeperAfterAnEndJumpStaysClamped) {
     app->keyDown(Button::Forward);
     clock.advance(700ms);
     app->tick();
-    ASSERT_EQ(level().index, 13u);
+    ASSERT_EQ(level().index, 11u);
     app->keyDown(Button::ForwardDeep);
-    EXPECT_EQ(level().index, 13u);
+    EXPECT_EQ(level().index, 11u);
     EXPECT_EQ(sounds.last(), Earcon::Edge);
     app->keyUp(Button::ForwardDeep);
     app->keyUp(Button::Forward);
@@ -1109,7 +1118,7 @@ TEST_F(AppTest, HoldingRightInAMenuJumpsOnceWithNoRepeat) {
     clock.advance(5s); // still held
     app->tick();
     app->keyUp(Button::Forward);
-    EXPECT_EQ(level().index, 13u);
+    EXPECT_EQ(level().index, 11u);
 }
 
 TEST_F(AppTest, ChaptersListOpensOnTheCurrentChapter) {
@@ -1126,14 +1135,14 @@ TEST_F(AppTest, PreviousChapterGoesToChapterStartFirst) {
     player.atEnd = true;
     app->tick(); // now in file 2, "Calm"
     player.pos = 10;
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(player.file, alphaFile(2));
     EXPECT_DOUBLE_EQ(player.pos, 0);
     EXPECT_EQ(speech.last(), "Calm");
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(player.file, alphaFile(1));
     EXPECT_EQ(speech.last(), "Storm");
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(speech.last(), "First chapter.");
     EXPECT_EQ(sounds.last(), Earcon::Edge);
 }
@@ -1146,10 +1155,10 @@ TEST_F(AppTest, EmbeddedChaptersInASingleFileBook) {
     press(Button::Ok);
     ASSERT_EQ(player.file, beta().string());
     player.pos = 150;
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_DOUBLE_EQ(player.pos, 200);
     EXPECT_EQ(speech.last(), "End");
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Last chapter.");
     EXPECT_EQ(app->nowPlaying().chapterIndex, 2);
     EXPECT_EQ(app->nowPlaying().chapterCount, 3);
@@ -1247,7 +1256,7 @@ TEST_F(AppTest, MusicTalksAboutTracksNotChapters) {
     player.pos = 100;
     hold(Button::PlayPause);
     EXPECT_EQ(speech.last(), "Music player. Road Trip. Track 2 of 2, Highway. 8 minutes 20 seconds left in track. Playing.");
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Last track.");
     press(Button::Ok);
     EXPECT_EQ(labels()[0], "Queue");
@@ -1291,7 +1300,7 @@ TEST_F(AppTest, SleepTimerAtEndOfALooseTrack) {
     hold(Button::Home);
     open("Settings");
     hold(Button::Forward);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 14 of 14");
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 12 of 12");
 }
 
 TEST_F(AppTest, MusicDoesNotTakeOverTheBookToResume) {
@@ -1792,11 +1801,11 @@ TEST_F(AppTest, ARemoteTrackSaysLoadingBeforeItIsOpened) {
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
     EXPECT_EQ(lastSaidAtOpen, (std::vector<std::string>{"Loading."}));
     EXPECT_EQ(speech.last(), "Now playing. Weather, Storm Front.");
-    hold(Button::Forward); // next track
+    press(Button::Forward); // next track
     EXPECT_EQ(lastSaidAtOpen.back(), "Loading.");
     EXPECT_EQ(speech.last(), "Rain");
     player.unopenable = {"fake://stream/t3"};
-    hold(Button::Forward); // fails: Rain is opened again on Play
+    press(Button::Forward); // fails: Rain is opened again on Play
     player.unopenable.clear();
     lastSaidAtOpen.clear();
     press(Button::PlayPause);
@@ -1818,7 +1827,7 @@ TEST_F(AppTest, TheNextRemoteTrackAtTheEndOfOneOpensWithoutLoading) {
 
 TEST_F(AppTest, ALocalBookOpensWithoutLoading) {
     playAlpha();
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(player.file, alphaFile(2));
     EXPECT_FALSE(speech.heard("Loading."));
 }
@@ -2101,7 +2110,7 @@ TEST_F(AppTest, WhereAmIInAQueueOfTwoAlbumsNamesTheAlbumAndArtistOfTheCurrentTra
     std::vector<RemoteTrack> mixed = {{"t1", "Storm Front", "Band", "Weather", 200, 1},
                                       {"t2", "Blue", "Singer", "Ocean", 180, 1}};
     ASSERT_TRUE(app->playRemote("Mix", mixed, 0)); // a list that is not an album: the queue's title is "Mix"
-    hold(Button::Forward);
+    press(Button::Forward);
     player.pos = 0;
     hold(Button::PlayPause);
     EXPECT_EQ(speech.last(), "Music player. Ocean, by Singer. Track 2 of 2, Blue. 10 minutes left in track. Playing.");
@@ -2147,7 +2156,7 @@ TEST_F(AppTest, WhereAmIAfterAFailedRemoteTrackSaysNoTimeLeft) {
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
     player.pos = 42;
     player.unopenable = {"fake://stream/t2"};
-    hold(Button::Forward); // fails: Storm Front stays current, closed
+    press(Button::Forward); // fails: Storm Front stays current, closed
     hold(Button::PlayPause);
     EXPECT_EQ(speech.last(), "Music player. Weather, by Band. Track 1 of 3, Storm Front. Paused.");
     EXPECT_DOUBLE_EQ(app->nowPlaying().position, 42) << "where Play opens it";
@@ -2170,14 +2179,14 @@ TEST_F(AppTest, ALocalBookThatCannotBeOpenedLeavesTheRemoteTrackPlaying) {
 TEST_F(AppTest, NextAndPreviousRemoteTrackAndWhereAmIUseServerTitles) {
     start();
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Rain");
     EXPECT_EQ(player.file, "fake://stream/t2");
     player.pos = 100;
     hold(Button::PlayPause);
     EXPECT_EQ(speech.last(), "Music player. Weather, by Band. Track 2 of 3, Rain. 8 minutes 20 seconds left in track. Playing.");
     player.pos = 1;
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(speech.last(), "Storm Front");
     EXPECT_EQ(player.file, "fake://stream/t1");
     press(Button::Ok); // Player menu
@@ -2191,7 +2200,7 @@ TEST_F(AppTest, SkippingToAnUnreachableRemoteTrackStaysOnThisOne) {
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
     player.unopenable = {"fake://stream/t2"};
     player.pos = 42;
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
     EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1", "fake://stream/t2"}));
     EXPECT_FALSE(player.playing());
@@ -2258,13 +2267,13 @@ TEST_F(AppTest, AFailedRemoteTrackIsForgottenOnceABookPlays) {
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
     player.pos = 42;
     player.unopenable = {"fake://stream/t2"};
-    hold(Button::Forward); // fails: Storm Front is to be opened again on Play
+    press(Button::Forward); // fails: Storm Front is to be opened again on Play
     hold(Button::Home);
     open("Library");
     open("Alpha");
     ASSERT_EQ(player.file, alphaFile(1));
     player.unopenable = {alphaFile(2)};
-    hold(Button::Forward); // Calm cannot be opened: nothing is open now
+    press(Button::Forward); // Calm cannot be opened: nothing is open now
     ASSERT_EQ(speech.last(), "Cannot open 02 - Calm.mp3");
     player.opened.clear();
     press(Button::PlayPause);
@@ -2275,7 +2284,8 @@ TEST_F(AppTest, ChoosingTheCurrentRemoteTrackAfterAFailureOpensIt) {
     start();
     ASSERT_TRUE(app->playRemote("Weather", weather(), 0));
     player.unopenable = {"fake://stream/t2"};
-    hold(Button::Forward); // fails: Storm Front stays the current track, closed
+    press(Button::Forward); // fails: Storm Front stays the current track, closed
+    ASSERT_FALSE(player.isOpen()) << "the chosen track failed";
     press(Button::Ok);     // Player menu
     open("Queue");
     open("Storm Front");
@@ -2410,9 +2420,9 @@ TEST_F(AsyncOpenTest, SleepWhileATrackOpensDropsIt) {
 
 TEST_F(AsyncOpenTest, SkippingAgainWhileATrackOpensKeepsPlaying) {
     playWeather();
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Rain");
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Sunshine");
     finishOpen();
     EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1", "fake://stream/t2", "fake://stream/t3"}));
@@ -2422,7 +2432,7 @@ TEST_F(AsyncOpenTest, SkippingAgainWhileATrackOpensKeepsPlaying) {
 
 TEST_F(AsyncOpenTest, PauseWhileATrackOpensKeepsItPausedOnceOpen) {
     playWeather();
-    hold(Button::Forward); // Rain opens, to play
+    press(Button::Forward); // Rain opens, to play
     press(Button::PlayPause);
     EXPECT_EQ(speech.last(), "Paused.");
     finishOpen();
@@ -2436,7 +2446,7 @@ TEST_F(AsyncOpenTest, PauseWhileATrackOpensKeepsItPausedOnceOpen) {
 TEST_F(AsyncOpenTest, PlayWhileAPausedTrackOpensPlaysItOnceOpen) {
     playWeather(1);
     press(Button::PlayPause); // paused
-    hold(Button::Back);       // Storm Front opens, paused like Rain
+    press(Button::Back);       // Storm Front opens, paused like Rain
     press(Button::PlayPause);
     EXPECT_EQ(speech.last(), "Loading.");
     finishOpen();
@@ -2447,7 +2457,7 @@ TEST_F(AsyncOpenTest, PlayWhileAPausedTrackOpensPlaysItOnceOpen) {
 // A skip or Play belongs to no menu: the user may go on browsing while it opens.
 TEST_F(AsyncOpenTest, ASkipStillOpensWhenTheUserLeavesThePlayer) {
     playWeather();
-    hold(Button::Forward);
+    press(Button::Forward);
     press(Button::Home); // back to Home
     ASSERT_TRUE(player.finishOpen()) << "not dropped";
     app->tick();
@@ -2510,7 +2520,7 @@ TEST_F(AsyncOpenTest, PlayOpensAFailedTrackAgainRewoundAfterALongPause) {
     press(Button::PlayPause); // paused at 50
     idle(20s);
     player.unopenable = {"fake://stream/t2"};
-    hold(Button::Forward); // Rain fails: Storm Front is opened again on Play
+    press(Button::Forward); // Rain fails: Storm Front is opened again on Play
     finishOpen();
     player.unopenable.clear();
     press(Button::PlayPause);
@@ -2540,7 +2550,7 @@ TEST_F(AsyncOpenTest, SleepTimerAtEndOfTrackWaitsForTheTrackSkippedTo) {
     open("Sleep timer");
     open("End of track"); // back in the Player menu
     press(Button::Home);  // the player
-    hold(Button::Forward); // Rain opens
+    press(Button::Forward); // Rain opens
     idle(1s);
     EXPECT_NE(app->mode(), App::Mode::Sleeping) << "Storm Front did not end";
     finishOpen();
@@ -2554,7 +2564,7 @@ TEST_F(AsyncOpenTest, SleepTimerAtEndOfTrackWaitsForTheTrackSkippedTo) {
 
 TEST_F(AsyncOpenTest, WhereAmIInThePlayerWhileATrackOpensSaysLoading) {
     playWeather();
-    hold(Button::Forward);
+    press(Button::Forward);
     hold(Button::PlayPause);
     EXPECT_EQ(speech.last(), "Music player. Weather, by Band. Track 2 of 3, Rain. Loading.");
     press(Button::Ok);   // Player menu
@@ -2835,7 +2845,7 @@ TEST_F(ScrobbleTest, ATrackThatFailsToOpenIsNotScrobbled) {
 TEST_F(ScrobbleTest, ATrackOpenedPausedSaysNowPlayingOnlyOnPlay) {
     playWeather();
     press(Button::PlayPause); // paused
-    hold(Button::Forward);    // Rain opens, paused
+    press(Button::Forward);    // Rain opens, paused
     finishOpen();
     listen(10s);
     EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1")}));
@@ -2890,7 +2900,7 @@ TEST_F(ScrobbleTest, ASkipBeforeHalfSendsNoSubmission) {
     player.length = 200;
     playWeather();
     listen(60s);
-    hold(Button::Forward); // Rain
+    press(Button::Forward); // Rain
     finishOpen();
     listen(60s);
     EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), nowPlaying("t2")}));
@@ -2927,7 +2937,7 @@ TEST_F(ScrobbleTest, PausedTimeDoesNotCount) {
 TEST_F(ScrobbleTest, ASeekForwardDoesNotCount) {
     player.length = 200;
     playWeather();
-    for (int i = 0; i < 5; ++i) press(Button::Forward); // 150 s on
+    for (int i = 0; i < 5; ++i) deep(Button::Forward); // 150 s on
     ASSERT_GE(player.pos, 150);
     listen(30s);
     EXPECT_EQ(server.scrobbles.size(), 1u);
@@ -2951,9 +2961,10 @@ TEST_F(ScrobbleTest, RestartingATrackCountsItAgain) {
     playWeather();
     listen(100s);
     player.pos = 100;
-    hold(Button::Back); // more than 3 s in: back to its start
+    press(Button::Back); // more than 3 s in: back to its start
     ASSERT_EQ(player.file, "fake://stream/t1");
     ASSERT_DOUBLE_EQ(player.pos, 0);
+    idle(0ms); // observe the new play after the short release action
     listen(100s);
     EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), played("t1"), nowPlaying("t1"),
                                                        played("t1")}));
@@ -3005,7 +3016,7 @@ TEST_F(ScrobbleTest, ATrackOpenedAgainAtItsStartAfterAFailedChoiceGoesOnWithItsP
     press(Button::PlayPause); // paused at 1 s
     listen(20s);
     player.unopenable = {"fake://stream/t2"};
-    hold(Button::Forward); // Rain fails: Storm Front opens again on Play
+    press(Button::Forward); // Rain fails: Storm Front opens again on Play
     finishOpen();
     player.unopenable.clear();
     press(Button::PlayPause);
@@ -3027,7 +3038,7 @@ TEST_F(ScrobbleTest, AChapterInsideATrackIsNotARestart) {
     app->tick();
     listen(20s);
     player.pos = 20;
-    hold(Button::Back); // the start of Intro, the first chapter
+    press(Button::Back); // the start of Intro, the first chapter
     ASSERT_DOUBLE_EQ(player.pos, 0);
     listen(80s);
     EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), played("t1")}));
@@ -3058,7 +3069,7 @@ TEST_F(ScrobbleTest, RestartingTheOnlyTrackCountsItAgain) {
     app->tick();
     listen(30s);
     player.pos = 30;
-    hold(Button::Back); // back to its start
+    press(Button::Back); // back to its start
     ASSERT_DOUBLE_EQ(player.pos, 0);
     listen(1s);
     EXPECT_EQ(server.scrobbles, (std::vector<Scrobble>{nowPlaying("t1"), nowPlaying("t1")}));
@@ -4210,7 +4221,7 @@ TEST_F(ResumeStreamTest, NextTrackWhileTheResumedTrackOpensPlaysTheNextOne) {
     press(Button::Ok);
     answer(weather());
     press(Button::Ok); // the player
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(player.file, "fake://stream/t3");
     EXPECT_EQ(speech.last(), "Sunshine");
     ASSERT_TRUE(player.finishOpen());
@@ -4535,7 +4546,7 @@ TEST_F(ResumeStreamTest, StreamingWritesNothingToDiskUntilExit) {
     press(Button::PlayPause); // pause
     press(Button::PlayPause); // play
     press(Button::Forward);   // a seek
-    hold(Button::Forward);    // a track change
+    press(Button::Forward);    // a track change
     ASSERT_EQ(player.file, "fake://stream/t3");
     EXPECT_EQ(stateFile.saves, 0);
     EXPECT_EQ(files.queueWrites, 0);
@@ -4555,7 +4566,8 @@ TEST_F(ResumeStreamTest, AResumedStreamWritesNothingToDiskUntilExit) {
     }
     press(Button::PlayPause);
     press(Button::PlayPause);
-    hold(Button::Forward);
+    press(Button::Forward);
+    ASSERT_EQ(app->nowPlaying().chapter, "Sunshine");
     EXPECT_EQ(stateFile.saves, saves);
     EXPECT_EQ(files.queueWrites, queueWrites);
     EXPECT_EQ(configFile.saves, 0);
@@ -4652,7 +4664,8 @@ TEST_F(AppTest, HoldCancellationSuppressesLateDeepAndDuplicateDownUntilBothConta
     EXPECT_EQ(player.file, alphaFile(1));
     EXPECT_EQ(speech.last(), "Buttons unlocked.");
     press(Button::ForwardDeep);
-    EXPECT_EQ(player.file, alphaFile(2)) << "a new gesture works";
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_EQ(player.pos, 30) << "a new deep gesture seeks";
 }
 
 TEST_F(AppTest, SleepingCancelsHeldNavigationWithoutWakingOnItsRelease) {
@@ -4718,7 +4731,8 @@ TEST_F(AppTest, HoldSwitchLocksAKeyThatIsAlreadyDown) {
     app->keyUp(Button::Forward);
     app->setHold(false);
     press(Button::Forward);
-    EXPECT_DOUBLE_EQ(player.pos, 130) << "works again once let go";
+    EXPECT_EQ(player.file, alphaFile(2)) << "works again once let go";
+    EXPECT_DOUBLE_EQ(player.pos, 0);
 }
 
 TEST_F(AppTest, HoldSwitchDoesNotLockPowerAlreadyDown) {
@@ -4761,11 +4775,11 @@ TEST_F(AppTest, SleepTimerIsInSettings) {
     hold(Button::Home);
     open("Settings");
     hold(Button::Forward);
-    EXPECT_EQ(speech.last(), "Sleep timer, off, 14 of 14");
+    EXPECT_EQ(speech.last(), "Sleep timer, off, 12 of 12");
     press(Button::Ok);
     open("15 minutes");
     EXPECT_EQ(level().title, "Settings") << "choosing a time goes back";
-    EXPECT_EQ(speech.last(), "Sleep timer, 15 minutes left, 14 of 14");
+    EXPECT_EQ(speech.last(), "Sleep timer, 15 minutes left, 12 of 12");
     press(Button::Ok);
     EXPECT_EQ(speech.last(), "Sleep timer. 15 minutes, current, 3 of 7") << "opens on the timer that is set";
     press(Button::Home);
@@ -4953,9 +4967,9 @@ TEST_F(AppTest, ATranscodeIsOpenedWithItsOffsetUrlAndTheServersLength) {
     EXPECT_EQ(player.transcoded->offsetUrl, "fake://stream/t2?maxBitRate=128&timeOffset=");
     EXPECT_DOUBLE_EQ(player.transcoded->duration, 180) << "Rain, as the server lists it";
     player.pos = 170;
-    press(Button::Forward); // 30 s on would be past the end of Rain's 180 s
+    deep(Button::Forward); // 30 s on would be past the end of Rain's 180 s
     EXPECT_EQ(sounds.last(), Earcon::Edge);
-    EXPECT_DOUBLE_EQ(player.pos, 179);
+    EXPECT_DOUBLE_EQ(player.pos, 180);
 }
 
 TEST_F(AppTest, ChangingTheQualityTakesEffectWithTheNextTrack) {
@@ -5635,7 +5649,7 @@ TEST_F(DownloadTest, ReplacingACopyRetargetsLocalQueueEntriesAndOpenAlbumActions
     finishLast();
     finishLast();
     finishLast();
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(player.file, (store().listFolder(list.source) / "t2.mp3").string());
     EXPECT_TRUE(player.playing());
     press(Button::Home); // the already-open album still holds its earlier file names
@@ -5646,7 +5660,7 @@ TEST_F(DownloadTest, ReplacingACopyRetargetsLocalQueueEntriesAndOpenAlbumActions
     open("Play next");
     hold(Button::Home);
     open("Now playing");
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(player.file, (store().listFolder(list.source) / "t3.flac").string());
     app->shutdown();
     auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
@@ -5690,7 +5704,7 @@ TEST_F(DownloadTest, ReplacingACopyRetargetsTheParkedAndSavedMusicQueue) {
     hold(Button::Home);
     open("Continue");
     EXPECT_EQ(player.file, (store().listFolder(list.source) / "t1.flac").string());
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(player.file, (store().listFolder(list.source) / "t2.mp3").string());
     EXPECT_TRUE(player.playing());
 }
@@ -7424,7 +7438,7 @@ TEST_F(CacheUpgradeTest, DisabledOrSufficientCopiesPlayWithoutAStreamOrTransfer)
     EXPECT_TRUE(downloader.requests.empty());
     enable();
     settings.setInt("streaming.bitrate", 128);
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(player.file, lower("t2"));
     listen(11s);
     EXPECT_TRUE(downloader.requests.empty());
@@ -7487,7 +7501,7 @@ TEST_F(CacheUpgradeTest, ImmediateFailureFallsBackAtTheSamePositionAndMarksTheSe
     EXPECT_FALSE(spokeUnreachable());
     listen(11s);
     EXPECT_TRUE(downloader.requests.empty());
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(player.file, lower("t2"));
     EXPECT_EQ(player.opened.size(), 3u) << "marked-down server uses the next copy directly";
 }
@@ -7550,7 +7564,7 @@ TEST_F(CacheUpgradeTest, ReadAheadPreloadsALowerQualityCopyOnlyWhenUpgradesAreEn
     settings.setInt("cache.upgrade", 0);
     app->tick();
     EXPECT_FALSE(player.preloaded.has_value());
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(player.file, lower("t2"));
 }
 
@@ -7583,7 +7597,7 @@ TEST_F(AutoCacheTest, AStreamedTrackIsFetchedUnpinnedIntoItsListFolderOnceHeardL
 TEST_F(AutoCacheTest, TracksAreFetchedOneAtATimeInTheOrderTheyWereHeard) {
     playSized();
     listen(11s);
-    hold(Button::Forward); // Rain
+    press(Button::Forward); // Rain
     listen(11s);
     ASSERT_EQ(downloader.requests.size(), 1u) << "Rain waits for Storm Front";
     finishLast();
@@ -7605,7 +7619,7 @@ TEST_F(AutoCacheTest, TranscodedJobsKeepTheOpenedQualityWhileSettingsAndTracksCh
     ASSERT_EQ(downloader.requests.size(), 1u);
     EXPECT_EQ(downloader.lastRequest().bitrate, 128);
     EXPECT_EQ(downloader.lastRequest().dest, weatherFolderFile("t1~128.mp3"));
-    hold(Button::Forward);
+    press(Button::Forward);
     listen(11s); // the 192 job waits behind the 128 job
     settings.setInt("streaming.bitrate", 320);
     finishLast();
@@ -7644,9 +7658,9 @@ TEST_F(AutoCacheTest, AnOriginalStreamStaysOriginalWhenTheSettingChanges) {
 TEST_F(AutoCacheTest, ASkippedTrackIsNotFetched) {
     playSized();
     listen(5s);
-    hold(Button::Forward);
+    press(Button::Forward);
     listen(5s);
-    hold(Button::Forward);
+    press(Button::Forward);
     listen(5s);
     EXPECT_TRUE(downloader.requests.empty());
 }
@@ -7683,7 +7697,8 @@ TEST_F(AutoCacheTest, WithTheLimitAtZeroAnExplicitDownloadStillWorks) {
 TEST_F(AutoCacheTest, SwitchingTheCacheOffDropsTracksStillWaiting) {
     playSized();
     listen(11s);
-    hold(Button::Forward);
+    press(Button::Forward);
+    ASSERT_EQ(player.file, "fake://stream/t2");
     listen(11s); // Rain waits behind Storm Front
     settings.setInt("cache.limit_gb", 0);
     finishLast();
@@ -7857,7 +7872,8 @@ TEST_F(AutoCachePriorityTest, DeletingAListDropsItsTransfer) {
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
     listen(11s);
     auto id = downloader.lastRequest().id;
-    hold(Button::Forward);
+    press(Button::Forward);
+    ASSERT_EQ(player.file, "fake://stream/t2");
     listen(11s); // Rain waits behind Storm Front
     ASSERT_TRUE(app->playRemote("Other", {{"o1", "One", "Duo", "Other", 100, 1, "mp3", 5}}, 0, albumSource("al2")));
     press(Button::Home);
@@ -7893,7 +7909,8 @@ TEST_F(AutoCacheLimitTest, OverTheLimitTheLeastRecentlyPlayedUnpinnedTrackGoesFi
     startSmall(15); // with the new one 20 bytes
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
     listen(11s);
-    hold(Button::Forward); // Storm Front is not the open one any more
+    press(Button::Forward);
+    ASSERT_EQ(player.file, "fake://stream/t2"); // Storm Front is not the open one any more
     finishLast();
     EXPECT_FALSE(cached("b")) << "the oldest play goes";
     EXPECT_TRUE(cached("a"));
@@ -8022,7 +8039,7 @@ TEST_F(AutoCacheLimitTest, ATrackThatWouldLeaveLessThanTheReserveFreeIsNotFetche
     EXPECT_EQ(speech.said.size(), said) << "skipped silently";
     EXPECT_EQ(sounds.played.size(), played);
     room = kReserve + 5; // exactly enough
-    hold(Button::Forward);
+    press(Button::Forward);
     listen(11s);
     ASSERT_EQ(downloader.requests.size(), 1u);
     EXPECT_EQ(downloader.lastRequest().trackId, "t2") << "the skipped track is not tried again";
@@ -8042,7 +8059,7 @@ TEST_F(AutoCacheLimitTest, ThePartFileOfARunningOrWaitingTransferIsNeverTouched)
     startSmall(5);
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
     listen(11s);
-    hold(Button::Forward);
+    press(Button::Forward);
     listen(11s); // t1 runs, t2 waits
     ASSERT_EQ(downloader.requests.size(), 1u);
     fs::create_directories(store().listFolder(albumSource("al1")));
@@ -8059,7 +8076,7 @@ TEST_F(AutoCacheLimitTest, TranscodedPartsOfRunningAndWaitingJobsSurviveTrimming
     startSmall(4'000'000);
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
     listen(11s);
-    hold(Button::Forward);
+    press(Button::Forward);
     listen(11s);
     ASSERT_EQ(downloader.requests.size(), 1u);
     fs::create_directories(store().listFolder(albumSource("al1")));
@@ -8087,7 +8104,7 @@ TEST_F(AutoCacheLimitTest, TranscodeSpaceAndLimitUseTheStreamedSize) {
     listen(11s);
     EXPECT_TRUE(downloader.requests.empty()) << "one byte short of the reserve";
     room++;
-    hold(Button::Forward);
+    press(Button::Forward);
     listen(11s);
     ASSERT_EQ(downloader.requests.size(), 1u);
     EXPECT_EQ(downloader.lastRequest().trackId, "t2");
@@ -8101,7 +8118,8 @@ TEST_F(AutoCacheLimitTest, TheFolderOfAnAbandonedTransferGoesWithItsPartWhenOver
     ASSERT_TRUE(downloader.finish(downloader.lastRequest().id, Result::Unreachable, true, "", "halfhalf"));
     app->tick(); // failed: the .part is left, nobody resumes it
     ASSERT_TRUE(fs::exists(weatherFolderFile("t1.flac.part")));
-    hold(Button::Forward); // the play moves on
+    press(Button::Forward);
+    ASSERT_EQ(player.file, "fake://stream/t2"); // the play moves on
     app->shutdown();       // (t2 is queued and its folder is the same one)
     EXPECT_FALSE(fs::exists(weatherFolderFile("t1.flac.part")));
 }
@@ -8204,7 +8222,7 @@ TEST_F(AutoCacheLimitTest, CachingATrackDoesNotScanTheManifestsAgainWhileTheCach
     finishLast();
     int first = counting.reads - before;
     EXPECT_GE(first, 4) << "its own list (read to load and to save) and a scan of the two others";
-    hold(Button::Forward);
+    press(Button::Forward);
     listen(11s);
     before = counting.reads;
     finishLast();
@@ -8219,7 +8237,7 @@ TEST_F(AutoCacheLimitTest, TracksCachedAfterTheFirstScanAreCountedToTheLimitWith
     listen(11s);
     finishLast(); // 10 bytes: the scan
     ASSERT_TRUE(cached("a"));
-    hold(Button::Forward);
+    press(Button::Forward);
     listen(11s);
     finishLast(); // 15 bytes
     EXPECT_FALSE(cached("a"));
@@ -8233,11 +8251,11 @@ TEST_F(AutoCacheLimitTest, ATransferThatFailsAfterTheFirstScanLeavesAPartThatIsS
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
     listen(11s);
     finishLast(); // 10 bytes: the scan; within the limit
-    hold(Button::Forward);
+    press(Button::Forward);
     listen(11s);
     ASSERT_TRUE(downloader.finish(downloader.lastRequest().id, Result::Unreachable, true, "", "halfhalf"));
     app->tick();
-    hold(Button::Forward); // nothing waits for t2's part any more
+    press(Button::Forward); // nothing waits for t2's part any more
     ASSERT_TRUE(fs::exists(weatherFolderFile("t2.mp3.part")));
     app->shutdown();
     EXPECT_FALSE(fs::exists(weatherFolderFile("t2.mp3.part"))) << "10 + 8 bytes are over 12";
@@ -9314,7 +9332,7 @@ TEST_F(MergeTest, PlayAllSpeaksTheTitlesOfADownloadNotItsFileNames) {
     open("Play all");
     ASSERT_EQ(player.file, downloadedFile("al1", 1));
     EXPECT_EQ(speech.last(), "Now playing. All music, Song 1.");
-    hold(Button::Forward); // the next track
+    press(Button::Forward); // the next track
     ASSERT_EQ(player.file, downloadedFile("al1", 2));
     EXPECT_NE(speech.last().find("Song 2"), std::string::npos) << speech.last();
     EXPECT_EQ(speech.last().find("al1-t"), std::string::npos) << speech.last();
@@ -9359,10 +9377,10 @@ TEST_F(MergeTest, ARestoredPlayAllQueueSpeaksTheTitleOfADownloadSavedByItsFileNa
     press(Button::Ok);
     ASSERT_EQ(player.file, downloadedFile("al1", 2)) << "its place is kept";
     EXPECT_EQ(speech.last(), "Now playing. All music, Song 2.");
-    hold(Button::Back); // the track before, in the shuffled order
+    press(Button::Back); // the track before, in the shuffled order
     ASSERT_EQ(player.file, downloadedFile("al1", 1));
     EXPECT_EQ(app->nowPlaying().chapter, "Song 1");
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(player.file, (roadTrip() / "01 - Sunrise.mp3").string()) << "the shuffled order is kept";
     EXPECT_EQ(app->nowPlaying().chapter, "Sunrise");
 }
@@ -10009,7 +10027,7 @@ TEST_F(ServerBookTest, OpeningABookShowsLoadingThenPlaysItAsChaptersAndSaysChapt
     player.pos = 5;
     hold(Button::PlayPause);
     EXPECT_EQ(speech.last(), "Book player. Dune, by Band. Chapter 1 of 3, Storm Front. 9 minutes 55 seconds left in chapter. Playing.");
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Rain");
     EXPECT_EQ(player.file, "fake://stream/t2");
     EXPECT_EQ(app->nowPlaying().title, "Dune");
@@ -10046,7 +10064,7 @@ TEST_F(ServerBookTest, PauseAnotherBookThenThisBookAgainResumesThePlace) {
     start();
     syncWithFolder({dune()}, {dune()});
     ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
-    hold(Button::Forward);
+    press(Button::Forward);
     ASSERT_EQ(player.file, "fake://stream/t2");
     player.pos = 100;
     press(Button::PlayPause); // pause
@@ -10069,7 +10087,7 @@ TEST_F(ServerBookTest, ThePlaceSurvivesARestart) {
     start();
     syncWithFolder({dune()}, {dune()});
     ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
-    hold(Button::Forward);
+    press(Button::Forward);
     player.pos = 77.5;
     app->shutdown();
     app.reset();
@@ -10096,7 +10114,7 @@ TEST_F(ServerBookTest, TheBooksOfTwoServerIdsKeepSeparatePlaces) {
     start();
     syncWithFolder({dune(), album("b2", "Emma")}, {dune(), album("b2", "Emma")});
     ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
-    hold(Button::Forward);
+    press(Button::Forward);
     player.pos = 40;
     press(Button::PlayPause);
     ASSERT_NO_FATAL_FAILURE(openServerBook("Emma"));
@@ -10111,7 +10129,8 @@ TEST_F(ServerBookTest, NoPosKeyIsMadeFromAUrlAndNothingSpokenOrSavedHoldsOne) {
     start();
     syncWithFolder({dune()}, {dune()});
     ASSERT_NO_FATAL_FAILURE(openServerBook("Dune"));
-    hold(Button::Forward);
+    press(Button::Forward);
+    ASSERT_EQ(player.file, "fake://stream/t2");
     player.pos = 12;
     hold(Button::PlayPause);
     press(Button::PlayPause);
@@ -10237,7 +10256,8 @@ protected:
 
 TEST_F(BooksServerTest, OpeningTheBookThatPlaysAgainFromLibraryKeepsTheProgressMadeSinceItOpened) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
-    hold(Button::Forward); // Middle
+    press(Button::Forward);
+    ASSERT_DOUBLE_EQ(player.pos, 100); // Middle
     player.pos = 150;
     hold(Button::Home);
     open("Library");
@@ -10418,7 +10438,7 @@ TEST_F(BooksServerTest, ChoosingAChapterInTheMiddleOfAFileSeeksThereAndOpensTheF
 TEST_F(BooksServerTest, NextChapterFromTheFirstSeeksInsideTheFirstFile) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 10;
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(player.opened, (std::vector<std::string>{"fake://stream/t1"})) << "no second open: it is a seek";
     EXPECT_DOUBLE_EQ(player.pos, 100);
     EXPECT_EQ(speech.last(), "Middle");
@@ -10429,12 +10449,12 @@ TEST_F(BooksServerTest, NextChapterFromTheFirstSeeksInsideTheFirstFile) {
 TEST_F(BooksServerTest, NextChapterFromTheSecondOpensTheSecondFileAtTheRightSecond) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 150; // Middle, in file 1
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(player.file, "fake://stream/t2");
     EXPECT_DOUBLE_EQ(player.pos, 30);
     EXPECT_EQ(speech.last(), "End");
     EXPECT_EQ(app->nowPlaying().chapterIndex, 2);
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Last chapter.");
     EXPECT_EQ(player.file, "fake://stream/t2");
 }
@@ -10443,7 +10463,8 @@ TEST_F(BooksServerTest, ASeekToAChapterInTheFileThatPlaysIsNotANewPlayOfTheFile)
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     idle(1s);
     ASSERT_EQ(server.scrobbles.size(), 1u) << "now playing, once the file plays";
-    hold(Button::Forward); // Middle: a seek in file 1
+    press(Button::Forward);
+    ASSERT_DOUBLE_EQ(player.pos, 100); // Middle: a seek in file 1
     idle(1s);
     EXPECT_EQ(server.scrobbles.size(), 1u);
 }
@@ -10451,7 +10472,7 @@ TEST_F(BooksServerTest, ASeekToAChapterInTheFileThatPlaysIsNotANewPlayOfTheFile)
 TEST_F(BooksServerTest, AStreamThatFailsKeepsTheChapterAndTheEndOfChapterTimer) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 150;
-    hold(Button::Forward); // End, in file 2
+    press(Button::Forward); // End, in file 2
     ASSERT_EQ(player.file, "fake://stream/t2");
     player.pos = 50;
     press(Button::Ok); // Player menu
@@ -10467,8 +10488,8 @@ TEST_F(BooksServerTest, AStreamThatFailsKeepsTheChapterAndTheEndOfChapterTimer) 
 TEST_F(BooksServerTest, AChapterGoesOnInTheNextFileUntilTheNextChapterStarts) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 150;
-    hold(Button::Forward);
-    hold(Button::Back); // End, 0 s in: the chapter before
+    press(Button::Forward);
+    press(Button::Back); // End, 0 s in: the chapter before
     EXPECT_EQ(speech.last(), "Middle");
     EXPECT_EQ(player.file, "fake://stream/t1");
     EXPECT_DOUBLE_EQ(player.pos, 100);
@@ -10505,9 +10526,9 @@ TEST_F(BooksServerTest, WhereAmIWithAStreamOfUnknownLengthUsesTheLengthsTheServe
 TEST_F(BooksServerTest, WhereAmIInAChapterThatBeganInTheFileBeforeCountsTheTimeLeftToTheNextChapter) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 150;
-    hold(Button::Forward); // End, file 2 at 30 s
-    hold(Button::Back);    // Middle again, file 1 at 100 s
-    hold(Button::Forward);
+    press(Button::Forward); // End, file 2 at 30 s
+    press(Button::Back);    // Middle again, file 1 at 100 s
+    press(Button::Forward);
     player.length = 180;
     player.pos = 50; // in the last chapter: 130 s of file 2 left
     hold(Button::PlayPause);
@@ -10533,7 +10554,7 @@ TEST_F(BooksServerTest, PreviousChapterLongIntoAChapterThatBeganInAnEarlierFileG
     player.atEnd = true;
     app->tick(); // file 2 at 0: Middle, 100 s in
     player.pos = 2;
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(speech.last(), "Middle") << "not the Intro: it is 102 s into Middle, not 2";
     EXPECT_EQ(player.file, "fake://stream/t1");
     EXPECT_DOUBLE_EQ(player.pos, 100);
@@ -10542,25 +10563,25 @@ TEST_F(BooksServerTest, PreviousChapterLongIntoAChapterThatBeganInAnEarlierFileG
 TEST_F(BooksServerTest, PreviousChapterJustAfterTheStartGoesToTheChapterBefore) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 150;
-    hold(Button::Forward); // End at file 2, 30 s
+    press(Button::Forward); // End at file 2, 30 s
     player.pos = 31;
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(speech.last(), "Middle");
     EXPECT_EQ(player.file, "fake://stream/t1");
     EXPECT_DOUBLE_EQ(player.pos, 100);
-    hold(Button::Back); // at 100 s exactly: the chapter before
+    press(Button::Back); // at 100 s exactly: the chapter before
     EXPECT_EQ(speech.last(), "Intro");
     EXPECT_DOUBLE_EQ(player.pos, 0);
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(speech.last(), "First chapter.");
 }
 
 TEST_F(BooksServerTest, PreviousChapterWellIntoAChapterRestartsIt) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 150;
-    hold(Button::Forward); // End: file 2, 30 s
+    press(Button::Forward); // End: file 2, 30 s
     player.pos = 60;
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(speech.last(), "End");
     EXPECT_EQ(player.file, "fake://stream/t2");
     EXPECT_DOUBLE_EQ(player.pos, 30);
@@ -10573,7 +10594,7 @@ TEST_F(BooksServerTest, AOneFileBookUsesTheServerChaptersAndNotTheMarksInTheFile
     ASSERT_NO_FATAL_FAILURE(playBook(std::move(b)));
     player.embedded = {{"Mark", 0}};
     player.pos = 10;
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Two");
     EXPECT_DOUBLE_EQ(player.pos, 200);
     player.pos = 450;
@@ -10586,7 +10607,7 @@ TEST_F(BooksServerTest, AOneFileBookUsesTheServerChaptersAndNotTheMarksInTheFile
 
 TEST_F(BooksServerTest, ABookWithNoServerChaptersIsOneChapterPerFile) {
     ASSERT_NO_FATAL_FAILURE(playBook(bookOf(weather())));
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(speech.last(), "Rain");
     EXPECT_EQ(player.file, "fake://stream/t2");
     EXPECT_DOUBLE_EQ(player.pos, 0);
@@ -10605,7 +10626,7 @@ TEST_F(BooksServerTest, AChapterBeforeTheStartIsAtTheStartAndOneAtTheEndOfTheBoo
     b.chapters = {{"Early", -5}, {"Late", 100}, {"Gone", 380}, {"Beyond", 500}};
     ASSERT_NO_FATAL_FAILURE(playBook(std::move(b)));
     player.pos = 50;
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_DOUBLE_EQ(player.pos, 0);
     EXPECT_EQ(chapterLabels(), (std::vector<std::string>{"Early", "Late"}));
 }
@@ -10615,7 +10636,7 @@ TEST_F(BooksServerTest, AChapterThatStartsAHairBeforeTheEndOfAFileStartsTheNextF
     b.chapters = {{"One", 0}, {"Two", 199.98}};
     ASSERT_NO_FATAL_FAILURE(playBook(std::move(b)));
     player.pos = 10;
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(player.file, "fake://stream/t2");
     EXPECT_DOUBLE_EQ(player.pos, 0);
 }
@@ -10637,7 +10658,7 @@ TEST_F(BooksServerTest, AFileOfUnknownLengthIsFineInAOneFileBook) {
 TEST_F(BooksServerTest, PauseAnotherBookThenThisOneResumesTheFileAndSecond) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 150;
-    hold(Button::Forward); // End: file 2, 30 s
+    press(Button::Forward); // End: file 2, 30 s
     player.pos = 50;
     press(Button::PlayPause);
     ASSERT_FALSE(player.playing());
@@ -10660,7 +10681,7 @@ TEST_F(BooksServerTest, PauseAnotherBookThenThisOneResumesTheFileAndSecond) {
 TEST_F(BooksServerTest, ARestartKeepsTheServerChaptersOfTheBookToResume) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 150;
-    hold(Button::Forward);
+    press(Button::Forward);
     player.pos = 50;
     app->shutdown();
     app.reset();
@@ -10795,7 +10816,7 @@ TEST_F(BooksServerTest, SleepAtTheEndOfAChapterWhenTheFileEndsBeforeTheNextChapt
 TEST_F(BooksServerTest, SleepAtTheEndOfTheLastChapterSleepsWhenTheBookEnds) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 150;
-    hold(Button::Forward); // End
+    press(Button::Forward); // End
     press(Button::Ok);
     open("Sleep timer");
     open("End of chapter");
@@ -10815,7 +10836,7 @@ TEST_F(BooksServerTest, NextChapterMovesTheSleepTimerToTheChapterThatPlays) {
     press(Button::Home); // back to the player
     ASSERT_EQ(app->mode(), App::Mode::Player);
     press(Button::PlayPause);
-    hold(Button::Forward); // Middle at 100 s: the timer is for Middle now
+    press(Button::Forward); // Middle at 100 s: the timer is for Middle now
     EXPECT_NE(app->mode(), App::Mode::Sleeping);
     player.pos = 150;
     app->tick();
@@ -10838,7 +10859,8 @@ protected:
         start();
         ASSERT_NO_FATAL_FAILURE(syncWithFolder({dune()}, {dune()}));
         ASSERT_NO_FATAL_FAILURE(openServerBook("Dune", std::move(tracks)));
-        hold(Button::Forward);
+        press(Button::Forward);
+        ASSERT_EQ(app->nowPlaying().chapterIndex, 1) << "resume setup moved to chapter two";
         player.pos = 77.5;
         restart();
     }
@@ -11436,7 +11458,7 @@ TEST_F(MusicQueueTest, LocalFilesThatCannotBeOpenedLeaveTheServerTrackThatWasPla
     finishOpen();
     ASSERT_EQ(app->nowPlaying().chapter, "Rain");
     player.pos = 42;
-    hold(Button::Forward); // Calm: cannot be opened; neither can Sunrise
+    press(Button::Forward); // Calm: cannot be opened; neither can Sunrise
     EXPECT_TRUE(speech.heard("Cannot open 02 - Calm.mp3"));
     EXPECT_EQ(app->nowPlaying().chapter, "Rain") << "the server track is still the current one";
     player.unopenable.clear();
@@ -11599,7 +11621,7 @@ TEST_F(UnavailableTest, ASkipIsSaidOnceEvenWhenTheNextFileCannotBeOpenedEither) 
     player.unopenable = {alphaFile(2)};
     ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm"), ofServer("https://other.example", "ann", "t2", "Rain"),
                                          localEntry(alphaFile(2), "Calm"), localEntry(lullaby(), "Lullaby")}));
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(countOf(speech.said, "Cannot play Rain. Server not set up."), 1);
     EXPECT_TRUE(speech.heard("Cannot open 02 - Calm.mp3"));
     EXPECT_EQ(player.file, lullaby());
@@ -11615,7 +11637,7 @@ TEST_F(UnavailableTest, TheSleepTimerAtTheEndOfATrackWaitsForTheTrackThatPlaysAf
     ASSERT_TRUE(speech.heard("Sleep timer set to end of track."));
     while (!app->screens().back().isPlayer() && app->screens().size() > 1) press(Button::Home); // out of the menus
     ASSERT_TRUE(app->screens().back().isPlayer());
-    hold(Button::Forward); // Rain is skipped: Calm plays
+    press(Button::Forward); // Rain is skipped: Calm plays
     ASSERT_EQ(player.file, alphaFile(2));
     idle(1s);
     EXPECT_NE(app->mode(), App::Mode::Sleeping) << "Calm has only just begun";
@@ -11628,7 +11650,7 @@ TEST_F(UnavailableTest, PreviousGoesBackOverAnEntryThatCannotPlay) {
     start_();
     ASSERT_TRUE(app->playQueue("Mixed", {localEntry(lullaby(), "Lullaby"), ofServer("https://other.example", "ann", "t2", "Rain"),
                                          localEntry(alphaFile(2), "Calm")}, 2));
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_TRUE(speech.heard("Cannot play Rain. Server not set up."));
     EXPECT_EQ(player.file, lullaby()) << "the track before the one that was skipped, not Calm again";
     EXPECT_EQ(speech.last(), "Lullaby");
@@ -11638,7 +11660,7 @@ TEST_F(UnavailableTest, PreviousGoesBackOverAnEntryThatCannotPlay) {
 TEST_F(UnavailableTest, PreviousWithNothingPlayableBeforeItSaysFirstTrack) {
     start_();
     ASSERT_TRUE(app->playQueue("Mixed", {ofServer("https://other.example", "ann", "t2", "Rain"), localEntry(alphaFile(2), "Calm")}, 1));
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(speech.last(), "First track.");
     EXPECT_EQ(sounds.last(), Earcon::Edge);
     EXPECT_EQ(player.file, alphaFile(2));
@@ -11771,12 +11793,12 @@ TEST_F(UnavailableTest, SkippingToAMarkedDownServerTrackWithAKeyPassesItToo) {
     start_();
     ASSERT_TRUE(app->playQueue("Mixed", mixed()));
     player.unopenable = {"fake://stream/t2"};
-    hold(Button::Forward); // Rain: tried, because the user asked for it
+    press(Button::Forward); // Rain: tried, because the user asked for it
     finishOpen();
     ASSERT_EQ(speech.last(), "Cannot play Rain. Server not reachable.");
     ASSERT_EQ(app->nowPlaying().chapter, "Storm");
     player.unopenable.clear();
-    hold(Button::Forward); // Rain again: the server is marked down now, so Calm plays
+    press(Button::Forward); // Rain again: the server is marked down now, so Calm plays
     EXPECT_TRUE(speech.heard("Rain, source unavailable."));
     EXPECT_EQ(speech.last(), "Calm") << "the track that plays, not the one that was skipped";
     EXPECT_EQ(player.file, alphaFile(2));
@@ -12892,7 +12914,7 @@ TEST_F(ShuffleRepeatTest, ChoosingShuffleTracksWorksAtOnceAndKeepsTheCurrentEntr
 TEST_F(ShuffleRepeatTest, ShuffleOffGivesBackTheOriginalOrderWithTheSameCurrentEntry) {
     play(four(), 1);
     ASSERT_NO_FATAL_FAILURE(choose("Shuffle", "tracks"));
-    hold(Button::Forward); // Sunrise, the third in the shuffled order
+    press(Button::Forward); // Sunrise, the third in the shuffled order
     ASSERT_EQ(player.file, sunrise());
     ASSERT_NO_FATAL_FAILURE(choose("Shuffle", "off"));
     EXPECT_EQ(app->nowPlaying().chapter, "Sunrise");
@@ -13012,7 +13034,7 @@ TEST_F(ShuffleRepeatTest, RepeatAlbumStillMovesWithRightAndTheAlbumMovedToRepeat
           localEntry(sunrise(), "Sunrise", "Three"), localEntry(highway(), "Highway", "Three")},
          1);
     ASSERT_NO_FATAL_FAILURE(choose("Repeat", "album"));
-    hold(Button::Forward);
+    press(Button::Forward);
     ASSERT_EQ(player.file, sunrise());
     trackEnds();
     EXPECT_EQ(player.file, highway());
@@ -13069,11 +13091,11 @@ TEST_F(ShuffleRepeatTest, PingsGoOnForAServerTrackBehindTheCurrentOneWithRepeatA
 TEST_F(ShuffleRepeatTest, RepeatTrackStillMovesWithLeftAndRightAndTheTrackMovedToRepeats) {
     play(four(), 1);
     ASSERT_NO_FATAL_FAILURE(choose("Repeat", "track"));
-    hold(Button::Forward);
+    press(Button::Forward);
     ASSERT_EQ(player.file, lullaby());
     trackEnds();
     EXPECT_EQ(player.file, lullaby()) << "the track moved to repeats";
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(player.file, alphaFile(2)) << "and Previous still moves";
 }
 
@@ -13114,7 +13136,7 @@ TEST_F(ShuffleRepeatTest, RepeatAllNextOnTheLastTrackGoesToTheFirstOverMissingOn
     ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
     fs::remove(lullaby());
     fs::remove(sunrise());
-    hold(Button::Forward);
+    press(Button::Forward);
     EXPECT_EQ(player.file, alphaFile(1));
     EXPECT_TRUE(speech.heard("2 tracks, source unavailable."));
     EXPECT_EQ(speech.last(), "Storm");
@@ -13125,7 +13147,7 @@ TEST_F(ShuffleRepeatTest, RepeatAllPreviousOnTheFirstTrackGoesToTheLastOverMissi
     ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
     fs::remove(lullaby());
     fs::remove(sunrise());
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_TRUE(speech.heard("2 tracks, source unavailable."));
     EXPECT_EQ(player.file, alphaFile(2));
     EXPECT_EQ(speech.last(), "Calm");
@@ -13136,7 +13158,7 @@ TEST_F(ShuffleRepeatTest, RepeatAllPreviousGoesBackOverMissingOnesPastTheFirstTo
     ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
     fs::remove(alphaFile(1));
     fs::remove(alphaFile(2));
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_TRUE(speech.heard("2 tracks, source unavailable."));
     EXPECT_EQ(player.file, sunrise());
     EXPECT_EQ(speech.last(), "Sunrise");
@@ -13176,7 +13198,7 @@ TEST_F(ShuffleRepeatTest, ShufflingWhileAServerTrackOpensKeepsTrackOfWhichTrackI
 TEST_F(ShuffleRepeatTest, ShuffleWaitsWhileATrackTheUserChoseIsStillOpening) {
     play({localEntry(alphaFile(1), "Storm"), localEntry(alphaFile(2), "Calm"), remoteEntry("t3", "Rain"),
           localEntry(lullaby(), "Lullaby")}, 1);
-    hold(Button::Forward);
+    press(Button::Forward);
     ASSERT_TRUE(player.opening()) << "Rain takes a moment";
     press(Button::Ok);
     open("Shuffle");
@@ -14090,7 +14112,9 @@ TEST_F(KeepQueueTest, SleepThenRestartKeepsTheMixedShuffledQueueItsPlaceAndRepea
     ASSERT_NO_FATAL_FAILURE(choose("Repeat", "all"));
     // Move on in the shuffled order: the current entry is whatever comes next.
     ASSERT_NO_FATAL_FAILURE(toPlayer());
-    hold(Button::Forward);
+    const int prior = app->nowPlaying().chapterIndex;
+    press(Button::Forward);
+    ASSERT_EQ(app->nowPlaying().chapterIndex, (prior + 1) % app->nowPlaying().chapterCount);
     player.pos = 77;
     const std::vector<std::string> before = listedQueue();
     const std::string playing = app->nowPlaying().chapter;
@@ -14169,7 +14193,7 @@ TEST_F(KeepQueueTest, AChangeAfterTheLastWriteIsWrittenAtTheNextExit) {
     press(Button::Power);
     ASSERT_EQ(files.queueWrites, 1);
     press(Button::Ok); // wake
-    hold(Button::Forward); // another track
+    press(Button::Forward); // another track
     hold(Button::Power);
     open("Power off");
     EXPECT_EQ(files.queueWrites, 2);
@@ -14698,9 +14722,9 @@ TEST_F(TwoServerPlayTest, TheMixedQueueResumesAfterARestartOnBothServers) {
     trackEnds();
     finishOpen();
     EXPECT_EQ(player.file, "fake://stream/t3");
-    hold(Button::Back);
+    press(Button::Back);
     finishOpen();
-    hold(Button::Back);
+    press(Button::Back);
     finishOpen();
     EXPECT_EQ(player.file, "fake://stream/t1") << "the first entry plays from the first server";
     expectNoUrlSpoken(speech);
@@ -14877,7 +14901,7 @@ TEST_F(TwoServerPlayTest, TheAutomaticCacheOfASecondServerCountsItsBytesAgainstT
     ASSERT_TRUE(secondDownloader.finish(secondDownloader.lastRequest().id, Downloader::Result::Ok, true));
     app->tick();
     ASSERT_TRUE(booksCache.find("x")) << "10 bytes of 12: nothing goes yet";
-    hold(Button::Forward);
+    press(Button::Forward);
     finishOpen();
     listen(11s);
     ASSERT_EQ(secondDownloader.requests.size(), 2u);
@@ -15263,7 +15287,7 @@ TEST_F(TwoServerDownloadTest, DeletingTheSecondServersListLeavesTheFirstServersA
     ASSERT_TRUE(app->playRemote("Weather", sized(), 0, albumSource("al1"), 0, "Band"));
     for (int i = 0; i < 11; ++i) idle(1s);
     ASSERT_EQ(downloader.requests.size(), 1u) << "the track is being cached on the first server";
-    hold(Button::Forward);
+    press(Button::Forward);
     for (int i = 0; i < 11; ++i) idle(1s); // Rain waits behind Storm Front
     ASSERT_NO_FATAL_FAILURE(deleteDownloadOf("Audiobooks", "Dune"));
     EXPECT_TRUE(downloader.cancelled.empty());
@@ -16415,10 +16439,10 @@ TEST_F(BookDownloadTest, AWholeDownloadPlaysFromLibraryWithTheServerDownAndNoLoa
     EXPECT_EQ(app->mode(), App::Mode::Player);
     EXPECT_EQ(player.file, fileOf(1));
     EXPECT_EQ(app->nowPlaying().chapterCount, 3) << "the server's chapters, not one per file";
-    hold(Button::Forward); // Middle: 100 s into file 1
+    press(Button::Forward); // Middle: 100 s into file 1
     EXPECT_EQ(player.file, fileOf(1));
     EXPECT_DOUBLE_EQ(player.pos, 100);
-    hold(Button::Forward); // End: 30 s into file 2
+    press(Button::Forward); // End: 30 s into file 2
     EXPECT_EQ(player.file, fileOf(2));
     EXPECT_DOUBLE_EQ(player.pos, 30);
     app->shutdown();
@@ -16452,7 +16476,8 @@ TEST_F(BookDownloadTest, PlayBookInDownloadedKeepsTheSamePlaceAsLibrary) {
     open("Downloaded");
     open("Dune");
     press(Button::Ok); // Play book
-    hold(Button::Forward);
+    press(Button::Forward);
+    ASSERT_DOUBLE_EQ(player.pos, 100);
     player.pos = 77.5;
     press(Button::Home);
     hold(Button::Home);
@@ -16471,8 +16496,8 @@ TEST_F(BookDownloadTest, NowPlayingAfterARestartResumesTheDownloadedBookOfflineW
     hold(Button::Home);
     open("Library");
     open("Dune");
-    hold(Button::Forward);
-    hold(Button::Forward); // End
+    press(Button::Forward);
+    press(Button::Forward); // End
     player.pos = 42;
     ASSERT_NO_FATAL_FAILURE(restartOffline());
     ASSERT_EQ(level().items[0].label, "Now playing");
@@ -16482,9 +16507,9 @@ TEST_F(BookDownloadTest, NowPlayingAfterARestartResumesTheDownloadedBookOfflineW
     EXPECT_EQ(player.file, fileOf(2));
     EXPECT_DOUBLE_EQ(player.pos, 42);
     EXPECT_EQ(app->nowPlaying().chapterCount, 3);
-    hold(Button::Back); // Previous chapter well into End: its start
+    press(Button::Back); // Previous chapter well into End: its start
     EXPECT_DOUBLE_EQ(player.pos, 30);
-    hold(Button::Back);
+    press(Button::Back);
     EXPECT_EQ(player.file, fileOf(1)) << "Middle begins in file 1";
     EXPECT_DOUBLE_EQ(player.pos, 100);
 }
@@ -16667,7 +16692,7 @@ protected:
 TEST_F(BookProgressPushTest, PausePushesTheFileOffsetAndWritesNoDiskUntilExit) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 150;
-    hold(Button::Forward); // file 2, thirty seconds in
+    press(Button::Forward); // file 2, thirty seconds in
     press(Button::PlayPause);
     ASSERT_EQ(server.progressSaves.size(), 1u);
     EXPECT_EQ(server.progressSaves[0].albumId, "b1");
@@ -17492,4 +17517,388 @@ TEST_F(StreamingTest, EmptyNextPageStopsOfferingLoadMoreEvenWhenServerSaysMore) 
     hold(Button::Forward);
     EXPECT_EQ(speech.last(), "A 1, Band, 1 of 1");
     EXPECT_EQ(requestsOf(Kind::Albums), 2u);
+}
+
+TEST_F(AppTest, LightHoldSeeksAtTheConfiguredThresholdAndRepeatsWithoutSpeech) {
+    settings.setInt("buttons.long_press_ms", 900);
+    playAlpha();
+    player.pos = 40;
+    const auto said = speech.said.size();
+    sounds.played.clear();
+    app->keyDown(Button::Forward);
+    idle(899ms);
+    EXPECT_EQ(player.pos, 40);
+    idle(1ms);
+    EXPECT_EQ(player.pos, 45);
+    idle(499ms);
+    EXPECT_EQ(player.pos, 45);
+    idle(1ms);
+    EXPECT_EQ(player.pos, 50);
+    idle(500ms);
+    EXPECT_EQ(player.pos, 55);
+    EXPECT_EQ(speech.said.size(), said);
+    EXPECT_EQ(sounds.played, (std::vector<Earcon>{Earcon::Move}));
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(speech.last(), "Position, 55 seconds.");
+    idle(1s);
+    EXPECT_EQ(player.pos, 55);
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(AppTest, SeekingChangesStageWithoutAnExtraStepOrDeadlineReset) {
+    playAlpha();
+    player.pos = 100;
+    sounds.played.clear();
+    app->keyDown(Button::Forward);
+    idle(600ms);
+    EXPECT_EQ(player.pos, 105);
+    idle(100ms);
+    app->keyDown(Button::ForwardDeep);
+    EXPECT_EQ(player.pos, 105);
+    idle(399ms);
+    EXPECT_EQ(player.pos, 105);
+    idle(1ms);
+    EXPECT_EQ(player.pos, 135);
+    idle(100ms);
+    app->keyUp(Button::ForwardDeep);
+    EXPECT_EQ(player.pos, 135);
+    idle(399ms);
+    EXPECT_EQ(player.pos, 135);
+    idle(1ms);
+    EXPECT_EQ(player.pos, 140);
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(speech.last(), "Position, 2 minutes 20 seconds.");
+    EXPECT_EQ(sounds.played, (std::vector<Earcon>{Earcon::Move}));
+}
+
+TEST_F(AppTest, DeepFirstRemainsFastAfterLongAndEasesBeforeTheHoldThreshold) {
+    playAlpha();
+    player.pos = 100;
+    app->keyDown(Button::Back);
+    app->keyDown(Button::BackDeep);
+    EXPECT_EQ(player.pos, 70);
+    idle(500ms);
+    EXPECT_EQ(player.pos, 40);
+    idle(100ms); // Long arrives without changing the deep rate
+    EXPECT_EQ(player.pos, 40);
+    idle(400ms);
+    EXPECT_EQ(player.pos, 10);
+    app->keyUp(Button::BackDeep);
+    app->keyUp(Button::Back);
+    EXPECT_EQ(speech.last(), "Position, 10 seconds.");
+    player.pos = 100;
+    app->keyDown(Button::ForwardDeep); // reversed contact order also works
+    EXPECT_EQ(player.pos, 130);
+    app->keyDown(Button::Forward);
+    idle(100ms);
+    app->keyUp(Button::ForwardDeep); // ease before Long
+    idle(400ms);
+    EXPECT_EQ(player.pos, 135);
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(speech.last(), "Position, 2 minutes 15 seconds.");
+}
+
+TEST_F(AppTest, SeekingPreservesPausedStateAtBothRatesAndInBothDirections) {
+    playAlpha();
+    press(Button::PlayPause);
+    player.pos = 200;
+    for (Button b : {Button::Back, Button::Forward}) {
+        const double from = player.pos;
+        const int direction = b == Button::Back ? -1 : 1;
+        app->keyDown(b);
+        idle(600ms);
+        EXPECT_EQ(player.pos, from + direction * 5);
+        idle(500ms);
+        EXPECT_EQ(player.pos, from + direction * 10);
+        app->keyUp(b);
+        EXPECT_FALSE(player.playing());
+        deep(b);
+        EXPECT_EQ(player.pos, from + direction * 40);
+        EXPECT_FALSE(player.playing());
+    }
+    EXPECT_EQ(player.file, alphaFile(1));
+}
+
+TEST_F(AppTest, SeekingClampsTheCurrentFileWithOneEdgeAndNoRepeatedBoundaryRequests) {
+    playAlpha();
+    for (Button b : {Button::Back, Button::Forward}) {
+        player.pos = b == Button::Back ? 2 : 598;
+        player.seeks.clear();
+        sounds.played.clear();
+        const Button second = b == Button::Back ? Button::BackDeep : Button::ForwardDeep;
+        app->keyDown(b);
+        app->keyDown(second);
+        EXPECT_EQ(player.pos, b == Button::Back ? 0 : 600);
+        player.atEnd = true;
+        idle(1500ms);
+        EXPECT_EQ(player.file, alphaFile(1));
+        EXPECT_EQ(player.seeks.size(), 1u);
+        EXPECT_EQ(sounds.played, (std::vector<Earcon>{Earcon::Move, Earcon::Edge}));
+        app->keyUp(b); // first contact may release first
+        EXPECT_EQ(player.file, alphaFile(1));
+        app->keyUp(second);
+        EXPECT_EQ(player.file, alphaFile(1));
+        EXPECT_EQ(player.pos, b == Button::Back ? 0 : 600);
+        player.atEnd = false;
+    }
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(AppTest, UnknownDurationAllowsForwardSeekingAndClampsBackAtZero) {
+    playAlpha();
+    player.length = 0;
+    player.pos = 700;
+    deep(Button::Forward);
+    EXPECT_EQ(player.pos, 730);
+    EXPECT_EQ(speech.last(), "Position, 12 minutes 10 seconds.");
+    player.pos = 2;
+    sounds.played.clear();
+    app->keyDown(Button::Back);
+    idle(600ms);
+    EXPECT_EQ(player.pos, 0);
+    idle(500ms);
+    EXPECT_EQ(player.pos, 0);
+    EXPECT_EQ(sounds.played, (std::vector<Earcon>{Earcon::Move, Earcon::Edge}));
+    app->keyUp(Button::Back);
+    EXPECT_EQ(speech.last(), "Position, 0 seconds.");
+}
+
+TEST_F(AppTest, SeekingAccumulatesTargetsWhenDecoderFeedbackLags) {
+    playAlpha();
+    player.pos = 100;
+    player.deferSeeks = true;
+    player.seeks.clear();
+    app->keyDown(Button::Forward);
+    idle(600ms);
+    idle(500ms);
+    app->keyDown(Button::ForwardDeep);
+    idle(500ms);
+    EXPECT_EQ(player.seeks, (std::vector<double>{105, 110, 140}));
+    app->keyUp(Button::ForwardDeep);
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(speech.last(), "Position, 2 minutes 20 seconds.");
+}
+
+TEST_F(AppTest, SeekingCancellationOnLockSleepScreenAndShutdownHasNoLateAction) {
+    playAlpha();
+    for (int cancel : {0, 1, 2, 3}) {
+        app->keyDown(Button::Forward);
+        app->keyDown(Button::ForwardDeep);
+        const auto at = player.pos;
+        if (cancel == 0) { app->setHold(true); app->setHold(false); }
+        if (cancel == 1) { press(Button::Power); press(Button::Power); }
+        if (cancel == 2) { press(Button::Ok); press(Button::Home); }
+        if (cancel == 3) app->shutdown();
+        const auto said = speech.said.size();
+        const auto stopped = speech.stops;
+        idle(1s);
+        app->keyUp(Button::ForwardDeep);
+        app->keyUp(Button::Forward);
+        EXPECT_EQ(player.file, alphaFile(1));
+        EXPECT_EQ(player.pos, at);
+        EXPECT_EQ(speech.said.size(), said);
+        EXPECT_EQ(speech.stops, stopped);
+    }
+}
+
+TEST_F(AppTest, OldUnitKeysAndSkipSettingsDoNotAffectShortsOrHoldsAndAreNotMigrated) {
+    stateFile.file["unit.book"] = "2";
+    stateFile.file["unit.music"] = "999";
+    configFile.file["skip.back"] = "60";
+    configFile.file["skip.forward"] = "120";
+    settings.load();
+    state.load();
+    playAlpha();
+    EXPECT_EQ(stateFile.saves, 0);
+    EXPECT_EQ(configFile.saves, 0);
+    press(Button::Forward);
+    EXPECT_EQ(player.file, alphaFile(2));
+    player.pos = 40;
+    hold(Button::Back);
+    EXPECT_EQ(player.pos, 35);
+    hold(Button::Home);
+    open("Settings");
+    EXPECT_FALSE(hasLabel("Skip back"));
+    EXPECT_FALSE(hasLabel("Skip forward"));
+    open("Speech rate"); open("250 words per minute");
+    EXPECT_EQ(configFile.onDisk("skip.back"), "60");
+    hold(Button::Home);
+    open("Music"); open("Albums A to Z"); open("Road Trip"); open("Sunrise");
+    press(Button::Forward);
+    EXPECT_EQ(player.file, (roadTrip() / "02 - Highway.mp3").string());
+    app->shutdown();
+    EXPECT_EQ(stateFile.onDisk("unit.book"), "2");
+    EXPECT_EQ(stateFile.onDisk("unit.music"), "999");
+}
+
+TEST_F(AppTest, SeekingToEofDoesNotAdvanceOnReleaseOrTheFollowingTick) {
+    playAlpha();
+    player.pos = 599;
+    deep(Button::Forward);
+    EXPECT_EQ(player.pos, 600);
+    player.atEnd = true; // the decoder drained at exactly duration, as the real Player does
+    idle(1s);
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(speech.last(), "Position, 10 minutes.");
+    hold(Button::Back);
+    EXPECT_EQ(player.file, alphaFile(1));
+    EXPECT_EQ(player.pos, 595);
+    player.atEnd = false; // this seek has now reached the decoder
+    press(Button::Forward);
+    EXPECT_EQ(player.file, alphaFile(2));
+}
+
+TEST_F(AsyncOpenTest, AHeldGestureDuringAPendingOpenCannotBeginSeekingAfterItCompletes) {
+    playWeather();
+    press(Button::Forward);
+    ASSERT_TRUE(player.opening());
+    player.seeks.clear();
+    app->keyDown(Button::Back);
+    app->keyDown(Button::BackDeep);
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_TRUE(player.seeks.empty());
+    finishOpen();
+    const auto said = speech.said.size();
+    idle(1s);
+    app->keyDown(Button::BackDeep); // duplicate contact also stays cancelled
+    app->keyUp(Button::BackDeep);
+    app->keyUp(Button::Back);
+    EXPECT_TRUE(player.seeks.empty());
+    EXPECT_EQ(speech.said.size(), said);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    deep(Button::Forward);
+    EXPECT_EQ(player.pos, 30) << "fresh gesture works";
+}
+
+TEST_F(AsyncOpenTest, FailedAndClosedPlayersCannotStartSeekingOrAnnounceAPosition) {
+    playWeather();
+    player.broken = true;
+    const auto said = speech.said.size();
+    app->keyDown(Button::ForwardDeep); // failure visible before tick sees it
+    EXPECT_EQ(sounds.last(), Earcon::Edge);
+    EXPECT_TRUE(player.seeks.empty());
+    app->tick();
+    EXPECT_FALSE(player.isOpen());
+    app->keyUp(Button::ForwardDeep);
+    const auto failedSpeech = speech.said.size();
+    hold(Button::Back);
+    EXPECT_EQ(speech.said.size(), failedSpeech);
+    EXPECT_GT(failedSpeech, said);
+    EXPECT_TRUE(player.seeks.empty());
+    EXPECT_FALSE(player.playing());
+}
+
+TEST_F(AppTest, NaturalFileChangeBeforeTheHoldThresholdCancelsThatGesture) {
+    playAlpha();
+    app->keyDown(Button::Forward);
+    player.atEnd = true;
+    idle(100ms);
+    ASSERT_EQ(player.file, alphaFile(2));
+    idle(1s);
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(player.pos, 0);
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_NE(speech.last().find("Position"), 0u);
+}
+
+TEST_F(AppTest, ShortBackUsesTheThreeSecondRuleWithinAnEmbeddedChapter) {
+    player.embedded = {{"Intro", 0}, {"Middle", 100}, {"End", 200}};
+    start(); open("Library"); open("Beta");
+    for (double seconds : {102.99, 103.0, 103.01}) {
+        player.pos = seconds;
+        press(Button::Back);
+        EXPECT_EQ(player.pos, seconds > 103 ? 100 : 0);
+        EXPECT_EQ(player.file, beta().string());
+    }
+}
+
+TEST_F(AppTest, ChoosingAChapterAfterSeekingToEofRestoresNaturalEndHandling) {
+    player.embedded = {{"Intro", 0}, {"Middle", 100}};
+    start(); open("Library"); open("Beta");
+    player.pos = 599;
+    deep(Button::Forward);
+    player.atEnd = true;
+    press(Button::Ok); open("Chapters"); open("Intro");
+    EXPECT_EQ(player.pos, 0);
+    player.atEnd = true; // playback later reaches the natural end again
+    idle(1ms);
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(speech.last(), "End of book. Press play to start again.");
+}
+
+TEST_F(AsyncOpenTest, AStreamFailureCancelsActiveSeekingAndItsReleaseSpeech) {
+    playWeather();
+    app->keyDown(Button::Forward);
+    app->keyDown(Button::ForwardDeep);
+    ASSERT_EQ(player.pos, 30);
+    player.broken = true;
+    idle(500ms);
+    EXPECT_FALSE(player.isOpen());
+    const auto seeks = player.seeks;
+    const auto said = speech.said.size();
+    idle(1s);
+    app->keyUp(Button::ForwardDeep);
+    app->keyUp(Button::Forward);
+    EXPECT_EQ(player.seeks, seeks);
+    EXPECT_EQ(speech.said.size(), said);
+    EXPECT_EQ(speech.last(), "Server not reachable. Press play to try again.");
+    press(Button::PlayPause);
+    answerPing();
+    finishOpen();
+    player.seeks.clear();
+    idle(1s);
+    EXPECT_TRUE(player.seeks.empty()) << "a failed gesture cannot revive after recovery";
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(AppTest, ExplicitPlayAfterSeekingToEofAllowsPlaybackToAdvanceAgain) {
+    playAlpha();
+    player.pos = 599;
+    deep(Button::Forward);
+    player.atEnd = true;
+    press(Button::PlayPause);
+    press(Button::PlayPause);
+    idle(1ms);
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_TRUE(player.playing());
+}
+
+TEST_F(AppTest, FileChangesCancelNavigationButPreserveHeldVolumeAndPlay) {
+    playAlpha();
+    app->keyDown(Button::VolumeUp);
+    app->keyDown(Button::PlayPause);
+    press(Button::Forward);
+    EXPECT_EQ(player.file, alphaFile(2));
+    idle(400ms);
+    EXPECT_EQ(volume.volume, 0.80f);
+    idle(150ms);
+    EXPECT_NE(speech.last().find("Book player. Alpha."), std::string::npos);
+    app->keyUp(Button::PlayPause);
+    press(Button::Back);
+    EXPECT_EQ(player.file, alphaFile(1));
+    player.atEnd = true;
+    idle(150ms);
+    EXPECT_EQ(player.file, alphaFile(2));
+    EXPECT_GT(volume.volume, 0.80f);
+    const float before = volume.volume;
+    idle(150ms);
+    EXPECT_GT(volume.volume, before);
+    app->keyUp(Button::VolumeUp);
+}
+
+TEST_F(AppTest, PausedSeekingCountsAsActivityUntilTheButtonIsReleased) {
+    settings.setInt("power.auto_sleep_min", 1);
+    playAlpha();
+    press(Button::PlayPause);
+    app->keyDown(Button::Forward);
+    idle(600ms);
+    for (int i = 0; i < 122; ++i) idle(500ms);
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(player.file, alphaFile(1));
+    app->keyUp(Button::Forward);
+    idle(61s);
+    EXPECT_EQ(app->mode(), App::Mode::Sleeping) << "inactivity sleep returns after release";
 }

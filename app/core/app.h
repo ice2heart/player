@@ -129,6 +129,7 @@ private:
 
     void onGesture(ButtonEvent ev);
     void cancelGestures(bool preservePower = false);
+    void cancelNavigation();
     void onButton(ButtonEvent ev);
     void handleMenu(ButtonEvent ev);
     void handlePlayer(ButtonEvent ev);
@@ -538,11 +539,10 @@ private:
     void togglePlay();
     void play();
     void pause(bool announce);
-    void skip(int direction, int seconds = 0); // seconds 0: the skip of Settings
-    int stepUnit() const;                       // of the loaded player: 0 Skip, 1 Track / Chapter, 2 Album / 10 minutes
-    void changeStepUnit(int direction);         // Up / Down in a player
-    void stepByUnit(int direction);             // a light press of Left / Right in a player
-    void stepAlbum(int direction);
+    void startSeeking(Button button, bool deep);
+    void seekStep();
+    void repeatSeeking(Clock::TimePoint now);
+    void finishSeeking(bool announce);
     void changeVolume(int delta, Gesture gesture);
     std::vector<ChapterRef> chapters() const;   // the server's, else a file each, else the file's own marks
     bool hasServerChapters() const;             // a server book that lists chapters
@@ -714,9 +714,15 @@ private:
     FreeSpace freeSpace_;
     QueueRandom random_;
     GestureDetector gestures_;
-    // Until the menu/player mappings are replaced, keep their single-action
-    // handling of a navigation gesture while accepting the richer lifecycle.
-    std::array<bool, kButtonCount> navigationActed_{};
+    struct Seeking {
+        Button button;
+        bool deep = false;
+        bool edgeHeard = false;
+        double target = 0;
+        TimePoint next;
+    };
+    std::optional<Seeking> seeking_;
+    bool seekAtEnd_ = false; // a user-seek to EOF stays in this file after release
 
     std::vector<Screen> screens_;
     std::uint64_t lastScreenId_ = 0;
