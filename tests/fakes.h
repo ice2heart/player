@@ -32,12 +32,15 @@ inline TextFiles& diskFiles() {
 
 class FakePower : public Power {
 public:
-    Caps caps() const override { return {}; }
+    Caps caps() const override { return capabilities; }
     BatteryState battery() const override { return snapshot; }
     void requestSuspend() override {}
-    void requestPowerOff() override {}
+    void requestPowerOff() override { ++powerOffRequests; if (onPowerOff) onPowerOff(); }
     void requestReboot() override {}
     void setWakeAlarm(std::optional<std::time_t>) override {}
+    Caps capabilities{};
+    int powerOffRequests = 0;
+    std::function<void()> onPowerOff;
     BatteryState snapshot{};
 };
 class FakeStorage : public Storage {

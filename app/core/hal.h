@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/services.h"
+
 #include <functional>
 #include <mutex>
 #include <string>
@@ -9,8 +11,9 @@
 
 namespace oap {
 
+struct BatteryChanged { BatteryState state; };
 struct HalError { std::string message; };
-using HalEvent = std::variant<HalError>;
+using HalEvent = std::variant<HalError, BatteryChanged>;
 
 // Producers may post from any thread. The owner drains on the UI thread.
 class HalEvents {

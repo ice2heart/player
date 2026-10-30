@@ -145,7 +145,7 @@ The unit tests wire in fakes instead (section 12).
 | **TTS worker** | `Tts` | Runs `espeak_Synth()` synchronously and resamples into the speech stream. |
 | **Audio callback** | `AudioOutput` | Calls `Mixer::render()` to pull PCM for the device. CoreAudio calls back; Pulse, ALSA and null run their own writer thread. |
 | **HTTP worker** | `HttpClient` | Runs every libcurl GET/PATCH transfer and parses Subsonic and Audiobookshelf answers. Finished results go into each server’s mutex-protected inbox that its `poll()` empties on the UI thread. At exit the front end calls `Servers::finish()` after `app.shutdown()`: `HttpClient::finish()` stops new requests, lets the queued and running ones end for up to `kServerFinishDeadline` (3 s), aborts the rest and joins this thread (a scrobble sent just before exit reaches the server and its answer reaches `App`, which drops the entry from `scrobbles.tsv` without sending the next one). |
-| **HAL producers** | HAL backends | Can post events to `HalEvents`; its supplied wake callback can notify the front end, and `App::tick()` drains them on the UI thread. `HalError` is spoken and included in Status. Existing front ends do not supply a queue yet. |
+| **HAL producers** | HAL backends | Can post events to `HalEvents`; its supplied wake callback can notify the front end, and `App::tick()` drains them on the UI thread. `HalError` is spoken and included in Status. Battery events announce thresholds and charging edges; at 3 percent App saves before requesting a supported power off, or says “Battery critical.” |
 | **Scan worker** | `ThreadedScanner` | Walks the library and music roots, reads the tags of new or changed files through `TagReader`, one scan at a time. Finished scans go into a mutex-protected list that `ThreadedScanner::poll()` empties on the UI thread. |
 | **Download worker** | `HttpDownloader` | Fetches one track file at a time into its `.part`. Progress and results go into a mutex-protected list that `HttpDownloader::poll()` empties on the UI thread. |
 
@@ -1357,8 +1357,8 @@ phase 3.
 
 ## 10. Simulator (`app/sim/main.cpp`)
 
-The generated HAL registry currently has no part factories: each `OAP_HAL_*`
-selection accepts `none` only. Both front ends construct a `HalContext` and
+The generated HAL registry selects simulated power and storage factories or `none`;
+other parts currently accept `none` only. Both front ends construct a `HalContext` and
 pass its event queue to `App`; their existing input and audio paths remain active.
 The `sim-macos` and `sim-linux` CMake presets configure simulator builds.
 

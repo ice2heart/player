@@ -716,6 +716,10 @@ private:
     Power* power_;
     Storage* storage_;
     std::vector<std::string> halErrors_;
+    std::optional<BatteryState> lastBattery_;
+    bool battery20Announced_ = false, battery10Announced_ = false, battery5Announced_ = false;
+    bool batteryCriticalHandled_ = false;
+    void batteryChanged(const BatteryState& state);
     std::filesystem::path libraryRoot_;
     std::filesystem::path musicRoot_;
     std::filesystem::path cacheRoot_; // downloaded tracks; never scanned as library or music

@@ -18288,3 +18288,56 @@ TEST_F(AppTest, StatusUsesCurrentPowerAndStorageSnapshotsAndOmitsMissingParts) {
     EXPECT_EQ(speech.last().find("gigabytes free"), std::string::npos);
     EXPECT_NE(speech.last().find("Wi-Fi connected."), std::string::npos);
 }
+
+TEST_F(AppTest, BatteryWarningsAndChargingEdgesRearmOnce) {
+    HalEvents events;
+    FakePower power;
+    app = std::make_unique<App>(Services{speech, player, sounds, volume, serverLinks(), indexStore,
+        scanner, settings, state, clock, textFiles, &events, &power}, root, music, cache, queueFile, scrobbleFile);
+    app->start();
+    speech.said.clear();
+    auto post = [&](int percent, bool charging = false, bool full = false) {
+        events.post(BatteryChanged{{percent, charging, charging, full}});
+        app->tick();
+    };
+    post(21); EXPECT_TRUE(speech.said.empty());
+    post(20); EXPECT_EQ(speech.last(), "Battery 20 percent.");
+    post(20); post(19);
+    post(10); EXPECT_EQ(speech.last(), "Battery 10 percent.");
+    post(9);
+    int stopsBeforeCritical = speech.stops;
+    post(5); EXPECT_EQ(speech.last(), "Battery 5 percent.");
+    EXPECT_EQ(speech.stops, stopsBeforeCritical + 1);
+    post(4);
+    EXPECT_EQ(speech.said, (std::vector<std::string>{"Battery 20 percent.", "Battery 10 percent.", "Battery 5 percent."}));
+    post(4, true); post(5, true); post(100, true, true); post(100, true, true);
+    EXPECT_EQ(std::count(speech.said.begin(), speech.said.end(), "Charging started."), 1);
+    EXPECT_EQ(std::count(speech.said.begin(), speech.said.end(), "Battery full."), 1);
+    post(20); post(10); post(5);
+    EXPECT_EQ(std::count(speech.said.begin(), speech.said.end(), "Battery 20 percent."), 2);
+    EXPECT_EQ(std::count(speech.said.begin(), speech.said.end(), "Battery 10 percent."), 2);
+    EXPECT_EQ(std::count(speech.said.begin(), speech.said.end(), "Battery 5 percent."), 2);
+}
+
+TEST_F(AppTest, CriticalBatterySavesBeforePowerOffOrWarnsWhenUnsupported) {
+    HalEvents events;
+    FakePower power;
+    power.capabilities.powerOff = true;
+    app = std::make_unique<App>(Services{speech, player, sounds, volume, serverLinks(), indexStore,
+        scanner, settings, state, clock, textFiles, &events, &power}, root, music, cache, queueFile, scrobbleFile);
+    app->start();
+    state.setInt("battery_test", 42);
+    power.onPowerOff = [&] { EXPECT_EQ(stateFile.file["battery_test"], "42"); };
+    events.post(BatteryChanged{{3, false, false, false}});
+    app->tick();
+    EXPECT_EQ(power.powerOffRequests, 1);
+    events.post(BatteryChanged{{2, false, false, false}});
+    app->tick();
+    EXPECT_EQ(power.powerOffRequests, 1);
+    power.capabilities.powerOff = false;
+    events.post(BatteryChanged{{4, true, true, false}});
+    events.post(BatteryChanged{{3, false, false, false}});
+    app->tick();
+    EXPECT_EQ(power.powerOffRequests, 1);
+    EXPECT_EQ(speech.last(), "Battery critical.");
+}

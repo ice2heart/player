@@ -809,12 +809,50 @@ App::Mode App::mode() const {
     return !screens_.empty() && screens_.back().isPlayer() ? Mode::Player : Mode::Menu;
 }
 
+void App::batteryChanged(const BatteryState& state) {
+    const bool startedCharging = state.charging && (!lastBattery_ || !lastBattery_->charging);
+    const bool becameFull = state.full && (!lastBattery_ || !lastBattery_->full);
+    lastBattery_ = state;
+    if (startedCharging) {
+        battery20Announced_ = battery10Announced_ = battery5Announced_ = false;
+        batteryCriticalHandled_ = false;
+        say("Charging started.");
+    }
+    if (becameFull) say("Battery full.");
+    if (state.charging) return;
+    if (state.percent <= 20 && !battery20Announced_) {
+        battery20Announced_ = true;
+        say("Battery 20 percent.");
+    }
+    if (state.percent <= 10 && !battery10Announced_) {
+        battery10Announced_ = true;
+        say("Battery 10 percent.");
+    }
+    if (state.percent <= 5 && !battery5Announced_) {
+        battery5Announced_ = true;
+        tts_.stop();
+        say("Battery 5 percent.");
+    }
+    if (state.percent <= 3 && !batteryCriticalHandled_) {
+        batteryCriticalHandled_ = true;
+        if (power_ && power_->caps().powerOff) {
+            saveOnExit();
+            power_->requestPowerOff();
+        } else {
+            tts_.stop();
+            say("Battery critical.");
+        }
+    }
+}
+
 void App::tick() {
     if (halEvents_) {
         for (const auto& event : halEvents_->drain()) {
             if (const auto* error = std::get_if<HalError>(&event); error && !shutDown_) {
                 halErrors_.push_back(error->message);
                 say(error->message);
+            } else if (const auto* battery = std::get_if<BatteryChanged>(&event); battery && !shutDown_) {
+                batteryChanged(battery->state);
             }
         }
     }
