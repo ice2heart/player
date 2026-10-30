@@ -643,6 +643,29 @@ server alone. All the rules below hold for every server.
   opens the track again where it stopped. The next track's stream opens in the
   background 10 s before the end, so tracks change without a wait.
 
+## Planned playlist and queue changes (streaming phase 5)
+
+These rules describe planned behaviour; the current Music and Queue sections
+remain the as-built reference until the implementation steps land. Music → Playlists
+will combine local, downloaded and server playlists. Create playlist selects "On the
+device" or a configured playlist-capable server and uses a generated timestamp name;
+renaming waits for [input-methods.md](input-methods.md). Each playlist opens with Play
+playlist, tracks, Delete playlist and, for a server playlist, Keep offline or Stop
+keeping offline. Options on a track offers Remove from playlist. Delete confirms with
+Cancel first. The music Player menu offers Add to playlist and opens that list on the
+last eligible playlist used. Server playlists accept only tracks known to that server;
+local-only and other-server tracks are skipped. Local playlists accept local tracks.
+
+Success says "Added to playlist.", "Removed from playlist." or "Playlist deleted.";
+cancelling says "Cancelled." Server writes say "Saving." and use existing server error
+feedback on failure. An unavailable action says "Not available." and a failed local
+write says "Could not save playlist." Offline star and server-playlist edits are not
+queued in this phase. Keep offline owns a pin for each track; deleting the playlist or
+stopping offline keeping releases only its own pins. Book progress follows the existing
+Audiobookshelf interaction; it is independent of playlist editing. Queue sync compares
+server and local timestamps, keeps the newer version and does not interrupt playback;
+[streaming.md](streaming.md#phase-5-design) specifies the remaining rules.
+
 ## Music and Library
 
 Music and Library list one library: the files on the device, the downloads and the albums of the

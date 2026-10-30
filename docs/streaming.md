@@ -708,47 +708,97 @@ still empty.
 ## Phase 5: sync and playlists
 
 Goal: edit playlists on the device, keep selected playlists offline, and sync book
-positions and the music queue with the server. Pending offline edits survive a restart.
+positions and the music queue with the server. Failed book progress saves retain the
+existing retry behaviour; other offline edits are deferred.
 Local files are **not uploaded**; moving them to a server is outside this plan.
 
-**Draft:** the numbered steps below divide the work and record its acceptance criteria,
-but the phase 5 design questions below must be decided before implementation. In
-particular, the existing book progress behaviour in navigation.md and SPEC §6.3
-supersedes the earlier proposal to ask "Server position is further, jump there?".
+The design below records the phase 5 choices. Book progress follows the existing
+Audiobookshelf behaviour in navigation.md and SPEC §6.3.
 
 | # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
 |---|------|------|
-| 5.1 | **Navigation and design.** Resolve the phase 5 design questions, then document menus, keys, spoken feedback, conflict handling, persistence and server capabilities in this plan and navigation.md. Keep existing playback usable throughout the following steps. | Review the design against SPEC, existing navigation and the implemented server interfaces. |
-| 5.2 | **Playlist server operations.** Add asynchronous server interfaces and Subsonic requests for renaming, adding tracks, removing tracks and deleting playlists; retain the existing create operation. Handle unsupported providers and errors. | Net tests check request parameters, ordering and response errors; fake-server tests cover success, failure and cancellation. |
-| 5.3 | **Local playlists.** Read and write local-only `.m3u` playlists under `/data/library/playlists/`, with an injectable root for tests. Provide create, rename, add, remove and delete operations through the agreed interface. | Temp-directory tests cover round trips, track order, duplicate entries, rename, removal, deletion and failed writes; local files remain local. |
-| 5.4 | **Playlist editing menus.** Expose create, rename, remove and delete for supported playlists and add the current track from the Player menu, reopening the last playlist used. Delete requires a Cancel-first confirmation. | App tests exercise each action and its feedback, last-used selection, confirmation cancellation, server errors and local versus server track eligibility. |
+| ✅ 5.1 | **Navigation and design.** Resolve the phase 5 design questions, then document menus, keys, spoken feedback, conflict handling, persistence and server capabilities in this plan and navigation.md. Keep existing playback usable throughout the following steps. | Review the design against SPEC, existing navigation and the implemented server interfaces. |
+| 5.2 | **Playlist server operations.** Add asynchronous server interfaces and Subsonic requests for adding tracks, removing tracks and deleting playlists; retain the existing create operation. Handle unsupported providers and errors. | Net tests check request parameters, ordering and response errors; fake-server tests cover success, failure and cancellation. |
+| 5.3 | **Local playlists.** Read and write local-only `.m3u` playlists under `/data/library/playlists/`, with an injectable root for tests. Provide create, add, remove and delete operations through the agreed interface. | Temp-directory tests cover round trips, track order, duplicate entries, removal, deletion and failed writes; local files remain local. |
+| 5.4 | **Playlist editing menus.** Expose create, remove and delete for supported playlists and add the current track from the Player menu, reopening the last playlist used. Delete requires a Cancel-first confirmation. | App tests exercise each action and its feedback, last-used selection, confirmation cancellation, server errors and local versus server track eligibility. |
 | 5.5 | **Keep playlists offline.** Persist the keep-offline choice, pin playlist tracks in the cache and reconcile them with later server changes without removing pins needed by other downloads. | Tests cover enabling and disabling, restart, added and removed tracks, overlapping pins, failed refresh and insufficient space. |
 | 5.6 | **Subsonic book progress.** Implement the existing `MusicServer` progress interface with Subsonic bookmarks per track, applying the agreed timestamp and chapter mapping. Reuse the existing book-player offer and progress persistence. | Net tests cover bookmark requests, timestamps, missing and malformed data and errors; App tests cover local and newer server positions, chapters, pause, stale callbacks and offline retry. |
 | 5.7 | **Play queue sync.** Add asynchronous `savePlayQueue` and `getPlayQueue` support with `indexBasedQueue`, and integrate it with the music queue using the agreed conflict and mixed-source rules. | Net tests cover request and response mapping including duplicate tracks and position; App tests cover a phone queue, a device queue, restart, offline and errors, and unsupported or local-only tracks. |
-| 5.8 | **Offline outbox.** Persist offline star changes, book progress and playlist edits and replay them in order per the agreed retry and conflict rules. Keep scrobbles in their existing outbox. | Tests cover restart, ordering, failed sends and retries, server identity, duplicate delivery and removal only after success; no credentials or stream URLs are persisted or spoken. |
-| 5.9 | **Docs for phase 5 as built.** Update architecture.md, navigation.md, SPEC and this plan to describe the implementation and its limits. | – |
+| 5.8 | **Docs for phase 5 as built.** Update architecture.md, navigation.md, SPEC and this plan to describe the implementation and its limits. | – |
 
 **Device check (manual):** With a configured test server and a second client, create
 and edit a playlist on the device and verify its contents on the server; change a
 kept-offline playlist on the server, refresh it and play it with Wi-Fi off. Change a
 book's position and a music queue on the second client and check the device's sync
-behaviour. Make supported edits offline, restart, reconnect and verify they arrive in
-order. Check the corresponding spoken feedback and Cancel on delete.
+behaviour. Make book progress offline, restart and reconnect, and verify it reaches the
+server. Check the corresponding spoken feedback and Cancel on delete.
 
-### Phase 5 design questions
+### Phase 5 design
 
-- How does a user enter or change a playlist name with the available buttons, and
-  where do create, rename, remove and delete appear? What is the exact spoken feedback?
-- How are local playlists represented in the library, and what happens when a user
-  adds a local track to a server playlist or a server track to a local playlist?
-- How are pins owned and reconciled when downloads and multiple kept playlists share
-  tracks, or when a playlist is deleted or temporarily unavailable?
-- How are Subsonic's per-track bookmarks mapped to a book-wide position and timestamp,
-  and how is the existing progress outbox shared with other server types?
-- When are queues fetched and saved, which version wins, and how are local tracks,
-  multiple servers, duplicate tracks and unsupported extensions handled?
-- What durable outbox format, retry triggers, ordering, idempotency and conflict rules
-  apply to each operation, especially playlist creation followed by edits?
+- A playlist has a generated name; editing names waits for [input-methods.md](input-methods.md).
+  Save the queue as a playlist using the existing timestamp name. Creating an empty
+  playlist uses "Playlist, 27 October 14:05" with the same wall-clock rules as Save
+  as playlist. Playlist names are labels, not identifiers: local files use unique,
+  safe generated filenames and server playlists use server key and id.
+- Music → Playlists lists local `.m3u` files alongside server and downloaded
+  playlists. Distinct playlists stay distinct, even if their names match. Local files
+  store ordered local paths; duplicate entries are allowed. Adding a server track to
+  a local playlist is unavailable. A server playlist accepts only tracks with an id
+  for that server; local-only tracks and tracks from another server are skipped,
+  with the count spoken. No file is uploaded.
+- Music → Playlists offers Create playlist and existing playlists. Create opens a
+  destination list with "On the device" first and each configured playlist-capable
+  server in configuration order; choosing one creates the empty playlist. A playlist opens
+  with Play playlist, followed by its tracks and actions to delete it and, for a
+  server playlist, Keep offline / Stop keeping offline. Options on a track offers
+  Remove from playlist; deletion opens a confirmation with Cancel first. The music
+  Player menu adds Add to playlist, which opens on the last used eligible playlist;
+  with no last selection it opens on the first. A successful add or removal says
+  "Added to playlist." or "Removed from playlist."; deletion says "Playlist deleted."
+  and cancellation says "Cancelled." A server operation says "Saving." while it
+  waits; failures use the existing server error messages and leave the list unchanged.
+  Unsupported actions say "Not available." Local write failures say "Could not save
+  playlist." Creating a local playlist is available offline; creating or editing a
+  server playlist requires a reachable server in this phase.
+- A kept playlist owns a pin for each referenced server track. Each download and
+  each kept playlist has its own ownership; removing a track, stopping offline
+  keeping or deleting a playlist releases only that owner's pin. A track remains
+  pinned while another owner needs it. Persist owners across restart. A successful
+  refresh reconciles tracks in server order, schedules new tracks at Download quality
+  and releases removed tracks; a confirmed server deletion releases that playlist's
+  pins. An error leaves the previous contents and pins intact.
+  Existing download space and progress feedback applies; a failed or incomplete
+  transfer remains eligible for the next refresh. Cached audio is not removed merely
+  because its last pin was released: normal cache eviction may remove it later.
+- Subsonic books are separate from playlists. Reuse Audiobookshelf's book timeline,
+  pull/offer, save scheduling, dirty markers and startup retry, as documented in
+  [audiobookshelf.md](audiobookshelf.md#phase-3-as-built). Subsonic bookmarks are per
+  track: map track positions to the book timeline using `book()` track order and
+  durations, and select the newest valid bookmark for a track of that book. Save
+  the current track and its offset with `createBookmark`; `getBookmarks` provides
+  timestamps. Ignore malformed, unknown-track or unmappable bookmarks. Playback and
+  pending saves must not wait for a network request on the UI thread.
+- Sync queues per configured server, using only entries with a track id for that
+  server and preserving order and duplicate entries. Compare the server's `changed`
+  timestamp with the local queue's last change or place timestamp; the newer wins,
+  equal timestamps leave the local queue alone. Fetch at startup and before sending
+  a pending local queue, so an older offline queue cannot overwrite a newer server
+  queue. A failed fetch keeps the local queue and defers sending. A newer server
+  queue replaces the saved music queue paused when music is not playing; it must not
+  interrupt an active book. While music plays, retain a newer server snapshot pending
+  until the player is left, and discard it if the local queue changes in the meantime.
+  Discard stale responses after any local change. Use wall time through
+  `clock_`; an unset clock cannot establish that a local edit is newer. Persist
+  pending sync with the queue at exit and sleep. Server-only queues are synced only
+  with their own server; mixed queues send each server's eligible entries and skip
+  all others, reporting omissions when a sync is user initiated. Queue syncing uses
+  [indexBasedQueue](https://opensubsonic.netlify.app/docs/extensions/indexbasedqueue/)
+  `getPlayQueueByIndex` and `savePlayQueueByIndex` when supported; without the
+  extension use ordinary queue calls only when the current track is unambiguous.
+- General offline replay for stars and playlist edits is deferred. Their existing
+  online actions keep their existing failure feedback; they do not claim success
+  or save an offline edit. The existing scrobble outbox and book progress retry
+  remain separate.
 
 ---
 
