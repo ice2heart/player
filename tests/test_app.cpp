@@ -9902,6 +9902,29 @@ protected:
     std::string bookKey(const std::string& id) const { return "pos:" + ref(id); }
 };
 
+TEST_F(ServerBookTest, SyncingSubsonicBookOffersServerChapterAndSavesPause) {
+    server.progressSync = true;
+    state.setString("pos:" + ref("b1"), "0:10.0");
+    state.setString("posat:" + ref("b1"), "1699999990");
+    state.setString("pushed:" + ref("b1"), "1699999990");
+    start(); syncWithFolder({dune()}, {dune()});
+    openServerBook("Dune");
+    ASSERT_EQ(server.lastRequest().kind, Kind::Progress);
+    ASSERT_TRUE(server.replyProgress(lastOf(Kind::Progress), RemoteProgress{250, 620, false, 1700000010000}));
+    app->tick();
+    EXPECT_EQ(speech.last(), "The server has a later place, chapter 2. It is in Options.");
+    press(Button::PlayPause);
+    press(Button::Options);
+    ASSERT_FALSE(labels().empty());
+    EXPECT_NE(labels().front().find("Go to the server's place, chapter 2"), std::string::npos);
+    press(Button::Ok);
+    EXPECT_FALSE(player.playing());
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 50);
+    ASSERT_FALSE(server.progressSaves.empty());
+    EXPECT_DOUBLE_EQ(server.progressSaves.front().progress.seconds, 250);
+}
+
 TEST_F(ServerBookTest, TheFolderAlbumsAreInLibraryAfterTheLocalBooksAndNotInMusic) {
     start();
     syncWithFolder({dune()}, {dune(), album("s1", "Weather")});
@@ -16718,6 +16741,30 @@ TEST_F(BookProgressPushTest, PausePushesTheFileOffsetAndWritesNoDiskUntilExit) {
     EXPECT_EQ(stateFile.onDisk("pushed:" + ref("b1")), "1700000000");
 }
 
+TEST_F(BookProgressPushTest, AConflictingOfflineSaveStaysUnacknowledgedUntilANewLocalPlace) {
+    server.progressSaveError = MusicServer::Error::Conflict;
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    player.pos = 40; press(Button::PlayPause); app->tick();
+    EXPECT_EQ(state.getString("progressconflict:" + ref("b1")), "1700000000");
+    EXPECT_EQ(state.getString("pushed:" + ref("b1")), "");
+    EXPECT_EQ(state.getString("pushdirty:" + ref("b1")), "1");
+    ASSERT_EQ(server.lastRequest().kind, Kind::Progress);
+    ASSERT_TRUE(server.replyProgress(lastOf(Kind::Progress), RemoteProgress{250, 380, false, 1700000010000}));
+    app->tick(); EXPECT_EQ(speech.last(), "The server has a later place, chapter 3. It is in Options.");
+    app->shutdown();
+    EXPECT_EQ(stateFile.onDisk("progressconflict:" + ref("b1")), "1700000000");
+    const auto requests = server.requests.size();
+    restartFromDisk();
+    for (size_t i = requests; i < server.requests.size(); ++i) EXPECT_NE(server.requests[i].kind, Kind::Book);
+    EXPECT_EQ(state.getString("pushed:" + ref("b1")), "");
+    server.progressSaveError = MusicServer::Error::None;
+    open("Now playing");
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters())); app->tick();
+    clock.setWallTime(1700000020); player.pos = 60; press(Button::PlayPause);
+    app->tick(); EXPECT_EQ(state.getString("progressconflict:" + ref("b1")), "");
+    EXPECT_EQ(state.getString("pushed:" + ref("b1")), "1700000020");
+}
+
 TEST_F(BookProgressPushTest, PeriodicPushWaitsSixtyPlaybackSecondsAndFiveSecondsOfMovement) {
     ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
     player.pos = 59;
@@ -16800,8 +16847,10 @@ TEST_F(BookProgressPushTest, EndOfBookPushesFinishedAndAnOfflineCompletionSurviv
     EXPECT_EQ(state.getString("pos:" + ref("b1")), "0:0.0");
     app->tick();
     app->shutdown();
+    const auto savesBeforeRetry = server.progressSaves.size();
     restartFromDisk();
     ASSERT_NO_FATAL_FAILURE(answerRetry());
+    ASSERT_EQ(server.progressSaves.size(), savesBeforeRetry + 1);
     EXPECT_TRUE(server.progressSaves.back().progress.finished);
     EXPECT_DOUBLE_EQ(server.progressSaves.back().progress.seconds, 380);
 }
@@ -16899,6 +16948,16 @@ TEST_F(BookProgressPushTest, FactoryResetDropsOutstandingAndQueuedProgressAcknow
     EXPECT_EQ(server.progressSaves.size(), 1u) << "erased progress must not be sent after reset";
     EXPECT_TRUE(state.getString("pos:" + ref("b1")).empty());
     EXPECT_TRUE(state.getString("pushed:" + ref("b1")).empty());
+}
+
+TEST_F(BookProgressPushTest, RetryDoesNotSendAPlaceForAChangedTrackOrder) {
+    state.setString("pos:" + ref("b1"), "1:30.0");
+    state.setString("postrack:" + ref("b1"), "old-track");
+    state.setString("posat:" + ref("b1"), "1700000000");
+    start();
+    ASSERT_TRUE(server.replyBook(lastOf(Kind::Book), twoFilesThreeChapters())); app->tick();
+    EXPECT_TRUE(server.progressSaves.empty());
+    EXPECT_EQ(state.getString("pushed:" + ref("b1")), "");
 }
 
 TEST_F(BookProgressPushTest, StaleStartupMetadataNeverOverwritesANewerPlayedPlace) {
@@ -17057,6 +17116,24 @@ TEST_F(BookProgressPullTest, NoLocalPlacePlaysAtOnceThenMovesToTheServersFileAnd
     EXPECT_EQ(state.getString("posat:" + ref("b1")), "1700000010");
     EXPECT_EQ(stateFile.saves, 0);
     ASSERT_NO_FATAL_FAILURE(expectNoOptions());
+}
+
+TEST_F(BookProgressPullTest, AChangedDownloadedTrackOrderDoesNotApplyServerPlace) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    RemoteProgress place = later();
+    place.trackIds = {"t2", "t1"}; place.trackDurations = {180, 200};
+    speech.said.clear(); ASSERT_NO_FATAL_FAILURE(answerPlace(place));
+    EXPECT_DOUBLE_EQ(player.pos, 0); EXPECT_TRUE(speech.said.empty());
+    EXPECT_NE(player.file.find("t1"), std::string::npos);
+}
+
+TEST_F(BookProgressPullTest, ChangedDownloadedDurationDoesNotApplyServerPlace) {
+    ASSERT_NO_FATAL_FAILURE(playBook(twoFilesThreeChapters()));
+    RemoteProgress place = later();
+    place.trackIds = {"t1", "t2"}; place.trackDurations = {300, 180};
+    speech.said.clear(); ASSERT_NO_FATAL_FAILURE(answerPlace(place));
+    EXPECT_DOUBLE_EQ(player.pos, 0); EXPECT_TRUE(speech.said.empty());
+    EXPECT_NE(player.file.find("t1"), std::string::npos);
 }
 
 TEST_F(BookProgressPullTest, ALaterServerPlaceIsOfferedOnceInOptionsAndOkSeeksWithoutChangingPause) {

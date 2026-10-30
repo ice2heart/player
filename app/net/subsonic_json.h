@@ -37,6 +37,13 @@ struct VersionResult {
     std::string version; // empty on an error, or when the answer has no lastModified
 };
 
+struct Bookmark {
+    std::string trackId;
+    std::int64_t position = 0; // milliseconds in the track
+    std::int64_t changed = 0; // wall milliseconds
+};
+Parsed<Bookmark> parseBookmarks(std::string_view body);
+
 PingResult parsePing(std::string_view body);
 // An answer that carries nothing but its status, such as scrobble's.
 Error parseStatus(std::string_view body);

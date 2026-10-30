@@ -773,27 +773,93 @@ TEST(Subsonic, ItsCatalogueIsMusic) {
     EXPECT_EQ(server.subsonic->catalogue(), oap::MusicServer::Catalogue::Music);
 }
 
-TEST(Subsonic, ProgressIsUnsupportedAndSendsNoRequest) {
+TEST(Subsonic, ProgressMapsNewestBookmarkToBookTimelineAndCancels) {
     Server s;
-    EXPECT_FALSE(s.subsonic->syncsProgress());
-    int read = 0, saved = 0;
-    s.subsonic->progress("a", [&](Error error, std::optional<oap::RemoteProgress> value) {
-        ++read;
-        EXPECT_EQ(error, Error::Server);
-        EXPECT_FALSE(value);
+    EXPECT_TRUE(s.subsonic->syncsProgress());
+    int calls = 0;
+    std::optional<oap::RemoteProgress> result;
+    auto id = s.subsonic->progress("al1", [&](Error error, std::optional<oap::RemoteProgress> p) {
+        EXPECT_EQ(error, Error::None); ++calls; result = p;
     });
-    s.subsonic->saveProgress("a", {}, [&](Error error) { ++saved; EXPECT_EQ(error, Error::Server); });
-    s.subsonic->saveProgress("a", {});
-    EXPECT_EQ(read, 0);
-    EXPECT_EQ(saved, 0);
-    s.subsonic->poll();
-    EXPECT_EQ(read, 1);
-    EXPECT_EQ(saved, 1);
-    EXPECT_TRUE(s.http->calls.empty());
-    auto id = s.subsonic->progress("a", [&](Error, std::optional<oap::RemoteProgress>) { ++read; });
+    s.http->answer(0, kOk, subsonicFixture("album.json")); s.subsonic->poll();
+    ASSERT_EQ(s.http->calls.size(), 2u);
+    EXPECT_NE(s.http->url(1).find("/getBookmarks?"), std::string::npos);
+    s.http->answer(1, kOk, R"({"subsonic-response":{"status":"ok","bookmarks":{"bookmark":[
+      {"entry":{"id":"s1"},"position":5000,"changed":"2025-01-01T00:00:00Z"},
+      {"entry":{"id":"s2"},"position":30500,"changed":"2025-01-02T00:00:00.123Z"},
+      {"entry":{"id":"unknown"},"position":1000,"changed":"2026-01-01T00:00:00Z"},
+      {"entry":{"id":"s1"},"position":"bad","changed":"2027-01-01T00:00:00Z"}]}}})");
+    s.subsonic->poll(); ASSERT_EQ(calls, 1); ASSERT_TRUE(result);
+    EXPECT_DOUBLE_EQ(result->seconds, 211.5); EXPECT_DOUBLE_EQ(result->duration, 395.5);
+    EXPECT_EQ(result->updated, 1735776000123LL);
+    id = s.subsonic->progress("al1", [&](Error, std::optional<oap::RemoteProgress>) { ++calls; });
+    s.http->answer(2, kOk, subsonicFixture("album.json")); s.subsonic->poll();
     s.subsonic->cancel(id);
-    s.subsonic->poll();
-    EXPECT_EQ(read, 1);
+    EXPECT_NE(std::find(s.http->cancelled.begin(), s.http->cancelled.end(), s.http->calls[3].id), s.http->cancelled.end());
+    s.http->answer(3, kOk, R"({"subsonic-response":{"status":"ok"}})");
+    s.subsonic->poll(); EXPECT_EQ(calls, 1);
+}
+
+TEST(Subsonic, ProgressSavesTrackOffsetAndPropagatesErrors) {
+    Server s; int calls = 0; Error result = Error::None;
+    s.subsonic->saveProgress("al1", {211.5, 395.5, false, 1735776000123LL}, [&](Error e) { ++calls; result = e; });
+    s.http->answer(0, kOk, subsonicFixture("album.json")); s.subsonic->poll();
+    s.http->answer(1, kOk, R"({"subsonic-response":{"status":"ok","bookmarks":{}}})"); s.subsonic->poll();
+    s.http->answer(2, kOk, subsonicFixture("album.json")); s.subsonic->poll();
+    ASSERT_EQ(s.http->calls.size(), 4u);
+    EXPECT_NE(s.http->url(3).find("/createBookmark?"), std::string::npos);
+    EXPECT_NE(s.http->url(3).find("&id=s2&position=30500"), std::string::npos);
+    s.http->answer(3, kOk, R"({"subsonic-response":{"status":"ok"}})"); s.subsonic->poll();
+    EXPECT_EQ(calls, 1); EXPECT_EQ(result, Error::None);
+    s.subsonic->saveProgress("al1", {0, 0, false, 0}, [&](Error e) { ++calls; result = e; });
+    s.http->unreachable(4); s.subsonic->poll(); EXPECT_EQ(calls, 2); EXPECT_EQ(result, Error::Unreachable);
+}
+
+TEST(Subsonic, OfflineSaveDoesNotOverwriteANewerServerBookmark) {
+    Server s; int calls = 0; Error result = Error::None;
+    s.subsonic->saveProgress("al1", {50, 395.5, false, 1735689600000LL}, [&](Error e) { ++calls; result = e; });
+    s.http->answer(0, kOk, subsonicFixture("album.json")); s.subsonic->poll();
+    s.http->answer(1, kOk, R"({"subsonic-response":{"status":"ok","bookmarks":{"bookmark":
+      [{"entry":{"id":"s2"},"position":30000,"changed":"2025-01-02T00:00:00Z"}]}}})");
+    s.subsonic->poll(); EXPECT_EQ(calls, 1); EXPECT_EQ(result, Error::Conflict);
+    EXPECT_EQ(s.http->calls.size(), 2u);
+}
+
+TEST(Subsonic, SaveRejectsAChangedTrackOrder) {
+    Server s; int calls = 0; Error result = Error::None;
+    oap::RemoteProgress place{211.5, 395.5, false, 1735776000123LL};
+    place.trackIds = {"s2", "s1"}; place.trackDurations = {214.5, 181};
+    s.subsonic->saveProgress("al1", place, [&](Error e) { ++calls; result = e; });
+    s.http->answer(0, kOk, subsonicFixture("album.json")); s.subsonic->poll();
+    s.http->answer(1, kOk, R"({"subsonic-response":{"status":"ok","bookmarks":{}}})"); s.subsonic->poll();
+    s.http->answer(2, kOk, subsonicFixture("album.json")); s.subsonic->poll();
+    EXPECT_EQ(calls, 1); EXPECT_EQ(result, Error::Server); EXPECT_EQ(s.http->calls.size(), 3u);
+    place.trackIds = {"s1", "s2"}; place.trackDurations = {181, 100};
+    s.subsonic->saveProgress("al1", place, [&](Error e) { ++calls; result = e; });
+    s.http->answer(3, kOk, subsonicFixture("album.json")); s.subsonic->poll();
+    s.http->answer(4, kOk, R"({"subsonic-response":{"status":"ok","bookmarks":{}}})"); s.subsonic->poll();
+    s.http->answer(5, kOk, subsonicFixture("album.json")); s.subsonic->poll();
+    EXPECT_EQ(calls, 2); EXPECT_EQ(result, Error::Server); EXPECT_EQ(s.http->calls.size(), 6u);
+}
+
+TEST(Subsonic, ProgressIgnoresInvalidBookmarksAndReportsNetworkFailures) {
+    Server s; int calls = 0; Error error = Error::None; std::optional<oap::RemoteProgress> place;
+    auto receive = [&](Error e, std::optional<oap::RemoteProgress> p) { ++calls; error = e; place = p; };
+    s.subsonic->progress("al1", receive);
+    s.http->answer(0, kOk, subsonicFixture("album.json")); s.subsonic->poll();
+    s.http->answer(1, kOk, R"({"subsonic-response":{"status":"ok","bookmarks":{"bookmark":[
+      {"entry":{"id":"s1"},"position":20,"changed":"2025-02-30T00:00:00Z"},
+      {"entry":{"id":"s1"},"position":-2,"changed":"2025-01-01T00:00:00Z"},
+      {"entry":{"id":"s2"},"position":9999999,"changed":"2025-01-01T00:00:00Z"},
+      {"entry":{"id":"s2"},"position":100,"changed":"garbage"}]}}})");
+    s.subsonic->poll(); EXPECT_EQ(calls, 1); EXPECT_EQ(error, Error::None); EXPECT_FALSE(place);
+    s.subsonic->progress("al1", receive);
+    s.http->answer(2, kOk, subsonicFixture("album.json")); s.subsonic->poll();
+    s.http->unreachable(3); s.subsonic->poll(); EXPECT_EQ(calls, 2); EXPECT_EQ(error, Error::Unreachable);
+    s.subsonic->progress("al1", receive);
+    s.http->answer(4, kOk, subsonicFixture("album.json")); s.subsonic->poll();
+    s.http->answer(5, kOk, R"({"subsonic-response":{"status":"ok","bookmarks":{}}})"); s.subsonic->poll();
+    EXPECT_EQ(calls, 3); EXPECT_EQ(error, Error::None); EXPECT_FALSE(place);
 }
 
 TEST(Subsonic, InProgressIsUnsupportedWithoutNetworkRequests) {

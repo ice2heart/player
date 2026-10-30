@@ -1,8 +1,13 @@
 #include "subsonic_json.h"
+#include "core/text.h"
 
 #include <yaml-cpp/yaml.h>
 
 #include <cstdio>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <limits>
 
 namespace oap::subsonic {
 
@@ -202,6 +207,59 @@ PingResult parsePing(std::string_view body) {
 }
 
 Error parseStatus(std::string_view body) { return open(body).error; }
+
+Parsed<Bookmark> parseBookmarks(std::string_view body) {
+    Parsed<Bookmark> parsed;
+    auto envelope = open(body);
+    parsed.error = envelope.error;
+    if (parsed.error != Error::None) return parsed;
+    forEach(child(child(envelope.response, "bookmarks"), "bookmark"), [&](const YAML::Node& node) {
+        try {
+            const auto id = text(child(node, "entry"), "id");
+            const auto stamp = text(node, "changed");
+            // A full ISO timestamp with a timezone is required; parseIsoTime also
+            // accepts bare dates and normalises invalid calendar days.
+            if (stamp.size() < 20 || stamp[4] != '-' || stamp[7] != '-' || stamp[10] != 'T' ||
+                stamp[13] != ':' || stamp[16] != ':') return;
+            for (auto i : {0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18})
+                if (!std::isdigit(static_cast<unsigned char>(stamp[std::size_t(i)]))) return;
+            const auto year = std::stoi(stamp.substr(0, 4));
+            const auto month = std::stoi(stamp.substr(5, 2));
+            const auto day = std::stoi(stamp.substr(8, 2));
+            if (!std::chrono::year_month_day{std::chrono::year{year}, std::chrono::month{unsigned(month)}, std::chrono::day{unsigned(day)}}.ok()) return;
+            std::size_t zone = 19;
+            if (stamp[zone] == '.') {
+                ++zone;
+                const auto begin = zone;
+                while (zone < stamp.size() && std::isdigit(static_cast<unsigned char>(stamp[zone]))) ++zone;
+                if (zone == begin) return;
+            }
+            if (zone == stamp.size() || (stamp[zone] != 'Z' && stamp[zone] != '+' && stamp[zone] != '-')) return;
+            if (stamp[zone] == 'Z') {
+                if (zone + 1 != stamp.size()) return;
+            } else {
+                const std::string offset = stamp.substr(zone + 1);
+                if (offset.size() != 5 || offset[2] != ':' ||
+                    !std::isdigit(static_cast<unsigned char>(offset[0])) || !std::isdigit(static_cast<unsigned char>(offset[1])) ||
+                    !std::isdigit(static_cast<unsigned char>(offset[3])) || !std::isdigit(static_cast<unsigned char>(offset[4])) ||
+                    std::stoi(offset.substr(0, 2)) > 23 || std::stoi(offset.substr(3, 2)) > 59) return;
+            }
+            const auto seconds = parseIsoTime(stamp);
+            const auto position = child(node, "position").as<std::int64_t>();
+            if (id.empty() || seconds <= 0 || position < 0) return;
+            std::int64_t fraction = 0;
+            auto dot = stamp.find('.');
+            if (dot != std::string::npos) {
+                int scale = 100;
+                for (std::size_t i = dot + 1; i < stamp.size() && scale && std::isdigit(static_cast<unsigned char>(stamp[i])); ++i, scale /= 10)
+                    fraction += (stamp[i] - '0') * scale;
+            }
+            if (seconds > (std::numeric_limits<std::int64_t>::max() - fraction) / 1000) return;
+            parsed.items.push_back({id, position, seconds * 1000 + fraction});
+        } catch (const YAML::Exception&) { /* Ignore an invalid bookmark, not its neighbours. */ }
+    });
+    return parsed;
+}
 
 Parsed<RemoteAlbum> parseAlbumList(std::string_view body, int pageSize) {
     auto parsed = parseList<RemoteAlbum>(body, "albumList2", "album", album);

@@ -58,7 +58,7 @@ public:
     // getAlbum; a Subsonic album has no chapters (its tracks are the parts).
     RequestId book(std::string albumId, std::function<void(Error, RemoteBook)> done) override;
     Catalogue catalogue() const override { return Catalogue::Music; }
-    bool syncsProgress() const override { return false; }
+    bool syncsProgress() const override { return true; }
     RequestId progress(std::string albumId, std::function<void(Error, std::optional<RemoteProgress>)> done) override;
     void saveProgress(std::string albumId, RemoteProgress progress, std::function<void(Error)> done = {}) override;
     RequestId inProgress(Done<RemoteAlbum> done) override;
@@ -102,7 +102,7 @@ private:
         Error error = Error::None;
         std::variant<std::monostate, ServerInfo, std::vector<RemoteAlbum>, std::vector<RemoteArtist>,
                      std::vector<RemoteTrack>, std::vector<RemotePlaylist>, std::vector<RemoteFolder>,
-                     std::vector<std::string>, std::string>
+                     std::vector<std::string>, std::string, std::optional<RemoteProgress>>
             data;
         bool more = false;
     };
@@ -117,6 +117,7 @@ private:
     std::string url(const std::string& method, const Params& params) const;
     RequestId request(const std::string& method, const Params& params, Parser parse, std::function<void(Reply)> done);
     template <class T, class P> RequestId list(const std::string& method, const Params& params, P parse, Done<T> done);
+    RequestId sendProgressBookmark(std::string albumId, RemoteProgress progress, std::function<void(Error)> done);
     void askExtensions(); // getOpenSubsonicExtensions, for transcodeOffset_
 
     Config config_;
@@ -124,6 +125,7 @@ private:
     std::shared_ptr<Inbox> inbox_ = std::make_shared<Inbox>();
     RequestId lastId_ = 0;
     std::unordered_map<RequestId, std::function<void(Reply)>> waiting_; // UI thread only
+    std::unordered_map<RequestId, RequestId> progressChildren_; // public request -> active HTTP request
     std::set<RequestId> scrobbleIds_;                                   // scrobbles waiting: finish() answers them
     enum class Known { NotYet, Asking, Yes, No };
     Known transcodeOffset_ = Known::NotYet; // whether a transcode can start later (timeOffset)

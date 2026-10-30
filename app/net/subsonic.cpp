@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cmath>
 #include <random>
 
 namespace oap {
@@ -31,6 +32,7 @@ const char* errorName(MusicServer::Error error) {
     case MusicServer::Error::Unreachable: return "server not reachable";
     case MusicServer::Error::BadLogin: return "wrong user name or password";
     case MusicServer::Error::Server: return "server error";
+    case MusicServer::Error::Conflict: return "newer server place";
     }
     return "unknown";
 }
@@ -145,17 +147,97 @@ MusicServer::RequestId Subsonic::list(const std::string& method, const Params& p
         });
 }
 
-MusicServer::RequestId Subsonic::progress(std::string, std::function<void(Error, std::optional<RemoteProgress>)> done) {
-    RequestId id = ++lastId_;
-    waiting_[id] = [done = std::move(done)](Reply reply) { done(reply.error, std::nullopt); };
-    std::lock_guard lock(inbox_->mutex);
-    inbox_->ready.emplace_back(id, Reply{configured() ? Error::Server : Error::NotConfigured, {}, false});
+MusicServer::RequestId Subsonic::progress(std::string albumId, std::function<void(Error, std::optional<RemoteProgress>)> done) {
+    const RequestId id = ++lastId_;
+    progressChildren_[id] = albumTracks(std::move(albumId), [this, id, done = std::move(done)](Error error, std::vector<RemoteTrack> tracks, bool) mutable {
+        if (!progressChildren_.contains(id)) return;
+        if (error != Error::None) { progressChildren_.erase(id); done(error, std::nullopt); return; }
+        progressChildren_[id] = request("getBookmarks", {}, [tracks = std::move(tracks)](const std::string& body) {
+            auto parsed = subsonic::parseBookmarks(body);
+            std::optional<RemoteProgress> best;
+            double duration = 0;
+            for (const auto& track : tracks) {
+                if (!std::isfinite(track.duration) || track.duration <= 0 || track.id.empty())
+                    return Reply{parsed.error, std::optional<RemoteProgress>{}, false};
+                duration += track.duration;
+            }
+            double start = 0;
+            for (const auto& track : tracks) {
+                for (const auto& bookmark : parsed.items) {
+                    const double offset = bookmark.position / 1000.0;
+                    if (bookmark.trackId == track.id && offset <= track.duration && (!best || bookmark.changed > best->updated))
+                        best = RemoteProgress{start + offset, duration, false, bookmark.changed};
+                }
+                start += track.duration;
+            }
+            if (best) for (const auto& track : tracks) {
+                best->trackIds.push_back(track.id);
+                best->trackDurations.push_back(track.duration);
+            }
+            return Reply{parsed.error, std::move(best), false};
+        }, [this, id, done = std::move(done)](Reply reply) mutable {
+            if (!progressChildren_.erase(id)) return;
+            auto* value = std::get_if<std::optional<RemoteProgress>>(&reply.data);
+            done(reply.error, value ? *value : std::nullopt);
+        });
+    });
     return id;
 }
 
-void Subsonic::saveProgress(std::string, RemoteProgress, std::function<void(Error)> done) {
-    if (!done) return;
-    progress({}, [done = std::move(done)](Error error, std::optional<RemoteProgress>) { done(error); });
+void Subsonic::saveProgress(std::string albumId, RemoteProgress progress, std::function<void(Error)> done) {
+    const RequestId id = ++lastId_;
+    progressChildren_[id] = this->progress(albumId, [this, id, albumId, progress, done = std::move(done)]
+        (Error error, std::optional<RemoteProgress> remote) mutable {
+        if (!progressChildren_.contains(id)) return;
+        if (error == Error::None && remote && !progress.trackIds.empty() &&
+            (progress.trackIds != remote->trackIds || progress.trackDurations.size() != remote->trackDurations.size())) error = Error::Server;
+        if (error == Error::None && remote && !progress.trackIds.empty())
+            for (std::size_t i = 0; i < progress.trackDurations.size(); ++i)
+                if (!std::isfinite(progress.trackDurations[i]) || std::abs(progress.trackDurations[i] - remote->trackDurations[i]) > RemoteProgress::kDurationTolerance) { error = Error::Server; break; }
+        // Local positions are persisted with whole-second wall timestamps, so
+        // sub-second server differences cannot establish an ordering here.
+        if (error != Error::None || (remote && remote->updated / 1000 > progress.updated / 1000)) {
+            progressChildren_.erase(id);
+            if (done) done(error == Error::None ? Error::Conflict : error);
+            return;
+        }
+        progressChildren_[id] = sendProgressBookmark(std::move(albumId), progress, [this, id, done = std::move(done)](Error result) mutable {
+            if (progressChildren_.erase(id) && done) done(result);
+        });
+    });
+}
+
+MusicServer::RequestId Subsonic::sendProgressBookmark(std::string albumId, RemoteProgress progress, std::function<void(Error)> done) {
+    const RequestId id = ++lastId_;
+    progressChildren_[id] = albumTracks(std::move(albumId), [this, id, progress, done = std::move(done)](Error error, std::vector<RemoteTrack> tracks, bool) mutable {
+        if (!progressChildren_.contains(id)) return;
+        auto fail = [&](Error e) { progressChildren_.erase(id); if (done) done(e); };
+        if (error != Error::None) { fail(error); return; }
+        if (tracks.empty() || !std::isfinite(progress.seconds) || progress.seconds < 0) { fail(Error::Server); return; }
+        if (!progress.trackIds.empty()) {
+            if (progress.trackIds.size() != tracks.size() || progress.trackDurations.size() != tracks.size()) { fail(Error::Server); return; }
+            for (std::size_t i = 0; i < tracks.size(); ++i)
+                if (progress.trackIds[i] != tracks[i].id || !std::isfinite(progress.trackDurations[i]) ||
+                    std::abs(progress.trackDurations[i] - tracks[i].duration) > RemoteProgress::kDurationTolerance) { fail(Error::Server); return; }
+        }
+        double remaining = progress.seconds;
+        for (std::size_t i = 0; i < tracks.size(); ++i) {
+            const auto& track = tracks[i];
+            if (track.id.empty() || !std::isfinite(track.duration) || track.duration <= 0) { fail(Error::Server); return; }
+            if (remaining < track.duration || i + 1 == tracks.size()) {
+                if (remaining > track.duration) { fail(Error::Server); return; }
+                const auto position = static_cast<std::int64_t>(remaining * 1000);
+                progressChildren_[id] = request("createBookmark", {{"id", track.id}, {"position", std::to_string(position)}},
+                    [](const std::string& body) { return Reply{subsonic::parseStatus(body), {}, false}; },
+                    [this, id, done = std::move(done)](Reply reply) mutable {
+                        if (progressChildren_.erase(id) && done) done(reply.error);
+                    });
+                return;
+            }
+            remaining -= track.duration;
+        }
+    });
+    return id;
 }
 
 MusicServer::RequestId Subsonic::ping(std::function<void(Error, ServerInfo)> done) {
@@ -222,7 +304,11 @@ MusicServer::RequestId Subsonic::book(std::string albumId, std::function<void(Er
 }
 
 MusicServer::RequestId Subsonic::inProgress(Done<RemoteAlbum> done) {
-    return progress({}, [done = std::move(done)](Error error, std::optional<RemoteProgress>) { done(error, {}, false); });
+    RequestId id = ++lastId_;
+    waiting_[id] = [done = std::move(done)](Reply reply) { done(reply.error, {}, false); };
+    std::lock_guard lock(inbox_->mutex);
+    inbox_->ready.emplace_back(id, Reply{configured() ? Error::Server : Error::NotConfigured, {}, false});
+    return id;
 }
 
 MusicServer::RequestId Subsonic::playlists(Done<RemotePlaylist> done) {
@@ -284,6 +370,12 @@ MusicServer::RequestId Subsonic::deletePlaylist(std::string playlistId, std::fun
 }
 
 void Subsonic::cancel(RequestId id) {
+    if (auto it = progressChildren_.find(id); it != progressChildren_.end()) {
+        const auto child = it->second;
+        progressChildren_.erase(it);
+        cancel(child);
+        return;
+    }
     if (waiting_.erase(id)) http_->cancel(id);
 }
 

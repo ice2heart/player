@@ -256,6 +256,7 @@ std::string errorText(MusicServer::Error error) {
     case MusicServer::Error::Unreachable: return "Server not reachable";
     case MusicServer::Error::BadLogin: return "Wrong user name or password";
     case MusicServer::Error::Server: return "Server error";
+    case MusicServer::Error::Conflict: return "Server has a newer place";
     case MusicServer::Error::None: break;
     }
     return "";
@@ -268,6 +269,7 @@ std::string errorHelp(MusicServer::Error error) {
         return "Check that Wi-Fi is on and the server is running, then choose Try again.";
     case MusicServer::Error::BadLogin: return "Check the user and password in the server section of config.yaml.";
     case MusicServer::Error::Server: return "The server could not answer. Choose Try again, or try later.";
+    case MusicServer::Error::Conflict: return "The server has a newer place.";
     case MusicServer::Error::None: break;
     }
     return "";
@@ -5848,6 +5850,15 @@ void App::cancelProgressPull() {
 
 std::optional<App::ServerPlace> App::serverPlace(RemoteProgress progress) const {
     if (!book_ || book_->files.empty() || !std::isfinite(progress.seconds) || progress.seconds < 0) return std::nullopt;
+    if (!progress.trackIds.empty()) {
+        if (progress.trackIds.size() != book_->files.size() || progress.trackDurations.size() != book_->files.size() ||
+            book_->durations.size() != book_->files.size()) return std::nullopt;
+        for (size_t i = 0; i < book_->files.size(); ++i)
+            if (progress.trackIds[i] != book_->files[i].string() ||
+                !std::isfinite(progress.trackDurations[i]) || !std::isfinite(book_->durations[i]) ||
+                std::abs(progress.trackDurations[i] - book_->durations[i]) > RemoteProgress::kDurationTolerance)
+                return std::nullopt;
+    }
     ServerPlace place;
     place.progress = progress;
     place.position = progress.seconds;
@@ -5918,7 +5929,9 @@ void App::useServerPlace(ServerPlace target) {
         progressQueued_.erase(id); // a queued older local place must not replace the accepted one
         const std::string stamp = std::to_string(target.progress.updated / kProgressMillisPerSecond);
         state_.setString("pos:" + id, std::to_string(fileIndex_) + ":" + tenths(place()));
+        if (fileIndex_ < book_->files.size()) state_.setString("postrack:" + id, book_->files[fileIndex_].string());
         state_.setString("posat:" + id, stamp);
+        state_.erase("progressconflict:" + id);
         state_.erase("finished:" + id);
         if (needsSave) {
             // A pause after the notice may already have sent the old local
@@ -5960,6 +5973,8 @@ void App::recordProgress(bool finished) {
     if (state_.getString("pos:" + id) == position && wasFinished == finished &&
         !state_.getString("posat:" + id).empty()) return;
     state_.setString("pos:" + id, position);
+    if (fileIndex_ < book_->files.size()) state_.setString("postrack:" + id, book_->files[fileIndex_].string());
+    state_.erase("progressconflict:" + id); // a new local place may be sent again
     if (finished) state_.setString("finished:" + id, "1");
     else state_.erase("finished:" + id);
     const auto at = static_cast<std::int64_t>(clock_.wallTime());
@@ -5979,11 +5994,15 @@ void App::pushProgress() {
     save.album = book_->source->id;
     save.position = state_.getString("pos:" + id);
     save.stamp = state_.getString("posat:" + id);
+    if (!save.stamp.empty() && state_.getString("progressconflict:" + id) == save.stamp) return;
     if (save.stamp.empty() || (save.stamp == state_.getString("pushed:" + id) && state_.getString("pushdirty:" + id) != "1")) return;
     save.progress.finished = state_.getString("finished:" + id) == "1";
+    for (const auto& file : book_->files) save.progress.trackIds.push_back(file.string());
+    save.progress.trackDurations = book_->durations;
     for (double duration : book_->durations) save.progress.duration += duration;
     save.progress.seconds = save.progress.finished ? save.progress.duration : bookTime(fileIndex_, place());
-    save.progress.updated = static_cast<std::int64_t>(clock_.wallTime()) * kProgressMillisPerSecond;
+    try { save.progress.updated = std::stoll(save.stamp) * kProgressMillisPerSecond; }
+    catch (...) { return; }
     sendProgress(id, std::move(save));
 }
 
@@ -6005,7 +6024,13 @@ void App::sendProgress(const std::string& id, ProgressSave save) {
         if (error == MusicServer::Error::None && same) {
             state_.setString("pushed:" + id, save.stamp);
             state_.erase("pushdirty:" + id);
+            state_.erase("progressconflict:" + id);
             if (shutDown_ || sleeping_ || quit_) saveState();
+        } else if (error == MusicServer::Error::Conflict && same) {
+            state_.setString("progressconflict:" + id, save.stamp);
+            if (shutDown_ || sleeping_ || quit_) saveState();
+            else if (book_ && !music_ && book_->path.string() == id)
+                pullProgress(true, save.stamp);
         }
         auto next = progressQueued_.find(id);
         if (next != progressQueued_.end()) {
@@ -6048,6 +6073,7 @@ void App::retryProgress() {
         if (!key.starts_with("posat:")) continue;
         const std::string id = key.substr(6);
         const std::string pushed = state_.getString("pushed:" + id);
+        if (state_.getString("progressconflict:" + id) == stamp) continue;
         try { if (state_.getString("pushdirty:" + id) != "1" && !pushed.empty() && std::stoll(stamp) <= std::stoll(pushed)) continue; }
         catch (...) { continue; }
         const auto on = serverRefOf({id});
@@ -6070,8 +6096,15 @@ void App::retryProgress() {
                 if (colon == std::string::npos) return;
                 const size_t file = std::stoul(position.substr(0, colon));
                 if (file >= book.tracks.size()) return;
+                const auto trackId = state_.getString("postrack:" + id);
+                // Completed books resume locally at file zero, but the pending
+                // completion was recorded on the final track.
+                const auto savedFile = finished ? book.tracks.size() - 1 : file;
+                if (!trackId.empty() && trackId != book.tracks[savedFile].id) return;
                 save.progress.seconds = std::stod(position.substr(colon + 1));
                 for (size_t i = 0; i < book.tracks.size(); ++i) {
+                    save.progress.trackIds.push_back(book.tracks[i].id);
+                    save.progress.trackDurations.push_back(book.tracks[i].duration);
                     save.progress.duration += book.tracks[i].duration;
                     if (i < file) save.progress.seconds += book.tracks[i].duration;
                 }

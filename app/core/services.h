@@ -339,9 +339,13 @@ struct RemoteBook {
 };
 // A place on the book timeline; updated is wall-clock milliseconds since 1970.
 struct RemoteProgress {
+    static constexpr double kDurationTolerance = 0.1; // seconds; cached durations are rounded
     double seconds = 0, duration = 0;
     bool finished = false;
     std::int64_t updated = 0;
+    // Optional timeline identity, for providers whose progress is per track.
+    std::vector<std::string> trackIds;
+    std::vector<double> trackDurations;
 };
 struct RemotePlaylist {
     std::string id, name;
@@ -356,7 +360,7 @@ struct RemotePlaylist {
 // is dropped. Callbacks must not hold pointers to screens; keep the id instead.
 class MusicServer {
 public:
-    enum class Error { None, NotConfigured, Unreachable, BadLogin, Server };
+    enum class Error { None, NotConfigured, Unreachable, BadLogin, Server, Conflict };
     struct ServerInfo {
         std::string type, version; // "navidrome", "0.64.2"
     };

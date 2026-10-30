@@ -115,7 +115,7 @@ app/core/      App ── takes std::vector<ServerLink>; one Home entry per serv
                 │     services.h: book(), catalogue(), progress(), saveProgress(), inProgress()
                 └── settings: ServerConfig, serverConfigs()
 app/net/       Http: GET with headers, plus JSON PATCH with a body
-               Subsonic        : MusicServer (no progress sync)
+               Subsonic        : MusicServer (book progress via track bookmarks)
                Audiobookshelf  : MusicServer + audiobookshelf_json.{h,cpp}
 app/frontend/  makeServers(config) → Servers: one MusicServer + one Downloader per entry
 ```
@@ -136,11 +136,12 @@ app/frontend/  makeServers(config) → Servers: one MusicServer + one Downloader
   ```
 
 - **Progress sync.** `RemoteProgress` carries timeline seconds, duration, completion and the
-  server update time in wall milliseconds. `syncsProgress()` is true for Audiobookshelf only.
+  server update time in wall milliseconds. `syncsProgress()` is true for Audiobookshelf and Subsonic.
   `progress(id, done)` returns an optional place (404 means none); `saveProgress(id, place, done = {})`
   optionally acknowledges the PATCH through `poll()`, so failed saves stay pending.
-  `inProgress(done)` lists the selected book library’s in-progress books. Subsonic answers
-  progress and in-progress requests with `Error::Server`; `NoMusicServer` uses `NotConfigured`.
+  `inProgress(done)` lists the selected book library’s in-progress books. Subsonic implements
+  progress using track bookmarks (streaming.md 5.6), but its `inProgress` is unsupported;
+  `NoMusicServer` uses `NotConfigured`.
 - **`ServerLink`** (in `services.h`) is what `App` gets per server:
   `{ ServerConfig config; std::string key; std::string name; MusicServer& server; Downloader& downloader; }`
   (`key` is the server key, `name` the spoken name after the rules above). The front ends own

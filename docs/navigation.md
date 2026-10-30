@@ -351,6 +351,10 @@ instead (and while a book plays they leave it playing and keep the queue for Con
 A book on a server that syncs progress starts playing its local place immediately and asks
 for the server's place silently. This also applies to a whole download while offline: a
 failed progress request says nothing and does not delay playback.
+Subsonic book progress uses the server's track bookmarks. If the server has a newer
+place, an older offline save is retained locally and the server place is offered on
+opening the book. A changed track order or duration prevents a place from being
+applied to the wrong downloaded chapter.
 
 When the server's saved place is newer and more than 30 seconds away, a book with no local
 place moves there and says the chapter title. With a local place it keeps playing and says
