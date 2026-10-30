@@ -3903,6 +3903,7 @@ void App::leaveEmptyPlayer() {
 }
 
 void App::finishPendingOpen() {
+    cancelNavigation(); // contacts pressed while loading must not act on the new file
     PendingOpen open = std::move(*pendingOpen_);
     pendingOpen_.reset(); // before the callbacks, which may open again
     if (player_.isOpen()) {

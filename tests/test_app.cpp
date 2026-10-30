@@ -17910,3 +17910,40 @@ TEST_F(AppTest, PausedSeekingCountsAsActivityUntilTheButtonIsReleased) {
     idle(61s);
     EXPECT_EQ(app->mode(), App::Mode::Sleeping) << "inactivity sleep returns after release";
 }
+
+TEST_F(AsyncOpenTest, ALightPressDuringAnOpenIsCancelledWhenTheFileArrives) {
+    playWeather();
+    press(Button::Forward);
+    ASSERT_TRUE(player.opening());
+    player.seeks.clear();
+    app->keyDown(Button::Back);
+    idle(100ms); // still below the hold threshold when the new file arrives
+    finishOpen();
+    player.pos = 100;
+    const auto said = speech.said.size();
+    idle(1s);
+    app->keyUp(Button::Back);
+    EXPECT_TRUE(player.seeks.empty());
+    EXPECT_EQ(player.pos, 100);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_EQ(speech.said.size(), said);
+    deep(Button::Forward);
+    EXPECT_EQ(player.pos, 130) << "a fresh gesture still works";
+}
+
+TEST_F(AsyncOpenTest, ALightPressDuringAnOpenCannotSkipWhenReleasedAfterCompletion) {
+    playWeather();
+    press(Button::Forward);
+    ASSERT_TRUE(player.opening());
+    app->keyDown(Button::Back);
+    idle(100ms);
+    finishOpen();
+    player.pos = 100;
+    player.seeks.clear();
+    const auto said = speech.said.size();
+    app->keyUp(Button::Back); // release below the hold threshold
+    EXPECT_TRUE(player.seeks.empty());
+    EXPECT_EQ(player.pos, 100);
+    EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_EQ(speech.said.size(), said);
+}

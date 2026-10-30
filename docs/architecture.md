@@ -341,9 +341,10 @@ key / GPIO ─► App::keyDown(b) ─► GestureDetector.press   ─► Deep / S
   before returning without player work. Already-polled events from
   keys cancelled during the same tick are suppressed by the App's held-key locks.
   Menus use this lifecycle for deep-then-hold movement; players use it to change
-  seek rate and stop on release or cancellation. New file opens also cancel held
-  navigation contacts (`cancelNavigation()`), so a natural track change cannot
-  start a hold in the next file; held volume and Play remain global.
+  seek rate and stop on release or cancellation. Starting a file open and completing
+  an asynchronous open cancel held navigation contacts (`cancelNavigation()`), so
+  a natural track change or a press during loading cannot start a hold in the new
+  file; held volume and Play remain global.
 - **Repeat**: the volume keys (`VolumeUp`, `VolumeDown`) send a `Short` as soon as they go
   down, then a `Repeat` every `kRepeatInterval` (150 ms) after `kRepeatDelay` (400 ms), until
   they are let go. They have no long press and the release says nothing. `App` plays the
