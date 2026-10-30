@@ -117,7 +117,7 @@ protected:
 
     // Starts the App and, unless `scan` is false, lets its background scan finish.
     void start(bool scan = true) {
-        app = std::make_unique<App>(Services{speech, player, sounds, volume, serverLinks(), indexStore, scanner, settings, state, clock, textFiles}, root, music, cache, queueFile, scrobbleFile);
+        app = std::make_unique<App>(Services{speech, player, sounds, volume, serverLinks(), indexStore, scanner, settings, state, clock, textFiles, nullptr, nullptr, nullptr, localPlaylists}, root, music, cache, queueFile, scrobbleFile);
         app->start();
         if (scan) ASSERT_NO_FATAL_FAILURE(deliverScan());
     }
@@ -229,6 +229,7 @@ protected:
     bool noServerLinks = false;         // start() gives the App an empty list of servers
     std::vector<ServerLink> moreLinks;  // servers after the first, for start()
     FakeDownloader downloader;
+    FakeLocalPlaylists* localPlaylists = nullptr;
     FakeLibraryStore indexStore;    // library.db
     FakeLibraryScanner scanner; // the background scan: the test delivers it (deliverScan())
     FakeTagReader tags;         // what the real scan reads from the files
@@ -18340,4 +18341,330 @@ TEST_F(AppTest, CriticalBatterySavesBeforePowerOffOrWarnsWhenUnsupported) {
     app->tick();
     EXPECT_EQ(power.powerOffRequests, 1);
     EXPECT_EQ(speech.last(), "Battery critical.");
+}
+
+class PlaylistEditingTest : public MusicQueueTest {
+protected:
+    void SetUp() override {
+        MusicQueueTest::SetUp();
+        localPlaylists = &playlists;
+    }
+    FakeLocalPlaylists playlists;
+};
+
+TEST_F(PlaylistEditingTest, LocalCreateRemoveAndDeleteConfirmation) {
+    start();
+    open("Music");
+    open("Playlists");
+    open("Create playlist");
+    EXPECT_EQ(labels().front(), "On the device");
+    press(Button::Ok);
+    ASSERT_EQ(playlists.lists.size(), 1u);
+    EXPECT_TRUE(speech.last().find("Created Playlist, ") == 0);
+    const auto name = playlists.lists.front().name;
+    EXPECT_TRUE(name.starts_with("Playlist, "));
+    playlists.lists.front().tracks = {roadTrip() / "01 - Sunrise.mp3", roadTrip() / "02 - Highway.mp3"};
+    open(name);
+    press(Button::Forward);
+    press(Button::Options);
+    open("Remove from playlist");
+    ASSERT_EQ(playlists.lists.front().tracks.size(), 1u);
+    EXPECT_EQ(playlists.lists.front().tracks.front(), roadTrip() / "02 - Highway.mp3");
+    EXPECT_EQ(speech.last(), "Removed from playlist.");
+    open("Delete playlist");
+    EXPECT_EQ(level().items[level().index].label, "Cancel");
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Cancelled.");
+    ASSERT_EQ(playlists.lists.size(), 1u);
+    open("Delete playlist");
+    open("Yes, delete");
+    EXPECT_TRUE(playlists.lists.empty());
+    EXPECT_EQ(speech.last(), "Playlist deleted.");
+}
+
+TEST_F(PlaylistEditingTest, AddLocalTrackRemembersLastEligiblePlaylistAndReportsWriteFailure) {
+    playlists.lists = {{"a", "Apple", {}}, {"z", "Zebra", {}}};
+    start();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Storm")}));
+    press(Button::Ok);
+    open("Add to playlist");
+    open("Zebra");
+    EXPECT_EQ(speech.last(), "Added to playlist.");
+    ASSERT_EQ(playlists.lists[1].tracks.size(), 1u);
+    EXPECT_EQ(playlists.lists[1].tracks[0], alphaFile(1));
+    open("Add to playlist");
+    EXPECT_EQ(level().items[level().index].label, "Zebra");
+    playlists.failWrites = true;
+    press(Button::Ok);
+    EXPECT_EQ(speech.last(), "Could not save playlist.");
+    EXPECT_EQ(playlists.lists[1].tracks.size(), 1u);
+}
+
+TEST_F(PlaylistEditingTest, ServerCreateAddRemoveAndDeleteHandleErrorsAndCancellation) {
+    indexStore.playlists.push_back({TrackCache::serverKey("https://music.example", "ann"), "p", "Remote mix", 2, 0});
+    start();
+    open("Music");
+    open("Playlists");
+    open("Create playlist");
+    open("Server");
+    EXPECT_EQ(speech.last(), "Saving.");
+    auto create = server.lastRequest();
+    EXPECT_EQ(create.kind, Kind::CreatePlaylist);
+    ASSERT_TRUE(create.trackIds.empty());
+    ASSERT_TRUE(server.replyCreated(create.id, "new")); app->tick();
+    EXPECT_TRUE(speech.last().find("Created Playlist, ") == 0);
+    EXPECT_TRUE(hasLabel("Remote mix"));
+    open("Remote mix");
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "First"}, {"t2", "Second"}})); app->tick();
+    open("First");
+    press(Button::Ok);
+    open("Add to playlist");
+    EXPECT_EQ(labels(), (std::vector<std::string>{create.arg, "Remote mix"}));
+    open("Remote mix");
+    auto add = server.lastRequest();
+    EXPECT_EQ(add.kind, Kind::AddPlaylistTrack);
+    EXPECT_EQ(add.arg, "p");
+    EXPECT_EQ(add.trackIds, (std::vector<std::string>{"t1"}));
+    ASSERT_TRUE(server.fail(add.id, MusicServer::Error::Unreachable)); app->tick();
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    press(Button::Ok);
+    auto retry = server.lastRequest();
+    ASSERT_TRUE(server.replyCreated(retry.id)); app->tick();
+    EXPECT_EQ(speech.last(), "Added to playlist.");
+    auto stored = std::find_if(indexStore.playlists.begin(), indexStore.playlists.end(), [](const IndexPlaylist& p) { return p.id == "p"; });
+    ASSERT_NE(stored, indexStore.playlists.end()); EXPECT_EQ(stored->songCount, 3);
+    press(Button::Home); // player
+    press(Button::Home); // playlist
+    press(Button::Forward); // First
+    press(Button::Options);
+    open("Remove from playlist");
+    EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "First"}, {"t2", "Second"}})); app->tick();
+    open("Second");
+    auto remove = server.lastRequest();
+    EXPECT_EQ(remove.kind, Kind::RemovePlaylistTrack);
+    EXPECT_EQ(remove.trackIndex, 1u);
+    ASSERT_TRUE(server.replyCreated(remove.id)); app->tick();
+    EXPECT_EQ(speech.last(), "Removed from playlist.");
+    stored = std::find_if(indexStore.playlists.begin(), indexStore.playlists.end(), [](const IndexPlaylist& p) { return p.id == "p"; });
+    ASSERT_NE(stored, indexStore.playlists.end()); EXPECT_EQ(stored->songCount, 2);
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "First"}})); app->tick();
+    open("Delete playlist");
+    EXPECT_EQ(level().items[level().index].label, "Cancel");
+    open("Yes, delete");
+    auto deletion = server.lastRequest();
+    EXPECT_EQ(deletion.kind, Kind::DeletePlaylist);
+    press(Button::Home);
+    EXPECT_FALSE(server.replyCreated(deletion.id));
+    open("Delete playlist");
+    open("Yes, delete");
+    auto again = server.lastRequest();
+    ASSERT_TRUE(server.replyCreated(again.id)); app->tick();
+    EXPECT_EQ(speech.last(), "Playlist deleted.");
+    EXPECT_FALSE(hasLabel("Remote mix"));
+}
+
+TEST_F(PlaylistEditingTest, RemoteTrackCannotBeAddedToLocalPlaylist) {
+    playlists.lists = {{"local", "Local list", {}}};
+    indexStore.playlists.push_back({TrackCache::serverKey("https://music.example", "ann"), "p", "Remote mix", 1, 0});
+    start();
+    ASSERT_TRUE(app->playQueue("Remote", {remoteEntry("t1", "First")}));
+    press(Button::Ok);
+    open("Add to playlist");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Remote mix"}));
+    open("Remote mix");
+    EXPECT_EQ(server.lastRequest().kind, Kind::AddPlaylistTrack);
+    EXPECT_EQ(server.lastRequest().trackIds, (std::vector<std::string>{"t1"}));
+    ASSERT_TRUE(server.replyCreated(server.lastRequest().id)); app->tick();
+    EXPECT_TRUE(playlists.lists[0].tracks.empty());
+}
+
+class DownloadedPlaylistEditingTest : public MusicPlaylistsTest {
+protected:
+    void SetUp() override {
+        MusicPlaylistsTest::SetUp();
+        localPlaylists = &playlists;
+    }
+    FakeLocalPlaylists playlists;
+};
+
+TEST_F(DownloadedPlaylistEditingTest, RemovalFetchesServerOrderAndHandlesFailureAndDuplicates) {
+    indexPlaylist("p1", "Road Trip", 3);
+    seedRoad(); // the snapshot has Sunrise and Highway only
+    openPlaylists();
+    open("Road Trip");
+    EXPECT_TRUE(hasLabel("Highway"));
+    while (level().items[level().index].label != "Highway") press(Button::Forward);
+    press(Button::Options);
+    open("Remove from playlist");
+    EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+    auto first = server.lastRequest().id;
+    ASSERT_TRUE(server.fail(first, MusicServer::Error::Unreachable)); app->tick();
+    EXPECT_TRUE(hasLabel("Server not reachable"));
+    EXPECT_EQ(requestsOf(Kind::RemovePlaylistTrack), 0u);
+    open("Try again");
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "Sunrise"}, {"t1", "Sunrise"}, {"t2", "Highway"}})); app->tick();
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Sunrise", "Sunrise", "Highway"}));
+    open("Highway");
+    auto remove = server.lastRequest();
+    EXPECT_EQ(remove.kind, Kind::RemovePlaylistTrack);
+    EXPECT_EQ(remove.trackIndex, 2u);
+    ASSERT_TRUE(server.replyCreated(remove.id)); app->tick();
+    EXPECT_EQ(speech.last(), "Removed from playlist.");
+    EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "Sunrise"}, {"t1", "Sunrise"}})); app->tick();
+    open("Download playlist");
+    EXPECT_EQ(speech.last(), "Already downloaded.");
+    press(Button::Home);
+    auto asked = requestsOf(Kind::PlaylistTracks);
+    open("Road Trip");
+    EXPECT_EQ(requestsOf(Kind::PlaylistTracks), asked + 1) << "the older download is not the current server list";
+    EXPECT_TRUE(hasLabel("Loading"));
+}
+
+class LinkedLocalPlaylistTest : public LinkedLocalStarTest {
+protected:
+    void SetUp() override {
+        LinkedLocalStarTest::SetUp();
+        localPlaylists = &playlists;
+        indexStore.playlists = {{firstKey, "p1", "First server list", 0, 0},
+                                {secondKey, "p2", "Second server list", 0, 0}};
+    }
+    FakeLocalPlaylists playlists;
+};
+
+TEST_F(LinkedLocalPlaylistTest, AddsOnlyToServersWithAReferenceForTheCurrentLocalTrack) {
+    seed({LibraryIndex::seenRef(firstKey, SeenKind::Album, "album"),
+          LibraryIndex::seenRef(firstKey, SeenKind::Track, "server-song")});
+    playLocal();
+    press(Button::Ok);
+    open("Add to playlist");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"First server list"}));
+    open("First server list");
+    EXPECT_EQ(server.lastRequest().kind, Kind::AddPlaylistTrack);
+    EXPECT_EQ(server.lastRequest().trackIds, (std::vector<std::string>{"server-song"}));
+    ASSERT_TRUE(server.replyCreated(server.lastRequest().id)); app->tick();
+    EXPECT_EQ(player.file, path);
+}
+
+TEST_F(PlaylistEditingTest, UnsupportedServerIsNotAPlaylistDestination) {
+    server.playlistEditingSupported = false;
+    start();
+    open("Music"); open("Playlists"); open("Create playlist");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"On the device"}));
+}
+
+TEST_F(DownloadedPlaylistEditingTest, InFlightCatalogueCannotResurrectADeletedPlaylist) {
+    indexPlaylist("p1", "Road Trip", 1);
+    openPlaylists();
+    open("Road Trip");
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "Sunrise"}})); app->tick();
+    open("Delete playlist"); open("Yes, delete");
+    ASSERT_TRUE(server.replyCreated(server.lastRequest().id)); app->tick();
+    EXPECT_FALSE(hasLabel("Road Trip"));
+    syncWith({{"p1", "Road Trip", 1}}); // an older response was already in flight
+    press(Button::Home); open("Playlists");
+    EXPECT_FALSE(hasLabel("Road Trip"));
+}
+
+TEST_F(PlaylistEditingTest, ServerCreateFinishingUnderPowerMenuUpdatesIndexSilently) {
+    start();
+    open("Music"); open("Playlists"); open("Create playlist"); open("Server");
+    auto request = server.lastRequest();
+    hold(Button::Power);
+    ASSERT_EQ(level().title, "Power");
+    const auto count = speech.said.size();
+    ASSERT_TRUE(server.replyCreated(request.id, "new")); app->tick();
+    EXPECT_EQ(level().title, "Power");
+    EXPECT_EQ(speech.said.size(), count);
+    auto found = std::find_if(indexStore.playlists.begin(), indexStore.playlists.end(), [](const IndexPlaylist& p) { return p.id == "new"; });
+    EXPECT_NE(found, indexStore.playlists.end());
+    press(Button::Home);
+    EXPECT_EQ(level().items[level().index].label, "Playlist created");
+    press(Button::Ok);
+    EXPECT_EQ(level().title, "Playlists");
+}
+
+TEST_F(DownloadedPlaylistEditingTest, RefreshingEditedUniquePlaylistRestoresOfflineSnapshot) {
+    indexPlaylist("p1", "Road Trip", 2);
+    seedRoad();
+    openPlaylists(); open("Road Trip");
+    while (level().items[level().index].label != "Highway") press(Button::Forward);
+    press(Button::Options); open("Remove from playlist");
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "Sunrise"}, {"t2", "Highway"}})); app->tick();
+    open("Highway");
+    ASSERT_TRUE(server.replyCreated(server.lastRequest().id)); app->tick();
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "Sunrise"}})); app->tick();
+    open("Download playlist");
+    EXPECT_EQ(speech.last(), "Already downloaded.");
+    press(Button::Home); // the playlist list
+    auto asked = requestsOf(Kind::PlaylistTracks);
+    open("Road Trip");
+    EXPECT_EQ(requestsOf(Kind::PlaylistTracks), asked);
+    EXPECT_TRUE(hasLabel("Sunrise"));
+    EXPECT_FALSE(hasLabel("Highway"));
+}
+
+TEST_F(DownloadedPlaylistEditingTest, EditingWhileDownloadRunsKeepsItsSnapshotStale) {
+    indexPlaylist("p1", "Road Trip", 2);
+    seedRoad();
+    openPlaylists(); open("Road Trip");
+    while (level().items[level().index].label != "Highway") press(Button::Forward);
+    press(Button::Options); open("Remove from playlist");
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "Sunrise"}, {"t2", "Highway"}})); app->tick();
+    open("Highway"); ASSERT_TRUE(server.replyCreated(server.lastRequest().id)); app->tick();
+    std::vector<RemoteTrack> revised{{"t1", "Sunrise", "", "", 1, 1, "mp3", 5}, {"t3", "New", "", "", 1, 2, "mp3", 5}};
+    ASSERT_TRUE(server.reply(server.lastRequest().id, revised)); app->tick();
+    open("Download playlist");
+    ASSERT_FALSE(downloader.requests.empty());
+    ASSERT_TRUE(app->playRemote("Road Trip", revised, 0, playlistSource("p1")));
+    press(Button::Ok); open("Add to playlist"); open("Road Trip");
+    ASSERT_TRUE(server.replyCreated(server.lastRequest().id)); app->tick();
+    finishLast();
+    press(Button::Home); // player
+    press(Button::Home); // playlist page
+    press(Button::Home); // playlist list
+    open("Road Trip");
+    EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+    EXPECT_TRUE(hasLabel("Loading"));
+}
+
+TEST_F(DownloadedPlaylistEditingTest, ShutdownCancelsPendingRemovalListFetch) {
+    indexPlaylist("p1", "Road Trip", 2);
+    seedRoad(); openPlaylists(); open("Road Trip");
+    while (level().items[level().index].label != "Highway") press(Button::Forward);
+    press(Button::Options); open("Remove from playlist");
+    const auto request = server.lastRequest().id;
+    app->shutdown();
+    EXPECT_FALSE(server.reply(request, std::vector<RemoteTrack>{{"t2", "Highway"}}));
+}
+
+TEST_F(DownloadedPlaylistEditingTest, InFlightCatalogueCannotDropAnEditedPlaylist) {
+    indexPlaylist("p1", "Road Trip", 1);
+    openPlaylists(); open("Road Trip");
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "Sunrise"}})); app->tick();
+    open("Sunrise"); press(Button::Ok); open("Add to playlist"); open("Road Trip");
+    ASSERT_TRUE(server.replyCreated(server.lastRequest().id)); app->tick();
+    syncWith({}); // an older reply did not yet include the playlist
+    press(Button::Home); press(Button::Home); press(Button::Home);
+    EXPECT_TRUE(hasLabel("Road Trip"));
+}
+
+TEST_F(DownloadedPlaylistEditingTest, RemovalFinishingUnderPowerMenuRefreshesSilently) {
+    indexPlaylist("p1", "Road Trip", 2); seedRoad();
+    openPlaylists(); open("Road Trip");
+    while (level().items[level().index].label != "Highway") press(Button::Forward);
+    press(Button::Options); open("Remove from playlist");
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "Sunrise"}, {"t2", "Highway"}})); app->tick();
+    open("Highway"); auto remove = server.lastRequest().id;
+    hold(Button::Power); ASSERT_EQ(level().title, "Power");
+    const auto spoken = speech.said.size();
+    ASSERT_TRUE(server.replyCreated(remove)); app->tick();
+    EXPECT_EQ(level().title, "Power"); EXPECT_EQ(speech.said.size(), spoken);
+    EXPECT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "Sunrise"}})); app->tick();
+    press(Button::Home);
+    EXPECT_EQ(level().items[level().index].label, "Removed from playlist");
+    press(Button::Ok); press(Button::Home);
+    EXPECT_TRUE(hasLabel("Sunrise")); EXPECT_FALSE(hasLabel("Highway"));
 }

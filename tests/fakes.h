@@ -229,6 +229,34 @@ public:
 };
 
 // A library store in memory: what was last saved, and how often.
+class FakeLocalPlaylists : public LocalPlaylists {
+public:
+    std::vector<LocalPlaylist> lists;
+    bool failWrites = false;
+    std::vector<LocalPlaylist> list() override { return lists; }
+    std::optional<LocalPlaylist> create(const std::string& name) override {
+        if (failWrites) return std::nullopt;
+        LocalPlaylist p{std::to_string(++next), name, {}}; lists.push_back(p); return p;
+    }
+    bool add(const std::string& id, const std::filesystem::path& track) override {
+        if (failWrites) return false;
+        for (auto& p : lists) if (p.id == id) { p.tracks.push_back(track); return true; }
+        return false;
+    }
+    bool removeTrack(const std::string& id, std::size_t index) override {
+        if (failWrites) return false;
+        for (auto& p : lists) if (p.id == id && index < p.tracks.size()) { p.tracks.erase(p.tracks.begin() + index); return true; }
+        return false;
+    }
+    bool remove(const std::string& id) override {
+        if (failWrites) return false;
+        auto it = std::find_if(lists.begin(), lists.end(), [&](const auto& p) { return p.id == id; });
+        if (it == lists.end()) return false;
+        lists.erase(it); return true;
+    }
+    int next = 0;
+};
+
 class FakeLibraryStore : public LibraryStore {
 public:
     std::vector<IndexItem> load() override {
@@ -451,6 +479,8 @@ public:
         return add(CreateDone{[done = std::move(done)](Error e, std::string) { done(e); }},
                    starred ? Kind::Star : Kind::Unstar, std::move(id));
     }
+    bool supportsPlaylistEditing() const override { return playlistEditingSupported && catalogueKind == Catalogue::Music; }
+    bool playlistEditingSupported = true;
     RequestId playlists(Done<RemotePlaylist> done) override { return add(std::move(done), Kind::Playlists); }
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override {
         return add(std::move(done), Kind::PlaylistTracks, std::move(playlistId));

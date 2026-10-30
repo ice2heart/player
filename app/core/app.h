@@ -176,9 +176,25 @@ private:
     std::vector<MenuItem> musicMenu();
     static std::string artistOf(const MergedAlbum& album);
     std::vector<MenuItem> artistsMenu();
+    struct PlaylistEntry;
     std::vector<MenuItem> playlistsMenu();             // Music > Playlists: the index and the downloads
     bool hasPlaylists() const;
     void openPlaylist(size_t link, const std::string& id, const std::string& name);
+    std::vector<MenuItem> localPlaylistMenu(const std::string& id);
+    void createPlaylist(size_t link, bool local);
+    void addCurrentToPlaylist(const PlaylistEntry& playlist);
+    void removeFromPlaylist(const PlaylistEntry& playlist, size_t index);
+    void selectServerPlaylistRemoval(const PlaylistEntry& playlist);
+    std::string stalePlaylistKey(const PlaylistEntry& playlist) const;
+    void invalidatePlaylistSnapshot(const PlaylistEntry& playlist);
+    void changePlaylistCount(const PlaylistEntry& playlist, int delta);
+    MenuItem deletePlaylistItem(const PlaylistEntry& playlist);
+    void deletePlaylist(const PlaylistEntry& playlist);
+    void cancelPlaylistEdit();
+    void markPlaylistScreenDone(std::uint64_t screen, const std::string& message);
+    std::vector<MenuItem> addToPlaylistMenu();
+    std::optional<std::string> playlistTrackId(const PlaylistEntry& playlist, const QueueEntry& track) const;
+    void playlistEditDone(MusicServer::Error error, std::function<void(bool)> success);
     std::vector<MenuItem> genresMenu();
     std::vector<MenuItem> recentAlbums(std::int64_t (*when)(const MergedAlbum&), const std::string& empty);
     std::vector<MenuItem> recentlyAddedMenu();
@@ -206,6 +222,8 @@ private:
         size_t link = 0;
         std::string id, name;
         size_t tracks = 0;
+        bool local = false;
+        std::vector<std::filesystem::path> localTracks;
     };
     std::vector<PlaylistEntry> playlistEntries() const; // of every server, by name
     void startScan();
@@ -400,6 +418,8 @@ private:
     // screen: leaving the menu, Home or playing something does not stop it.
     struct Download {
         int bitrate = 0; // captured Download quality; books remain original
+        int playlistVersion = 0; // invalidate only the snapshot this download saw
+        bool playlistUnique = true;
         struct Item {
             RemoteTrack track;
             size_t number = 0; // its place in the list, from 1
@@ -677,6 +697,13 @@ private:
     std::vector<ServerLink> servers_;
     LibraryIndex index_;
     LibraryScanner& scanner_;
+    LocalPlaylists* localPlaylists_ = nullptr;
+    struct PlaylistEdit {
+        std::uint64_t screen = 0;
+        size_t link = 0;
+        MusicServer::RequestId request = 0;
+    } playlistEdit_;
+    std::string lastPlaylist_;
     LibraryScanner::RequestId scanRequest_ = 0; // 0: none running
     struct Catalogue {
         size_t link = 0;     // the server being synced (servers_)
@@ -687,6 +714,8 @@ private:
         bool books = false;  // a Books server: everything it lists is a book
         std::vector<IndexItem> items;
         std::vector<IndexPlaylist> savedPlaylists; // made by Save as playlist while the sync runs
+        std::map<std::string, IndexPlaylist> editedPlaylists;
+        std::set<std::string> deletedPlaylists;
     };
     MusicServer::RequestId catalogueRequest_ = 0; // 0: no request of the sync is out (between two servers too)
     Catalogue catalogue_;

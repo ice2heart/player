@@ -66,6 +66,7 @@ public:
     RequestId trackDetails(std::string trackId, Done<RemoteTrack> done) override;
     RequestId starredTracks(Done<RemoteTrack> done) override;
     RequestId setStarred(std::string trackId, bool starred, std::function<void(Error)> done) override;
+    bool supportsPlaylistEditing() const override { return true; }
     RequestId playlists(Done<RemotePlaylist> done) override;
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override;
     // `createPlaylist` with `name` and one `songId` per track, a GET like every call (HttpClient has no POST).

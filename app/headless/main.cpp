@@ -4,6 +4,7 @@
 
 #include "config/disk_text_files.h"
 #include "config/settings_files.h"
+#include "config/stores.h"
 #include "core/app.h"
 #include "hal/registry.h"
 #include "core/earcons.h"
@@ -170,7 +171,8 @@ int main(int argc, char** argv) {
     FfmpegTagReader tagReader;
     ThreadedScanner scanner(tagReader);
     DiskTextFiles manifests; // the cache's manifests, written atomically
-    App app(Services{tts, player, earcons, mixer, servers.links(), libraryStore, scanner, settings.config(), settings.state(), clock, &manifests, &halEvents, halParts.power.get(), halParts.storage.get()}, library, music, cache, defaultQueueFile(state), defaultScrobbleFile(state));
+    DiskLocalPlaylists localPlaylists(library / "playlists");
+    App app(Services{tts, player, earcons, mixer, servers.links(), libraryStore, scanner, settings.config(), settings.state(), clock, &manifests, &halEvents, halParts.power.get(), halParts.storage.get(), &localPlaylists}, library, music, cache, defaultQueueFile(state), defaultScrobbleFile(state));
 
     EvdevInput evdev;
     if (useEvdev && evdev.open(evdevDevice) == 0)

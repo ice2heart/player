@@ -898,3 +898,8 @@ TEST(Subsonic, PlaylistEditsCancelAndNotConfigured) {
     EXPECT_EQ(errors, std::vector<Error>(3, Error::NotConfigured));
     EXPECT_TRUE(missing.http->calls.empty());
 }
+
+TEST(Subsonic, SupportsPlaylistEditing) {
+    Server server;
+    EXPECT_TRUE(server.subsonic->supportsPlaylistEditing());
+}

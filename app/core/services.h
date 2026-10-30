@@ -404,6 +404,7 @@ public:
     virtual RequestId trackDetails(std::string trackId, Done<RemoteTrack> done) = 0;
     virtual RequestId starredTracks(Done<RemoteTrack> done) = 0;
     virtual RequestId setStarred(std::string trackId, bool starred, std::function<void(Error)> done) = 0;
+    virtual bool supportsPlaylistEditing() const { return false; }
     virtual RequestId playlists(Done<RemotePlaylist> done) = 0;
     virtual RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) = 0;
     // A request carries every track id in its URL, so a server or proxy may refuse a very long one:
@@ -530,6 +531,7 @@ struct Services {
     HalEvents* events = nullptr;
     Power* power = nullptr;
     Storage* storage = nullptr;
+    LocalPlaylists* localPlaylists = nullptr;
 };
 
 } // namespace oap

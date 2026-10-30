@@ -436,7 +436,8 @@ Player menu (music player)
 ├── Shuffle, off           list: off · tracks · albums
 ├── Repeat, off            list: off · all · album · track
 ├── Go to first track      the first entry in the play order
-└── Sleep timer → …
+├── Sleep timer → …
+└── Add to playlist → <eligible playlists>
 ```
 
   The book Player menu has no Queue, Shuffle or Repeat.
@@ -455,8 +456,8 @@ Player menu (music player)
 - The queue is saved on sleep and exit and is back after a restart; nothing plays until
   the user chooses it.
 
-**As built (phase 2):** the music player's Player menu is Queue · Shuffle · Repeat · Go to first track ·
-Sleep timer, Options in the music player is Go to album · Album info · Star / Unstar for supported server-linked tracks, including local playback (streaming.md
+**As built:** the music player's Player menu is Queue · Shuffle · Repeat · Go to first track ·
+Sleep timer · Add to playlist (streaming 5.4), Options in the music player is Go to album · Album info · Star / Unstar for supported server-linked tracks, including local playback (streaming.md
 2a.1), and the Queue list works as above. Where the build differs from the text above:
 
 - Play now says "Playing Weather." once the track opens. "End of queue. Press play to start
@@ -643,15 +644,16 @@ server alone. All the rules below hold for every server.
   opens the track again where it stopped. The next track's stream opens in the
   background 10 s before the end, so tracks change without a wait.
 
-## Planned playlist and queue changes (streaming phase 5)
+## Playlist editing and planned sync changes (streaming phase 5)
 
-These rules describe planned behaviour; the current Music and Queue sections
-remain the as-built reference until the implementation steps land. Music → Playlists
-will combine local, downloaded and server playlists. Create playlist selects "On the
+Playlist editing is built in step 5.4; Keep offline and queue sync below are planned.
+Music → Playlists combines local, downloaded and server playlists. Create playlist selects "On the
 device" or a configured playlist-capable server and uses a generated timestamp name;
 renaming waits for [input-methods.md](input-methods.md). Each playlist opens with Play
-playlist, tracks, Delete playlist and, for a server playlist, Keep offline or Stop
-keeping offline. Options on a track offers Remove from playlist. Delete confirms with
+playlist, tracks and Delete playlist. Keep offline / Stop keeping offline for server
+playlists is planned for step 5.5. Options on a track offers Remove from playlist; for a server playlist
+it first loads the current ordered tracks for the user to select the occurrence to remove.
+A fetch error uses the usual server error feedback. Delete confirms with
 Cancel first. The music Player menu offers Add to playlist and opens that list on the
 last eligible playlist used. Server playlists accept only tracks known to that server;
 local-only and other-server tracks are skipped. Local playlists accept local tracks.
@@ -705,7 +707,7 @@ Music
   scripts come after the Latin ones, and albums with no artist are under "Unknown artist", last.
   An artist's list holds the albums of both sources. **Albums A to Z** lists every album,
   server-only ones too.
-- **Playlists**, after Albums A to Z, lists the
+- **Playlists**, after Albums A to Z, offers Create playlist and lists local M3U files and the
   server's playlists by name, with the track count as the value ("Road Trip, 12 tracks"),
   sorted by name (Back / Forward still move one, ten or to an end). It is a local menu: it is read from the
   index, so it opens at once and works offline. The sync stores the playlists in the index
@@ -718,14 +720,12 @@ Music
   **Opening a playlist** that is whole on the disk plays from the files with no "Loading.";
   otherwise its tracks load under the rules of "Lists from the server" ("Loading", the error,
   "Try again", "Downloaded" when offline). It opens with "Play playlist", then "Download
-  playlist" where it can work, then the tracks. With no playlists the list has one item, "No
-  playlists"; OK says "Make a playlist on the server, or save the queue as a playlist."
+  playlist" where it can work, then the tracks and Delete playlist. An edited server playlist's
+  old download remains available in Downloaded, while Music fetches the current track list;
+  see [Playlist editing](#playlist-editing-and-planned-sync-changes-streaming-phase-5).
   **Streaming no longer has Playlists**; Streaming → Downloaded still lists downloaded
-  playlists. With no music yet ("Scanning" / "No music") Playlists is listed only when
-  there is a playlist to show. Known limit: the Options of a playlist (Play now, Play
-  next, Add to queue) load its tracks from the server, even for one that is whole on the
-  disk, so with the server down they say "Server not reachable."; OK on it plays from
-  the files.
+  playlists. Playlists is also available when there is no music yet, so a playlist can be created.
+  Options on a whole, current download use its files; an edited snapshot needs the server.
 - **Play all** plays what is on the device (local and downloaded), never the
   whole server. With nothing on the device it says "No music".
 - **Genres** lists each genre once, local tags and the server's album genre together; names

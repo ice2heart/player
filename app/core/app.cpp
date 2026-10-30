@@ -304,6 +304,7 @@ App::App(Services services, std::filesystem::path libraryRoot, std::filesystem::
       musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)), freeSpace_(spaceOnDisk),
       random_(clockRandom(services.clock)), lastActivity_(services.clock.now()) {
     textFiles_ = services.files;
+    localPlaylists_ = services.localPlaylists;
     scrobbleFile_ = std::move(scrobbleFile);
     links_.resize(std::max<size_t>(1, servers_.size()));
 }
@@ -311,6 +312,7 @@ App::App(Services services, std::filesystem::path libraryRoot, std::filesystem::
 // ---------------------------------------------------------------- lifecycle
 
 void App::start() {
+    lastPlaylist_ = state_.getString("last_playlist");
     tts_.setRate(config_.getInt(kSpeechRate, 220));
     volume_.setVolume(config_.getInt(kVolume, 70) / 100.0f);
     gestures_.setLongPress(std::chrono::milliseconds(config_.getInt(kLongPress, 600)));
@@ -636,6 +638,16 @@ void App::fetchPlaylists() {
         // A playlist saved while this request was out may be missing from the answer.
         for (const IndexPlaylist& added : catalogue_.savedPlaylists)
             if (std::none_of(stored.begin(), stored.end(), [&](const IndexPlaylist& p) { return p.id == added.id; })) stored.push_back(added);
+        for (auto& playlist : stored) {
+            auto edited = catalogue_.editedPlaylists.find(playlist.id);
+            if (edited != catalogue_.editedPlaylists.end()) playlist = edited->second;
+        }
+        for (const auto& [id, edited] : catalogue_.editedPlaylists)
+            if (std::none_of(stored.begin(), stored.end(), [&](const IndexPlaylist& playlist) { return playlist.id == id; }))
+                stored.push_back(edited);
+        stored.erase(std::remove_if(stored.begin(), stored.end(), [this](const IndexPlaylist& playlist) {
+            return catalogue_.deletedPlaylists.contains(playlist.id);
+        }), stored.end());
         index_.replacePlaylists(catalogue_.key, stored);
         index_.savePlaylists();
         finishSync(MusicServer::Error::None);
@@ -716,9 +728,15 @@ void App::finishRefresh() {
 
 void App::shutdown() {
     cancelStarOptions();
+    cancelPlaylistEdit();
     if (shutDown_) return; // the player is closed now: a second save would write its place as 0
     cancelGestures();
     cancelProgressPull();
+    cancelLoading();
+    cancelSaving();
+    for (auto& [id, list] : remoteLists_)
+        if (list.request) serverAt(list.link).cancel(list.request);
+    remoteLists_.clear();
     shutDown_ = true;
     saveOnExit();
     for (auto [link, request] : progressRetries_) serverAt(link).cancel(request);
@@ -1091,6 +1109,7 @@ void App::closeScreens(size_t keep) {
         if (resume_ && resumeScreen_ == id) cancelResume(); // a server book still loading for this screen
         if (progressPullScreen_ == id) cancelProgressPull();
         if (loading_.screen == id) cancelLoading();         // an album Options is loading for
+        if (playlistEdit_.screen == id) cancelPlaylistEdit();
         if (saving_.screen == id) cancelSaving();           // Save as playlist is waiting for the server
         bool drop = pendingOpen_ && pendingOpen_->screen == id;
         screens_.pop_back();
@@ -1470,13 +1489,13 @@ std::vector<MenuItem> App::musicMenu() {
     std::vector<MenuItem> items;
     if (albums.empty() && scanRequest_) {
         items.push_back(action("Scanning", [this] { say("Looking for music. Try again in a moment."); }));
-        if (hasPlaylists()) items.push_back(submenu("Playlists", [this] { return playlistsMenu(); })); // downloaded ones need no scan
+        if (localPlaylists_ || hasPlaylists()) items.push_back(submenu("Playlists", [this] { return playlistsMenu(); })); // downloaded ones need no scan
         items.push_back(refresh);
         return items;
     }
     if (albums.empty()) {
         items.push_back(action("No music", [this] { say("Copy music into " + musicRoot_.string() + ". One folder per album."); }));
-        if (hasPlaylists()) items.push_back(submenu("Playlists", [this] { return playlistsMenu(); })); // downloaded ones need no index
+        if (localPlaylists_ || hasPlaylists()) items.push_back(submenu("Playlists", [this] { return playlistsMenu(); })); // downloaded ones need no index
         items.push_back(refresh);
         return items;
     }
@@ -2111,13 +2130,13 @@ std::vector<MenuItem> App::trackItems(const std::string& title, const std::vecto
                                       const std::string& playAll, const RemoteSource& source,
                                       const std::string& artist, std::optional<MenuItem> second,
                                       const std::string& playedId, size_t link) {
-    if (tracks.empty()) return {};
+    if (tracks.empty() && (source.kind != RemoteSource::Kind::Playlist || !localPlaylists_)) return {};
     auto play = [this, title, artist, source, playedId, link](const std::shared_ptr<const std::vector<RemoteTrack>>& list, size_t from) {
         if (playRemote(title, *list, from, source, 0, artist, link) && !playedId.empty()) markPlayed(playedId);
     };
     auto list = std::make_shared<const std::vector<RemoteTrack>>(tracks); // one copy for all the items
     std::vector<MenuItem> items;
-    MenuItem all = action(playAll, [play, list] { play(list, 0); });
+    MenuItem all = action(playAll, [this, play, list] { if (list->empty()) say("No tracks."); else play(list, 0); });
     all.value = [n = tracks.size()] { return countValue(n, "track"); };
     items.push_back(all);
     if (second) {
@@ -2140,8 +2159,21 @@ std::vector<MenuItem> App::trackItems(const std::string& title, const std::vecto
             selection.playedId = playedId;
             return selection;
         };
-        items.push_back(withOptions(std::move(track), std::move(pick)));
+        track = withOptions(std::move(track), std::move(pick));
+        if (localPlaylists_ && source.kind == RemoteSource::Kind::Playlist && serverAt(link).supportsPlaylistEditing()) {
+            auto options = track.options;
+            track.options = [this, options, source, title, link] {
+                auto result = options();
+                result.push_back(action("Remove from playlist", [this, source, title, link] {
+                    selectServerPlaylistRemoval({link, source.id, title, 0, false});
+                }));
+                return result;
+            };
+        }
+        items.push_back(std::move(track));
     }
+    if (localPlaylists_ && source.kind == RemoteSource::Kind::Playlist && serverAt(link).supportsPlaylistEditing())
+        items.push_back(deletePlaylistItem({link, source.id, title, tracks.size(), false}));
     return items;
 }
 
@@ -2373,6 +2405,7 @@ RemoteSource App::sourceOf(const Pick& pick) {
 bool App::offersDownload(const Pick& pick) const {
     if (pick.kind != Pick::Kind::Album && pick.kind != Pick::Kind::Playlist) return false;
     if (!canDownloadFrom(pick.link)) return false;
+    if (pick.kind == Pick::Kind::Playlist && state_.getInt(stalePlaylistKey({pick.link, pick.id, pick.title, 0, false}), 0)) return true;
     const TrackCache& store = trackCacheOf(pick.link);
     const RemoteSource source = sourceOf(pick);
     if (downloading(source, pick.link)) return true; // its manifest holds only what has arrived
@@ -2448,7 +2481,9 @@ void App::choose(const Pick& pick, QueueAction action) {
         const RemoteSource source = sourceOf(pick);
         const CachedList cached = store.enabled() ? store.load(source) : CachedList{};
         std::vector<RemoteTrack> onDisk = completeTracks(store, source, cached);
-        if (isWholeDownload(cached, onDisk)) {
+        const bool stale = pick.kind == Pick::Kind::Playlist &&
+            state_.getInt(stalePlaylistKey({pick.link, pick.id, pick.title, 0, false}), 0);
+        if (!stale && isWholeDownload(cached, onDisk)) {
             onPickLoaded(screen, MusicServer::Error::None, std::move(onDisk));
             return;
         }
@@ -2731,14 +2766,6 @@ std::vector<MenuItem> App::downloadedBookMenu(const RemoteSource& source, size_t
 
 // ---------------------------------------------------------- Music > Playlists
 
-namespace {
-// One playlist of Music > Playlists: the index's and the manifest's entry for it merged.
-struct PlaylistEntry {
-    std::string id, name;
-    size_t tracks = 0;
-};
-} // namespace
-
 // The playlists of the servers set up now (the index holds no other server's, dropUnsetServers()): those in the index, and the downloaded ones from the cache
 // manifests (a downloaded playlist deleted on the server, or never synced, is still there). One entry
 // for a playlist of a server in both, named and counted as the index has it. Sorted by name.
@@ -2758,6 +2785,10 @@ std::vector<App::PlaylistEntry> App::playlistEntries() const {
             entries.push_back({link, list.source.id, downloadedName(list), list.tracks.size()});
         }
     }
+    if (localPlaylists_) {
+        for (const auto& p : localPlaylists_->list())
+            entries.push_back({0, p.id, p.name, p.tracks.size(), true, p.tracks});
+    }
     std::stable_sort(entries.begin(), entries.end(),
                      [](const PlaylistEntry& a, const PlaylistEntry& b) { return naturalLess(a.name, b.name); });
     return entries;
@@ -2770,11 +2801,27 @@ bool App::hasPlaylists() const {
 // Music > Playlists is a local menu: read from the index and the manifests when it is opened.
 std::vector<MenuItem> App::playlistsMenu() {
     std::vector<MenuItem> items;
+    if (localPlaylists_) items.push_back(submenu("Create playlist", [this] {
+        std::vector<MenuItem> destinations{action("On the device", [this] { createPlaylist(0, true); })};
+        for (size_t link = 0; link < servers_.size(); ++link)
+            if (serverAt(link).configured() && serverAt(link).supportsPlaylistEditing())
+                destinations.push_back(action(servers_[link].name, [this, link] { createPlaylist(link, false); }));
+        return destinations;
+    }));
     for (const PlaylistEntry& p : playlistEntries()) {
-        MenuItem item = action(p.name, [this, link = p.link, id = p.id, name = p.name] { openPlaylist(link, id, name); });
+        MenuItem item = action(p.name, [this, p] {
+            if (p.local) openMenu(p.name, [this, id = p.id] { return localPlaylistMenu(id); });
+            else openPlaylist(p.link, p.id, p.name);
+        });
         item.okHint = "open";
         if (p.tracks > 0) item.value = [n = p.tracks] { return countValue(n, "track"); };
-        items.push_back(withOptions(std::move(item), remotePick(Pick::Kind::Playlist, p.id, p.name, "", {}, p.link)));
+        if (p.local) {
+            if (!p.localTracks.empty()) {
+                Book book; book.title = p.name; book.files = p.localTracks;
+                item = withOptions(std::move(item), localAlbumPick(book, ""));
+            }
+            items.push_back(std::move(item));
+        } else items.push_back(withOptions(std::move(item), remotePick(Pick::Kind::Playlist, p.id, p.name, "", {}, p.link)));
     }
     if (items.empty())
         items.push_back(action("No playlists", [this] { say("Make a playlist on the server, or save the queue as a playlist."); }));
@@ -2786,7 +2833,7 @@ std::vector<MenuItem> App::playlistsMenu() {
 void App::openPlaylist(size_t link, const std::string& id, const std::string& name) {
     RemoteSource source{RemoteSource::Kind::Playlist, id};
     const TrackCache& store = trackCacheOf(link);
-    if (store.enabled()) {
+    if (store.enabled() && !state_.getInt(stalePlaylistKey({link, id, name, 0, false}), 0)) {
         CachedList cached = store.load(source);
         if (isWholeDownload(cached, completeTracks(store, source, cached))) {
             openMenu(name, [this, source, link] { return downloadedListMenu(source, link); });
@@ -3092,7 +3139,22 @@ void App::sayPlayerInfo() {
 std::vector<MenuItem> App::musicPlayerMenu() {
     MenuItem queue = submenu("Queue", [this] { return queueMenu(); });
     queue.selected = [this] { return fileIndex_; }; // the play order position of the current entry
-    return {std::move(queue), shuffleItem(), repeatItem(), goToStartItem("Go to first track"), sleepTimerItem()};
+    MenuItem add = submenu("Add to playlist", [this] { return addToPlaylistMenu(); });
+    add.selected = [this] {
+        auto list = playlistEntries();
+        if (queue_.empty()) return size_t(0);
+        size_t n = 0;
+        for (const auto& p : list) {
+            if (!playlistTrackId(p, queue_.at(fileIndex_))) continue;
+            std::string key = (p.local ? "local:" : servers_[p.link].key + ":") + TrackCache::safeName(p.id);
+            if (key == lastPlaylist_) return n;
+            ++n;
+        }
+        return size_t(0);
+    };
+    std::vector<MenuItem> items{std::move(queue), shuffleItem(), repeatItem(), goToStartItem("Go to first track"), sleepTimerItem()};
+    if (localPlaylists_) items.push_back(std::move(add));
+    return items;
 }
 
 // A "Setting with list" item that the queue backs instead of config.yaml: OK opens the list on the current
@@ -3213,6 +3275,259 @@ std::string queuePlaylistName(std::time_t when) {
     return "Queue, " + std::to_string(t.tm_mday) + " " + months[t.tm_mon % 12] + " " + buf;
 }
 } // namespace
+
+// All playlist mutations belong to the initiating screen. Leaving it cancels the callback.
+void App::cancelPlaylistEdit() {
+    if (playlistEdit_.request) serverAt(playlistEdit_.link).cancel(playlistEdit_.request);
+    playlistEdit_ = {};
+}
+
+void App::markPlaylistScreenDone(std::uint64_t id, const std::string& message) {
+    Screen* screen = findScreen(id);
+    if (!screen) return;
+    screen->build = {};
+    screen->items = {action(message, [this] { back(); })};
+    screen->index = 0;
+}
+
+void App::playlistEditDone(MusicServer::Error error, std::function<void(bool)> success) {
+    const auto edit = std::exchange(playlistEdit_, PlaylistEdit{});
+    if (!findScreen(edit.screen) || sleeping_ || shutDown_) return;
+    if (error != MusicServer::Error::None) {
+        if (screens_.back().id == edit.screen) {
+            earcons_.play(Earcon::Error);
+            say(errorText(error) + ".");
+        }
+        return;
+    }
+    success(screens_.back().id == edit.screen);
+}
+
+void App::createPlaylist(size_t link, bool local) {
+    if (playlistEdit_.request) return say("Saving.");
+    std::string name = queuePlaylistName(clock_.wallTime());
+    name.replace(0, 5, "Playlist");
+    if (local) {
+        if (!localPlaylists_ || !localPlaylists_->create(name)) {
+            earcons_.play(Earcon::Error); return say("Could not save playlist.");
+        }
+        popScreen();
+        return say("Created " + name + ".");
+    }
+    const auto screen = screens_.back().id;
+    playlistEdit_ = {screen, link, 0};
+    say("Saving.");
+    playlistEdit_.request = serverAt(link).createPlaylist(name, {}, [this, link, name, screen](MusicServer::Error error, std::string id) {
+        playlistEditDone(error, [this, link, name, id, screen](bool visible) {
+            if (!id.empty()) {
+                IndexPlaylist playlist{servers_[link].key, id, name, 0, clock_.wallTime()};
+                index_.addPlaylist(playlist);
+                index_.savePlaylists();
+                if (catalogueRequest_ && catalogue_.key == servers_[link].key) catalogue_.savedPlaylists.push_back(playlist);
+            }
+            if (visible) { popScreen(); say("Created " + name + "."); }
+            else markPlaylistScreenDone(screen, "Playlist created");
+        });
+    });
+}
+
+std::optional<std::string> App::playlistTrackId(const PlaylistEntry& playlist, const QueueEntry& track) const {
+    if (playlist.local) {
+        if (track.kind != QueueEntry::Kind::Local || track.path.empty()) return std::nullopt;
+        return track.path;
+    }
+    if (!servers_[playlist.link].server.supportsPlaylistEditing()) return std::nullopt;
+    if (track.kind == QueueEntry::Kind::Remote) {
+        if (linkOf(track) != playlist.link || track.trackId.empty()) return std::nullopt;
+        return track.trackId;
+    }
+    auto hit = index_.findByLocation(track.path);
+    if (!hit.track) return std::nullopt;
+    const std::string prefix = LibraryIndex::seenRef(servers_[playlist.link].key, SeenKind::Track, "");
+    for (const auto& ref : hit.track->seenOn)
+        if (ref.starts_with(prefix) && ref.size() > prefix.size()) return ref.substr(prefix.size());
+    return std::nullopt;
+}
+
+std::vector<MenuItem> App::addToPlaylistMenu() {
+    std::vector<MenuItem> result;
+    if (!queue_.empty()) for (const auto& p : playlistEntries()) {
+        if (!playlistTrackId(p, queue_.at(fileIndex_))) continue;
+        result.push_back(action(p.name, [this, p] { addCurrentToPlaylist(p); }));
+    }
+    if (result.empty()) result.push_back(action("No eligible playlists", [this] { say("Not available."); }));
+    return result;
+}
+
+void App::addCurrentToPlaylist(const PlaylistEntry& p) {
+    if (queue_.empty()) return say("Not available.");
+    auto id = playlistTrackId(p, queue_.at(fileIndex_));
+    if (!id) return say("Not available.");
+    const auto screen = screens_.back().id;
+    auto finish = [this, p, screen](bool visible) {
+        lastPlaylist_ = (p.local ? "local:" : servers_[p.link].key + ":") + TrackCache::safeName(p.id);
+        state_.setString("last_playlist", lastPlaylist_);
+        if (!p.local) { invalidatePlaylistSnapshot(p); changePlaylistCount(p, 1); }
+        if (visible) { popScreen(); say("Added to playlist."); }
+        else markPlaylistScreenDone(screen, "Added to playlist");
+    };
+    if (p.local) {
+        if (!localPlaylists_->add(p.id, *id)) { earcons_.play(Earcon::Error); return say("Could not save playlist."); }
+        return finish(true);
+    }
+    if (playlistEdit_.request) return say("Saving.");
+    playlistEdit_ = {screens_.back().id, p.link, 0};
+    say("Saving.");
+    playlistEdit_.request = serverAt(p.link).addPlaylistTrack(p.id, *id, [this, finish](MusicServer::Error error) {
+        playlistEditDone(error, finish);
+    });
+}
+
+std::vector<MenuItem> App::localPlaylistMenu(const std::string& id) {
+    if (!localPlaylists_) return {};
+    auto lists = localPlaylists_->list();
+    auto found = std::find_if(lists.begin(), lists.end(), [&](const LocalPlaylist& p) { return p.id == id; });
+    if (found == lists.end()) return {action("No playlist", [this] { say("Not available."); })};
+    PlaylistEntry p{0, found->id, found->name, found->tracks.size(), true};
+    Book book; book.title = p.name; book.files = found->tracks;
+    std::vector<MenuItem> items;
+    items.push_back(action("Play playlist", [this, book] {
+        if (book.files.empty()) return say("No tracks.");
+        if (playMusic(book, 0)) enterPlayer();
+    }));
+    for (size_t i = 0; i < book.files.size(); ++i) {
+        MenuItem track = action(partTitle(book, i), [this, book, i] { if (playMusic(book, i)) enterPlayer(); });
+        track.okHint = "play";
+        track = withOptions(std::move(track), localTrackPick(book, i, ""));
+        auto options = track.options;
+        track.options = [this, options, p, i] {
+            auto result = options();
+            result.push_back(action("Remove from playlist", [this, p, i] { removeFromPlaylist(p, i); }));
+            return result;
+        };
+        items.push_back(std::move(track));
+    }
+    items.push_back(deletePlaylistItem(p));
+    return items;
+}
+
+void App::changePlaylistCount(const PlaylistEntry& p, int delta) {
+    auto key = LibraryIndex::seenRef(servers_[p.link].key, SeenKind::Playlist, p.id);
+    auto found = index_.playlists().find(key);
+    if (found == index_.playlists().end()) return;
+    auto playlist = found->second;
+    const auto count = static_cast<long long>(playlist.songCount) + delta;
+    playlist.songCount = static_cast<int>(std::clamp(count, 0LL, static_cast<long long>(std::numeric_limits<int>::max())));
+    if (syncRunning_ && catalogue_.key == playlist.server) catalogue_.editedPlaylists[playlist.id] = playlist;
+    index_.addPlaylist(std::move(playlist));
+    index_.savePlaylists();
+}
+
+std::string App::stalePlaylistKey(const PlaylistEntry& p) const {
+    return "playlist.stale:" + TrackCache::safeName(servers_[p.link].key) + ":" + TrackCache::safeName(p.id);
+}
+
+void App::invalidatePlaylistSnapshot(const PlaylistEntry& p) {
+    const auto key = stalePlaylistKey(p);
+    const int old = state_.getInt(key, 0);
+    state_.setInt(key, old == std::numeric_limits<int>::max() ? old : old + 1);
+}
+
+// A download stores each track only once, so its rows are not server positions. Always
+// ask for the current ordered list and let the user select an occurrence to remove.
+void App::selectServerPlaylistRemoval(const PlaylistEntry& p) {
+    openRemoteList(p.link, "Remove from playlist",
+        fetchPages<RemoteTrack>(
+            [this, p](int, MusicServer::Done<RemoteTrack> done) {
+                return serverAt(p.link).playlistTracks(p.id, std::move(done));
+            },
+            [this, p](const std::vector<RemoteTrack>& tracks) {
+                std::vector<MenuItem> items;
+                for (size_t i = 0; i < tracks.size(); ++i) {
+                    const auto title = tracks[i].title.empty() ? "Track " + std::to_string(i + 1) : tracks[i].title;
+                    items.push_back(action(title, [this, p, i] { removeFromPlaylist(p, i); }));
+                }
+                return items;
+            }), 0, "No tracks", "This playlist is empty.");
+}
+
+void App::removeFromPlaylist(const PlaylistEntry& p, size_t index) {
+    if (p.local) {
+        if (!localPlaylists_ || !localPlaylists_->removeTrack(p.id, index)) { earcons_.play(Earcon::Error); return say("Could not save playlist."); }
+        popScreen();
+        return say("Removed from playlist.");
+    }
+    if (playlistEdit_.request) return say("Saving.");
+    const auto screen = screens_.back().id;
+    // The selector is above the track's Options, which is above the playlist.
+    const auto listScreen = screens_[screens_.size() - 3].id;
+    playlistEdit_ = {screen, p.link, 0};
+    say("Saving.");
+    playlistEdit_.request = serverAt(p.link).removePlaylistTrack(p.id, index, [this, p, listScreen, screen](MusicServer::Error error) {
+        playlistEditDone(error, [this, p, listScreen, screen](bool visible) {
+            invalidatePlaylistSnapshot(p);
+            changePlaylistCount(p, -1);
+            if (visible) closeScreens(screens_.size() - 2);
+            Screen* listView = findScreen(listScreen);
+            if (listView) {
+                listView->items.clear();
+                listView->build = {};
+                RemoteList& list = remoteLists_[listScreen];
+                list = {};
+                list.link = p.link;
+                list.emptyLabel = "No tracks";
+                list.emptyHelp = "This playlist is empty.";
+                list.fetch = fetchPages<RemoteTrack>(
+                    [this, p](int, MusicServer::Done<RemoteTrack> done) { return serverAt(p.link).playlistTracks(p.id, std::move(done)); },
+                    [this, p](const std::vector<RemoteTrack>& tracks) {
+                        return trackItems(p.name, tracks, "Play playlist", {RemoteSource::Kind::Playlist, p.id}, "", std::nullopt, {}, p.link);
+                    });
+                requestPage(listScreen, 0, true); showStatus(listScreen);
+            }
+            if (visible) say("Removed from playlist.");
+            else markPlaylistScreenDone(screen, "Removed from playlist");
+        });
+    });
+}
+
+MenuItem App::deletePlaylistItem(const PlaylistEntry& p) {
+    return submenu("Delete playlist", [this, p] {
+        return std::vector<MenuItem>{
+            action("Cancel", [this] { popScreen(); say("Cancelled."); }),
+            action("Yes, delete", [this, p] { deletePlaylist(p); })};
+    });
+}
+
+void App::deletePlaylist(const PlaylistEntry& p) {
+    const auto screen = screens_.back().id;
+    const auto listScreen = screens_[screens_.size() - 2].id;
+    auto finish = [this, p, screen, listScreen](bool visible) {
+        if (!p.local) {
+            std::vector<IndexPlaylist> keep;
+            for (const auto& [key, item] : index_.playlists())
+                if (item.server == servers_[p.link].key && item.id != p.id) keep.push_back(item);
+            index_.replacePlaylists(servers_[p.link].key, keep);
+            index_.savePlaylists();
+            if (syncRunning_ && catalogue_.key == servers_[p.link].key) {
+                catalogue_.deletedPlaylists.insert(p.id);
+                catalogue_.editedPlaylists.erase(p.id);
+            }
+        }
+        if (visible) { popScreen(); popScreen(); say("Playlist deleted."); }
+        else {
+            markPlaylistScreenDone(screen, "Playlist deleted");
+            markPlaylistScreenDone(listScreen, "Playlist deleted");
+        }
+    };
+    if (p.local) {
+        if (!localPlaylists_ || !localPlaylists_->remove(p.id)) { earcons_.play(Earcon::Error); return say("Could not save playlist."); }
+        return finish(true);
+    }
+    if (playlistEdit_.request) return say("Saving.");
+    playlistEdit_ = {screens_.back().id, p.link, 0};
+    say("Saving.");
+    playlistEdit_.request = serverAt(p.link).deletePlaylist(p.id, [this, finish](MusicServer::Error error) { playlistEditDone(error, finish); });
+}
 
 // Saves the tracks of the queue's first server (the server of its first track from a server), in play order,
 // as a playlist on it. The queue is not touched,
@@ -4998,6 +5313,10 @@ void App::startDownload(size_t link, const std::string& title, const std::string
         needed = bytes >= maximum - needed ? maximum : needed + bytes;
     }
     job.total = job.order.size();
+    if (source.kind == RemoteSource::Kind::Playlist) {
+        job.playlistVersion = state_.getInt(stalePlaylistKey({link, source.id, title, 0, false}), 0);
+        job.playlistUnique = job.order.size() == tracks.size();
+    }
     cached.source = source;
     cached.name = title;
     cached.artist = artist;
@@ -5011,6 +5330,9 @@ void App::startDownload(size_t link, const std::string& title, const std::string
     }
     deleteDropped(source, dropped, link);
     if (job.todo.empty()) {
+        if (source.kind == RemoteSource::Kind::Playlist && job.playlistUnique &&
+            state_.getInt(stalePlaylistKey({link, source.id, title, 0, false}), 0) == job.playlistVersion)
+            state_.erase(stalePlaylistKey({link, source.id, title, 0, false}));
         say("Already downloaded.");
         return;
     }
@@ -5084,7 +5406,11 @@ void App::finishDownload() {
     std::string title = download_->title;
     const TrackCache& store = trackCacheOf(download_->link);
     CachedList cached = store.load(download_->source);
-    if (markTracks(cached, "")) store.save(cached); // (unsaved, the list stays partial: the server is asked)
+    const bool saved = !markTracks(cached, "") || store.save(cached); // if unsaved, the list stays partial
+    if (saved && download_->source.kind == RemoteSource::Kind::Playlist && download_->playlistUnique) {
+        PlaylistEntry p{download_->link, download_->source.id, title, 0, false};
+        if (state_.getInt(stalePlaylistKey(p), 0) == download_->playlistVersion) state_.erase(stalePlaylistKey(p));
+    }
     download_.reset();
     if (sleeping_) return;
     if (player_.playing()) earcons_.play(Earcon::Open);
@@ -5642,6 +5968,7 @@ void App::sleep(const std::string& announcement) {
     cancelResume();
     cancelLoading();
     cancelSaving();
+    cancelPlaylistEdit();
     cancelMarkPing();
     dropPendingOpen(); // nothing may start playing while the device sleeps
     pause(false);
@@ -5676,6 +6003,7 @@ void App::powerOff() {
     cancelResume(); // the front end ticks on while "Goodbye" is spoken
     cancelLoading();
     cancelSaving();
+    cancelPlaylistEdit();
     cancelMarkPing(); // Play's answer must not start the music
     dropPendingOpen(); // nothing may start playing while the device shuts down
     pause(false);

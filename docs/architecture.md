@@ -106,7 +106,7 @@ The unit tests wire in fakes instead (section 12).
 | `app/core/library_index.{h,cpp}` | `LibraryIndex` (owned by `App`, built on the `LibraryStore` it is given; see section 8): the library in memory, `IndexItem` (id, source local/server/cached, kind book/music/podcast, title, artist, album, genre, year, MusicBrainz id, first-seen and last-played wall times, tracks, `seenOn`) with `IndexTrack` (location, title, artist, number, duration, size, file time, `seenOn`). `playlists()` holds the server's playlists (`IndexPlaylist`: server key, id, name, song count, `changed`), kept apart from the items: `replacePlaylists(key, list)` replaces one server's, `addPlaylist()` adds one (Save as playlist), `playlistServers()` names the servers that have some, and `saveItems()` / `savePlaylists()` write the two parts (`save()` tries both). `seenOn` holds server references `<server key>:<album\|playlist\|track>:<id>` (`seenRef()`; `refOnServer()` finds the one for a server key), each at most once. Lookups by id, by track location, and by reference. `upsert()` merges (keeps first-seen, later last-played, and the references already there), `replaceSource()` is a scan, `replaceServer()` a sync of one server key. It loads and saves through `LibraryStore` in `services.h` (`load()`; `save(changed, removed)`), and `save()` hands over only the items that changed and the ones removed, nothing when none did. The SQLite store is `SqliteLibraryStore` in `app/library/`. |
 | `app/core/settings.{h,cpp}` | `Settings`: dotted keys in memory, loaded and saved through a `SettingsStore`; the `state.tsv` line format; `ServerConfig` and `serverConfigs()` (the `servers:` list, else a lone `server:` section as a list of one; an entry with no url or the same server key as an earlier one is left out; core prints nothing, a `warnings` list goes to the caller); `serverConfigured()` is "`serverConfigs()` is not empty". `clearExcept` takes several prefixes (factory reset keeps `server.` and `servers.`). |
 | `app/library/sqlite_library_store.{h,cpp}` | `SqliteLibraryStore : LibraryStore` (both front ends construct it on `--library-db` and pass it to `App`): `library.db` with tables `schema_version` (3: 2.4 added the `playlists` table, which a version 2 file gains when it is opened; 2: 4.8 added `items.track_count` and `items.created`; a version 1 file is moved aside and rebuilt by scan and sync), `items`, `tracks` (by item and position), `refs` (the `seenOn` of an item, or of its track by position) and `playlists` (server key, id, name, song count, `changed`; `savePlaylists()` replaces them as a whole in one transaction). `save()` is one `BEGIN IMMEDIATE` transaction that deletes and rewrites each changed item and deletes the removed ones, and rolls back on any error. Rollback journal (no WAL), `synchronous=FULL`, file mode 0600 (also set on an existing file). A file that is damaged (`quick_check`), not a database, or of another schema version is renamed to `library.db.bad` (replacing an earlier one) and the store starts empty; a file with no tables is new. Front ends take `--library-db FILE` (default `library.db` next to `state.tsv`, so `/data/config/library.db` on the device). |
-| `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys), `TsvStore` (`state.tsv`), and `DiskLocalPlaylists : LocalPlaylists`, an injectable-root local M3U store. It preserves ordered local paths and duplicates, accepts relative paths in existing files, ignores URLs, uses generated filename IDs and atomic writes, and rejects symlink playlist files. Its menus and frontend wiring come in streaming phase 5.4. |
+| `app/config/stores.{h,cpp}` | `YamlStore` (`config.yaml`, nested YAML ⇄ dotted keys), `TsvStore` (`state.tsv`), and `DiskLocalPlaylists : LocalPlaylists`, an injectable-root local M3U store. It preserves ordered local paths and duplicates, accepts relative paths in existing files, ignores URLs, uses generated filename IDs and atomic writes, and rejects symlink playlist files. Both front ends pass it to App with `library/playlists` as its root (streaming 5.4). |
 | `app/config/atomic_file.{h,cpp}` | `writeFileAtomically()`: temp file with mode 0600, `fsync`, `rename`. |
 | `app/config/disk_text_files.h` | `DiskTextFiles`: the `TextFiles` of the real file system, for the cache manifests (`App` takes it with the cache root; without one the cache is off). |
 | `app/config/settings_files.{h,cpp}` | `SettingsFiles`: what a front end hands to `App` (both files, loaded). |
@@ -442,7 +442,7 @@ does and does nothing else. Holding Esc leaves the mode. The same texts
   starting a player of the other kind parks the loaded one in `switchTo()` (undone, with the old
   `parked_`, if the open fails or is dropped). `continueParked()` (Home "Continue", or Play with
   nothing loaded) opens the parked book again at its place and plays it. Each player has its own
-  Player menu (`musicPlayerMenu()` has Queue, Shuffle, Repeat, Go to first track and Sleep timer; `bookPlayerMenu()` has
+  Player menu (`musicPlayerMenu()` has Queue, Shuffle, Repeat, Go to first track, Sleep timer and Add to playlist; `bookPlayerMenu()` has
   Chapters, Speed and Add bookmark, and neither). Home (`homeMenu()`) lists the player used last as "Now
   playing" and the other as "Continue", each when it has something: `playerTitle()` gives the
   title of the loaded book, the parked one, or what is saved for a restart (the queue, or
@@ -577,7 +577,7 @@ Home
 │   ├── Albums A to Z → <albums>   (every merged entry, server-only ones too)
 │   │   <album on the device> → <tracks>   (OK plays; Album info is in its Options) from that track to the end; a loose track plays at once)
 │   │   <server-only album> → Loading, then Play album · Download album · <tracks>   (as in Streaming)
-│   ├── Playlists → <playlist> → Play playlist · Download playlist · <tracks>   (`playlistsMenu()`: the index's playlists and the downloaded ones from the cache manifests, one entry for a playlist in both, sorted by name, "12 tracks"; a local menu, works offline; "No playlists". A playlist whole on the disk opens from its files, else its tracks load from the server; with no music yet the item is there only when a playlist is)
+│   ├── Playlists → <playlist> → Play playlist · Download playlist · <tracks>   (`playlistsMenu()`: Create playlist, local M3U playlists, and the index's server playlists merged with downloads, sorted by name with track counts. A whole, current download opens from disk; otherwise its tracks load from the server. See playlist editing below.)
 │   ├── Genres → <genre> → <albums>   (tags and server genre, names merged without case; albums with no genre are left out)
 │   ├── Recently added → <albums>      (newest first, at most 50; "No new albums")
 │   ├── Recently played → <albums>     (last played first, at most 50; "Nothing played yet")
@@ -641,7 +641,8 @@ Player menu of the music player (`musicPlayerMenu()`)
 ├── Shuffle, off                   list: off · tracks · albums (backed by the queue, not config.yaml)
 ├── Repeat, off                    list: off · all · album · track     (the same)
 ├── Go to first track
-└── Sleep timer → …
+├── Sleep timer → …
+└── Add to playlist → <eligible playlists>
 
 Options in the music player (`playerOptionsMenu()`, "Options, <track>")
 ├── Go to album            (local: the index item of the file; remote: the album id of the entry; opens on the playing track)
@@ -717,6 +718,27 @@ Delete download (`deleteDownload(source, title, link)`) touches its list, its ca
 with the same id. One download runs at a time across all servers (`download_` is a single optional): starting another says
 "Another download is running." unless it is the same list of the same server (`downloading(source, link)`), which says its
 progress. The older `last_stream.*` state finds its link by url and user (`StreamPlace::link`, `resumeStream()`).
+**Playlist editing (streaming 5.4):** Both front ends provide `DiskLocalPlaylists` rooted
+at `<library>/playlists`. Music → Playlists combines local M3U files and server playlists,
+with Create playlist choosing the device or a playlist-editing-capable server. Generated
+names use the same clock as Save as playlist; renaming waits for input methods. The music
+Player menu offers Add to playlist and remembers the last eligible destination in state;
+a local track can go to a server only if the index has that exact track's reference on it.
+Tracks have Remove from playlist in Options; a server removal first fetches its current
+ordered list and lets the user choose an occurrence, so duplicate tracks and a deduplicated
+download cannot change the wrong position. Delete playlist confirms on Cancel. Requests
+belong to their screen, are cancelled on departure or shutdown, and finish silently when
+covered. Successful edits update the index even when a catalogue request is already in
+flight. Local write failures and server errors leave the list unchanged.
+
+A server edit invalidates that playlist's cached snapshot in `state.tsv` (written on exit
+or sleep). Music fetches its current tracks on the next open; the existing download remains
+available in Downloaded. A refreshed download without duplicate tracks can become current
+again; a playlist containing duplicates continues to use the server list because the
+existing manifest stores each track only once. A download started before a later edit
+cannot make that later snapshot current. Step 5.5 will address reconciliation and pin
+ownership.
+
 **Catalogue per server (step 1.7):** see Server catalogue below. Music's playlists list those of every server (`playlistEntries()`, each with its link; `openPlaylist(link, ...)`), Save as playlist goes to the server of the first remote track of the queue (`Saving::link`; the other servers' tracks count as not saved), and a server book knows its link (`Book::link`, set by `serverBookOf()`; `trackLink()` returns it for the book player, `resumeLink_` is it while the book loads). There are no first-link shortcuts left (`server_`, `downloader_`, `trackCache()` are gone; with no list the stand-ins `noServer_` / `noDownloader_` are only polled). A scrobble in the outbox
 whose server is not set up stays in `scrobbles.tsv` (bounded by `kMaxScrobbles`) and is sent when that server is back.
 
