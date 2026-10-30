@@ -1,11 +1,11 @@
 # Hardware Abstraction Layer (HAL) — Plan
 
-> Status: **plan, not implemented.** Last updated: 2026-10-22.
-> Context: [../SPEC.md](../SPEC.md) §3, §4.2, §6.4 · code as built: [architecture.md](architecture.md).
+> Status: **plan, not implemented.** Last updated: 2026-10-30.
+> Context: [../SPEC.md](../SPEC.md) §3, §4.2, §6.4 · code as built: [architecture.md](architecture.md) · keys: [navigation.md](navigation.md).
 
 ## 1. Why
 
-`App` now fakes everything below the audio pipeline. `statusReport()` says
+`App` uses real audio and existing front-end input adapters, but hardware status is simulated. `statusReport()` says
 "Battery 80 percent, simulated", and the Wi-Fi menu speaks fixed strings. The device
 needs real battery, charger, headphone jack, Wi-Fi and Bluetooth, and the simulator and
 tests need controllable stand-ins for them. The HAL extends the pattern `services.h`
@@ -289,7 +289,9 @@ public:
 `HalEvents` stays plain C++. The front end passes the `wake` callback, which writes an
 eventfd, pushes an SDL user event or posts to an Android `Handler`. Tests pass an empty one.
 
-Grouping. `App`'s constructor already takes seven arguments. Replace them with one struct:
+Grouping. `App` already has a long constructor. Group its existing service dependencies
+without dropping the server, library, scanner, settings, file or path arguments. The
+following sketch shows the HAL additions, not the complete constructor contract:
 
 ```cpp
 struct Services {
@@ -359,25 +361,22 @@ silently.
 
 ### 5.3 Keyboard as text entry
 
-A new screen type, **text field**, is opened by setup steps that need text: Wi-Fi
-passphrase, server URL, device name, and later search.
+Text entry uses the `TextEntry` screen in [input-methods.md](input-methods.md),
+including its validation, cancellation, UTF-8 limits and secret handling. Button entry
+is the baseline; keyboard events feed the same draft. For non-secret fields, inserted
+characters may be spoken. For secret fields, insertion says "Character added" and
+readback says only "Hidden, N characters." Secrets never enter speech, logs or snapshots.
 
-- `TextInput` inserts characters. Backspace, Delete, Left/Right, Home/End edit. Enter
-  confirms, Escape cancels. Device buttons keep working: short OK confirms, Esc cancels, Back/Forward
-  move by character, Play long reads the whole field back.
-- **Echo**: each typed character is spoken, as screen readers do ("a", "capital B", "7",
-  "at"). Backspace says the deleted character. Password fields echo characters too for now.
-  A setting to hide them is deferred (§10).
-- Layout is the backend's job. `TextInput` already carries characters. On Linux the
-  `evdev` backend runs keycodes through **libxkbcommon** with the layout from settings.
-  The setup asks for the keyboard layout once, after the language.
-- When there is no keyboard, the text field says "Connect a keyboard, or use spelling
-  mode" (spelling mode arrives with STT, M3). Until then, Wi-Fi also has the keyboard-free
-  paths from SPEC §6.3: `config.toml` copied over USB file transfer, and AP setup. When a keyboard is connected, the device says
-  "Keyboard connected" (`KeyboardChanged`). If a text field is waiting, it adds "Type now".
+Backspace, Delete, Left/Right, Home/End, Enter and Escape edit or confirm/cancel through
+the same screen; the keyboard adapter must not change the button editor's controls.
+Linux applies the layout with libxkbcommon; keyboard layout is a user setting. A keyboard
+connection says "Keyboard connected." and disconnection says "Keyboard disconnected."
+The existing button editor works without a keyboard. Android's native keyboard must
+feed the same validation and secret rules.
 
-This makes a keyboard the **first way to enter a Wi-Fi passphrase**, so H4 no longer waits for M3.
-On Android the phone's own keyboard (with TalkBack) is used instead, through a native text field.
+Wi-Fi setup in phase 5 depends on the button editor and keyboard adapter, not on speech
+recognition (M3). USB configuration import and AP setup need their own transport and
+credential-lifecycle designs; SPEC §6.3 is not an implementation of those paths.
 
 ### 5.4 Touch gestures (Android)
 
@@ -408,7 +407,7 @@ Draft map, to be tried with blind users:
 **TalkBack conflict**: when TalkBack is on, it takes these gestures for itself, and the app only
 sees TalkBack's actions. Options: tell the user to pause TalkBack while in the player
 (TalkBack has a shortcut for this), or handle TalkBack's actions (focus moves, activate,
-scroll) as input too. This needs a prototype (§10).
+scroll) as input too. This needs a prototype (step 8.3).
 
 ## 6. What App does with it
 
@@ -416,7 +415,7 @@ scroll) as input too. This needs a prototype (§10).
 |---|---|
 | `ButtonInput` / `HoldChanged` | Same as `keyDown`/`keyUp`/`setHold` today. |
 | `KeyInput` | Text field open: edit keys (§5.3). Otherwise: `defaultKeyMap()` → button. |
-| `TextInput` | Text field open: insert and echo. Otherwise: ignore. |
+| `TextInput` | TextEntry open: insert with the field’s feedback and secret rules. Otherwise: ignore. |
 | `TouchInput` | `defaultTouchMap()` → button gesture (§5.4). Unknown gestures play the Edge earcon. |
 | `KeyboardChanged` | "Keyboard connected." / "Keyboard disconnected." Low priority. |
 | `HalError` | Spoken at startup and in Status, so the user can report it. |
@@ -448,7 +447,7 @@ Settings
 └── Keyboard layout
 ```
 
-On the Android app, System keeps only Status, since Wi-Fi, Bluetooth, power and USB belong to the phone.
+On Android, System omits unsupported hardware actions; Status and other existing non-hardware items remain.
 
 `MenuLevel` needs a `refresh` builder so that a list such as scan results can be rebuilt
 while it is open (the `submenu` lambda is only called once today).
@@ -459,7 +458,7 @@ while it is open (the `submenu` lambda is only called once today).
 
 | Backend | Notes |
 |---|---|
-| `sim` | A **Hardware** ImGui panel (H2) shows and edits every sim part: jack and BT checkboxes, battery slider, charger, drain over time, fake networks with passwords and connect delays, fake BT devices with an optional PIN, "keyboard connected" toggle. A separate **Touch pad** panel (H1) turns mouse drags into gestures. Script steps `jack:out`, `battery:15`, `charger:on`, `type:hunter2`, `swipe:left` make walkthroughs repeatable. Sim backends use `Clock` for their delays, so the same classes can serve as rich test fakes. |
+| `sim` | A **Hardware** ImGui panel starts in phase 3 and gains controls with later parts: jack and BT checkboxes, battery slider, charger, drain over time, fake networks with passwords and connect delays, fake BT devices with an optional PIN, "keyboard connected" toggle. A separate **Touch pad** panel (phase 2) turns mouse drags into gestures. Script steps `jack:out`, `battery:15`, `charger:on`, `type:hunter2`, `swipe:left` make walkthroughs repeatable. Sim backends use `Clock` for their delays, so the same classes can serve as rich test fakes. |
 | `sdl` input | SDL key events → `KeyInput`, `SDL_TEXTINPUT` → `TextInput`, mouse drags on the touch pad → `TouchInput`. The simulator's own key handling goes away. |
 | `evdev` input | `/dev/input/event*` + udev hotplug, `EVIOCSCLOCKID` set to `CLOCK_MONOTONIC` so event times match `Clock`. libxkbcommon for text. |
 | `mcu` | One `McuLink` (USB CDC-ACM or UART, framed messages with a version handshake) shared by the power, haptics and (UART boards) input backends. |
@@ -501,43 +500,182 @@ not suspend from inside `tick()`:
 
 `Mode::Sleeping` stays as it is in the simulator, where a key press is the "resume".
 
-## 9. Phases
+## Phase 1: foundations and status (H0)
 
-| Phase | Work | Fits milestone |
-|---|---|---|
-| H0 | `Services` struct, `HalEvents`, `hal.h`, `HalContext`, per-part CMake variables, generated registry, presets `sim-macos` and `sim-linux`. Sim and fake `Power`/`Storage` replace the hard-coded status strings. Tests for battery announcements. | M0 |
-| H1 | Input through the HAL: `ButtonInput`/`KeyInput`/`TextInput`/`TouchInput`, timestamps on `keyDown`/`keyUp`, `defaultKeyMap()` and `defaultTouchMap()` in core, `sdl` input backend, sim Touch pad panel. **Text field screen with typing echo.** | M0 |
-| H2 | `AudioRouting` (jack, pause on unplug, volume per output), sim Hardware panel | M0 / M2 |
-| H3 | Linux `evdev` input (device buttons + keyboards, xkbcommon), `sysfs` `Power`, `pulse` `AudioRouting`, real suspend through the front end. First board preset. `hal.toml` with board matching. | M2, M5 |
-| H4 | `Wifi`: sim, then iwd. Live menu refresh. Passphrase by keyboard (H1), `config.toml` over USB, or AP setup (SPEC §6.3); later by spelling mode (M3) | M4 |
-| H5 | `Bluetooth`: sim, then BlueZ. BT as an audio output. | M4+ |
-| H6 | Microcontroller: HID buttons, `McuLink` over CDC-ACM for power, RTC, haptics and LED. | M5 |
-| A0 | Android spike: NDK build of core + FFmpeg, JNI host service, Android TTS, MediaSession, touch gestures. Answers the TalkBack question (§10). | after M2 |
-| A1 | Android app: SAF library, read-only power/storage/audio parts, Play Store release. | later |
+Goal: the simulator reports battery and storage from replaceable HAL services, while
+existing playback and input still work. The Wi-Fi placeholder remains until phase 5.
 
-Each phase follows the usual rule: tests drive `App` with fakes, and every test is checked with a sabotage.
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
+|---|------|------|
+| 1.1 | **Navigation contract first.** Update [navigation.md](navigation.md) for the planned input, text entry, capability-dependent menus and output-loss behaviour; retain its as-built status and identify the phases that implement each change. Align the editor with [input-methods.md](input-methods.md). | Manual walkthrough of the proposed keys, menus and secret handling against both plans; record unresolved choices before code. |
+| 1.2 | **Service grouping.** Add `Services` to `app/core/services.h`, preserving every existing App dependency and lifetime; migrate both front ends and test fixtures. Existing behaviour stays the same. | Existing App, front-end and core tests pass with the grouped services, including server playback and saved state. |
+| 1.3 | **Event queue.** Add `app/core/hal.h` and `HalEvents` with thread-safe post, drain and wake; drain in `App::tick()`. Keep direct key calls working. Make the test clock safe across threads. | Posted events arrive in order on tick, wake is called, and concurrent posting loses no events; direct key tests still pass. |
+| 1.4 | **Backend selection.** Add `HalContext`, per-part CMake selection, generated registry and `sim-macos`/`sim-linux` presets. Initially only compile available sim and none backends; retain current input and audio paths until their migration steps. Reject unknown selections. | Core-only and simulator configurations build; none omits the part; an unknown backend fails configuration; selected factories alone are linked. |
+| 1.5 | **Power and storage status.** Add `Power` and `Storage` interfaces and sim/fake snapshots. Replace the hard-coded battery and filesystem-space status portions; omit missing parts and retain the existing Wi-Fi placeholder until step 5.3. | Status speaks the supplied battery percentage and free space; changing snapshots changes status; missing power or storage is omitted. |
+| 1.6 | **Battery events.** Handle `BatteryChanged` thresholds and charger edges as in §6; save before requesting power off at 3% when supported. | Crossing 20%, 10% and 5% announces once, charging rearms them; 3% saves and requests power off when supported, otherwise says "Battery critical". |
+| 1.7 | **Docs for phase 1 as built:** update architecture.md, navigation.md and SPEC. | – |
 
-## 10. Decisions and open questions
+**Device check (manual):** run the simulator, open System → Status, change the simulated
+battery and storage snapshots and hear the new values. Repeat with either part absent.
+Exercise playback and existing keyboard controls.
 
-Decided (2026-10-22):
+## Phase 2: input events and text (H1)
 
-- **Backends are chosen per part at build time.** `hal.toml` is used only when one image serves
-  several board revisions. It picks among backends that were built in and holds the button key map.
-- **Android target: a normal Play Store app** with the same core and touch gestures. It is a
-  separate front end, scheduled after the device work reaches M2.
-- **Microcontroller: one USB composite device with several functions**: HID for buttons and CDC-ACM serial for
-  power, RTC, haptics and LED.
+Goal: simulator input travels through the HAL and keyboard text reaches the shared
+accessible editor. This phase depends on [input-methods.md](input-methods.md) phase 1.
 
-Open:
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
+|---|------|------|
+| 2.1 | **Timestamped button events.** Add `ButtonInput` and `HoldChanged`; route them to the existing handlers with event timestamps, including `GestureDetector`. Preserve direct calls and `NavigationKeys` depth and release lifecycle. | A queued down/up retains its actual short or long duration; Hold locks input from startup; staged deep presses and releases still stop seeking. |
+| 2.2 | **Keyboard navigation.** Add `KeyInput` and the core default key map; move SDL keyboard mapping to the HAL while preserving shared Shift/deep transitions, media keys and existing scripts. Ignore keyboard autorepeat for mapped buttons. | Simulator key sequences produce the existing button actions; both Shift keys and late depth changes work; unmapped keys are silent and held volume repeats once per gesture timer. |
+| 2.3 | **Keyboard text adapter.** Add `TextInput` and `KeyboardChanged`, SDL text input and editing keys for the existing TextEntry screen. Use its request, validation and secret rules; do not add a second editor. | Keyboard insertion, cursor edits, confirm and cancel use the same draft as buttons; UTF-8 limits apply; secret text never appears in speech or logs; disconnect does not commit. |
+| 2.4 | **Touch simulation.** Add completed `TouchInput` gestures, core mapping for the draft non-seeking gestures in §5.4 for simulator trials and an SDL Touch pad panel. Leave player touch seeking unavailable until its lifecycle is decided; preserve regular controls. | Mapped gestures perform their specified actions; unknown gestures play Edge; no completed gesture starts an unbounded seek. |
+| 2.5 | **Docs for phase 2 as built:** update architecture.md, navigation.md and SPEC. | – |
 
-1. **D-Bus client library**: sd-bus without systemd (`basu`) plus `sdbus-c++`, or plain `libdbus-1`? GDBus pulls in GLib.
-2. **PipeWire or PulseAudio** on the device. PipeWire with WirePlumber gives BT audio with
-   little work but costs boot time and RAM. Bare ALSA would mean bluez-alsa. Measure in M2.
-3. **Bluetooth in v1?** SPEC does not list it yet. The front-runner board (Radxa Zero 3W) has
-   BT on its Wi-Fi module. A2DP adds about 150–250 ms of latency, which is noticeable for TTS feedback.
-4. Should haptics be a decorator over `SoundEffects` (every earcon also buzzes) instead of a separate call?
-5. **TalkBack and touch gestures** on Android: ask the user to pause TalkBack, or treat TalkBack's
-   actions as input? Prototype in A0 and test with TalkBack users.
-6. **Touch gesture map** (§5.4): draft only. Test with blind users.
-7. **Password echo** *(deferred)*: characters are spoken for now. Later, add a setting to hide them,
-   and ask blind testers which default they want.
+**Device check (manual):** use existing simulator keys and a touch-pad gesture to
+navigate, then enter and correct non-secret text in the shared editor. Enter a dummy
+secret and verify that neither speech nor simulator output reveals it.
+
+## Phase 3: simulated audio routing (H2)
+
+Goal: simulated output changes pause playback safely and retain each output's volume.
+
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
+|---|------|------|
+| 3.1 | **Simulated routing.** Add `AudioRouting`, `OutputChanged` and a simulator backend with cached available/current outputs. | Available and current outputs track simulated connect/disconnect; missing routing leaves existing playback usable. |
+| 3.2 | **Output-loss policy.** On a lost headphone or Bluetooth output pause, save position and speak the corresponding sentence in §6; never resume automatically on speaker. | Pulling headphones while playing saves and says "Headphones unplugged, paused."; Bluetooth loss says its sentence; neither resumes on speaker. |
+| 3.3 | **Output selection and volume.** Add the capability-dependent System → Audio output list and `volume.<output>` settings; automatic selects the newest output. Preserve existing volume until an output is known. | Selection invokes the requested output; changing outputs restores each saved volume; unavailable selection hides the menu; persistence survives restart. |
+| 3.4 | **Hardware panel.** Add simulator battery, charger, jack and output controls plus `jack:out`, `battery:15` and `charger:on` scripts; leave Wi-Fi and Bluetooth controls for their phases. | Scripts and controls post the same changes; battery and unplug behaviour match steps 1.6 and 3.2. |
+| 3.5 | **Docs for phase 3 as built:** update architecture.md, navigation.md and SPEC. | – |
+
+**Device check (manual):** play audio, remove the simulated headphones and hear the
+pause announcement. Reconnect, select outputs and verify their separate volume levels.
+
+## Phase 4: Linux hardware (H3)
+
+Goal: a selected Linux board can use real input, power and audio routing and suspend
+without blocking App. The board, audio stack and board configuration must be decided first.
+
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
+|---|------|------|
+| 4.1 | **Hardware configuration.** Parse `hal.toml` in `app/hal/` with board matching and compiled-backend validation (§3.3); wire `--hal` into the simulator. Keep built defaults without a file. | First matching board wins; defaults apply without a match; `none` disables a part; an unbuilt backend reports the specified error instead of falling back. |
+| 4.2 | **Linux input.** Adapt existing `app/headless/evdev_input.*` into an evdev HAL backend: device maps, initial Hold state, hotplug and monotonic timestamps. Preserve gamepad and key release behaviour. | Injected evdev events map device keys and Hold, hotplug releases held keys, timestamps preserve gestures and deep release stops seeking. |
+| 4.3 | **Linux keyboard text.** Add xkbcommon text translation and the keyboard layout setting, feeding step 2.3. | Two selected layouts produce their expected text; media keys remain controls; a disconnected keyboard cannot commit text. |
+| 4.4 | **Sysfs power.** Add the `sysfs` Power backend with cached battery/charger snapshots and change notifications. | Fixture power-supply changes reach status and battery announcements; absent hardware yields no power part; no getter performs I/O. |
+| 4.5 | **Linux audio routing.** After the audio stack decision, implement the selected routing backend and the first board preset; keep sim and none selectable. | Fake backend events exercise connect, select and loss through App; the preset builds only selected dependencies and missing hardware omits routing. |
+| 4.6 | **Suspend.** Implement §8: request during tick, suspend after speech on the front end, call `onResume()` after return. Simulator retains key-to-wake. | Sleep saves before suspend; the front end does not suspend during tick or before speech finishes; resume speaks location; sim still wakes on a key. |
+| 4.7 | **Docs for phase 4 as built:** update architecture.md, navigation.md and SPEC. | – |
+
+**Device check (manual):** on the selected board, boot with Hold on, unlock and use the
+buttons and a keyboard; inspect battery status, unplug headphones during playback,
+then sleep and wake. Confirm the saved position survives suspend.
+
+## Phase 5: Wi-Fi (H4)
+
+Goal: scan and join a network using the shared editor, first in simulation and then on
+Linux with iwd. Choose the D-Bus library and specify the Wi-Fi menu contract first.
+
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
+|---|------|------|
+| 5.1 | **Wi-Fi simulator.** Add `Wifi`, events and simulated networks with configurable credentials and delayed results using `Clock`; add simulator controls. | Scan and connect return asynchronously; success, wrong password and disabled Wi-Fi update cached state; no secret appears in output. |
+| 5.2 | **Refreshable lists.** Add a refresh builder to `MenuLevel` for live network lists, keeping the selected item by identity when possible. | A scan result refresh keeps the selected network; a removed selection clamps safely; leaving the list ignores late results. |
+| 5.3 | **Wi-Fi menus.** Replace the placeholder with capability-dependent status, toggle, scan, connect and forget actions; use TextEntry for secured networks. Record exact prompts, error handling and confirmation in navigation.md before implementation. | Scan results update in place; connecting uses accepted text; cancellation sends no request; forget requires confirmation; missing capabilities hide actions; errors are spoken without revealing credentials. |
+| 5.4 | **iwd backend.** Implement `app/hal/iwd/` over the chosen D-Bus library and shared HAL event loop. | Mock D-Bus scan, connect, error and disconnect reach the same menu behaviour; unavailable iwd yields no part; getters use cached state. |
+| 5.5 | **Docs for phase 5 as built:** update architecture.md, navigation.md, streaming.md and SPEC, including whether network-connect sync is implemented. | – |
+
+**Device check (manual):** scan, enter a dummy test network password, connect, disconnect
+and forget it; repeat with an incorrect password and confirm keys remain responsive.
+
+## Phase 6: Bluetooth (H5)
+
+Goal: pair and manage a Bluetooth audio device using spoken feedback. Decide whether
+Bluetooth is in scope for the device and specify pairing prompts before implementation.
+
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
+|---|------|------|
+| 6.1 | **Bluetooth simulator.** Add `Bluetooth` and its events; simulate discovery, pairing including PIN, connection and loss, with Hardware panel controls. | Discovery and pairing complete asynchronously; PIN and connection events carry the simulated device; disconnect updates routing. |
+| 6.2 | **Bluetooth menus.** Add capability-dependent discovery, paired devices, connect, disconnect and confirmed forget; refresh lists by device identity. Record exact speech in navigation.md first. | Discovery updates the open list without losing selection; PIN is spoken digit by digit; cancel and forget behave as specified; lost audio pauses as in step 3.2. |
+| 6.3 | **BlueZ backend.** Implement `app/hal/bluez/` and the D-Bus Agent using the library selected in phase 5. | Mock BlueZ discovery, PIN, connection, failure and removal reach App; an absent service leaves the part out. |
+| 6.4 | **Docs for phase 6 as built:** update architecture.md, navigation.md and SPEC. | – |
+
+**Device check (manual):** discover, pair and connect a test headset, hear any PIN,
+play audio, disconnect it and verify playback pauses. Forget it and check the list.
+
+## Phase 7: microcontroller (H6)
+
+Goal: the device uses the selected MCU for its buttons, battery, wake alarm and haptics.
+The board, protocol, LED behaviour and haptic policy need decisions first.
+
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
+|---|------|------|
+| 7.1 | **MCU link.** Add shared `McuLink` with the agreed framed protocol, version handshake and reconnect/error handling. | Simulated serial frames survive partial reads; bad version and disconnect report errors; reconnect restores communication without blocking App. |
+| 7.2 | **MCU power.** Add the MCU Power backend for battery, charger, power off and wake alarm. | Simulated frames update status; power-off and alarm requests send the specified commands; missing MCU omits the part. |
+| 7.3 | **MCU input.** Support the agreed HID mappings and UART serial button backend, including initial Hold and two-stage release. | Simulated button and Hold events match step 2.1; disconnect releases held buttons and stops seek. |
+| 7.4 | **Haptics and LED.** Add MCU haptics and the agreed earcon/LED policy. | Simulated commands match the chosen patterns; unavailable haptics leaves audio feedback intact. |
+| 7.5 | **Docs for phase 7 as built:** update architecture.md, navigation.md and SPEC, including the protocol and board wiring. | – |
+
+**Device check (manual):** exercise each button and Hold, change charger state, trigger
+an earcon with haptics, set a test wake alarm and verify power-off and wake on the board.
+
+## Phase 8: Android spike (A0)
+
+Goal: establish whether the core, audio, MediaSession and accessible gestures work on
+Android. This is a prototype after M2; it does not promise a Play Store release.
+
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
+|---|------|------|
+| 8.1 | **Android build and host.** Build core and FFmpeg with the NDK; host App in a Kotlin foreground media service through JNI and tick on its handler. | A test activity starts the service, plays a local test file and receives asynchronous events without blocking the UI. |
+| 8.2 | **Speech and media controls.** Add Android TTS, AAudio output and MediaSession key events. | Spoken feedback completes and media controls play/pause through App; service recreation releases resources. |
+| 8.3 | **Touch and TalkBack trial.** Prototype the draft gestures with TalkBack on and off; document observed conflicts and choose the production contract before implementing touch seeking. | Manual trial with TalkBack users records actions received, conflicts and the selected approach; automated gesture tests cover the chosen mapping and seek cancellation. |
+| 8.4 | **Docs for phase 8 as built:** update architecture.md, navigation.md and SPEC; record trial results and remaining gaps. | – |
+
+**Device check (manual):** play a test book, use headset controls and try the prototype
+gestures with TalkBack both enabled and disabled; record what a TalkBack user can operate.
+
+## Phase 9: Android app (A1)
+
+Goal: a usable Android app with a selected library and phone-provided hardware status.
+SAF file access, lifecycle, text input and release details must be designed after phase 8.
+
+| # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
+|---|------|------|
+| 9.1 | **SAF library.** Add the agreed file-access abstraction and persist the user's folder grant. | Selected documents are indexed and played after restart; revoked access is reported without corrupting the library. |
+| 9.2 | **Android HAL.** Add read-only power, storage, Wi-Fi and audio routing plus Android haptics and suspend as specified in §7.2. | Status reflects supplied snapshots; unsupported actions are absent; sleep releases the wake lock and resume restores location. |
+| 9.3 | **Android text and lifecycle.** Connect the native keyboard to the shared editor and validation; handle foreground service and activity recreation. | Cancel does not commit; secret content stays out of speech/logs; playback and state survive activity recreation. |
+| 9.4 | **Docs for phase 9 as built:** update architecture.md, navigation.md and SPEC and record device and accessibility checks. | – |
+
+**Device check (manual):** pick a folder, play and resume a book across activity
+recreation, enter dummy text, inspect Status and use the selected TalkBack interaction.
+Play Store release follows only after the release requirements are specified and met.
+
+## Decisions
+
+- Backends are chosen per part at build time; `hal.toml` selects among compiled
+  backends for board revisions and holds their button maps.
+- Android is a normal Play Store app using the same core, after M2.
+- The MCU is a USB composite device: HID buttons and CDC-ACM serial for power,
+  RTC, haptics and LED. UART input is supported for boards that need it.
+- Text entry follows [input-methods.md](input-methods.md): button entry is the baseline,
+  all input uses the same editor, and secrets are never spoken or logged.
+
+## Open questions
+
+The affected step stops until its choice is recorded here and the design and navigation
+contract agree. Prototype and manual trial steps may investigate a question without
+choosing a production implementation.
+
+1. Before step 4.5: which board and audio stack (PipeWire/PulseAudio or ALSA)? Measure
+   boot time and RAM on the board.
+2. Before step 5.3: exact Wi-Fi prompts, error handling and forget confirmation; before
+   step 5.4: D-Bus client library (basu plus sdbus-c++ or libdbus-1).
+3. Before phase 6: whether Bluetooth is in v1, its menu prompts and pairing policy.
+4. Before phase 7: MCU protocol framing, commands, timeouts, board wiring, LED behaviour
+   and whether haptics decorates `SoundEffects` or is called separately.
+5. Before production Android touch input: TalkBack interaction, tested gesture map and
+   a bounded seek or start/change/release lifecycle. Step 8.3 investigates these.
+6. Before phase 9: SAF file abstraction, Android text input and service lifecycle details,
+   and Play Store release requirements.
+7. Maximum volume and the pause-on-unplug setting in §6 need values, defaults and safety
+   policy before they can be scheduled. USB mass storage needs an ownership/unmount and
+   failure-recovery design; AP and USB configuration import need separate provisioning
+   designs. None is implemented by the phases above.
