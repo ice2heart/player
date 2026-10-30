@@ -396,6 +396,11 @@ public:
     // NotConfigured. More than kMaxPlaylistTracks ids are not sent: the answer is Error::Server.
     virtual RequestId createPlaylist(std::string name, std::vector<std::string> trackIds,
                                      std::function<void(Error, std::string playlistId)> done) = 0;
+    // Add one track, remove the zero-based occurrence at index, or delete the playlist.
+    // Callbacks run from poll(); cancel drops them. Unsupported providers return Server.
+    virtual RequestId addPlaylistTrack(std::string playlistId, std::string trackId, std::function<void(Error)> done) = 0;
+    virtual RequestId removePlaylistTrack(std::string playlistId, std::size_t index, std::function<void(Error)> done) = 0;
+    virtual RequestId deletePlaylist(std::string playlistId, std::function<void(Error)> done) = 0;
     virtual void cancel(RequestId id) = 0; // its callback will not run; unknown ids are ignored
     // The stream of a track: the original file with `maxBitRate` 0, else a
     // transcode to at most that many kbit/s. Empty URLs when not configured.

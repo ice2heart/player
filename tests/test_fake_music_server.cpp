@@ -443,3 +443,27 @@ TEST(FakeMusicServer, ProgressMissingFailedCancelledAndNotConfiguredMatchTheCont
     EXPECT_EQ(saved, 1);
     EXPECT_TRUE(server.progressSaves.empty());
 }
+
+TEST(FakeMusicServer, PlaylistEditsRecordArgumentsAndDeliverSuccessFailureAndCancellation) {
+    FakeMusicServer server;
+    std::vector<Error> got;
+    auto done = [&](Error e) { got.push_back(e); };
+    auto add = server.addPlaylistTrack("p", "t", done);
+    EXPECT_EQ(server.lastRequest().kind, Kind::AddPlaylistTrack);
+    EXPECT_EQ(server.lastRequest().arg, "p");
+    EXPECT_EQ(server.lastRequest().trackIds, (std::vector<std::string>{"t"}));
+    auto remove = server.removePlaylistTrack("p", 4, done);
+    EXPECT_EQ(server.lastRequest().kind, Kind::RemovePlaylistTrack);
+    EXPECT_EQ(server.lastRequest().arg, "p");
+    EXPECT_EQ(server.lastRequest().trackIndex, 4u);
+    auto del = server.deletePlaylist("p", done);
+    EXPECT_EQ(server.lastRequest().kind, Kind::DeletePlaylist);
+    EXPECT_EQ(server.lastRequest().arg, "p");
+    EXPECT_TRUE(server.replyCreated(add));
+    EXPECT_TRUE(server.fail(remove, Error::Unreachable));
+    EXPECT_TRUE(server.replyCreated(del));
+    server.cancel(del);
+    EXPECT_TRUE(got.empty());
+    server.poll();
+    EXPECT_EQ(got, (std::vector<Error>{Error::None, Error::Unreachable}));
+}

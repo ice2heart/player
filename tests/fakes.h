@@ -378,7 +378,7 @@ inline std::vector<ServerLink> linkTo(const Settings& settings, MusicServer& ser
 // A fake that is not configured does not record a scrobble (like Subsonic).
 class FakeMusicServer : public MusicServer {
 public:
-    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Book, Progress, InProgress, Playlists, PlaylistTracks, CreatePlaylist, TrackDetails, StarredTracks, Star, Unstar };
+    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Book, Progress, InProgress, Playlists, PlaylistTracks, CreatePlaylist, AddPlaylistTrack, RemovePlaylistTrack, DeletePlaylist, TrackDetails, StarredTracks, Star, Unstar };
     struct Request {
         RequestId id = 0;
         Kind kind = Kind::Ping;
@@ -386,7 +386,8 @@ public:
         int offset = 0;  // Albums only
         int size = 0;    // Albums only
         std::string folder; // Albums only: the musicFolderId, empty for all
-        std::vector<std::string> trackIds; // CreatePlaylist only
+        std::vector<std::string> trackIds; // CreatePlaylist or AddPlaylistTrack
+        std::size_t trackIndex = 0; // RemovePlaylistTrack only
     };
 
     bool configured() const override { return isConfigured; }
@@ -459,6 +460,19 @@ public:
         requests.back().trackIds = std::move(trackIds);
         if (requests.back().trackIds.size() > kMaxPlaylistTracks && isConfigured) fail(id, Error::Server); // as Subsonic
         return id;
+    }
+    RequestId addPlaylistTrack(std::string playlistId, std::string trackId, std::function<void(Error)> done) override {
+        auto id = add(CreateDone{[done = std::move(done)](Error e, std::string) { done(e); }}, Kind::AddPlaylistTrack, std::move(playlistId));
+        requests.back().trackIds = {std::move(trackId)};
+        return id;
+    }
+    RequestId removePlaylistTrack(std::string playlistId, std::size_t index, std::function<void(Error)> done) override {
+        auto id = add(CreateDone{[done = std::move(done)](Error e, std::string) { done(e); }}, Kind::RemovePlaylistTrack, std::move(playlistId));
+        requests.back().trackIndex = index;
+        return id;
+    }
+    RequestId deletePlaylist(std::string playlistId, std::function<void(Error)> done) override {
+        return add(CreateDone{[done = std::move(done)](Error e, std::string) { done(e); }}, Kind::DeletePlaylist, std::move(playlistId));
     }
     void cancel(RequestId id) override {
         cancelled.push_back(id); // poll() skips it, even if answered or polled right now

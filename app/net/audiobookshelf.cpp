@@ -311,6 +311,16 @@ MusicServer::RequestId Audiobookshelf::createPlaylist(std::string, std::vector<s
     return id;
 }
 
+MusicServer::RequestId Audiobookshelf::addPlaylistTrack(std::string, std::string, std::function<void(Error)> done) {
+    return playlistTracks({}, [done = std::move(done)](Error e, std::vector<RemoteTrack>, bool) { done(e); });
+}
+MusicServer::RequestId Audiobookshelf::removePlaylistTrack(std::string, std::size_t, std::function<void(Error)> done) {
+    return addPlaylistTrack({}, {}, std::move(done));
+}
+MusicServer::RequestId Audiobookshelf::deletePlaylist(std::string, std::function<void(Error)> done) {
+    return addPlaylistTrack({}, {}, std::move(done));
+}
+
 void Audiobookshelf::cancel(RequestId id) {
     if (waiting_.erase(id)) http_->cancel(id);
 }

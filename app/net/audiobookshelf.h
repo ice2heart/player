@@ -68,6 +68,9 @@ public:
     RequestId playlists(Done<RemotePlaylist> done) override;
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override;
     RequestId createPlaylist(std::string name, std::vector<std::string> trackIds, std::function<void(Error, std::string)> done) override;
+    RequestId addPlaylistTrack(std::string playlistId, std::string trackId, std::function<void(Error)> done) override;
+    RequestId removePlaylistTrack(std::string playlistId, std::size_t index, std::function<void(Error)> done) override;
+    RequestId deletePlaylist(std::string playlistId, std::function<void(Error)> done) override;
     void cancel(RequestId id) override;
     // `<url>/api/items/<item>/file/<ino>?token=<api key>`: always the original file (it seeks
     // with Range), `maxBitRate` does not apply. Empty when not configured or the id is not "<item>/<ino>".

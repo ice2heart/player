@@ -267,6 +267,22 @@ MusicServer::RequestId Subsonic::createPlaylist(std::string name, std::vector<st
         });
 }
 
+MusicServer::RequestId Subsonic::addPlaylistTrack(std::string playlistId, std::string trackId, std::function<void(Error)> done) {
+    return request("updatePlaylist", {{"playlistId", std::move(playlistId)}, {"songIdToAdd", std::move(trackId)}},
+                   [](const std::string& body) { return Reply{subsonic::parseStatus(body), {}, false}; },
+                   [done = std::move(done)](Reply reply) { done(reply.error); });
+}
+MusicServer::RequestId Subsonic::removePlaylistTrack(std::string playlistId, std::size_t index, std::function<void(Error)> done) {
+    return request("updatePlaylist", {{"playlistId", std::move(playlistId)}, {"songIndexToRemove", std::to_string(index)}},
+                   [](const std::string& body) { return Reply{subsonic::parseStatus(body), {}, false}; },
+                   [done = std::move(done)](Reply reply) { done(reply.error); });
+}
+MusicServer::RequestId Subsonic::deletePlaylist(std::string playlistId, std::function<void(Error)> done) {
+    return request("deletePlaylist", {{"id", std::move(playlistId)}},
+                   [](const std::string& body) { return Reply{subsonic::parseStatus(body), {}, false}; },
+                   [done = std::move(done)](Reply reply) { done(reply.error); });
+}
+
 void Subsonic::cancel(RequestId id) {
     if (waiting_.erase(id)) http_->cancel(id);
 }

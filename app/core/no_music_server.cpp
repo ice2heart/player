@@ -43,6 +43,16 @@ MusicServer::RequestId NoMusicServer::createPlaylist(std::string, std::vector<st
     return add([done = std::move(done)] { done(Error::NotConfigured, {}); });
 }
 
+MusicServer::RequestId NoMusicServer::addPlaylistTrack(std::string, std::string, std::function<void(Error)> done) {
+    return add([done = std::move(done)] { done(Error::NotConfigured); });
+}
+MusicServer::RequestId NoMusicServer::removePlaylistTrack(std::string, std::size_t, std::function<void(Error)> done) {
+    return addPlaylistTrack({}, {}, std::move(done));
+}
+MusicServer::RequestId NoMusicServer::deletePlaylist(std::string, std::function<void(Error)> done) {
+    return addPlaylistTrack({}, {}, std::move(done));
+}
+
 void NoMusicServer::cancel(RequestId id) {
     std::erase_if(ready_, [id](const auto& r) { return r.first == id; });
     std::erase_if(running_, [id](const auto& r) { return r.first == id; });

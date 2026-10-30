@@ -904,3 +904,17 @@ TEST(AudiobookshelfStars, UnsupportedRequestsFailFromPollWithoutHttp) {
     s.abs->setStarred("x", false, [&](Error e) { EXPECT_EQ(e, Error::Server); ++calls; });
     EXPECT_EQ(calls, 0); s.abs->poll(); EXPECT_EQ(calls, 3); EXPECT_TRUE(s.http->calls.empty());
 }
+
+TEST(Audiobookshelf, PlaylistEditsAreUnsupportedAndCancellable) {
+    Server s;
+    std::vector<Error> got;
+    auto done = [&](Error e) { got.push_back(e); };
+    s.abs->addPlaylistTrack("p", "t", done);
+    s.abs->removePlaylistTrack("p", 0, done);
+    auto id = s.abs->deletePlaylist("p", done);
+    s.abs->cancel(id);
+    EXPECT_TRUE(got.empty());
+    s.abs->poll();
+    EXPECT_EQ(got, std::vector<Error>(2, Error::Server));
+    EXPECT_TRUE(s.http->calls.empty());
+}

@@ -158,3 +158,16 @@ TEST(NoMusicServer, StarsAreUnsupportedAndAllRequestsFailFromPoll) {
     auto id = server.setStarred("x", false, [&](Error) { ADD_FAILURE(); }); server.cancel(id);
     EXPECT_EQ(calls, 0); server.poll(); EXPECT_EQ(calls, 3);
 }
+
+TEST(NoMusicServer, PlaylistEditsAreNotConfiguredAndCancellable) {
+    NoMusicServer server;
+    std::vector<Error> got;
+    auto done = [&](Error e) { got.push_back(e); };
+    server.addPlaylistTrack("p", "t", done);
+    server.removePlaylistTrack("p", 0, done);
+    auto id = server.deletePlaylist("p", done);
+    server.cancel(id);
+    EXPECT_TRUE(got.empty());
+    server.poll();
+    EXPECT_EQ(got, std::vector<Error>(2, Error::NotConfigured));
+}

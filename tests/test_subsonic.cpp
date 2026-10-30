@@ -860,3 +860,41 @@ TEST(SubsonicStars, ErrorsMalformedSongAndNotConfiguredStayAsynchronous) {
     empty.subsonic->setStarred("t1", false, [&](Error e) { EXPECT_EQ(e, Error::NotConfigured); ++calls; });
     EXPECT_EQ(calls, 0); empty.subsonic->poll(); EXPECT_EQ(calls, 3); EXPECT_TRUE(empty.http->calls.empty());
 }
+
+TEST(Subsonic, PlaylistEditsSendOrderedEncodedParametersAndReportResults) {
+    Server server;
+    std::vector<Error> got;
+    auto done = [&](Error e) { got.push_back(e); };
+    server.subsonic->addPlaylistTrack("p&1", "t=2", done);
+    server.subsonic->removePlaylistTrack("p&1", 3, done);
+    server.subsonic->deletePlaylist("p&1", done);
+    ASSERT_EQ(server.http->calls.size(), 3u);
+    EXPECT_EQ(server.http->url(0), kBase + "updatePlaylist" + kAuth + "&playlistId=p%261&songIdToAdd=t%3D2");
+    EXPECT_EQ(server.http->url(1), kBase + "updatePlaylist" + kAuth + "&playlistId=p%261&songIndexToRemove=3");
+    EXPECT_EQ(server.http->url(2), kBase + "deletePlaylist" + kAuth + "&id=p%261");
+    server.http->answer(0, kOk, subsonicFixture("ping.json"));
+    server.http->answer(1, kOk, subsonicFixture("error_40_wrong_login.json"));
+    server.http->unreachable(2);
+    EXPECT_TRUE(got.empty());
+    server.subsonic->poll();
+    EXPECT_EQ(got, (std::vector<Error>{Error::None, Error::BadLogin, Error::Unreachable}));
+}
+
+TEST(Subsonic, PlaylistEditsCancelAndNotConfigured) {
+    Server server;
+    int calls = 0;
+    auto id = server.subsonic->deletePlaylist("p", [&](Error) { ++calls; });
+    server.subsonic->cancel(id);
+    server.http->answer(0, kOk, subsonicFixture("ping.json"));
+    server.subsonic->poll();
+    EXPECT_EQ(calls, 0);
+    Server missing(config(""));
+    std::vector<Error> errors;
+    auto done = [&](Error e) { errors.push_back(e); };
+    missing.subsonic->addPlaylistTrack("p", "t", done);
+    missing.subsonic->removePlaylistTrack("p", 0, done);
+    missing.subsonic->deletePlaylist("p", done);
+    missing.subsonic->poll();
+    EXPECT_EQ(errors, std::vector<Error>(3, Error::NotConfigured));
+    EXPECT_TRUE(missing.http->calls.empty());
+}

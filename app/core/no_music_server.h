@@ -36,6 +36,9 @@ public:
     RequestId playlists(Done<RemotePlaylist> done) override;
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override;
     RequestId createPlaylist(std::string name, std::vector<std::string> trackIds, std::function<void(Error, std::string)> done) override;
+    RequestId addPlaylistTrack(std::string playlistId, std::string trackId, std::function<void(Error)> done) override;
+    RequestId removePlaylistTrack(std::string playlistId, std::size_t index, std::function<void(Error)> done) override;
+    RequestId deletePlaylist(std::string playlistId, std::function<void(Error)> done) override;
     void cancel(RequestId id) override;
     Stream stream(const std::string&, int) override { return {}; }
     void scrobble(const std::string&, bool, std::optional<std::int64_t>, std::function<void(Error)>) override {}

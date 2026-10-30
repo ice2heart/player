@@ -70,6 +70,9 @@ public:
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override;
     // `createPlaylist` with `name` and one `songId` per track, a GET like every call (HttpClient has no POST).
     RequestId createPlaylist(std::string name, std::vector<std::string> trackIds, std::function<void(Error, std::string)> done) override;
+    RequestId addPlaylistTrack(std::string playlistId, std::string trackId, std::function<void(Error)> done) override;
+    RequestId removePlaylistTrack(std::string playlistId, std::size_t index, std::function<void(Error)> done) override;
+    RequestId deletePlaylist(std::string playlistId, std::function<void(Error)> done) override;
     void cancel(RequestId id) override;
     // A transcode is MP3: every Subsonic server can make it, and every bit rate
     // of the Streaming quality setting is a standard MP3 rate. It seeks with
