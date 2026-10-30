@@ -2171,19 +2171,42 @@ void App::cancelStarOptions() {
     starOptions_.reset();
 }
 
+// Star routing is independent of playback routing: a known local copy stays local.
+// Only the playing IndexTrack's exact track references identify it on a server. The
+// outer loop deliberately follows configured-server order, rather than reference order.
+std::optional<App::StarTarget> App::starTargetOf(const QueueEntry& entry) const {
+    if (entry.kind == QueueEntry::Kind::Remote) {
+        auto link = linkOf(entry);
+        if (link && servers_[*link].server.supportsStars() && !entry.trackId.empty())
+            return StarTarget{*link, entry.trackId};
+        return std::nullopt;
+    }
+    const auto hit = index_.findByLocation(entry.path);
+    if (!hit.track) return std::nullopt;
+    for (size_t link = 0; link < servers_.size(); ++link) {
+        const auto& server = servers_[link];
+        if (server.key.empty() || !server.server.configured() || !server.server.supportsStars()) continue;
+        const std::string prefix = LibraryIndex::seenRef(server.key, SeenKind::Track, "");
+        for (const auto& ref : hit.track->seenOn)
+            if (ref.starts_with(prefix) && ref.size() > prefix.size())
+                return StarTarget{link, ref.substr(prefix.size())};
+    }
+    return std::nullopt;
+}
+
 void App::loadPlayerStar() {
     const QueueEntry* entry = queue_.current();
     if (!entry) return;
-    auto link = linkOf(*entry);
-    if (!link || !serverAt(*link).configured() || !serverAt(*link).supportsStars()) return;
+    const auto target = starTargetOf(*entry);
+    if (!target) return;
     const auto screen = screens_.back().id;
     starOptions_ = screen;
     screens_.back().build = {}; // this screen keeps its asynchronously loaded actions
-    const std::string trackId = entry->trackId;
+    const std::string trackId = target->trackId;
     RemoteList& list = remoteLists_[screen];
-    list.link = *link;
+    list.link = target->link;
     list.loaded = screens_.back().items.size();
-    list.fetch = [this, screen, link = *link, trackId](int, PageDone done) {
+    list.fetch = [this, screen, link = target->link, trackId](int, PageDone done) {
         return serverAt(link).trackDetails(trackId, [this, screen, link, trackId, done](MusicServer::Error error,
                 std::vector<RemoteTrack> tracks, bool) {
             if (error == MusicServer::Error::None && (tracks.size() != 1 || tracks.front().id != trackId))

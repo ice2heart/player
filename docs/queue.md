@@ -93,7 +93,7 @@ menus then **jump in long lists**:
   with that item. **Options in a player** gives the actions for the playing track.
 - **OK and Options in a player stay different.** OK opens the Player menu, which is
   about the player (Queue, Shuffle, Repeat, Sleep timer). Options is about the
-  playing track: Go to album, Album info, and Star / Unstar for a remote track. Album
+  playing track: Go to album, Album info, and Star / Unstar for a server-linked track, including local playback. Album
   info moves to Options from the Player menu and from the end of an album's list (an
   album in a list has it in its Options). Star / Unstar is built in streaming.md
   [phase 2a](streaming.md#phase-2a-stars), in Options, so it has one key. Go to artist comes later.
@@ -330,7 +330,7 @@ Phase 2 is built as planned, with these differences. The code is described in
 [architecture.md](architecture.md), the rules in [navigation.md](navigation.md).
 
 - **Star / Unstar is built** in streaming.md 2a.1. The music player's Options keeps Go to album
-  and Album info, then loads Star / Unstar for tracks of supported configured music servers.
+  and Album info, then loads Star / Unstar for remote tracks and local tracks with an exact track reference on a supported configured music server.
 - **`last_stream.*` is not migrated at start.** It is still read when there is no `queue.tsv`: "Now
   playing" on Home and OK or Play run `resumeStream()` as before, and the queue that plays is saved in
   `queue.tsv`. Any music queue that plays, and reading a `queue.tsv`, remove the old keys.

@@ -211,15 +211,18 @@ instead (and while a book plays they leave it playing and keep the queue for Con
   with that item. **Options in a player** gives the actions for the playing track.
 - **Short OK and held OK in a player stay different.** Short OK opens the Player menu, which is
   about the player (Queue, Shuffle, Repeat, Sleep timer). Held OK / Options is about the
-  playing track: Go to album, Album info, and Star / Unstar for a remote track. Album
+  playing track: Go to album, Album info, and Star / Unstar for a server-linked track (including local playback). Album
   info moves to Options from the Player menu and from the end of an album's list (an
   album in a list has it in its Options). Star / Unstar loads the current state from the server in the player's Options,
   after Go to album and Album info. While it loads those two actions remain usable.
   OK says "Saving."; success returns to the player and says "Starred." or "Unstarred."
   An error is spoken and the Options stay for retry. Leaving, opening another screen,
   changing tracks, sleeping or exiting cancels the callback.
-  Stars are offered only for tracks of a configured music server, never local tracks
-  or book providers, and never sit in the Player menu.
+  Stars are offered for remote tracks and locally played tracks whose library entry has
+  an exact server track reference. Local playback stays local. Choose the first configured
+  star-capable server in configuration order with a valid track reference; album, playlist,
+  empty, malformed and removed-server references do not qualify. Unlinked local tracks and
+  book providers have no star action. Stars never sit in the Player menu.
   Streaming → Starred loads the server's starred tracks with the usual Loading, error,
   Try again and empty-list feedback. OK plays from the selected track as a normal queue. Go to artist comes later.
 - **Download album / Download playlist** is in the Options of an
@@ -373,7 +376,7 @@ Player menu (music player)
   the user chooses it.
 
 **As built (phase 2):** the music player's Player menu is Queue · Shuffle · Repeat · Go to first track ·
-Sleep timer, Options in the music player is Go to album · Album info · Star / Unstar for supported remote tracks (streaming.md
+Sleep timer, Options in the music player is Go to album · Album info · Star / Unstar for supported server-linked tracks, including local playback (streaming.md
 2a.1), and the Queue list works as above. Where the build differs from the text above:
 
 - Play now says "Playing Weather." once the track opens. "End of queue. Press play to start

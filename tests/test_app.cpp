@@ -18092,3 +18092,117 @@ TEST_F(PlayerOptionsTest, AutoSleepCancelsPendingStarMutation) {
     idle(2min); ASSERT_EQ(app->mode(), App::Mode::Sleeping);
     EXPECT_FALSE(server.replyCreated(id)); app->tick(); EXPECT_FALSE(speech.heard("Starred."));
 }
+
+class LinkedLocalStarTest : public AppTest {
+protected:
+    void SetUp() override {
+        AppTest::SetUp();
+        settings.setString("server.url", "https://music.example");
+        settings.setString("server.user", "ann");
+        ServerConfig c;
+        c.url = "https://second.example"; c.user = "ben"; c.name = "Second";
+        secondKey = TrackCache::serverKey(c.url, c.user);
+        firstKey = TrackCache::serverKey("https://music.example", "ann");
+        moreLinks.push_back({c, secondKey, "Second", second, secondDownloader});
+        path = (roadTrip() / "01 - Sunrise.mp3").string();
+    }
+    void seed(std::vector<std::string> refs, IndexItem::Source source = IndexItem::Source::Local) {
+        IndexItem item = savedItem("linked-local", IndexItem::Kind::Music, "Road Trip", {path, (roadTrip() / "02 - Highway.mp3").string()});
+        item.source = source;
+        item.tracks[0].seenOn = std::move(refs);
+        // Neither an album-level link nor a different track's link identifies the playing track.
+        item.seenOn = {LibraryIndex::seenRef(firstKey, SeenKind::Album, "album-id")};
+        item.tracks[1].seenOn = {LibraryIndex::seenRef(firstKey, SeenKind::Track, "other-song")};
+        indexStore.items[item.id] = std::move(item);
+    }
+    void playLocal() {
+        start(false);
+        QueueEntry e; e.kind = QueueEntry::Kind::Local; e.path = path; e.title = "Sunrise"; e.album = "Road Trip";
+        ASSERT_TRUE(app->playQueue("Road Trip", {e}));
+        ASSERT_EQ(player.file, path);
+    }
+    void acknowledge(FakeMusicServer& target, const std::string& id, bool starred) {
+        ASSERT_EQ(target.lastRequest().kind, Kind::TrackDetails);
+        EXPECT_EQ(target.lastRequest().arg, id);
+        RemoteTrack track; track.id = id; track.starred = starred;
+        ASSERT_TRUE(target.reply(target.lastRequest().id, std::vector<RemoteTrack>{track})); app->tick();
+        open(starred ? "Unstar" : "Star");
+        EXPECT_EQ(target.lastRequest().kind, starred ? Kind::Unstar : Kind::Star);
+        EXPECT_EQ(target.lastRequest().arg, id);
+        ASSERT_TRUE(target.replyCreated(target.lastRequest().id)); app->tick();
+        EXPECT_EQ(speech.last(), starred ? "Unstarred." : "Starred.");
+        EXPECT_EQ(player.file, path); EXPECT_TRUE(player.playing());
+    }
+    FakeMusicServer second;
+    FakeDownloader secondDownloader;
+    std::string path, firstKey, secondKey;
+};
+
+TEST_F(LinkedLocalStarTest, LinkedLocalPlaybackStarsAndUnstarsTheExactTrackAndStaysLocal) {
+    seed({LibraryIndex::seenRef(firstKey, SeenKind::Track, "server-song")});
+    playLocal();
+    const auto opens = player.opened.size();
+    for (bool starred : {false, true}) {
+        press(Button::Options);
+        ASSERT_NO_FATAL_FAILURE(acknowledge(server, "server-song", starred));
+        EXPECT_EQ(app->mode(), App::Mode::Player);
+    }
+    EXPECT_EQ(player.opened.size(), opens);
+    app->shutdown();
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved); ASSERT_EQ(saved->queue.size(), 1u);
+    EXPECT_EQ(saved->queue.at(0).kind, QueueEntry::Kind::Local);
+    EXPECT_EQ(saved->queue.at(0).path, path); EXPECT_TRUE(saved->queue.at(0).trackId.empty());
+}
+
+TEST_F(LinkedLocalStarTest, CachedLocalFileUsesItsTrackReferenceAndSkipsNonTrackReferences) {
+    path = (base / "cache" / "download.mp3").string(); touch(path);
+    seed({LibraryIndex::seenRef(firstKey, SeenKind::Album, "album-id"),
+          LibraryIndex::seenRef(firstKey, SeenKind::Playlist, "playlist-id"),
+          firstKey + ":track:", firstKey + ":track", firstKey + "extra:track:wrong-server",
+          LibraryIndex::seenRef(firstKey, SeenKind::Track, "downloaded-song")}, IndexItem::Source::Cached);
+    playLocal(); press(Button::Options);
+    ASSERT_NO_FATAL_FAILURE(acknowledge(server, "downloaded-song", false));
+}
+
+TEST_F(LinkedLocalStarTest, InvalidTrackReferencesNeverBorrowAlbumOrSiblingTrackIdentity) {
+    seed({LibraryIndex::seenRef(firstKey, SeenKind::Album, "album-id"),
+          LibraryIndex::seenRef(firstKey, SeenKind::Playlist, "playlist-id"),
+          firstKey + ":track:", firstKey + ":track", firstKey + "extra:track:wrong",
+          "removed-server:track:gone"});
+    playLocal(); const auto requests = server.requests.size() + second.requests.size(); press(Button::Options);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Go to album", "Album info"}));
+    EXPECT_EQ(server.requests.size() + second.requests.size(), requests);
+}
+
+TEST_F(LinkedLocalStarTest, FirstEligibleConfiguredServerWinsRegardlessOfReferenceOrder) {
+    seed({LibraryIndex::seenRef(secondKey, SeenKind::Track, "second-song"),
+          LibraryIndex::seenRef(firstKey, SeenKind::Track, "first-song")});
+    playLocal(); const auto otherRequests = second.requests.size(); press(Button::Options);
+    ASSERT_NO_FATAL_FAILURE(acknowledge(server, "first-song", false));
+    EXPECT_EQ(second.requests.size(), otherRequests);
+}
+
+TEST_F(LinkedLocalStarTest, UnsupportedFirstServerIsSkippedAndSecondServerReceivesBothOperations) {
+    server.starsSupported = false;
+    seed({LibraryIndex::seenRef(firstKey, SeenKind::Track, "first-song"),
+          LibraryIndex::seenRef(secondKey, SeenKind::Track, "second-song")});
+    playLocal(); const auto firstRequests = server.requests.size();
+    for (bool starred : {false, true}) {
+        press(Button::Options);
+        ASSERT_NO_FATAL_FAILURE(acknowledge(second, "second-song", starred));
+    }
+    EXPECT_EQ(server.requests.size(), firstRequests);
+}
+
+TEST_F(LinkedLocalStarTest, UnconfiguredFirstServerIsSkippedAndLocalCallbackCancelsOnLeave) {
+    server.isConfigured = false;
+    seed({LibraryIndex::seenRef(firstKey, SeenKind::Track, "first-song"),
+          LibraryIndex::seenRef(secondKey, SeenKind::Track, "second-song")});
+    playLocal(); press(Button::Options);
+    ASSERT_EQ(second.lastRequest().kind, Kind::TrackDetails); EXPECT_EQ(second.lastRequest().arg, "second-song");
+    auto id = second.lastRequest().id; press(Button::Home);
+    RemoteTrack track; track.id = "second-song"; track.title = "Sunrise";
+    EXPECT_FALSE(second.reply(id, std::vector<RemoteTrack>{track}));
+    EXPECT_EQ(player.file, path); EXPECT_TRUE(player.playing());
+}

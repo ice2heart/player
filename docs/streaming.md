@@ -390,13 +390,14 @@ Known limits after phase 2: nothing plays offline, and stars are not built (phas
 
 ## Phase 2a: stars
 
-Goal: star or unstar the playing remote music track from Options, and browse and play
+Goal: star or unstar the playing server-linked music track from Options, including
+local playback when the library knows its exact server track id, and browse and play
 starred tracks from Streaming. The queue interface built in queue.md supplies playback
 and restart persistence.
 
 | # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
 |---|------|------|
-| ✅ 2a.1 | **Star / unstar** in `App::playerOptionsMenu()` (the Options of the music player, "Options, <track>", next to Go to album and Album info; queue.md step 2.5 built that menu and left Star out; the Player menu never gets it), for a remote track of the server set up now, and a **Starred** list in Streaming. A track played from Starred is a queue entry like any other (it needs its album id only for Go to album), so it is saved in `queue.tsv` and nothing else is needed to resume it. | Star and unstar call the server. Starred loads like the other lists (Loading, filled, error). An error is spoken. Options in the player lists Star or Unstar for a remote track and neither for a local one. |
+| ✅ 2a.1 | **Star / unstar** in `App::playerOptionsMenu()` (the Options of the music player, "Options, <track>", next to Go to album and Album info; queue.md step 2.5 built that menu and left Star out; the Player menu never gets it), for a remote track of the server set up now or a local track with an exact library track reference to a configured star-capable server, and a **Starred** list in Streaming. A track played from Starred is a queue entry like any other (it needs its album id only for Go to album), so it is saved in `queue.tsv` and nothing else is needed to resume it. | Star and unstar call the server. Starred loads like the other lists (Loading, filled, error). An error is spoken. Options in the player lists Star or Unstar for remote and linked local tracks, including indexed cached files, and neither for an unlinked local one. Linked local operations use the exact track id and keep playback and the saved queue local; invalid/non-track references never qualify, and configured servers are selected in configuration order, skipping unsupported or absent servers. |
 
 **As built:** Subsonic uses [getSong](https://opensubsonic.netlify.app/docs/endpoints/getsong/)
 for the current star state, [getStarred2](https://opensubsonic.netlify.app/docs/endpoints/getstarred2/)
@@ -405,12 +406,19 @@ Options keeps Go to album and Album info usable while the state loads. Success s
 "Starred." / "Unstarred." and returns to the player; errors stay for retry. Requests are
 cancelled when Options closes, the track changes, or the device sleeps or exits. Starred
 plays through the normal queue and keeps each track's album id; no new persisted state.
-Stars are per configured music server; book providers and local tracks do not offer them.
+Stars are per configured music server. Local files, including indexed cached/downloaded
+files, offer stars when the playing track has an exact library track reference. The first
+configured star-capable server in configuration order with a valid track reference wins;
+non-track, empty, malformed and removed-server references are skipped. Playback and the
+saved queue remain local. Book providers and unlinked local tracks do not offer stars.
 
 **Device check (manual):** play a server track, open Options and star it. Streaming → Starred
 must include it and play it. Unstar it from the player's Options and reopen Starred: it is
 gone. With the server unreachable, an error is spoken and Home still responds. Restart
-while a track from Starred is saved: Now playing resumes its track and place.
+while a track from Starred is saved: Now playing resumes its track and place. Also play a
+local or downloaded file with a known library track reference: Star / Unstar must update
+that exact song on the server while the local file continues playing. A local file with
+no valid server track reference offers neither action.
 
 ## Phase 3: local cache and downloads
 

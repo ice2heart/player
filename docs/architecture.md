@@ -645,7 +645,7 @@ Player menu of the music player (`musicPlayerMenu()`)
 Options in the music player (`playerOptionsMenu()`, "Options, <track>")
 ├── Go to album            (local: the index item of the file; remote: the album id of the entry; opens on the playing track)
 ├── Album info             (title, number of tracks, status)
-└── Star / Unstar          (configured music servers supporting stars; state loaded from the server)
+└── Star / Unstar          (configured music servers supporting stars; remote or linked local tracks; state loaded from the server)
 
 **Stars (streaming.md 2a.1).** `MusicServer::supportsStars()` gates both the player action and
 Streaming → Starred. Subsonic implements `trackDetails` with `getSong`, `starredTracks` with
@@ -657,8 +657,15 @@ owns both the metadata and mutation requests. OK says "Saving."; success closes 
 says "Starred." / "Unstarred.", while an error stays for retry. Opening another screen, track changes, sleep, power
 off and shutdown close these Options and cancel outstanding callbacks. A background result
 is silent. Starred tracks play as an ordinary queue with no album/playlist source: their
-album ids remain on the entries for Go to album and `queue.tsv` restart. Local tracks and
-unsupported providers (including Audiobookshelf) have no star actions.
+album ids remain on the entries for Go to album and `queue.tsv` restart. Locally played files (including indexed downloads) also offer stars when the exact
+`IndexTrack` at the queue entry's path has a `seenOn` track reference. `starTargetOf()`
+checks configured star-capable servers in configuration order and takes the first nonempty
+`<server key>:track:<id>` reference for that server; it skips other kinds, malformed or
+empty references, unsupported servers and servers no longer configured. Album-level and
+sibling-track references never identify the playing track. Only the extracted server id
+is sent; the file continues playing locally and the queue entry and serialization stay
+local. `linkOf()` retains its playback-only meaning. Unlinked local tracks and unsupported
+providers (including Audiobookshelf) have no star actions.
 
 The Options of a server album or playlist (Music and Streaming) have Download album / Download playlist after
 Add to queue (`optionsMenu()`), where `offersDownload()`: `canDownloadFrom(pick.link)` and the list is not already whole on the
