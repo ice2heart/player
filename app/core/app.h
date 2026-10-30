@@ -2,6 +2,7 @@
 
 #include "album_merge.h"
 #include "buttons.h"
+#include "hal.h"
 #include "library.h"
 #include "library_index.h"
 #include "menu.h"
@@ -711,6 +712,8 @@ private:
     // plays it, as a stream did before (it is not just entered).
     bool restoredQueue_ = false;
     Clock& clock_;
+    HalEvents* halEvents_;
+    std::vector<std::string> halErrors_;
     std::filesystem::path libraryRoot_;
     std::filesystem::path musicRoot_;
     std::filesystem::path cacheRoot_; // downloaded tracks; never scanned as library or music

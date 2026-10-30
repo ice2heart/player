@@ -466,8 +466,10 @@ struct ServerLink {
     Downloader& downloader;
 };
 
-// Non-owning dependencies of App. The referenced objects and server targets
-// must outlive App; App takes ownership of the server links.
+class HalEvents;
+
+// Non-owning dependencies of App. The referenced objects, optional events and
+// server targets must outlive App; App takes ownership of the server links.
 struct Services {
     Speech& speech;
     MediaPlayer& player;
@@ -480,6 +482,7 @@ struct Services {
     Settings& state;
     Clock& clock;
     TextFiles* files = nullptr;
+    HalEvents* events = nullptr;
 };
 
 } // namespace oap

@@ -300,7 +300,7 @@ App::App(Services services, std::filesystem::path libraryRoot, std::filesystem::
     : tts_(services.speech), player_(services.player), earcons_(services.sounds), volume_(services.volume),
       servers_(std::move(services.servers)), index_(services.libraryStore), scanner_(services.scanner),
       config_(services.config), state_(services.state), savedState_(services.state.values()),
-      queueFile_(std::move(queueFile)), clock_(services.clock), libraryRoot_(std::move(libraryRoot)),
+      queueFile_(std::move(queueFile)), clock_(services.clock), halEvents_(services.events), libraryRoot_(std::move(libraryRoot)),
       musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)), freeSpace_(spaceOnDisk),
       random_(clockRandom(services.clock)), lastActivity_(services.clock.now()) {
     textFiles_ = services.files;
@@ -810,6 +810,14 @@ App::Mode App::mode() const {
 }
 
 void App::tick() {
+    if (halEvents_) {
+        for (const auto& event : halEvents_->drain()) {
+            if (const auto* error = std::get_if<HalError>(&event); error && !shutDown_) {
+                halErrors_.push_back(error->message);
+                say(error->message);
+            }
+        }
+    }
     auto now = clock_.now();
     if (!shutDown_)
         for (const ButtonEvent& ev : gestures_.poll(now)) onGesture(ev);
@@ -5695,7 +5703,9 @@ std::string App::statusReport() const {
     char buf[32];
     std::time_t t = clock_.wallTime();
     std::strftime(buf, sizeof buf, "Time %H:%M.", std::localtime(&t));
-    return text + buf;
+    text += buf;
+    for (const auto& error : halErrors_) text += " " + error;
+    return text;
 }
 
 } // namespace oap

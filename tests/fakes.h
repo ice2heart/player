@@ -32,12 +32,13 @@ inline TextFiles& diskFiles() {
 
 class FakeClock : public Clock {
 public:
-    TimePoint now() const override { return now_; }
-    std::time_t wallTime() const override { return wall_; }
-    void advance(std::chrono::milliseconds ms) { now_ += ms; }
-    void setWallTime(std::time_t t) { wall_ = t; } // wall time only moves when a test says so
+    TimePoint now() const override { std::lock_guard lock(mutex_); return now_; }
+    std::time_t wallTime() const override { std::lock_guard lock(mutex_); return wall_; }
+    void advance(std::chrono::milliseconds ms) { std::lock_guard lock(mutex_); now_ += ms; }
+    void setWallTime(std::time_t t) { std::lock_guard lock(mutex_); wall_ = t; } // wall time only moves when a test says so
 
 private:
+    mutable std::mutex mutex_;
     std::time_t wall_ = 1'700'000'000;
     TimePoint now_{std::chrono::hours(1000)};
 };

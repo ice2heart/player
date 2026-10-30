@@ -145,6 +145,7 @@ The unit tests wire in fakes instead (section 12).
 | **TTS worker** | `Tts` | Runs `espeak_Synth()` synchronously and resamples into the speech stream. |
 | **Audio callback** | `AudioOutput` | Calls `Mixer::render()` to pull PCM for the device. CoreAudio calls back; Pulse, ALSA and null run their own writer thread. |
 | **HTTP worker** | `HttpClient` | Runs every libcurl GET/PATCH transfer and parses Subsonic and Audiobookshelf answers. Finished results go into each server’s mutex-protected inbox that its `poll()` empties on the UI thread. At exit the front end calls `Servers::finish()` after `app.shutdown()`: `HttpClient::finish()` stops new requests, lets the queued and running ones end for up to `kServerFinishDeadline` (3 s), aborts the rest and joins this thread (a scrobble sent just before exit reaches the server and its answer reaches `App`, which drops the entry from `scrobbles.tsv` without sending the next one). |
+| **HAL producers** | HAL backends | Can post events to `HalEvents`; its supplied wake callback can notify the front end, and `App::tick()` drains them on the UI thread. `HalError` is spoken and included in Status. Existing front ends do not supply a queue yet. |
 | **Scan worker** | `ThreadedScanner` | Walks the library and music roots, reads the tags of new or changed files through `TagReader`, one scan at a time. Finished scans go into a mutex-protected list that `ThreadedScanner::poll()` empties on the UI thread. |
 | **Download worker** | `HttpDownloader` | Fetches one track file at a time into its `.part`. Progress and results go into a mutex-protected list that `HttpDownloader::poll()` empties on the UI thread. |
 
@@ -161,7 +162,7 @@ Rules:
   Only at exit does a front end wait, for at most 3 s, in `Servers::finish()`, after
   `App::shutdown()` and outside `App`.
 - Threads exchange data only through `AudioStream` (mutex-protected), atomics,
-  and mutex-protected queues: the `Tts` text queue, the `HttpClient` job queue,
+  and mutex-protected queues: `HalEvents`, the `Tts` text queue, the `HttpClient` job queue,
   the Subsonic and Audiobookshelf inboxes of finished requests and the `HttpDownloader` list of progress and results.
 - The audio callback only reads streams and atomics, and never blocks for long.
   It still takes the `AudioStream` mutex, which is acceptable for the simulator.
@@ -1433,7 +1434,7 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
   `oapaudio` holds only the null output; the device backends are added with the sim or headless build.
 - `tests/fakes.h` provides `FakeSpeech` (records what was said), `FakePlayer`
   (position, end of file and chapters set by the test), `FakeSounds`, `FakeVolume`,
-  `FakeClock` (time only moves when the test advances it), `FakeStore` (what was
+  `FakeClock` (thread-safe; time only moves when the test advances it), `FakeStore` (what was
   last saved to a settings file, and how often) and `FakeMusicServer` (records each
   request; answers only when the test calls `reply` / `replyPing` / `replyVersion` / `replyBook` / `replyProgress` / `fail`, and then
   only on the next `poll()`; honours `cancel`; its stream URLs show the quality,

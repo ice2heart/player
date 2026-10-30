@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <memory>
 #include <new>
@@ -18203,4 +18204,55 @@ TEST_F(LinkedLocalStarTest, UnconfiguredFirstServerIsSkippedAndLocalCallbackCanc
     RemoteTrack track; track.id = "second-song"; track.title = "Sunrise";
     EXPECT_FALSE(second.reply(id, std::vector<RemoteTrack>{track}));
     EXPECT_EQ(player.file, path); EXPECT_TRUE(player.playing());
+}
+
+TEST(HalEventsTest, PostsInOrderAndWakesOutsideTheLock) {
+    int wakes = 0;
+    HalEvents* queue = nullptr;
+    HalEvents events([&] { ++wakes; if (wakes == 1) queue->post(HalError{"second"}); });
+    queue = &events;
+    events.post(HalError{"first"});
+    EXPECT_EQ(wakes, 2);
+    const auto drained = events.drain();
+    ASSERT_EQ(drained.size(), 2u);
+    EXPECT_EQ(std::get<HalError>(drained[0]).message, "first");
+    EXPECT_EQ(std::get<HalError>(drained[1]).message, "second");
+    EXPECT_TRUE(events.drain().empty());
+}
+
+TEST(HalEventsTest, ConcurrentPostsAreNotLost) {
+    constexpr int workers = 4, count = 1000;
+    std::atomic<int> wakes = 0;
+    HalEvents events([&] { ++wakes; });
+    std::vector<std::thread> threads;
+    for (int i = 0; i < workers; ++i)
+        threads.emplace_back([&, i] {
+            for (int j = 0; j < count; ++j) events.post(HalError{std::to_string(i * count + j)});
+        });
+    for (auto& thread : threads) thread.join();
+    const auto drained = events.drain();
+    ASSERT_EQ(drained.size(), workers * count);
+    EXPECT_EQ(wakes.load(), workers * count);
+    std::set<std::string> unique;
+    for (const auto& event : drained) unique.insert(std::get<HalError>(event).message);
+    EXPECT_EQ(unique.size(), workers * count);
+}
+
+TEST_F(AppTest, HalEventsAreSpokenOnTickAndIncludedInStatus) {
+    HalEvents events;
+    app = std::make_unique<App>(Services{speech, player, sounds, volume, serverLinks(), indexStore,
+        scanner, settings, state, clock, textFiles, &events}, root, music, cache, queueFile, scrobbleFile);
+    app->start();
+    speech.said.clear();
+    events.post(HalError{"First hardware error."});
+    events.post(HalError{"Second hardware error."});
+    EXPECT_TRUE(speech.said.empty());
+    app->tick();
+    ASSERT_GE(speech.said.size(), 2u);
+    EXPECT_EQ(speech.said[0], "First hardware error.");
+    EXPECT_EQ(speech.said[1], "Second hardware error.");
+    open("System");
+    open("Status");
+    EXPECT_NE(speech.last().find("First hardware error."), std::string::npos);
+    EXPECT_NE(speech.last().find("Second hardware error."), std::string::npos);
 }
