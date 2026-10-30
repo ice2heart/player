@@ -193,16 +193,16 @@ struct ButtonHelp {
 
 const ButtonHelp kButtonHelp[] = {
     {Button::PlayPause, "Play pause", "Starts or pauses playback. Hold to hear where you are."},
-    {Button::Back, "Left", "In menus, jumps to the previous letter, or back 10 items. In player, moves back by the step unit. Hold, or press deeper, for previous chapter or track."},
-    {Button::Forward, "Right", "In menus, jumps to the next letter, or forward 10 items. In player, moves forward by the step unit. Hold, or press deeper, for next chapter or track."},
-    {Button::Up, "Up", "In menus, previous item. Hold for first item. In player, previous step unit."},
-    {Button::Down, "Down", "In menus, next item. Hold for last item. In player, next step unit: skip, track or chapter, album or ten minutes."},
-    {Button::Ok, "OK", "Opens the selected item. In player, opens the player menu. Hold to go back, like Home."},
-    {Button::Home, "Home", "Goes back to the previous screen. Hold for the home menu."},
+    {Button::Back, "Left", "In menus, previous item. Press deeper to go back ten items; hold for the first item. In a player, previous chapter or track, or restart after three seconds. Hold to seek back; press deeper to seek faster. Release to stop seeking."},
+    {Button::Forward, "Right", "In menus, next item. Press deeper to go forward ten items; hold for the last item. In a player, next chapter or track. Hold to seek forward; press deeper to seek faster. Release to stop seeking."},
+    {Button::Up, "Up", "Unused during normal use."},
+    {Button::Down, "Down", "Unused during normal use."},
+    {Button::Ok, "OK", "Opens the selected item. In a player, opens the player menu. Hold for options about the selected item or current playback."},
+    {Button::Home, "Esc", "Goes back to the previous screen. At Home, returns to the current player without resuming it. Hold for the Home menu."},
     {Button::VolumeUp, "Volume up", "Raises the volume, in menus and in the player. Hold to keep raising it."},
     {Button::VolumeDown, "Volume down", "Lowers the volume, in menus and in the player. Hold to keep lowering it."},
     {Button::Options, "Options", "Actions for the selected item. Says when there are none."},
-    {Button::Talk, "Talk", "Hold and speak a command. Coming later."},
+    {Button::Talk, "Talk", "Unused during normal use."},
     {Button::Power, "Power", "Press to sleep. Hold for the power menu."},
 };
 
@@ -287,11 +287,10 @@ MenuItem action(std::string label, std::function<void()> fn) {
     return item;
 }
 
-MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn, ListOrder order = ListOrder::None) {
+MenuItem submenu(std::string label, std::function<std::vector<MenuItem>()> fn) {
     MenuItem item;
     item.label = std::move(label);
     item.submenu = std::move(fn);
-    item.submenuOrder = order;
     return item;
 }
 } // namespace
@@ -962,7 +961,7 @@ void App::describeKey(ButtonEvent ev) {
         say("Key describer off.");
         return;
     }
-    say(keyHelp(ev.button) + (ev.button == Button::Home ? " Hold Home now to leave key describer." : ""));
+    say(keyHelp(ev.button) + (ev.button == Button::Home ? " Hold Esc now to leave key describer." : ""));
 }
 
 // ---------------------------------------------------------------- speech
@@ -984,7 +983,7 @@ std::string App::itemSpeech(const Screen& screen) const {
         text += ", " + std::to_string(screen.index + 1) + " of " + std::to_string(screen.items.size());
     if (verbosity == Beginner && (item.submenu || item.action)) {
         const std::string verb = !item.okHint.empty() ? item.okHint : item.submenu ? "open" : "select";
-        text += ". Press OK to " + verb + (item.options ? ", Options for more" : "") + ".";
+        text += ". Press OK to " + verb + (item.options ? ", hold OK for options" : "") + ".";
     }
     return text;
 }
@@ -1013,10 +1012,8 @@ void App::whereAmI() {
 
 // ---------------------------------------------------------------- screens
 
-void App::openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index,
-                   ListOrder order) {
+void App::openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index) {
     Screen screen = menuScreen(title, std::move(build));
-    screen.order = order;
     screen.index = std::min(index, screen.items.empty() ? 0 : screen.items.size() - 1);
     pushScreen(std::move(screen));
     earcons_.play(Earcon::Open);
@@ -1066,7 +1063,7 @@ void App::activate() {
     }
     MenuItem item = screen.items[screen.index]; // copy: the action may change the screen stack
     if (item.submenu) {
-        openMenu(item.label, item.submenu, item.selected ? item.selected() : 0, item.submenuOrder);
+        openMenu(item.label, item.submenu, item.selected ? item.selected() : 0);
     } else if (item.action) {
         item.action();
     } else {
@@ -1334,7 +1331,7 @@ std::vector<MenuItem> App::homeMenu() {
         item.value = [title = *title] { return title; };
         items.push_back(item);
     }
-    items.push_back(submenu("Library", [this] { return libraryMenu(); }, ListOrder::ByName));
+    items.push_back(submenu("Library", [this] { return libraryMenu(); }));
     items.push_back(submenu("Music", [this] { return musicMenu(); }));
     // One entry per server, in config order; with none set up, one that says so.
     for (size_t link = 0; link < std::max<size_t>(servers_.size(), 1); ++link)
@@ -1424,13 +1421,13 @@ std::vector<MenuItem> App::musicMenu() {
     std::vector<MenuItem> items;
     if (albums.empty() && scanRequest_) {
         items.push_back(action("Scanning", [this] { say("Looking for music. Try again in a moment."); }));
-        if (hasPlaylists()) items.push_back(submenu("Playlists", [this] { return playlistsMenu(); }, ListOrder::ByName)); // downloaded ones need no scan
+        if (hasPlaylists()) items.push_back(submenu("Playlists", [this] { return playlistsMenu(); })); // downloaded ones need no scan
         items.push_back(refresh);
         return items;
     }
     if (albums.empty()) {
         items.push_back(action("No music", [this] { say("Copy music into " + musicRoot_.string() + ". One folder per album."); }));
-        if (hasPlaylists()) items.push_back(submenu("Playlists", [this] { return playlistsMenu(); }, ListOrder::ByName)); // downloaded ones need no index
+        if (hasPlaylists()) items.push_back(submenu("Playlists", [this] { return playlistsMenu(); })); // downloaded ones need no index
         items.push_back(refresh);
         return items;
     }
@@ -1456,10 +1453,10 @@ std::vector<MenuItem> App::musicMenu() {
         playAll = withOptions(std::move(playAll), localAlbumPick(all, ""));
     }
     items.push_back(playAll);
-    items.push_back(submenu("Artists", [this] { return artistsMenu(); }, ListOrder::ByArtist));
-    items.push_back(submenu("Albums A to Z", [this] { return albumList(mergeAlbums(index_.items())); }, ListOrder::ByName));
-    items.push_back(submenu("Playlists", [this] { return playlistsMenu(); }, ListOrder::ByName));
-    items.push_back(submenu("Genres", [this] { return genresMenu(); }, ListOrder::ByName));
+    items.push_back(submenu("Artists", [this] { return artistsMenu(); }));
+    items.push_back(submenu("Albums A to Z", [this] { return albumList(mergeAlbums(index_.items())); }));
+    items.push_back(submenu("Playlists", [this] { return playlistsMenu(); }));
+    items.push_back(submenu("Genres", [this] { return genresMenu(); }));
     items.push_back(submenu("Recently added", [this] { return recentlyAddedMenu(); }));
     items.push_back(submenu("Recently played", [this] { return recentlyPlayedMenu(); }));
     items.push_back(refresh);
@@ -1501,9 +1498,8 @@ std::vector<MenuItem> App::artistsMenu() {
             for (MergedAlbum& m : mergeAlbums(index_.items()))
                 if (artistKey(artistOf(m)) == key) theirs.push_back(std::move(m));
             return albumList(std::move(theirs));
-        }, ListOrder::ByName);
+        });
         item.value = [n = a.albums] { return countValue(n, "album"); };
-        item.unlettered = a.key.empty();
         items.push_back(item);
     }
     return items;
@@ -1571,7 +1567,7 @@ std::vector<MenuItem> App::genresMenu() {
                 for (const auto& g : genresOf(m))
                     if (g.first == key) theirs.push_back(m);
             return albumList(std::move(theirs));
-        }, ListOrder::ByName);
+        });
         item.value = [n = g.albums] { return countValue(n, "album"); };
         items.push_back(item);
     }
@@ -1701,10 +1697,10 @@ std::vector<MenuItem> App::booksMenu(size_t link) {
     std::vector<MenuItem> items;
     items.push_back(action("Continue listening", [this, link] { openInProgress(link); }));
     items.push_back(action("Recently added", [this, link] {
-        openAlbumList(link, "Recently added", "newest", kAlbumPageSize, false, false, true);
+        openAlbumList(link, "Recently added", "newest", kAlbumPageSize, false, true);
     }));
     items.push_back(action("Books A to Z", [this, link] {
-        openAlbumList(link, "Books A to Z", "alphabeticalByName", kAlbumPageSize, true, true, true);
+        openAlbumList(link, "Books A to Z", "alphabeticalByName", kAlbumPageSize, true, true);
     }));
     items.push_back(action("Authors", [this, link] { openAuthors(link); }));
     if (trackCacheOf(link).enabled()) items.push_back(submenu("Downloaded", [this, link] { return downloadedMenu(link); }));
@@ -1761,7 +1757,7 @@ void App::openAuthors(size_t link) {
                    fetchPages<RemoteArtist>(
                        [this, link](int, MusicServer::Done<RemoteArtist> done) { return serverAt(link).artists(std::move(done)); },
                        toItems),
-                   0, "No authors", "The server has no authors yet. Add books to the server, then come back.", ListOrder::ByArtist);
+                   0, "No authors", "The server has no authors yet. Add books to the server, then come back.");
 }
 
 // "Title, Author": the author is the item's value, spoken after the title.
@@ -1846,7 +1842,7 @@ std::vector<MenuItem> App::streamingMenu(size_t link) {
         openAlbumList(link, "Recently added", "newest", kAlbumPageSize, false);
     }));
     items.push_back(action("Albums A to Z", [this, link] {
-        openAlbumList(link, "Albums A to Z", "alphabeticalByName", kAlbumPageSize, true, true);
+        openAlbumList(link, "Albums A to Z", "alphabeticalByName", kAlbumPageSize, true);
     }));
     items.push_back(action("Artists", [this, link] {
         auto toItems = [this, link](const std::vector<RemoteArtist>& artists) {
@@ -1871,8 +1867,7 @@ std::vector<MenuItem> App::streamingMenu(size_t link) {
                        fetchPages<RemoteArtist>(
                            [this, link](int, MusicServer::Done<RemoteArtist> done) { return serverAt(link).artists(std::move(done)); },
                            toItems),
-                       0, "No artists", "The server has no music yet. Add music to the server, then come back.",
-                       ListOrder::ByArtist);
+                       0, "No artists", "The server has no music yet. Add music to the server, then come back.");
     }));
     items.push_back(action("Random albums", [this, link] {
         openAlbumList(link, "Random albums", "random", kRandomAlbums, false);
@@ -1897,9 +1892,8 @@ App::FetchPage App::fetchPages(std::function<MusicServer::RequestId(int offset, 
 // Opens at once with "Loading"; onPage() fills it in. With a page size, the
 // following pages are requested only through the Load more item.
 void App::openRemoteList(size_t link, const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
-                         std::string emptyHelp, ListOrder order, std::string focusKey) {
+                         std::string emptyHelp, std::string focusKey) {
     pushScreen({Screen::Kind::Menu, title, {}, {}}); // no build: popScreen() keeps what has loaded
-    screens_.back().order = order;
     std::uint64_t id = screens_.back().id;
     RemoteList& list = remoteLists_[id];
     list.fetch = std::move(fetch);
@@ -2006,8 +2000,7 @@ void App::showStatus(std::uint64_t screenId) {
     screen->index = std::min(screen->index, items.size() - 1);
 }
 
-void App::openAlbumList(size_t link, const std::string& title, const std::string& listType, int pageSize, bool paged,
-                        bool byName, bool books) {
+void App::openAlbumList(size_t link, const std::string& title, const std::string& listType, int pageSize, bool paged, bool books) {
     openRemoteList(link, title,
                    fetchPages<RemoteAlbum>(
                        [this, link, listType, pageSize](int offset, MusicServer::Done<RemoteAlbum> done) {
@@ -2018,8 +2011,7 @@ void App::openAlbumList(size_t link, const std::string& title, const std::string
                        }),
                    paged ? pageSize : 0, books ? "No books" : "No albums",
                    books ? "The server has no books yet. Add books to the server, then come back."
-                         : "The server has no music yet. Add music to the server, then come back.",
-                   byName ? ListOrder::ByName : ListOrder::None);
+                         : "The server has no music yet. Add music to the server, then come back.");
 }
 
 void App::openRemoteAlbum(const RemoteAlbum& album, const std::string& playedId, const std::string& focusTrack,
@@ -2032,7 +2024,7 @@ void App::openRemoteAlbum(const RemoteAlbum& album, const std::string& playedId,
                        [this, name = album.name, artist = album.artist, id = album.id, playedId, link](const std::vector<RemoteTrack>& tracks) {
                            return trackItems(name, tracks, "Play album", {RemoteSource::Kind::Album, id}, artist, std::nullopt, playedId, link);
                        }),
-                   0, "No tracks", "This album has no tracks on the server.", ListOrder::None, focusTrack);
+                   0, "No tracks", "This album has no tracks on the server.", focusTrack);
 }
 
 // `withArtist`: lists of many artists say whose album it is; one artist's list says how long.
@@ -2893,10 +2885,12 @@ std::vector<MenuItem> App::powerMenu() {
 std::vector<MenuItem> App::helpMenu() {
     std::vector<MenuItem> items;
     items.push_back(action("Getting started", [this] {
-        say("This player has no screen. Up and Down move through a menu. OK opens the item, Home goes back, "
-            "and holding Home goes to the home menu. Left and Right jump in a long list, to the next letter or ten items on. In a player, Up and Down choose the step unit, "
-            "and Left and Right move by it. Play pause starts and stops playback, and holding it tells you where you are. The volume keys change the volume "
-            "everywhere, and Options shows what can be done with the selected item. "
+        say("This player has no screen. Left and Right move one item through a menu. Press deeper to jump ten items, "
+            "or hold to reach the first or last item. OK opens the item; hold OK for options. Esc goes back, "
+            "and holding Esc goes to Home. Short Esc at Home returns to the current player without resuming it. "
+            "In a player, Left and Right change chapter or track. Hold to seek; press deeper to seek faster, "
+            "and release to stop. Up, Down and Talk are unused. Play pause starts and stops playback, "
+            "and holding it tells you where you are. The volume keys change the volume everywhere. "
             "Power puts the player to sleep.");
     }));
     items.push_back(submenu("Buttons", [this] {
@@ -2910,7 +2904,7 @@ std::vector<MenuItem> App::helpMenu() {
     items.push_back(action("Key describer", [this] {
         keyDescriber_ = true;
         earcons_.play(Earcon::Open);
-        say("Key describer on. Press any key to hear what it does. Hold Home to leave.");
+        say("Key describer on. Press any key to hear what it does. Hold Esc to leave.");
     }));
     return items;
 }

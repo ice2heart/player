@@ -1,6 +1,7 @@
 #include "core/settings.h"
 #include "fakes.h"
 #include "frontend/presses.h"
+#include "frontend/terminal_keys.h"
 #include "temp_dir.h"
 
 #include <gtest/gtest.h>
@@ -39,7 +40,7 @@ TEST(ParseScript, VolumeAndOptionsSteps) {
 }
 
 TEST(ParseScript, DeepOnlyForKeysWithADeepStage) {
-    EXPECT_EQ(describe(parseScript("up:deep right:deep")), "Up, Forward deep");
+    EXPECT_EQ(describe(parseScript("up:deep right:deep")), "Forward deep");
 }
 
 TEST(ParseScript, SkipsUnknownStepsAndWaitsWithoutANumber) {
@@ -147,4 +148,29 @@ TEST_F(PressSequencerTest, AButtonHeldElsewhereStaysDownForApp) {
     EXPECT_EQ(usage(Button::Ok, Gesture::Short), 0); // App has not seen a release yet
     if (held.release(Button::Ok)) app->keyUp(Button::Ok);
     EXPECT_EQ(usage(Button::Ok, Gesture::Short), 1);
+}
+
+TEST(ParseScript, CombinesDeepAndLongAndRejectsUnknownModifiers) {
+    EXPECT_EQ(describe(parseScript("right:deep:long left:long:deep right:nope ok:deep right:long:typo quit:long ok")),
+              "Forward long deep, Back long deep, OK");
+}
+
+TEST_F(PressSequencerTest, TerminalAndScriptDeepHoldsGiveEquivalentMenuGestures) {
+    PressSequencer seq(0ms);
+    TerminalKeyDecoder decoder;
+    auto terminal = decoder.decode("ld\x1b[C");
+    ASSERT_EQ(terminal.size(), 1u);
+    seq.push(terminal[0].press);
+    EXPECT_EQ(run(seq, 2s), "0 Forward down, 0 Forward deep down, 1600 Forward up, 1600 Forward deep up");
+    EXPECT_EQ(app->screens().back().items[app->screens().back().index].label, "Help");
+    EXPECT_EQ(usage(Button::Forward, Gesture::Deep), 1);
+    EXPECT_EQ(usage(Button::Forward, Gesture::Long), 1);
+    EXPECT_EQ(usage(Button::Forward, Gesture::Short), 0);
+    // Back uses the same lifecycle through the script parser; it ends at Library.
+    seq.push(parseScript("left:deep:long"));
+    run(seq, 2s);
+    EXPECT_EQ(app->screens().back().items[app->screens().back().index].label, "Library");
+    EXPECT_EQ(usage(Button::Back, Gesture::Deep), 1);
+    EXPECT_EQ(usage(Button::Back, Gesture::Long), 1);
+    EXPECT_EQ(usage(Button::Back, Gesture::Short), 0);
 }

@@ -363,7 +363,7 @@ A new screen type, **text field**, is opened by setup steps that need text: Wi-F
 passphrase, server URL, device name, and later search.
 
 - `TextInput` inserts characters. Backspace, Delete, Left/Right, Home/End edit. Enter
-  confirms, Escape cancels. Device buttons keep working: OK confirms, Home cancels, Left/Right
+  confirms, Escape cancels. Device buttons keep working: short OK confirms, Esc cancels, Back/Forward
   move by character, Play long reads the whole field back.
 - **Echo**: each typed character is spoken, as screen readers do ("a", "capital B", "7",
   "at"). Backspace says the deleted character. Password fields echo characters too for now.
@@ -385,18 +385,23 @@ The whole screen is one gesture pad. There is nothing to find by touch. The `and
 backend recognizes finished gestures and posts `TouchInput`. Core maps them with
 `defaultTouchMap()` to the same `{Button, Gesture}` events that buttons produce, so menus,
 the player and all their tests stay the same. Gestures skip `GestureDetector`, because a
-swipe is already complete.
+swipe is already complete. The built button-remap contract now includes ongoing
+seek depth and release/cancel events. A completed swipe cannot begin an unbounded
+seek: before implementing player touch seeking, decide whether touch maps to
+bounded seeks or emits a start/change/release lifecycle. Tests must prove release
+and cancellation stop seeking. Raw button adapters retain that lifecycle today;
+SDL and evdev share `NavigationKeys` for both Shift keys and late depth changes.
 
 Draft map, to be tried with blind users:
 
 | Gesture | Acts as |
 |---|---|
 | Swipe left / right | Back / Forward (short) |
-| Two-finger swipe left / right | Back / Forward deep (chapter) |
-| Swipe up / down | Up / Down |
+| Two-finger swipe left / right | Menu ten-item jump; player seek gesture requires a lifecycle decision |
+| Swipe up / down | Unassigned; Up/Down are inactive |
 | Double tap | OK |
 | Two-finger double tap | Play/Pause (the screen readers' "magic tap") |
-| Touch and hold | OK long (back one level) |
+| Touch and hold | OK long (Options) |
 | Two-finger swipe down | Home |
 | Three-finger tap | Play long (where am I) |
 

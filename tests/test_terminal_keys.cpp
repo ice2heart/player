@@ -101,9 +101,9 @@ TEST(TerminalKeys, HTogglesHoldAndOtherBytesAreIgnored) {
     EXPECT_EQ(decode("\x1b[Z"), ""); // Shift+Tab
 }
 
-TEST(TerminalKeys, ShiftAltArrowIsDeepWhereThereIsADeepStageElseLong) {
-    EXPECT_EQ(decode("\x1b[1;4C"), "Forward deep");
-    EXPECT_EQ(decode("\x1b[1;4D"), "Back deep");
+TEST(TerminalKeys, ShiftAltArrowHoldsTheDeepStageElseHoldsNormally) {
+    EXPECT_EQ(decode("\x1b[1;4C"), "Forward long deep");
+    EXPECT_EQ(decode("\x1b[1;4D"), "Back long deep");
     EXPECT_EQ(decode("\x1b[1;4A"), "Up long");
 }
 
@@ -114,7 +114,8 @@ TEST(TerminalKeys, TruncatedSequenceIsDropped) {
 }
 
 TEST(TerminalKeys, PrefixesLAndDTogether) {
-    EXPECT_EQ(decode("ld\x1b[C"), "Forward deep"); // deep wins where there is a deep stage
+    EXPECT_EQ(decode("ld\x1b[C"), "Forward long deep"); // both modifiers apply
+    EXPECT_EQ(decode("dl\x1b[D"), "Back long deep");
     EXPECT_EQ(decode("dl\x1b[A"), "Up long");
     EXPECT_EQ(decode("ld "), "Play/Pause long");
 }

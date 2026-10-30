@@ -1,6 +1,6 @@
 # Open Audio Player for Blind Users — Design Spec (Draft v0.2)
 
-> Status: **draft v0.2** · Last updated: 2026-10-29. Product goals and hardware targets below are proposals unless marked built.
+> Status: **draft v0.2** · Last updated: 2026-10-30. Product goals and hardware targets below are proposals unless marked built.
 > Software architecture as built: [docs/architecture.md](docs/architecture.md)
 > Working name: _TBD_ (placeholder: **OAP** — Open Audio Player)
 
@@ -38,7 +38,7 @@ the audio user interface, features, and an implementation roadmap. Sections mark
 
 ### 1.3 Design principles
 1. **Predictable** — same button always does the same thing in the same context.
-2. **Interruptible** — any key press stops current speech immediately.
+2. **Interruptible** — active controls stop current speech immediately; unused Up/Down/Talk stay silent.
 3. **Orientation on demand** — "Where am I?" is always one press away.
 4. **Forgiving** — destructive actions require confirmation; undo where possible.
 5. **No time pressure** — no menus that time out while the user is thinking.
@@ -141,32 +141,39 @@ Proposed layout (v1):
 | Button          | Shape / position           | Short press        | Long press (≥ 600 ms)     | Double press |
 |-----------------|----------------------------|--------------------|---------------------------|--------------|
 | **Play/Pause**  | large round, center        | play / pause       | "Where am I?" (announce)  | —            |
-| **Back**        | left arrow, two-stage      | player: skip back by the step unit / menu: previous letter, or 10 items back | previous chapter or track (also deep press) | — |
-| **Forward**     | right arrow, two-stage     | player: skip fwd by the step unit / menu: next letter, or 10 items on | next chapter or track (also deep press)     | — |
-| **Up**          | top, ridged                | menu ↑ / player: previous step unit | first item (in menus) | —            |
-| **Down**        | bottom, ridged             | menu ↓ / player: next step unit | last item (in menus)        | —            |
+| **Back**        | left arrow, two-stage      | player: previous chapter/track or restart after >3 s / menu: previous item | player: seek back / menu: first item | — |
+| **Forward**     | right arrow, two-stage     | player: next chapter/track / menu: next item | player: seek forward / menu: last item     | — |
+| **Up**          | top, ridged                | unused during normal use | unused | —            |
+| **Down**        | bottom, ridged             | unused during normal use | unused        | —            |
 | **Volume up**   | side, ridged               | content volume up, on every screen; held repeats the step | — | — |
 | **Volume down** | side, ridged               | content volume down, on every screen; held repeats the step | — | — |
 | **Options**     | side, distinct from OK     | actions for the selected item, or for the playing track in a player | — | — |
-| **Menu / OK**   | square                     | open menu / select | go back one level         | —            |
-| **Home / Back** | small, recessed            | back one level     | go to Home (library root) | —            |
-| **Talk (Mic)**  | side, textured             | push-to-talk       | dictation mode            | —            |
+| **Menu / OK**   | square                     | open player menu / select | Options for selected item/current playback         | —            |
+| **Esc / Home** | small, recessed            | previous screen; at Home return to loaded player without resuming | go to Home | —            |
+| **Talk (Mic)**  | side, textured             | unused; voice input planned | unused            | —            |
 | **Power**       | side, recessed             | sleep / wake       | power menu / off (5 s = hard off) | — |
 | **Hold**        | slide switch               | locks all buttons except Power (announces "locked") | | |
 
 Notes:
-- **Two-stage Left/Right** (like a camera shutter button): a light press skips, and pressing deeper jumps
-  a chapter at once, without waiting for a long press. The deep stage is a second contact, so a second
-  GPIO per key. **[OPEN]** Pick a two-step tact switch and check that the stages can be felt through
-  the case. On one-stage hardware the long press stays the fallback.
+- **Two-stage Left/Right**: deep moves ten menu items immediately, then a continued
+  hold reaches the first/last item. In a player, light hold seeks 5 seconds every
+  500 ms and deep seeks 30 seconds every 500 ms immediately. Easing to light
+  changes the rate without an extra step or timer reset; release stops and announces
+  the position. Seek stays within the file, preserves playing/paused state and
+  stops on screen change, Hold, sleep or shutdown. Ten/end menu jumps clamp;
+  ordinary steps obey Menu wrap. Defaults are approved but still need device trials.
+  The deep stage needs a second contact/GPIO. **[OPEN]** Pick a two-step tact switch
+  and check that both stages can be felt through the case. One-stage keys still
+  support light holds.
 - Debounce in MCU (or `gpio-keys` `debounce-interval`).
 - Linux side sees standard **evdev** key events (`KEY_PLAYPAUSE`, `KEY_NEXTSONG`, …) so the
   app can be developed on a desktop with a keyboard. The volume keys are `KEY_VOLUMEUP` /
   `KEY_VOLUMEDOWN` and Options is `KEY_MENU`. On a gamepad R1 / R2 are volume up / down and
   Triangle is Options; in the simulator `+` / `-` and `O`; in a terminal `+` / `-` and `o`.
-- **Step unit:** Up / Down in a player choose what Left / Right move by (music: Skip, Track,
-  Album; book: Skip, Chapter, 10 minutes), like the navigation levels of a Victor Reader Stream.
-  Settings change only in their list. See [docs/navigation.md](docs/navigation.md) for the full contract.
+- Up/Down/Talk are silent during normal use. Step units and configurable skip
+  intervals are retired; old saved values are tolerated. The separate Options
+  button aliases held OK. Settings change only in their list. Full contract:
+  [docs/navigation.md](docs/navigation.md).
 - **Key describer mode** (like screen readers): press a key → it says what it does, no action.
 
 ### 3.4 Audio: USB Audio Class codec
@@ -236,7 +243,7 @@ split later, the bus and protocol need a separate design decision.
 | **library**      | Scans storage and parses metadata; the SQLite index holds items, tracks and playlists; history recovery needs phase 7 of fixes.md. Book positions live in `state.tsv`; bookmarks are planned. |
 | **sync**         | Talks to Subsonic and Audiobookshelf servers for built browsing, downloads and supported progress sync; podcast feeds are planned. |
 | **power**        | Built: software sleep and sleep timer. Planned: MCU, real battery status and hardware suspend/resume. |
-| **settings**     | Persistent config (speech rate, voice, skip intervals, language…) and the music server, in `config.yaml`; positions in `state.tsv`. |
+| **settings**     | Persistent config (speech rate, voice, volume, language…) and the music server, in `config.yaml`; positions in `state.tsv`. |
 | **net**          | Built: server access and status. Wi-Fi management and connection announcements are planned. |
 
 ### 4.3 Implementation language — **decided: C++20 + CMake**
@@ -362,11 +369,14 @@ Design:
 
 ### 5.2 Menu model
 Hierarchical list navigation, like a screen reader:
-- **Up/Down** move through items, each item is spoken: _"Podcasts, 3 of 6"_.
-- **OK** enters / activates. **Home short** goes up a level. **Home long** goes to root.
-- **OK goes in, Home goes out** of a stack of screens (menus and the player). **Left/Right jump in a long list**
-  (to the next or previous letter in a list sorted by name, else 10 items). A setting is changed
-  in its list, opened with OK. Full rules: [docs/navigation.md](docs/navigation.md).
+- Short **Back/Forward** moves one item; deep moves ten; held reaches first/last.
+  Lists retain sorting, but keys do not jump by letter. Only single steps wrap.
+- Short **OK** enters/activates; held OK opens Options. Short **Esc** goes back,
+  or returns from Home to a loaded player without resuming it; held Esc goes Home.
+- Settings change only in their list, opened with OK. Paged remote lists keep
+  Load more; jumping to a loaded boundary never fetches more automatically and
+  announces "More items are available. Load more to continue." when appropriate.
+  Full rules: [docs/navigation.md](docs/navigation.md).
 - Position info (`n of m`) is configurable.
 - Wrap-around at end of list with a distinct earcon (setting: wrap or stop).
 - **First-letter navigation** via voice: "go to D".
@@ -406,7 +416,7 @@ Home
 ├── Bookmarks
 ├── Settings
 │   ├── Speech (voice, rate, pitch, verbosity)
-│   ├── Playback (skip intervals, speed, skip silence, ducking)
+│   ├── Playback (speed, skip silence, ducking; planned controls)
 │   ├── Buttons (key describer, long-press time, hold behaviour)
 │   ├── Wi-Fi
 │   ├── Sync account
@@ -426,19 +436,19 @@ Home
 | Action                | Behaviour |
 |-----------------------|-----------|
 | Play/Pause            | toggles; says "Paused" / earcon on resume (configurable) |
-| Back / Forward short  | move by the step unit: skip 10 s / 30 s (configurable), track or chapter, album or 10 minutes |
-| Back / Forward long or deep | previous / next chapter or track; announces chapter name |
-| Up / Down             | choose the step unit for Back / Forward; speaks it ("Track") |
+| Back / Forward short  | previous/next chapter or track; Back restarts after more than three seconds |
+| Back / Forward held | repeated 5-second seeks every 500 ms; deep: 30 seconds every 500 ms, immediately; release stops and speaks position |
+| Up / Down / Talk      | silent and inactive during normal use |
 | Volume up / down      | content volume, held repeats; earcon pitch indicates level, edge sound at the limits |
 | Options               | Music: actions for the playing track (Go to album, Album info; Star later). Book: when a newer, distant server place is offered, the first action accepts it; otherwise it says "No options". On a list item: Play now, Play next, Add to queue, and for a server album or playlist Download |
 | Play long             | "Book player. Dune, by Frank Herbert. Chapter 7 of 22, 'The Storm'. 14 minutes left in chapter, 6 hours 3 minutes left in book." |
 | OK                    | player menu. Music: queue (list, move, remove, save as server playlist, clear), shuffle, repeat (off, all, album, track), go to first track, sleep timer. Book: chapters, sleep timer, info, speed, bookmark add |
-| Talk                  | voice command |
+| OK held               | Options for current playback |
 
 ### 5.5 Onboarding (first boot)
-- Device speaks immediately on first power-on; explains the Talk button and Up/Down/OK.
+- Device speaks immediately on first power-on; explains Back/Forward, OK, Esc and volume (voice tutorial planned).
 - Interactive **button tutorial** (press each button, device names it).
-- Language selection first (by voice or Up/Down).
+- Language selection first (by buttons; voice later).
 - Optional Wi-Fi and sync setup; skippable and revisitable.
 
 ### 5.6 Localization

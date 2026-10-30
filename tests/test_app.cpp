@@ -580,9 +580,9 @@ TEST_F(AppTest, HelpGettingStartedExplainsTheBasics) {
     start();
     open("Help");
     open("Getting started");
-    EXPECT_EQ(speech.last().rfind("This player has no screen. Up and Down move through a menu.", 0), 0u)
+    EXPECT_EQ(speech.last().rfind("This player has no screen. Left and Right move one item through a menu.", 0), 0u)
         << speech.last();
-    EXPECT_NE(speech.last().find("Left and Right jump in a long list, to the next letter or ten items on."), std::string::npos)
+    EXPECT_NE(speech.last().find("Press deeper to jump ten items, or hold to reach the first or last item."), std::string::npos)
         << speech.last();
     EXPECT_EQ(speech.last().find("change a setting"), std::string::npos) << "Left and Right no longer change settings";
 }
@@ -591,12 +591,12 @@ TEST_F(AppTest, HelpButtonsDescribesEachButton) {
     start();
     open("Help");
     open("Buttons");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play pause", "Left", "Right", "Up", "Down", "OK", "Home",
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play pause", "Left", "Right", "Up", "Down", "OK", "Esc",
                                                   "Volume up", "Volume down", "Options", "Talk", "Power"}));
     open("Left");
-    EXPECT_EQ(speech.last(), "Left. In menus, jumps to the previous letter, or back 10 items. In player, moves back by the step unit. Hold, or press deeper, for previous chapter or track.");
+    EXPECT_EQ(speech.last(), "Left. In menus, previous item. Press deeper to go back ten items; hold for the first item. In a player, previous chapter or track, or restart after three seconds. Hold to seek back; press deeper to seek faster. Release to stop seeking.");
     open("Right");
-    EXPECT_EQ(speech.last(), "Right. In menus, jumps to the next letter, or forward 10 items. In player, moves forward by the step unit. Hold, or press deeper, for next chapter or track.");
+    EXPECT_EQ(speech.last(), "Right. In menus, next item. Press deeper to go forward ten items; hold for the last item. In a player, next chapter or track. Hold to seek forward; press deeper to seek faster. Release to stop seeking.");
     EXPECT_FALSE(app->keyDescriber());
 }
 
@@ -742,12 +742,20 @@ TEST_F(AppTest, VolumeStopsAtMaximum) {
     EXPECT_EQ(speech.last(), "Maximum volume.");
 }
 
-TEST_F(AppTest, KeyDescriberNamesTheStepUnitForUpAndDown) {
+TEST_F(AppTest, HelpDescribesInactiveKeysAndHeldOkAndEsc) {
     start();
     open("Help");
     open("Buttons");
     open("Down");
-    EXPECT_EQ(speech.last(), "Down. In menus, next item. Hold for last item. In player, next step unit: skip, track or chapter, album or ten minutes.");
+    EXPECT_EQ(speech.last(), "Down. Unused during normal use.");
+    open("Up");
+    EXPECT_EQ(speech.last(), "Up. Unused during normal use.");
+    open("Talk");
+    EXPECT_EQ(speech.last(), "Talk. Unused during normal use.");
+    open("OK");
+    EXPECT_NE(speech.last().find("Hold for options"), std::string::npos);
+    open("Esc");
+    EXPECT_NE(speech.last().find("without resuming"), std::string::npos);
 }
 
 // ---------------------------------------------------------------- volume and options keys
@@ -970,7 +978,7 @@ TEST_F(AppTest, HelpGettingStartedMentionsTheVolumeKeysAndOptions) {
     open("Help");
     open("Getting started");
     EXPECT_NE(speech.last().find("The volume keys change the volume everywhere"), std::string::npos) << speech.last();
-    EXPECT_NE(speech.last().find("Options shows what can be done"), std::string::npos) << speech.last();
+    EXPECT_NE(speech.last().find("hold OK for options"), std::string::npos) << speech.last();
 }
 
 TEST_F(AppTest, PauseRemembersThePositionWithoutWritingIt) {
@@ -12527,14 +12535,14 @@ TEST_F(OptionsTest, OptionsInTheBookPlayerStillSayNoOptions) {
 TEST_F(OptionsTest, TheBeginnerHintNamesOptions) {
     settings.setInt("verbosity", 0);
     openRoadTrip();
-    EXPECT_EQ(speech.last(), "Road Trip. Sunrise, 1 of 2. Press OK to play, Options for more.");
+    EXPECT_EQ(speech.last(), "Road Trip. Sunrise, 1 of 2. Press OK to play, hold OK for options.");
     hold(Button::Home);
     open("Music");
     open("Albums A to Z");
     while (level().items[level().index].label != "Road Trip") press(Button::Forward);
     press(Button::Back);
     press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Road Trip, 2 tracks, 2 of 2. Press OK to open, Options for more.");
+    EXPECT_EQ(speech.last(), "Road Trip, 2 tracks, 2 of 2. Press OK to open, hold OK for options.");
     hold(Button::Home);
     open("Music");
     press(Button::Forward);
@@ -12547,11 +12555,11 @@ TEST_F(OptionsTest, ARemoteTrackAndAlbumHaveTheHintToo) {
     open("Server");
     open("Recently added");
     answer(std::vector<RemoteAlbum>{{"al1", "Weather", "Band", 3}});
-    EXPECT_EQ(speech.last(), "Weather, Band, 1 of 1. Press OK to open, Options for more.");
+    EXPECT_EQ(speech.last(), "Weather, Band, 1 of 1. Press OK to open, hold OK for options.");
     press(Button::Ok);
     answer(weather());
     while (level().items[level().index].label != "Rain") press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Rain, 4 of 5. Press OK to play, Options for more.");
+    EXPECT_EQ(speech.last(), "Rain, 4 of 5. Press OK to play, hold OK for options.");
 }
 
 TEST_F(OptionsTest, AServerOnlyAlbumInMusicHasOptionsToo) {

@@ -17,6 +17,10 @@ docker build -f docker/Dockerfile --target pi .       # Pi Zero 2 W cross build 
 docker build -f docker/Dockerfile --target pi --build-arg PI_MODEL=pi-4 .   # the same for the Pi 4
 ```
 
+Both front ends accept `--script` with `:long` for a light hold, `:deep` for
+a deep tap and `:deep:long` for a deep hold on Left/Right. For example:
+`./build/oap-sim --script "ok ok right:long left:deep:long quit" library`.
+
 `-DOAP_BUILD_SIM=OFF -DOAP_BUILD_HEADLESS=OFF` builds only the core, the config
 library, the library index store (`oaplibrary`) and the tests, without FFmpeg, eSpeak NG, SDL2, audio libraries or libcurl. yaml-cpp
 comes from the system, or CMake downloads it like GoogleTest. SQLite (`oaplibrary`) likewise: `libsqlite3-dev`

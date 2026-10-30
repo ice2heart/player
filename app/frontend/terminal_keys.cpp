@@ -67,7 +67,7 @@ void TerminalKeyDecoder::emit(std::vector<TerminalKey>& keys, Button b, bool lon
     // The volume keys repeat while held, so a long hold would swing the volume by half.
     if (b == Button::VolumeUp || b == Button::VolumeDown) longPress = nextLong_ = false;
     k.press.deep = deep;
-    k.press.longPress = !deep && (longPress || nextLong_);
+    k.press.longPress = longPress || nextLong_;
     nextLong_ = nextDeep_ = false;
     keys.push_back(k);
 }

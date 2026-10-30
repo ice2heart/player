@@ -40,7 +40,7 @@ struct Book {
     std::vector<long long> sizes;
     std::string artist;
     // Music that spans albums (Play all): where each album starts in `files`, in order, with its
-    // title. Empty: the whole list is one album. The Album step unit moves between these.
+    // title. Empty: the whole list is one album. Retained as library metadata for album identity.
     struct Album {
         size_t first = 0; // index in `files` of its first track
         std::string title;
@@ -64,13 +64,6 @@ void appendBook(Book& into, const Book& from);
 // Natural, case-insensitive order of names: runs of digits compare as numbers ("3" before
 // "10"). A total order. The order of the Library and Music lists.
 bool naturalLess(std::string_view a, std::string_view b);
-
-// The group a name falls in for letter jumps in a list sorted by `naturalLess`: its first
-// letter in capitals ("D"), "#" for a digit or ASCII punctuation (or an empty name), or its first
-// character itself for another script (a group of its own, after the Latin ones). Case and
-// Latin-1 accents are ignored. A name starting with ASCII punctuation or a space is "#" too,
-// because that is where naturalLess sorts it: a group is always a run of the sorted list.
-std::string nameGroup(std::string_view name);
 
 // Natural order of paths: folder by folder, digits as numbers, case and accents ignored
 // ("cd2/01" before "cd10/01"). The order of the files of a book.

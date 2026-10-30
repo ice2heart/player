@@ -34,7 +34,7 @@ std::vector<PressStep> parseScript(const std::string& text) {
                 std::fprintf(stderr, "script: '%s' needs a number of milliseconds\n", word.c_str());
                 continue;
             }
-        } else if (name == "quit") step.quit = true;
+        } else if (name == "quit" && arg.empty()) step.quit = true;
         else {
             for (const auto& [n, b] : kNames)
                 if (name == n) step.button = b;
@@ -42,8 +42,16 @@ std::vector<PressStep> parseScript(const std::string& text) {
                 std::fprintf(stderr, "script: unknown step '%s'\n", word.c_str());
                 continue;
             }
-            step.longPress = arg == "long";
-            step.deep = arg == "deep" && deepOf(*step.button);
+            if (!arg.empty() && arg != "long" && arg != "deep" && arg != "long:deep" && arg != "deep:long") {
+                std::fprintf(stderr, "script: unknown modifiers in '%s'\n", word.c_str());
+                continue;
+            }
+            step.longPress = arg == "long" || arg == "long:deep" || arg == "deep:long";
+            step.deep = arg == "deep" || arg == "long:deep" || arg == "deep:long";
+            if (step.deep && !deepOf(*step.button)) {
+                std::fprintf(stderr, "script: '%s' has no deep stage\n", word.c_str());
+                continue;
+            }
         }
         steps.push_back(step);
     }
@@ -65,7 +73,7 @@ bool PressSequencer::tick(App& app, HeldButtons* held, std::chrono::steady_clock
         steps_.pop_front();
     } else if (!pressed_) {
         std::printf("press: %s%s\n", buttonName(*step.button),
-                    step.longPress ? " (long)" : step.deep ? " (deep)" : "");
+                    step.deep && step.longPress ? " (deep hold)" : step.longPress ? " (long)" : step.deep ? " (deep)" : "");
         down(*step.button);
         if (step.deep) down(*deepOf(*step.button));
         pressed_ = true;

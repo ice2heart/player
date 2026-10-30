@@ -1,9 +1,8 @@
 # Navigation guidelines
 
 > Status: this contract includes the approved [button-remap.md](button-remap.md)
-> mapping and parameters, recorded before code in step 1.1. The gesture lifecycle
-> and menu/Options/player mapping are built (steps 1.2–1.4); step 1.5 updates
-> front-end help and references. [architecture.md](architecture.md) describes
+> mapping and parameters, recorded before code in step 1.1. The gesture lifecycle, menu/Options/player mapping,
+> front-end input and help are built (steps 1.2–1.5). [architecture.md](architecture.md) describes
 > the build; real listening checks remain pending.
 > The two players, queue, Options actions, server menus, progress sync, download
 > quality and cache quality are built. Star / Unstar is not built

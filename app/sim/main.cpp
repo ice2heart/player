@@ -10,6 +10,7 @@
 #include "frontend/gamepad.h"
 #include "frontend/held_buttons.h"
 #include "frontend/make_music_server.h"
+#include "frontend/navigation_keys.h"
 #include "frontend/pick_font.h"
 #include "frontend/presses.h"
 #include "frontend/threaded_scanner.h"
@@ -30,7 +31,6 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -133,9 +133,10 @@ void applyChanges(App& app, HeldButtons& held, const std::vector<ButtonChange>& 
 
 void printKeys() {
     std::printf(
-        "Keys:  Space play/pause   Left/Right back/forward   Up/Down\n"
-        "       Enter OK   Esc/Backspace Home   T talk   P power   H hold switch\n"
-        "       Shift+Left/Right deep press. Hold a key for a long press.\n"
+        "Keys:  Space play/pause   Left/Right move one; hold for ends in menus or seek in player\n"
+        "       Enter select; hold for Options   Esc/Backspace back; hold for Home\n"
+        "       + / - volume   O Options   P power   H hold   Up/Down/T unused\n"
+        "       Shift+Left/Right: ten items in menus; faster seeking in player. Ease Shift to slow.\n"
         "Pad:   D-pad arrows   Square/X play/pause   Cross/A OK   Circle/B Home   L1+Left/Right deep press\n"
         "       Close the window (Cmd+Q on macOS) to quit.\n\n");
 }
@@ -158,9 +159,9 @@ void drawMenu(const App& app) {
             ImGui::TextWrapped(
                 "PLAYER\n\n"
                 "Space: play / pause\nhold Space: where am I\n"
-                "Left / Right: move by the step unit\nhold or Shift: previous / next chapter\n"
-                "Up / Down: step unit\n"
-                "Enter: player menu\nEsc: back   hold Esc: home");
+                "Left / Right: chapter or track\nhold: seek   Shift: seek faster\n"
+                "Release Shift: normal seek   release arrow: stop\n"
+                "Enter: player menu   hold Enter: options\nEsc: back   hold Esc: home");
         }
         for (size_t j = 0; j < level.items.size(); ++j) {
             const MenuItem& item = level.items[j];
@@ -185,7 +186,7 @@ void drawMenu(const App& app) {
 void deviceButton(App& app, HeldButtons& held, Button b, ImVec2 size) {
     bool isHeld = held.held(b);
     if (isHeld) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-    std::string label = std::string(buttonName(b)) + "\n" + keyLabel(b);
+    std::string label = std::string(b == Button::Home ? "Esc" : buttonName(b)) + "\n" + keyLabel(b);
     ImGui::Button(label.c_str(), size);
     if (ImGui::IsItemActivated()) press(app, held, b);
     if (ImGui::IsItemDeactivated()) release(app, held, b);
@@ -199,19 +200,19 @@ void drawDevice(App& app, HeldButtons& held) {
     auto col = [&](int c) { ImGui::SetCursorPosX(x0 + c * (kSize.x + gap)); };
 
     col(0); deviceButton(app, held, Button::Power, kSize);
-    ImGui::SameLine(); col(2); deviceButton(app, held, Button::Talk, kSize);
-    col(1); deviceButton(app, held, Button::Up, kSize);
+    ImGui::SameLine(); col(2); deviceButton(app, held, Button::Ok, kSize);
     col(0); deviceButton(app, held, Button::Back, kSize);
     ImGui::SameLine(); col(1); deviceButton(app, held, Button::PlayPause, kSize);
     ImGui::SameLine(); col(2); deviceButton(app, held, Button::Forward, kSize);
-    col(1); deviceButton(app, held, Button::Down, kSize);
     col(0); deviceButton(app, held, Button::Home, kSize);
-    ImGui::SameLine(); col(2); deviceButton(app, held, Button::Ok, kSize);
+    ImGui::SameLine(); ImGui::TextUnformatted("Hold OK: options");
     col(0); deviceButton(app, held, Button::BackDeep, kSize);
     ImGui::SameLine(); col(2); deviceButton(app, held, Button::ForwardDeep, kSize);
     col(0); deviceButton(app, held, Button::VolumeDown, kSize);
     ImGui::SameLine(); col(1); deviceButton(app, held, Button::Options, kSize);
     ImGui::SameLine(); col(2); deviceButton(app, held, Button::VolumeUp, kSize);
+
+    ImGui::TextDisabled("Up / Down / Talk: unused (available in key describer)");
 
     bool hold = app.hold();
     if (ImGui::Checkbox("Hold switch (H)", &hold)) app.setHold(hold);
@@ -460,7 +461,7 @@ int main(int argc, char** argv) {
     // Debug aid: OAP_SIM_SNAPSHOT=file.bmp saves the last rendered frame on exit.
     const char* snapshot = std::getenv("OAP_SIM_SNAPSHOT");
     HeldButtons held;
-    std::set<SDL_Keycode> shifted; // keys pressed with Shift, whose deep stage is down too
+    NavigationKeys navigationKeys;
     std::map<SDL_JoystickID, Gamepad> gamepads;
     PressSequencer scriptPresses(std::chrono::milliseconds(700));
     scriptPresses.push(parseScript(script));
@@ -470,6 +471,8 @@ int main(int argc, char** argv) {
         while (SDL_PollEvent(&e)) {
             ImGui_ImplSDL2_ProcessEvent(&e);
             if (e.type == SDL_QUIT) running = false;
+            if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+                applyChanges(app, held, navigationKeys.releaseAll());
             if (e.type == SDL_CONTROLLERDEVICEADDED) { // also sent at startup for pads already plugged in
                 if (SDL_GameController* c = SDL_GameControllerOpen(e.cdevice.which)) {
                     gamepads[SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(c))].controller = c;
@@ -501,18 +504,13 @@ int main(int argc, char** argv) {
                 bool down = e.type == SDL_KEYDOWN;
                 if (e.key.keysym.sym == SDLK_h && down) {
                     app.setHold(!app.hold());
+                } else if (e.key.keysym.sym == SDLK_LSHIFT || e.key.keysym.sym == SDLK_RSHIFT) {
+                    applyChanges(app, held, navigationKeys.set(e.key.keysym.sym == SDLK_LSHIFT ? NavigationKey::LeftShift : NavigationKey::RightShift, down));
                 } else if (auto b = mapKey(e.key.keysym.sym)) {
-                    auto deep = deepOf(*b);
-                    if (down) {
-                        press(app, held, *b);
-                        if (deep && (e.key.keysym.mod & KMOD_SHIFT)) {
-                            shifted.insert(e.key.keysym.sym);
-                            press(app, held, *deep);
-                        }
-                    } else {
-                        if (deep && shifted.erase(e.key.keysym.sym)) release(app, held, *deep);
-                        release(app, held, *b);
-                    }
+                    if (*b == Button::Back || *b == Button::Forward) {
+                        applyChanges(app, held, navigationKeys.set(*b == Button::Back ? NavigationKey::Back : NavigationKey::Forward, down));
+                    } else if (down) press(app, held, *b);
+                    else release(app, held, *b);
                 }
             }
         }

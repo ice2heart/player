@@ -44,7 +44,7 @@ bool isSecret(const std::string& key) {
 const char* const kHeader =
     "# Open Audio Player settings. The player rewrites this file when a setting is\n"
     "# changed in the Settings menu; comments added here are not kept.\n"
-    "# Keys: speech.rate, volume, verbosity, skip.back, skip.forward, rewind_on_resume,\n"
+    "# Keys: speech.rate, volume, verbosity, rewind_on_resume,\n"
     "#   buttons.long_press_ms, menu.wrap, power.auto_sleep_min, streaming.bitrate (kbps,\n"
     "#   0 for the original file), cache.limit_gb (gigabytes of automatically cached tracks,\n"
     "#   0 for none), and server: type, name, url, user, password (quote it),\n"

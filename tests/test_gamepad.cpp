@@ -1,4 +1,5 @@
 #include "frontend/gamepad.h"
+#include "frontend/navigation_keys.h"
 
 #include <gtest/gtest.h>
 
@@ -166,4 +167,30 @@ TEST(Gamepad, DefaultLayoutMapsOnlyTheDocumentedControls) {
     EXPECT_EQ(mapped, "DpadUp: Up down, DpadDown: Down down, DpadLeft: Back down, DpadRight: Forward down, "
                       "South: OK down, East: Home down, West: Play/Pause down, North: Options down, "
                       "R1: Volume up down, R2: Volume down down");
+}
+
+TEST(NavigationKeys, LateShiftAndEasingKeepTheArrowHeld) {
+    NavigationKeys keys;
+    EXPECT_EQ(describe(keys.set(NavigationKey::Forward, true)), "Forward down");
+    EXPECT_EQ(describe(keys.set(NavigationKey::LeftShift, true)), "Forward deep down");
+    EXPECT_EQ(describe(keys.set(NavigationKey::RightShift, true)), "");
+    EXPECT_EQ(describe(keys.set(NavigationKey::LeftShift, false)), "");
+    EXPECT_EQ(describe(keys.set(NavigationKey::RightShift, false)), "Forward deep up");
+    EXPECT_EQ(describe(keys.set(NavigationKey::Forward, false)), "Forward up");
+}
+
+TEST(NavigationKeys, ShiftFirstReleasesDeepBeforeLightAndFocusLossRecovers) {
+    NavigationKeys keys;
+    keys.set(NavigationKey::RightShift, true);
+    EXPECT_EQ(describe(keys.set(NavigationKey::Back, true)), "Back down, Back deep down");
+    EXPECT_EQ(describe(keys.set(NavigationKey::Back, false)), "Back deep up, Back up");
+    keys.set(NavigationKey::Back, true);
+    EXPECT_EQ(describe(keys.releaseAll()), "Back deep up, Back up");
+    EXPECT_EQ(describe(keys.releaseAll()), "");
+    EXPECT_EQ(describe(keys.set(NavigationKey::Back, true)), "Back down");
+    EXPECT_EQ(describe(keys.set(NavigationKey::Back, true)), "");
+    // A new Shift cycle proves focus loss cleared both stored modifier contacts.
+    EXPECT_EQ(describe(keys.set(NavigationKey::LeftShift, true)), "Back deep down");
+    EXPECT_EQ(describe(keys.set(NavigationKey::LeftShift, false)), "Back deep up");
+    EXPECT_EQ(describe(keys.set(NavigationKey::Back, false)), "Back up");
 }

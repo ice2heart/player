@@ -179,17 +179,23 @@ core and `oap-tests`, without libcurl. Add `-DOAP_BUILD_NET=ON` for `oapnet` and
 | Key | Device button |
 |-----|---------------|
 | Space | Play/Pause (hold: where am I) |
-| ← / → | Back / Forward (hold: previous / next chapter) |
-| ↑ / ↓ | Up / Down |
-| Enter | OK |
-| O | Options |
-| Esc / Backspace | Home |
-| T | Talk |
+| ← / → | Menu: previous/next item; hold: first/last. Player: chapter/track; hold: seek |
+| ↑ / ↓ | Unused during normal use |
+| Enter | OK selects; hold for Options |
+| O | Options (alias for held OK) |
+| Esc / Backspace | Previous screen; at Home return to current player; hold for Home |
+| T | Unused during normal use |
 | P | Power (hold: power menu) |
 | H | Hold switch (toggle) |
 
-Hold any key for a long press, and use Shift+←/→ for a deep press. The
-on-screen buttons can also be clicked or held with the mouse.
+Hold an arrow to seek by 5 seconds every 500 ms in a player. Shift+←/→ seeks
+by 30 seconds every 500 ms; release Shift while keeping the arrow held to return
+to normal seeking, and release the arrow to stop and hear the final position.
+In menus, a deep press jumps ten items immediately; continuing to hold reaches
+the end once. Ten-item/end jumps clamp even with menu wrap enabled. Short Back
+restarts a chapter/track after more than three seconds; otherwise it goes back.
+The on-screen buttons can also be clicked or held with the mouse. Up/Down/T remain
+available to Help's key describer. Volume uses `+` / `-` (hold repeats).
 
 ### Game controller
 
@@ -202,7 +208,7 @@ game controllers in the simulator, evdev devices in `oap-headless`.
 | Square (X on Xbox) | Play/Pause |
 | Cross (A) | OK |
 | Circle (B) | Home |
-| L1 + D-pad ←/→ | deep press (previous / next chapter) |
+| L1 + D-pad ←/→ | Deep stage: ten menu items / faster seeking; release L1 to ease |
 
 Hold a control for a long press. To remap, edit `defaultGamepadLayout()` in
 [app/frontend/gamepad.cpp](app/frontend/gamepad.cpp).
@@ -262,7 +268,11 @@ oap-headless [--config FILE] [--state FILE] [--music DIR] [--cache DIR] [--audio
   A DualSense works over USB or Bluetooth.
 - **terminal** keys: Space, arrows, Enter, Esc/Backspace, `t` Talk, `p` Power, `h` hold.
   A terminal sends no key releases, so **Alt+key** (or `l` then the key) gives a long press,
-  and **Shift+←/→** (or `d` then the arrow) a deep press. Ctrl+C quits and saves the position.
+  and **Shift+←/→** (or `d` then the arrow) a deep press. Combine `l` and `d`
+  before an arrow (either order), or use Shift+Alt+arrow, for a 1600 ms deep hold.
+  A terminal cannot report easing or arbitrary release times; use evdev for real
+  staged holds. `+` / `-` step volume once; `o` aliases held OK. Up/Down/T are unused.
+  Ctrl+C quits and saves the position.
 - SIGTERM and SIGINT save the position and settings before exiting.
 
 ### Scripted run
@@ -271,9 +281,16 @@ Both front ends run scripts:
 
 ```sh
 ./build/oap-sim --config /tmp/oap-test/config.yaml \
-    --script "wait:1500 ok ok wait:3000 play:long right:long wait:1500 quit" library
+    --script "wait:1500 ok ok wait:3000 play:long right:long left:deep:long wait:1500 quit" library
 ./build/oap-headless --audio null --input none --config /tmp/oap-test/config.yaml \
-    --script "wait:1500 ok ok wait:3000 play:long right:long wait:1500 quit" library
+    --script "wait:1500 ok ok wait:3000 play:long right:long left:deep:long wait:1500 quit" library
 ```
 
 Spoken text is also printed to stdout as `say: …`.
+
+Script button names are `play left right up down ok home talk power volup voldown options`.
+A short press lasts 80 ms; `:long` lasts 1600 ms, `:deep` adds the second contact
+on Left/Right, and `:deep:long` (or `:long:deep`) combines both. `wait:<ms>` pauses
+and `quit` exits. Unknown modifiers or a deep stage on another button are rejected.
+Both front ends use the same parser and sequencer. Real two-stage keyboard and
+gamepad input can change depth during a hold; scripts currently hold a fixed stage.

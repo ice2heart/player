@@ -1,6 +1,6 @@
 # Input methods: draft plan
 
-> Status: proposed, not implemented. Reviewed 2026-10-29. Current behavior is in
+> Status: proposed, not implemented. Reviewed 2026-10-30. Current behavior is in
 > [architecture.md](architecture.md); keys are governed by [navigation.md](navigation.md).
 > Phase 1 is button text entry. Speech engines and provisioning transports are later work.
 
@@ -18,11 +18,11 @@ The draft is held in RAM and changes the caller's value only on Done. No keystro
 cursor move, or recognition partial result writes to flash.
 
 - The screen contains a spoken list: Characters, Cursor, Delete previous character,
-  Read text, Clear text, Done, Cancel. Up/Down select, OK activates, Home cancels
-  and returns; holding Home discards the draft and goes Home. Returning never commits.
+  Read text, Clear text, Done, Cancel. Back/Forward select (deep ten, held first/last), OK activates, Esc cancels
+  and returns; holding Esc discards the draft and goes Home. Returning never commits.
 - Characters opens a list of groups: lowercase letters, uppercase letters, digits,
   punctuation, space. OK on a group opens its characters; OK inserts at the cursor,
-  speaks the inserted character, and stays in that list for repeated entry. Home
+  speaks the inserted character, and stays in that list for repeated entry. Esc
   returns one level. The ASCII punctuation set includes every printable ASCII symbol.
 - Cursor opens a list of insertion positions, including Start and End, described by
   the adjacent character and its ordinal. Choosing a position returns to the editor.
@@ -35,7 +35,8 @@ cursor move, or recognition partial result writes to flash.
   keeps the draft, speaks the problem and returns to the editor. Cancellation leaves
   the caller's original value intact. No confirmation or editor timeout.
 - Play/Pause and Volume retain their global jobs. Hold Play describes the editor,
-  field name and cursor, never a secret. Options has no editor actions initially.
+  field name and cursor, never a secret. Held OK / Options has no editor actions initially and says "No options";
+  Up/Down remain inactive.
 - For password/API-key fields, echo "Character added" and counts rather than values;
   Read text says "Hidden, N characters." No secret enters the speech log, stdout,
   debug widgets or snapshots. Explicit secret readback is outside phase 1.
@@ -50,7 +51,8 @@ SSID, password and URL examples. A shortcut may follow evidence from those trial
 
 ## Voice and keyboard
 
-Proposed Talk contract: press and hold starts capture with an earcon; release stops
+Talk is currently silent and inactive. Before phase 2 enables it, update the
+navigation contract and lifecycle tests. Proposed Talk contract: press and hold starts capture with an earcon; release stops
 capture and starts recognition. Holding longer never switches into dictation. In a
 text editor the result is proposed text; elsewhere it is a command. A short press
 with no usable speech says "No speech heard." Home cancels capture/recognition and

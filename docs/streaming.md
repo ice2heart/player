@@ -308,6 +308,16 @@ and the device keeps answering keys. Wi-Fi off → the Streaming list says
 Known limits after phase 1: the UI pauses briefly while a stream opens, positions
 are not remembered, and nothing works offline.
 
+### Button-remap update (2026-10-30)
+
+The historical phase-1 paging notes below are superseded by
+[button-remap.md](button-remap.md) phase 1: Albums/Books A to Z load one page,
+then offer Load more. Back/Forward short moves one item, deep ten and hold to the
+loaded boundary. Jumps never fetch another page. A partial boundary announces
+"More items are available. Load more to continue."; a fully loaded end does not.
+Loading/error rows keep their own announcements. Recently added, Random albums
+and other one-request lists retain their limits.
+
 ### What phase 1 built differently
 
 The plan above is kept as it was written. Where the code differs, the code is right:

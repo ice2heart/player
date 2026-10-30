@@ -31,7 +31,7 @@ struct GamepadLayout {
 //   D-pad   Up/Down/Back/Forward      Square  Play/Pause
 //   Cross   OK                        Circle  Home
 //   Triangle Options                  R1 / R2  Volume up / down
-//   L1 + D-pad Left/Right             deep press (previous / next chapter)
+//   L1 + D-pad Left/Right             deep stage (ten-item menu jump / faster seeking)
 GamepadLayout defaultGamepadLayout();
 
 struct ButtonChange {

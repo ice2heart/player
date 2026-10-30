@@ -2,6 +2,7 @@
 
 #include "core/app.h"
 #include "frontend/gamepad.h"
+#include "frontend/navigation_keys.h"
 
 #include <chrono>
 #include <map>
@@ -44,8 +45,7 @@ private:
     struct Device {
         int fd = -1;
         std::string path;
-        bool shift = false;
-        std::set<Button> deepHeld; // deep stages pressed via Shift+arrow
+        NavigationKeys navigation; // same staged keyboard mapping as the simulator
         std::set<Button> keysHeld; // keys of this device pressed, released when it is removed
         GamepadMapper pad;
     };

@@ -23,8 +23,9 @@ struct PressStep {
 // The deep (second) stage of a two-stage key, if it has one.
 std::optional<Button> deepOf(Button b);
 
-// "down ok wait:3000 right:long right:deep quit". Names: play left right up down ok home talk power.
-// An unknown step, or a wait without a number of milliseconds, is printed and skipped.
+// "right ok wait:3000 right:long right:deep right:deep:long quit". Names: play left right up down ok home talk power.
+// :long holds for 1600 ms; :deep adds the second contact (Back/Forward only).
+// Combine them as :deep:long. Unknown steps/modifiers and invalid waits are skipped.
 std::vector<PressStep> parseScript(const std::string& text);
 
 // Presses buttons one after another with realistic timing: a short press is held

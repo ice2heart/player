@@ -1,7 +1,7 @@
 # Button remap: plan
 
 > Status: mapping and implementation parameters confirmed on 2026-10-29;
-> the contract is recorded before code. Implementation steps remain below. Contract: [navigation.md](navigation.md).
+> implementation steps 1.1–1.5 are built; manual/device trials remain pending. Contract: [navigation.md](navigation.md).
 > Implementation references: [architecture.md](architecture.md).
 
 Simplify navigation after UX testing: Back/Forward become the primary list keys;
@@ -60,7 +60,7 @@ held OK exposes Options; Up/Down are unused.
 - These are approved initial implementation parameters, not measured UX results.
   Transcoded streams may need a slower cadence if reopening cannot keep up.
 
-## Findings and reuse
+## Investigation findings (before implementation)
 
 - Volume repeat already works: first step immediately, 400 ms delay, then one
   step every 150 ms. Play and held Play already work globally.
@@ -89,7 +89,7 @@ Goal: use the requested mapping in both front ends, with reliable stop-on-releas
 | ✅ 1.2 | **Gesture lifecycle.** Extend GestureDetector and App input handling for light/deep holds and release. Preserve volume, Play, Power and Hold behavior. | No short action after a hold/deep action; deep after light hold; easing off deep; release order/bounce; cancellation on Hold, sleep, screen change and shutdown. |
 | ✅ 1.3 | **Menu and Options mapping.** Move single-item navigation to Back/Forward, deep to 10 items, hold to ends; held OK opens existing Options; implement Esc return from Home; disable Up/Down/Talk in normal use. Remote end jumps stop at loaded items and announce when more pages remain. | Sorted and unsorted lists, empty/single-item lists, boundaries/wrap, remote loading/error rows, partial-list end speaks the continuation line without fetching, fully loaded end omits it, held OK never activates the item, Options nesting, paused/current/no-player Home return. |
 | ✅ 1.4 | **Player mapping.** Short Back/Forward uses chapter/track movement with the existing Back restart convention; holds seek at the agreed rates. Preserve prior play/pause state and stop seeking on release or cancellation. Retire step-unit controls and obsolete skip settings. | Back before/at/after the 3-second threshold; chapters within/across files, queue tracks, paused seeking, both rates/directions, boundaries, unknown duration, pending/failed opens, no trailing track skip, old saved unit keys harmless. |
-| 1.5 | **Front ends, help and references.** Update simulator layout/help, spoken key descriptions and beginner hints, input adapters as needed, and scripts to express a deep hold. Update architecture.md, SPEC.md, README.md, and affected future plans in input-methods.md / hal.md. Migrate affected test navigation helpers. | Both front ends produce equivalent gestures; scripts express light/deep holds; help matches actions; run relevant gesture/frontend tests and full core suite. |
+| ✅ 1.5 | **Front ends, help and references.** Update simulator layout/help, spoken key descriptions and beginner hints, input adapters as needed, and scripts to express a deep hold. Update architecture.md, SPEC.md, README.md, and affected future plans in input-methods.md / hal.md. Migrate affected test navigation helpers. | Both front ends produce equivalent gestures; scripts express light/deep holds; help matches actions; run relevant gesture/frontend tests and full core suite. |
 
 **Device check (manual):** navigate a long sorted list using one/ten/end jumps;
 open Options with held OK; browse while audio plays; return from Home; seek at

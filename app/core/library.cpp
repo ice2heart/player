@@ -59,17 +59,6 @@ std::string_view digitRun(std::string_view s, size_t& i) {
 
 } // namespace
 
-std::string nameGroup(std::string_view name) {
-    size_t i = 0;
-    if (name.empty() || (static_cast<unsigned char>(name[0]) < 0x80 && !std::isalnum(static_cast<unsigned char>(name[0])))) return "#";
-    char32_t c = nextKey(name, i);
-    if (c >= '0' && c <= '9') return "#";
-    if (c >= 'a' && c <= 'z') return std::string(1, char(c - 'a' + 'A'));
-    std::string out;
-    appendUtf8(out, c);
-    return out;
-}
-
 // Natural, case-insensitive order: runs of digits compare as numbers ("3" before "10") and
 // letters compare folded. Names that fold equal fall back to their bytes, so the order is total.
 void appendBook(Book& into, const Book& from) {

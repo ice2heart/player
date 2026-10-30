@@ -173,40 +173,8 @@ TEST_F(LibraryTest, CacheFolderThatDoesNotExistSkipsNothing) {
     EXPECT_EQ(scanLibrary(root, root / "cache").size(), 1u);
 }
 
-TEST(NameGroup, ALatinNameIsGroupedByItsFirstLetterInCapitals) {
-    EXPECT_EQ(oap::nameGroup("Dune"), "D");
-    EXPECT_EQ(oap::nameGroup("dune"), "D");
-    EXPECT_EQ(oap::nameGroup("Zeta"), "Z");
-}
-
-TEST(NameGroup, LatinAccentsAreIgnored) {
-    EXPECT_EQ(oap::nameGroup("\xC3\x89t\xC3\xA9"), "E") << "Été";
-}
-
-TEST(NameGroup, LeadingPunctuationAndSpacesAreInTheNumberGroupWhereTheySort) {
-    EXPECT_EQ(oap::nameGroup("(What's the Story)"), "#");
-    EXPECT_EQ(oap::nameGroup("...And Justice"), "#");
-    EXPECT_EQ(oap::nameGroup(" Padded"), "#");
-    EXPECT_TRUE(oap::naturalLess("...And Justice", "1984")) << "and they sort before the digits";
-}
-
-TEST(NameGroup, CaseOfOtherLatinAndGreekLettersIsIgnored) {
-    EXPECT_EQ(oap::nameGroup("\xC5\x81\xC3\xB3" "d\xC5\xBA"), oap::nameGroup("\xC5\x82\xC3\xB3" "d\xC5\xBA")) << "Łódź, łódź";
-    EXPECT_EQ(oap::nameGroup("\xC5\x9A"), oap::nameGroup("\xC5\x9B")) << "Ś, ś";
-    EXPECT_EQ(oap::nameGroup("\xCE\x91"), oap::nameGroup("\xCE\xB1")) << "Α, α";
-    EXPECT_NE(oap::nameGroup("\xCE\x91"), oap::nameGroup("\xCE\x92")) << "Α, Β";
-}
-
-TEST(NameGroup, DigitsAndNamesWithNoLetterShareAGroup) {
-    EXPECT_EQ(oap::nameGroup("1984"), "#");
-    EXPECT_EQ(oap::nameGroup("0 to 100"), "#");
-    EXPECT_EQ(oap::nameGroup("9 Lives"), "#");
-    EXPECT_EQ(oap::nameGroup("!!!"), "#");
-    EXPECT_EQ(oap::nameGroup(""), "#");
-}
-
-TEST(NameGroup, AnotherScriptIsAGroupPerFirstCharacterAndNotALatinOne) {
-    EXPECT_EQ(oap::nameGroup("\xD0\x90\xD0\xB3\xD0\xB0"), "\xD0\xB0") << "Cyrillic, folded to lower case";
-    EXPECT_NE(oap::nameGroup("\xD0\x90\xD0\xB3\xD0\xB0"), oap::nameGroup("\xD0\x91\xD0\xB8"));
-    EXPECT_EQ(oap::nameGroup("\xE6\x97\xA5\xE6\x9C\xAC"), "\xE6\x97\xA5") << "three-byte character";
+// This ordering assertion used to live in the retired letter-group tests.
+TEST(NaturalLess, LeadingPunctuationSortsBeforeDigits) {
+    EXPECT_TRUE(oap::naturalLess("...And Justice", "1984"));
+    EXPECT_FALSE(oap::naturalLess("1984", "...And Justice"));
 }

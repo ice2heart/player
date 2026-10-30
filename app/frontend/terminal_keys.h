@@ -16,6 +16,7 @@ namespace oap {
 //   t Talk   p Power   h hold switch (toggle)   + (or =) / - volume up / down   o Options
 //   (a terminal never releases a key, so a volume key steps once and has no long press)
 //   Alt+key, or l then key: long press     Shift+Left/Right, or d then Left/Right: deep press
+//   Combine l and d (either order), or Shift+Alt+Left/Right, for a deep hold.
 struct TerminalKey {
     PressStep press;         // valid unless toggleHold
     bool toggleHold = false;

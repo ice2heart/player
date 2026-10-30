@@ -1,6 +1,5 @@
 #include "evdev_input.h"
 
-#include "frontend/presses.h"
 #include "frontend/gamepad.h"
 
 #include <linux/input.h>
@@ -178,7 +177,7 @@ void EvdevInput::process(App& app) {
         if (gone) {
             std::printf("input: %s removed\n", d.path.c_str());
             applyChanges(app, d.pad.releaseAll()); // a controller that dropped off mid-press
-            for (Button b : d.deepHeld) app.keyUp(b);  // and keys: a held volume key would repeat for ever
+            applyChanges(app, d.navigation.releaseAll()); // release a staged keyboard arrow before removing it
             for (Button b : d.keysHeld) app.keyUp(b);
             closeDevice(d);
             it = devices_.erase(it);
@@ -210,7 +209,7 @@ void EvdevInput::handle(Device& d, App& app, unsigned type, unsigned code, int v
         return;
     }
     if (code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT) {
-        d.shift = down;
+        applyChanges(app, d.navigation.set(code == KEY_LEFTSHIFT ? NavigationKey::LeftShift : NavigationKey::RightShift, down));
         return;
     }
     if (code == KEY_H) {
@@ -219,16 +218,14 @@ void EvdevInput::handle(Device& d, App& app, unsigned type, unsigned code, int v
     }
     auto b = mapKey(code);
     if (!b) return;
-    auto deep = deepOf(*b);
+    if (*b == Button::Back || *b == Button::Forward) {
+        applyChanges(app, d.navigation.set(*b == Button::Back ? NavigationKey::Back : NavigationKey::Forward, down));
+        return;
+    }
     if (down) {
         d.keysHeld.insert(*b);
         app.keyDown(*b);
-        if (deep && d.shift) {
-            d.deepHeld.insert(*deep);
-            app.keyDown(*deep);
-        }
     } else {
-        if (deep && d.deepHeld.erase(*deep)) app.keyUp(*deep);
         d.keysHeld.erase(*b);
         app.keyUp(*b);
     }

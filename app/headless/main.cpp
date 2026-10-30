@@ -88,9 +88,9 @@ void usage() {
 
 void printTerminalKeys() {
     std::printf(
-        "Keys:  Space play/pause   Left/Right back/forward   Up/Down   Enter OK\n"
-        "       Esc/Backspace Home   t talk   p power   h hold switch\n"
-        "       Alt+key or l then key: long press.  Shift+Left/Right or d then Left/Right: deep press.\n"
+        "Keys:  Space play/pause   Left/Right menu item or chapter/track   Enter select; hold for Options\n"
+        "       Esc/Backspace back; hold for Home   + / - volume   o Options   p power   h hold   Up/Down/t unused\n"
+        "       Alt+key or l then key: hold. Shift/arrows or d+arrow: deep. ld+arrow: deep hold.\n"
         "       Ctrl+C quits.\n\n");
 }
 

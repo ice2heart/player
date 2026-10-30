@@ -142,8 +142,7 @@ private:
     void whereAmI();
 
     // Screens and menus
-    void openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index = 0,
-                  ListOrder order = ListOrder::None);
+    void openMenu(const std::string& title, std::function<std::vector<MenuItem>()> build, size_t index = 0);
     void pushScreen(Screen screen);     // gives it an id
     void closeScreens(size_t keep);     // all but the first `keep`, cancelling their requests
     Screen* findScreen(std::uint64_t id); // nullptr once it has left the stack
@@ -374,12 +373,11 @@ private:
     static FetchPage fetchPages(std::function<MusicServer::RequestId(int offset, MusicServer::Done<T>)> request,
                                 std::function<std::vector<MenuItem>(const std::vector<T>&)> toItems);
     void openRemoteList(size_t link, const std::string& title, FetchPage fetch, int pageSize, std::string emptyLabel,
-                        std::string emptyHelp, ListOrder order = ListOrder::None, std::string focusKey = {});
+                        std::string emptyHelp, std::string focusKey = {});
     void requestPage(std::uint64_t screenId, int offset, bool waiting);
     void onPage(std::uint64_t screenId, MusicServer::Error error, std::vector<MenuItem> items, bool more);
     void showStatus(std::uint64_t screenId); // Loading, the error, or why it is empty, after the loaded items
-    void openAlbumList(size_t link, const std::string& title, const std::string& listType, int pageSize, bool paged, bool byName = false,
-                       bool books = false); // `books`: a Books server's list, its items are books
+    void openAlbumList(size_t link, const std::string& title, const std::string& listType, int pageSize, bool paged, bool books = false); // `books`: a Books server's list, its items are books
     // `playedId`: the index item to mark as played when it plays (Music).
     // `focusTrack`: the id of the track to open on, once the list has loaded.
     void openRemoteAlbum(const RemoteAlbum& album, const std::string& playedId = {}, const std::string& focusTrack = {},
