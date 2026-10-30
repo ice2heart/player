@@ -5851,7 +5851,7 @@ TEST_F(DownloadTest, AlbumAndPlaylistOfferDownloadRightAfterPlay) {
     open("Playlists");
     open("Road");
     answer(sized());
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play playlist", "Download playlist", "Storm Front", "Rain", "Sunshine"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play playlist", "Download playlist", "Storm Front", "Rain", "Sunshine", "Keep offline"}));
 }
 
 TEST_F(DownloadTest, NoDownloadItemWithoutACacheFolderAServerOrADownloader) {
@@ -7286,7 +7286,7 @@ TEST_F(MusicPlaylistsTest, WithTheServerDownADownloadedPlaylistPlaysFromItsFiles
     speech.said.clear();
     const size_t asked = server.requests.size();
     open("Road Trip");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Play playlist", "Delete download", "Sunrise", "Highway"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play playlist", "Delete download", "Sunrise", "Highway", "Keep offline"}));
     EXPECT_FALSE(speech.heard("Loading."));
     open("Highway");
     EXPECT_EQ(player.file, fileOf(pl, "t2"));
@@ -18487,6 +18487,256 @@ protected:
     }
     FakeLocalPlaylists playlists;
 };
+
+TEST_F(DownloadedPlaylistEditingTest, KeepOfflinePreservesOrderedDuplicatesAndIndependentDownloads) {
+    indexPlaylist("p1", "Road Trip", 3);
+    auto manual = seedRoad();
+    openPlaylists();
+    open("Road Trip");
+    open("Keep offline");
+    EXPECT_EQ(speech.last(), "Keeping offline.");
+    app->tick();
+    auto request = server.lastRequest();
+    ASSERT_EQ(request.kind, Kind::PlaylistTracks);
+    app->setFreeSpace([](const fs::path&) -> std::optional<std::uintmax_t> { return 0; });
+    ASSERT_TRUE(server.reply(request.id, std::vector<RemoteTrack>{{"t1", "Sunrise"}, {"t1", "Sunrise"}, {"t2", "Highway"}}));
+    app->tick();
+    EXPECT_TRUE(downloader.requests.empty()) << "existing files are shared without another transfer or space";
+    RemoteSource kept{RemoteSource::Kind::KeptPlaylist, "p1"};
+    auto snapshot = store().load(kept);
+    EXPECT_EQ(snapshot.order, (std::vector<std::string>{"t1", "t1", "t2"}));
+    ASSERT_EQ(snapshot.tracks.size(), 2u);
+    EXPECT_TRUE(snapshot.tracks[0].pinned);
+    EXPECT_TRUE(snapshot.tracks[1].pinned);
+    EXPECT_TRUE(fs::equivalent(store().listFolder(kept) / snapshot.tracks[0].file, store().listFolder(manual) / "t1.mp3"));
+    press(Button::Home);
+    open("Road Trip");
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Play playlist", "Download playlist", "Sunrise", "Sunrise", "Highway", "Stop keeping offline", "Delete playlist"}));
+    open("Stop keeping offline");
+    EXPECT_EQ(speech.last(), "Stopped keeping offline.");
+    snapshot = store().load(kept);
+    EXPECT_FALSE(snapshot.tracks[0].pinned);
+    EXPECT_TRUE(fs::exists(store().listFolder(kept) / snapshot.tracks[0].file));
+    EXPECT_TRUE(store().load(manual).tracks[0].pinned);
+    ASSERT_TRUE(store().remove(manual));
+    EXPECT_TRUE(fs::exists(store().listFolder(kept) / snapshot.tracks[0].file));
+}
+
+TEST_F(DownloadedPlaylistEditingTest, KeptPlaylistRefreshSurvivesRestartAndFailedFetch) {
+    indexPlaylist("p1", "Road Trip", 2);
+    RemoteSource kept{RemoteSource::Kind::KeptPlaylist, "p1"};
+    seed(kept, "Road Trip", "", {{"t1", "Sunrise"}, {"t2", "Highway"}});
+    auto original = store().load(kept);
+    original.order = {"t1", "t2"};
+    ASSERT_TRUE(store().save(original));
+    auto key = "playlist.keep:" + TrackCache::safeName(TrackCache::serverKey("https://music.example", "bob")) + ":p1";
+    state.setInt(key, 1);
+    state.setInt("playlist.keep.ready:" + TrackCache::safeName(TrackCache::serverKey("https://music.example", "bob")) + ":p1", 0);
+    start();
+    syncWith({{"p1", "Road Trip", 2}});
+    auto request = server.lastRequest();
+    ASSERT_EQ(request.kind, Kind::PlaylistTracks);
+    ASSERT_TRUE(server.fail(request.id, MusicServer::Error::Unreachable)); app->tick();
+    EXPECT_EQ(store().load(kept).order, original.order);
+    app->shutdown();
+    app.reset();
+    state = Settings(&stateFile);
+    state.load();
+    ASSERT_EQ(state.getInt(key, 0), 1);
+    start();
+    syncWith({{"p1", "Road Trip", 2}});
+    request = server.lastRequest();
+    ASSERT_EQ(request.kind, Kind::PlaylistTracks);
+    ASSERT_TRUE(server.reply(request.id, std::vector<RemoteTrack>{{"t2", "Highway", "", "", 100, 1, "mp3", 5}, {"t3", "New", "", "", 100, 2, "mp3", 5}})); app->tick();
+    ASSERT_EQ(downloader.lastRequest().trackId, "t3");
+    finishLast(Downloader::Result::Unreachable);
+    auto failed = store().load(kept);
+    EXPECT_EQ(failed.order, original.order);
+    EXPECT_TRUE(failed.tracks[0].pinned);
+    EXPECT_TRUE(failed.tracks[1].pinned);
+    app->shutdown(); app.reset();
+    state = Settings(&stateFile); state.load();
+    start();
+    syncWith({{"p1", "Road Trip", 2}});
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t2", "Highway", "", "", 100, 1, "mp3", 5}, {"t3", "New", "", "", 100, 2, "mp3", 5}})); app->tick();
+    ASSERT_EQ(downloader.lastRequest().trackId, "t3");
+    finishLast();
+    auto result = store().load(kept);
+    EXPECT_EQ(result.order, (std::vector<std::string>{"t2", "t3"}));
+    auto removed = std::find_if(result.tracks.begin(), result.tracks.end(), [](const CachedTrack& t) { return t.id == "t1"; });
+    ASSERT_NE(removed, result.tracks.end());
+    EXPECT_FALSE(removed->pinned);
+    EXPECT_TRUE(fs::exists(store().listFolder(kept) / removed->file));
+    open("Music"); open("Playlists"); open("Road Trip");
+    EXPECT_TRUE(hasLabel("Highway"));
+    EXPECT_TRUE(hasLabel("New"));
+    EXPECT_FALSE(hasLabel("Sunrise"));
+}
+
+TEST_F(DownloadedPlaylistEditingTest, KeepOfflineReportsFetchFailureAndInsufficientSpaceAndCanRetry) {
+    indexPlaylist("p1", "Road Trip", 1);
+    seedRoad();
+    openPlaylists(); open("Road Trip"); open("Keep offline"); app->tick();
+    auto request = server.lastRequest();
+    ASSERT_EQ(request.kind, Kind::PlaylistTracks);
+    ASSERT_TRUE(server.fail(request.id, MusicServer::Error::Unreachable)); app->tick();
+    EXPECT_EQ(speech.last(), "Server not reachable.");
+    EXPECT_TRUE(downloader.requests.empty());
+    open("Stop keeping offline");
+    open("Keep offline"); app->tick();
+    app->setFreeSpace([](const fs::path&) -> std::optional<std::uintmax_t> { return 0; });
+    request = server.lastRequest();
+    ASSERT_TRUE(server.reply(request.id, std::vector<RemoteTrack>{{"t3", "New", "", "", 100, 1, "mp3", 5}})); app->tick();
+    EXPECT_EQ(speech.last(), "Not enough space.");
+    EXPECT_TRUE(downloader.requests.empty());
+    open("Stop keeping offline");
+    app->setFreeSpace([](const fs::path&) -> std::optional<std::uintmax_t> { return 100; });
+    open("Keep offline"); app->tick();
+    request = server.lastRequest();
+    ASSERT_TRUE(server.reply(request.id, std::vector<RemoteTrack>{{"t3", "New", "", "", 100, 1, "mp3", 5}})); app->tick();
+    ASSERT_EQ(downloader.lastRequest().trackId, "t3");
+    finishLast();
+    EXPECT_TRUE(store().load({RemoteSource::Kind::KeptPlaylist, "p1"}).tracks[0].pinned);
+}
+
+TEST_F(DownloadedPlaylistEditingTest, StoppingAndDeletingKeptPlaylistReleaseOnlyItsPins) {
+    indexPlaylist("p1", "Road Trip", 2);
+    auto manual = seedRoad();
+    RemoteSource kept{RemoteSource::Kind::KeptPlaylist, "p1"};
+    seed(kept, "Road Trip", "", {{"t1", "Sunrise"}});
+    auto saved = store().load(kept);
+    saved.order = {"t1"};
+    ASSERT_TRUE(store().save(saved));
+    auto key = "playlist.keep:" + TrackCache::safeName(TrackCache::serverKey("https://music.example", "bob")) + ":p1";
+    state.setInt(key, 1);
+    openPlaylists(); open("Road Trip");
+    open("Stop keeping offline");
+    EXPECT_FALSE(store().load(kept).tracks[0].pinned);
+    open("Keep offline"); app->tick();
+    auto pending = server.lastRequest().id;
+    open("Stop keeping offline");
+    EXPECT_FALSE(server.reply(pending, std::vector<RemoteTrack>{{"t2", "Highway"}}));
+    open("Keep offline"); app->tick();
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t1", "Sunrise"}})); app->tick();
+    EXPECT_TRUE(store().load(kept).tracks[0].pinned);
+    open("Delete playlist"); open("Yes, delete");
+    ASSERT_TRUE(server.replyCreated(server.lastRequest().id)); app->tick();
+    EXPECT_EQ(speech.last(), "Playlist deleted.");
+    EXPECT_FALSE(store().load(kept).tracks[0].pinned);
+    EXPECT_TRUE(store().load(manual).tracks[0].pinned);
+}
+
+TEST_F(DownloadedPlaylistEditingTest, AManualDownloadReusesTheKeptPlaylistsFile) {
+    indexPlaylist("p1", "Road Trip", 1);
+    seed(playlistSource("p1"), "Old download", "", {{"t1", "Sunrise", false}}); // manifest survived; its file did not
+    RemoteSource kept{RemoteSource::Kind::KeptPlaylist, "p1"};
+    seed(kept, "Road Trip", "", {{"t1", "Sunrise"}});
+    auto saved = store().load(kept);
+    saved.order = {"t1"};
+    ASSERT_TRUE(store().save(saved));
+    auto key = TrackCache::safeName(TrackCache::serverKey("https://music.example", "bob")) + ":p1";
+    state.setInt("playlist.keep:" + key, 1);
+    state.setInt("playlist.keep.ready:" + key, 0);
+    openPlaylists(); open("Road Trip");
+    app->setFreeSpace([](const fs::path&) -> std::optional<std::uintmax_t> { return 0; });
+    open("Download playlist");
+    EXPECT_TRUE(downloader.requests.empty());
+    auto manual = store().load(playlistSource("p1"));
+    ASSERT_EQ(manual.tracks.size(), 1u);
+    EXPECT_TRUE(manual.tracks[0].pinned);
+    EXPECT_TRUE(fs::equivalent(store().listFolder(playlistSource("p1")) / manual.tracks[0].file,
+                               store().listFolder(kept) / saved.tracks[0].file));
+    ASSERT_TRUE(store().remove(playlistSource("p1")));
+    CachedTrack low{"t1", "low.mp3", "Sunrise", 100, "", true, 0, 128};
+    touch(store().listFolder(playlistSource("p1")) / low.file);
+    ASSERT_TRUE(store().save(CachedList{playlistSource("p1"), "Road Trip", "", {low}}));
+    open("Download playlist");
+    EXPECT_TRUE(downloader.requests.empty()) << "a suitable shared original replaces the lower-quality file";
+    manual = store().load(playlistSource("p1"));
+    ASSERT_EQ(manual.tracks.size(), 1u);
+    EXPECT_EQ(manual.tracks[0].bitrate, 0);
+    EXPECT_FALSE(fs::exists(store().listFolder(playlistSource("p1")) / low.file));
+    EXPECT_TRUE(fs::equivalent(store().listFolder(playlistSource("p1")) / manual.tracks[0].file,
+                               store().listFolder(kept) / saved.tracks[0].file));
+}
+
+TEST_F(DownloadedPlaylistEditingTest, AKeptSnapshotDoesNotMakeAnOlderDownloadCurrent) {
+    indexPlaylist("p1", "Road Trip", 1);
+    seedRoad();
+    RemoteSource kept{RemoteSource::Kind::KeptPlaylist, "p1"};
+    seed(kept, "Road Trip", "", {{"t3", "New"}});
+    auto snapshot = store().load(kept);
+    snapshot.order = {"t3"};
+    ASSERT_TRUE(store().save(snapshot));
+    auto key = TrackCache::safeName(TrackCache::serverKey("https://music.example", "bob")) + ":p1";
+    state.setInt("playlist.keep:" + key, 1);
+    state.setInt("playlist.keep.revision:" + key, 1);
+    state.setInt("playlist.keep.ready:" + key, 0);
+    state.setInt("playlist.stale:" + key, 1);
+    start();
+    syncWith({{"p1", "Road Trip", 1}});
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t3", "New"}})); app->tick();
+    open("Music"); open("Playlists"); open("Road Trip");
+    EXPECT_TRUE(hasLabel("New"));
+    open("Stop keeping offline");
+    press(Button::Home);
+    auto count = requestsOf(Kind::PlaylistTracks);
+    open("Road Trip");
+    EXPECT_EQ(requestsOf(Kind::PlaylistTracks), count + 1);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Loading"}));
+}
+
+TEST_F(DownloadedPlaylistEditingTest, EmptyKeptPlaylistOpensOffline) {
+    indexPlaylist("p1", "Empty", 0);
+    RemoteSource kept{RemoteSource::Kind::KeptPlaylist, "p1"};
+    ASSERT_TRUE(store().save(CachedList{kept, "Empty", "", {}}));
+    auto key = TrackCache::safeName(TrackCache::serverKey("https://music.example", "bob")) + ":p1";
+    state.setInt("playlist.keep:" + key, 1);
+    state.setInt("playlist.keep.ready:" + key, 0);
+    openPlaylists();
+    auto count = requestsOf(Kind::PlaylistTracks);
+    open("Empty");
+    EXPECT_EQ(requestsOf(Kind::PlaylistTracks), count);
+    EXPECT_TRUE(hasLabel("Play playlist"));
+    EXPECT_TRUE(hasLabel("Stop keeping offline"));
+    open("Play playlist");
+    EXPECT_EQ(speech.last(), "No tracks.");
+}
+
+TEST_F(DownloadedPlaylistEditingTest, ServerDeletionReleasesKeptPinsButKeepsIndependentDownload) {
+    indexPlaylist("p1", "Road Trip", 1);
+    auto manual = seedRoad();
+    RemoteSource kept{RemoteSource::Kind::KeptPlaylist, "p1"};
+    seed(kept, "Road Trip", "", {{"t1", "Sunrise"}});
+    auto snapshot = store().load(kept);
+    snapshot.order = {"t1"};
+    ASSERT_TRUE(store().save(snapshot));
+    auto key = "playlist.keep:" + TrackCache::safeName(TrackCache::serverKey("https://music.example", "bob")) + ":p1";
+    state.setInt(key, 1);
+    start();
+    syncWith({});
+    EXPECT_EQ(state.getInt(key, 0), 0);
+    EXPECT_FALSE(store().load(kept).tracks[0].pinned);
+    EXPECT_TRUE(store().load(manual).tracks[0].pinned);
+    EXPECT_TRUE(fs::exists(store().listFolder(kept) / snapshot.tracks[0].file));
+}
+
+TEST_F(DownloadedPlaylistEditingTest, RefreshReportsInsufficientSpaceForAKeptPlaylist) {
+    indexPlaylist("p1", "Road Trip", 1);
+    auto key = "playlist.keep:" + TrackCache::safeName(TrackCache::serverKey("https://music.example", "bob")) + ":p1";
+    state.setInt(key, 1);
+    start();
+    syncWith({{"p1", "Road Trip", 1}});
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable)); app->tick();
+    open("Music");
+    app->setFreeSpace([](const fs::path&) -> std::optional<std::uintmax_t> { return 0; });
+    open("Refresh library");
+    syncWith({{"p1", "Road Trip", 1}});
+    ASSERT_EQ(server.lastRequest().kind, Kind::PlaylistTracks);
+    ASSERT_TRUE(server.reply(server.lastRequest().id, std::vector<RemoteTrack>{{"t3", "New", "", "", 100, 1, "mp3", 5}})); app->tick();
+    EXPECT_EQ(speech.last(), "Not enough space.");
+    EXPECT_TRUE(downloader.requests.empty());
+}
 
 TEST_F(DownloadedPlaylistEditingTest, RemovalFetchesServerOrderAndHandlesFailureAndDuplicates) {
     indexPlaylist("p1", "Road Trip", 3);

@@ -54,6 +54,30 @@ protected:
     fs::path root;
 };
 
+TEST_F(TrackCacheTest, SharedFilesCountOnceAndRemainWhileAnyOwnerPinsThem) {
+    auto c = cache();
+    auto a = album("a");
+    auto b = playlist("b");
+    auto t = track("same", "same.mp3");
+    t.pinned = true;
+    writeFile(c.listFolder(a) / t.file, "audio");
+    fs::create_directories(c.listFolder(b));
+    fs::create_hard_link(c.listFolder(a) / t.file, c.listFolder(b) / t.file);
+    ASSERT_TRUE(c.save(listOf(a, {t})));
+    t.pinned = false;
+    ASSERT_TRUE(c.save(listOf(b, {t})));
+    TrackCache::TrimInfo info;
+    EXPECT_EQ(c.trim(0, {}, {}, &info), 0u);
+    EXPECT_EQ(info.remaining, 0u);
+    EXPECT_TRUE(fs::exists(c.listFolder(a) / t.file));
+    EXPECT_TRUE(fs::exists(c.listFolder(b) / t.file));
+    ASSERT_TRUE(c.save(listOf(a, {t})));
+    EXPECT_EQ(c.trim(5, {}, {}, &info), 0u);
+    EXPECT_EQ(info.remaining, 5u);
+    EXPECT_EQ(c.trim(0, {}, {}, &info), 2u);
+    EXPECT_EQ(info.remaining, 0u);
+}
+
 TEST_F(TrackCacheTest, ManifestRoundTrips) {
     CachedTrack a = track("s1", "01.flac");
     a.title = "Tab\there, new\nline and back\\slash";

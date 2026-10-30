@@ -132,13 +132,18 @@ bool parseLine(const std::string& line, CachedTrack& track) {
     return !track.id.empty() && plainFileName(track.file);
 }
 
-const char* kindName(RemoteSource::Kind kind) { return kind == RemoteSource::Kind::Album ? "album" : "playlist"; }
+const char* kindName(RemoteSource::Kind kind) {
+    if (kind == RemoteSource::Kind::Album) return "album";
+    if (kind == RemoteSource::Kind::KeptPlaylist) return "kept-playlist";
+    return "playlist";
+}
 
 bool parseListLine(const std::string& line, CachedList& list) {
     const std::vector<std::string> cells = splitTabs(line);
     if (cells.size() != kListColumns || cells[0] != kListTag) return false;
     if (cells[1] == "album") list.source.kind = RemoteSource::Kind::Album;
     else if (cells[1] == "playlist") list.source.kind = RemoteSource::Kind::Playlist;
+    else if (cells[1] == "kept-playlist") list.source.kind = RemoteSource::Kind::KeptPlaylist;
     else return false;
     return unescape(cells[2], list.source.id) && unescape(cells[3], list.name) && unescape(cells[4], list.artist) &&
            !list.source.id.empty();
@@ -158,6 +163,14 @@ CachedList parseManifest(const std::string& text) {
     if (!std::getline(in, line) || line != kManifestHeader || !std::getline(in, line) || !parseListLine(line, list))
         return {};
     while (std::getline(in, line)) {
+        const auto cells = splitTabs(line);
+        if (cells.size() == 2 && cells[0] == "order") {
+            std::string id;
+            if (list.source.kind != RemoteSource::Kind::KeptPlaylist || !list.tracks.empty() ||
+                !unescape(cells[1], id) || id.empty()) return {};
+            list.order.push_back(std::move(id));
+            continue;
+        }
         RemoteChapter chapter; // (a track line has seven or eight cells, so an id of "chapter" is not taken for this)
         if (parseChapterLine(line, chapter)) {
             if (!list.tracks.empty()) return {}; // chapters come before the tracks
@@ -262,6 +275,7 @@ bool TrackCache::save(const CachedList& list) const {
         std::snprintf(start, sizeof start, "%.3f", c.start);
         text += std::string(kChapterTag) + '\t' + start + '\t' + escape(c.title) + '\n';
     }
+    for (const auto& id : list.order) text += "order\t" + escape(id) + '\n';
     for (const CachedTrack& t : list.tracks) {
         char duration[32];
         std::snprintf(duration, sizeof duration, "%.3f", t.duration);
@@ -382,9 +396,12 @@ size_t TrackCache::trim(std::uintmax_t limitBytes, const std::map<std::string, i
         std::uintmax_t size;
         int64_t lastPlayed;
         std::string id;
+        size_t group = kPart;
     };
+    struct PhysicalFile { fs::path path; std::uintmax_t size; size_t links = 0; bool pinned = false; };
     std::vector<Folder> folders;
     std::vector<Candidate> candidates;
+    std::vector<std::pair<std::string, fs::path>> pinnedFiles;
     std::uintmax_t total = 0;
     std::error_code ec;
     for (fs::directory_iterator it(serverDir_, ec), end; !ec && it != end; it.increment(ec)) {
@@ -401,10 +418,12 @@ size_t TrackCache::trim(std::uintmax_t limitBytes, const std::map<std::string, i
                 t.lastPlayed = at->second;
                 folder.changed = true;
             }
-            if (t.pinned) continue;
+            if (t.pinned) {
+                if (auto file = completeInfo(folder.path, t)) pinnedFiles.emplace_back(t.id, file->path);
+                continue;
+            }
             if (auto file = completeInfo(folder.path, t)) {
                 candidates.push_back({folders.size(), i, file->path, file->size, t.lastPlayed, t.id});
-                total += file->size;
             }
         }
         std::error_code partEc;
@@ -420,6 +439,31 @@ size_t TrackCache::trim(std::uintmax_t limitBytes, const std::map<std::string, i
         // A folder without a valid manifest matters only for the parts in it.
         if (!folder.list.source.id.empty() || candidates.size() > first) folders.push_back(std::move(folder));
     }
+    // Links of one track can live in several list folders. Count the underlying
+    // file once, and never count bytes held by a pinned owner as evictable.
+    std::vector<PhysicalFile> physical;
+    std::map<std::string, std::vector<size_t>> byId;
+    auto groupFor = [&](const std::string& id, const fs::path& path, std::uintmax_t size) {
+        for (size_t n : byId[id]) {
+            std::error_code sameError;
+            if (fs::equivalent(physical[n].path, path, sameError) && !sameError) return n;
+        }
+        const auto n = physical.size();
+        physical.push_back({path, size});
+        byId[id].push_back(n);
+        return n;
+    };
+    for (const auto& [id, path] : pinnedFiles) {
+        std::error_code sizeError;
+        auto size = fs::file_size(path, sizeError);
+        if (!sizeError) physical[groupFor(id, path, size)].pinned = true;
+    }
+    for (auto& candidate : candidates) {
+        if (candidate.track == kPart) continue;
+        candidate.group = groupFor(candidate.id, candidate.file, candidate.size);
+        ++physical[candidate.group].links;
+    }
+    for (const auto& file : physical) if (!file.pinned && file.links) total += file.size;
     std::sort(candidates.begin(), candidates.end(), [&](const Candidate& a, const Candidate& b) {
         return std::tuple(a.lastPlayed, folders[a.folder].path.filename().string(), a.id) <
                std::tuple(b.lastPlayed, folders[b.folder].path.filename().string(), b.id);
@@ -428,11 +472,13 @@ size_t TrackCache::trim(std::uintmax_t limitBytes, const std::map<std::string, i
     std::vector<std::pair<std::string, fs::path>> evicted;
     for (const Candidate& c : candidates) {
         if (total <= limitBytes) break;
+        if (c.track != kPart && physical[c.group].pinned) continue;
         if (std::find(keep.begin(), keep.end(), c.file) != keep.end()) continue;
         std::error_code removeEc;
         fs::remove(c.file, removeEc);
         if (fs::exists(c.file, removeEc)) continue; // still there: keep its entry
-        total -= c.size;
+        if (c.track == kPart) total -= c.size;
+        else if (--physical[c.group].links == 0) total -= physical[c.group].size;
         folders[c.folder].changed = true;
         if (c.track != kPart) {
             gone.emplace(c.folder, c.track);

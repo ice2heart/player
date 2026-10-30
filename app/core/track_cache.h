@@ -42,6 +42,7 @@ struct CachedList {
     std::string artist;  // an album's artist, may be empty
     std::vector<CachedTrack> tracks;
     std::vector<RemoteChapter> chapters; // a server book's chapters on its timeline, kept for playing it offline; usually empty
+    std::vector<std::string> order; // kept playlist's server order, including repeated track ids
 };
 
 // Tracks kept on disk for one server: <root>/<server key>/<kind>%3A<list id>/,

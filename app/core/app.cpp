@@ -648,6 +648,19 @@ void App::fetchPlaylists() {
         stored.erase(std::remove_if(stored.begin(), stored.end(), [this](const IndexPlaylist& playlist) {
             return catalogue_.deletedPlaylists.contains(playlist.id);
         }), stored.end());
+        for (const auto& [ref, old] : index_.playlists()) {
+            if (old.server != catalogue_.key || !state_.getInt(keptPlaylistKey(catalogue_.link, old.id), 0)) continue;
+            if (std::none_of(stored.begin(), stored.end(), [&](const IndexPlaylist& p) { return p.id == old.id; }))
+                setPlaylistKept(catalogue_.link, old.id, old.name, false);
+        }
+        for (const auto& old : trackCacheOf(catalogue_.link).lists()) {
+            if (old.source.kind != RemoteSource::Kind::KeptPlaylist || !state_.getInt(keptPlaylistKey(catalogue_.link, old.source.id), 0)) continue;
+            if (std::none_of(stored.begin(), stored.end(), [&](const IndexPlaylist& p) { return p.id == old.source.id; }))
+                setPlaylistKept(catalogue_.link, old.source.id, old.name, false);
+        }
+        for (const auto& p : stored)
+            if (state_.getInt(keptPlaylistKey(catalogue_.link, p.id), 0))
+                scheduleKeptPlaylist(catalogue_.link, p.id, p.name);
         index_.replacePlaylists(catalogue_.key, stored);
         index_.savePlaylists();
         finishSync(MusicServer::Error::None);
@@ -749,6 +762,8 @@ void App::shutdown() {
     autoQueue_.clear();
     if (scanRequest_) scanner_.cancel(std::exchange(scanRequest_, 0));
     if (catalogueRequest_) serverAt(catalogue_.link).cancel(std::exchange(catalogueRequest_, 0));
+    if (keptRequest_) serverAt(keptRequestLink_).cancel(std::exchange(keptRequest_, 0));
+    keptJobs_.clear();
     syncRunning_ = false;
     syncFailures_.clear();
     syncTried_ = 0;
@@ -901,6 +916,7 @@ void App::tick() {
     checkScrobble(now);
     checkProgress(now);
     checkAutoCache();
+    pumpKeptPlaylists();
     pumpAutoCache();
 
     if (sleepDeadline_ && now >= *sleepDeadline_) {
@@ -2172,6 +2188,23 @@ std::vector<MenuItem> App::trackItems(const std::string& title, const std::vecto
         }
         items.push_back(std::move(track));
     }
+    if (source.kind == RemoteSource::Kind::Playlist && canDownloadFrom(link)) {
+        const bool kept = state_.getInt(keptPlaylistKey(link, source.id), 0) != 0;
+        items.push_back(action(kept ? "Stop keeping offline" : "Keep offline", [this, link, source, title] {
+            const bool kept = state_.getInt(keptPlaylistKey(link, source.id), 0) != 0;
+            if (!setPlaylistKept(link, source.id, title, !kept)) {
+                earcons_.play(Earcon::Error); say("Cannot write the download."); return;
+            }
+            if (!screens_.empty()) {
+                for (auto& item : screens_.back().items)
+                    if (item.label == (kept ? "Stop keeping offline" : "Keep offline")) {
+                        item.label = kept ? "Keep offline" : "Stop keeping offline";
+                        break;
+                    }
+            }
+            say(kept ? "Stopped keeping offline." : "Keeping offline.");
+        }));
+    }
     if (localPlaylists_ && source.kind == RemoteSource::Kind::Playlist && serverAt(link).supportsPlaylistEditing())
         items.push_back(deletePlaylistItem({link, source.id, title, tracks.size(), false}));
     return items;
@@ -2689,7 +2722,11 @@ std::vector<RemoteTrack> App::completeTracks(const TrackCache& store, const Remo
 
 bool App::hasDownloads(size_t link) const {
     const TrackCache& store = trackCacheOf(link);
-    return store.enabled() && !store.lists(true).empty();
+    if (!store.enabled()) return false;
+    const auto lists = store.lists(true);
+    return std::any_of(lists.begin(), lists.end(), [](const CachedList& list) {
+        return list.source.kind != RemoteSource::Kind::KeptPlaylist;
+    });
 }
 
 // Streaming > Downloaded: the lists whose manifests are in the cache, by name.
@@ -2699,6 +2736,7 @@ std::vector<MenuItem> App::downloadedMenu(size_t link) {
     const TrackCache& store = trackCacheOf(link);
     const bool books = serverAt(link).catalogue() == MusicServer::Catalogue::Books;
     for (const CachedList& list : store.lists(true)) { // what the user downloaded, not the automatic cache
+        if (list.source.kind == RemoteSource::Kind::KeptPlaylist) continue;
         MenuItem item;
         if (books && list.source.kind == RemoteSource::Kind::Album) {
             // A book that is whole plays from its files; one cut short opens as on the server (its files and chapters
@@ -2833,6 +2871,29 @@ std::vector<MenuItem> App::playlistsMenu() {
 void App::openPlaylist(size_t link, const std::string& id, const std::string& name) {
     RemoteSource source{RemoteSource::Kind::Playlist, id};
     const TrackCache& store = trackCacheOf(link);
+    if (state_.getInt(keptPlaylistKey(link, id), 0) &&
+        state_.getInt(keptReadyKey(link, id), -1) == state_.getInt(keptRevisionKey(link, id), 0)) {
+        RemoteSource kept{RemoteSource::Kind::KeptPlaylist, id};
+        CachedList cached = store.load(kept);
+        auto complete = completeTracks(store, kept, cached);
+        if (cached.source.kind == RemoteSource::Kind::KeptPlaylist && cached.source.id == id && cached.order.empty()) {
+            openMenu(name, [this, name, source, link] { return trackItems(name, {}, "Play playlist", source, "", std::nullopt, {}, link); });
+            return;
+        }
+        if (!cached.order.empty()) {
+            std::vector<RemoteTrack> ordered;
+            for (const auto& trackId : cached.order) {
+                auto found = std::find_if(complete.begin(), complete.end(), [&](const RemoteTrack& t) { return t.id == trackId; });
+                auto entry = std::find_if(cached.tracks.begin(), cached.tracks.end(), [&](const CachedTrack& t) { return t.id == trackId; });
+                if (found == complete.end() || entry == cached.tracks.end() || !entry->pinned || entry->changed == kPartialMark) { ordered.clear(); break; }
+                ordered.push_back(*found);
+            }
+            if (!ordered.empty()) {
+                openMenu(name, [this, name, source, link, ordered] { return trackItems(name, ordered, "Play playlist", source, "", std::nullopt, {}, link); });
+                return;
+            }
+        }
+    }
     if (store.enabled() && !state_.getInt(stalePlaylistKey({link, id, name, 0, false}), 0)) {
         CachedList cached = store.load(source);
         if (isWholeDownload(cached, completeTracks(store, source, cached))) {
@@ -3431,6 +3492,10 @@ void App::invalidatePlaylistSnapshot(const PlaylistEntry& p) {
     const auto key = stalePlaylistKey(p);
     const int old = state_.getInt(key, 0);
     state_.setInt(key, old == std::numeric_limits<int>::max() ? old : old + 1);
+    const auto revision = keptRevisionKey(p.link, p.id);
+    const int current = state_.getInt(revision, 0);
+    state_.setInt(revision, current == std::numeric_limits<int>::max() ? current : current + 1);
+    if (state_.getInt(keptPlaylistKey(p.link, p.id), 0)) scheduleKeptPlaylist(p.link, p.id, p.name);
 }
 
 // A download stores each track only once, so its rows are not server positions. Always
@@ -3503,6 +3568,7 @@ void App::deletePlaylist(const PlaylistEntry& p) {
     const auto listScreen = screens_[screens_.size() - 2].id;
     auto finish = [this, p, screen, listScreen](bool visible) {
         if (!p.local) {
+            setPlaylistKept(p.link, p.id, p.name, false);
             std::vector<IndexPlaylist> keep;
             for (const auto& [key, item] : index_.playlists())
                 if (item.server == servers_[p.link].key && item.id != p.id) keep.push_back(item);
@@ -5157,8 +5223,13 @@ std::pair<bool, std::vector<CachedTrack>> followServerOrder(CachedList& cached, 
         auto it = std::find_if(before.begin(), before.end(), [&](const CachedTrack& t) { return t.id == id; });
         if (it != before.end()) kept.push_back(*it);
     }
-    for (const CachedTrack& t : before)
-        if (!listed(t.id)) (t.pinned ? dropped : extra).push_back(t);
+    for (CachedTrack t : before) {
+        if (listed(t.id)) continue;
+        if (cached.source.kind == RemoteSource::Kind::KeptPlaylist) {
+            t.pinned = false;
+            extra.push_back(std::move(t));
+        } else (t.pinned ? dropped : extra).push_back(std::move(t));
+    }
     kept.insert(kept.end(), extra.begin(), extra.end());
     bool changed = kept.size() != before.size();
     for (size_t i = 0; !changed && i < kept.size(); ++i) changed = kept[i].id != before[i].id;
@@ -5231,7 +5302,7 @@ bool App::addToManifest(const RemoteSource& source, const RemoteTrack& track, co
     } else {
         cached.tracks.push_back(entry); // appended: a download's manifest then follows the order below
     }
-    if (update.order) {
+    if (update.order && source.kind != RemoteSource::Kind::KeptPlaylist) {
         auto removed = followServerOrder(cached, *update.order).second;
         dropped.insert(dropped.end(), removed.begin(), removed.end());
     }
@@ -5268,12 +5339,98 @@ void App::sayDownloadBusy(const RemoteSource& source, size_t link) {
     say(downloading(source, link) ? downloadProgress() + "." : "Another download is running.");
 }
 
+std::string App::keptPlaylistKey(size_t link, const std::string& id) const {
+    return "playlist.keep:" + TrackCache::safeName(servers_[link].key) + ":" + TrackCache::safeName(id);
+}
+
+std::string App::keptRevisionKey(size_t link, const std::string& id) const {
+    return "playlist.keep.revision:" + TrackCache::safeName(servers_[link].key) + ":" + TrackCache::safeName(id);
+}
+
+std::string App::keptReadyKey(size_t link, const std::string& id) const {
+    return "playlist.keep.ready:" + TrackCache::safeName(servers_[link].key) + ":" + TrackCache::safeName(id);
+}
+
+bool App::setPlaylistKept(size_t link, const std::string& id, const std::string& title, bool keep) {
+    const auto key = keptPlaylistKey(link, id);
+    if (keep) {
+        ++keptGenerations_[key];
+        state_.setInt(key, 1);
+        state_.erase(keptReadyKey(link, id));
+        keptJobs_.push_back({link, id, title, {}, false, screens_.empty() ? 0 : screens_.back().id});
+        return true;
+    }
+    const RemoteSource source{RemoteSource::Kind::KeptPlaylist, id};
+    const auto& store = trackCacheOf(link);
+    auto cached = store.load(source);
+    bool changed = false;
+    for (auto& track : cached.tracks) if (track.pinned) { track.pinned = false; changed = true; }
+    if (changed && !store.save(cached)) return false;
+    ++keptGenerations_[key];
+    state_.erase(key);
+    if (keptRequest_ && keptRequestLink_ == link && keptRequestPlaylist_ == id) {
+        serverAt(link).cancel(std::exchange(keptRequest_, 0));
+        keptRequestPlaylist_.clear();
+    }
+    keptJobs_.erase(std::remove_if(keptJobs_.begin(), keptJobs_.end(), [&](const KeptJob& job) { return job.link == link && job.id == id; }), keptJobs_.end());
+    if (downloading(source, link)) {
+        servers_[link].downloader.cancel(download_->request);
+        download_.reset();
+    }
+    return true;
+}
+
+void App::scheduleKeptPlaylist(size_t link, const std::string& id, const std::string& title) {
+    auto found = std::find_if(keptJobs_.begin(), keptJobs_.end(), [&](const KeptJob& job) { return job.link == link && job.id == id; });
+    if (found == keptJobs_.end()) keptJobs_.push_back({link, id, title, {}, false, refresh_.active ? refresh_.screen : 0});
+}
+
+void App::pumpKeptPlaylists() {
+    if (keptRequest_ || download_ || keptJobs_.empty()) return;
+    KeptJob job = keptJobs_.front();
+    keptJobs_.erase(keptJobs_.begin());
+    if (!state_.getInt(keptPlaylistKey(job.link, job.id), 0)) return;
+    if (!job.fetched) {
+        keptRequestLink_ = job.link;
+        keptRequestPlaylist_ = job.id;
+        job.generation = keptGenerations_[keptPlaylistKey(job.link, job.id)];
+        job.version = state_.getInt(keptRevisionKey(job.link, job.id), 0);
+        keptRequest_ = serverAt(job.link).playlistTracks(job.id, [this, job](MusicServer::Error error, std::vector<RemoteTrack> tracks, bool) mutable {
+            keptRequest_ = 0;
+            keptRequestPlaylist_.clear();
+            const auto key = keptPlaylistKey(job.link, job.id);
+            if (!state_.getInt(key, 0) || keptGenerations_[key] != job.generation) return;
+            if (error != MusicServer::Error::None) {
+                if (job.screen && !sleeping_ && !screens_.empty() && screens_.back().id == job.screen) {
+                    earcons_.play(Earcon::Error);
+                    say(errorText(error) + ".");
+                }
+                return;
+            }
+            if (job.version != state_.getInt(keptRevisionKey(job.link, job.id), 0)) {
+                scheduleKeptPlaylist(job.link, job.id, job.title);
+                return;
+            }
+            job.tracks = std::move(tracks);
+            job.fetched = true;
+            keptJobs_.push_back(std::move(job));
+        });
+        return;
+    }
+    if (job.version != state_.getInt(keptRevisionKey(job.link, job.id), 0)) {
+        scheduleKeptPlaylist(job.link, job.id, job.title);
+        return;
+    }
+    const bool visible = job.screen && !sleeping_ && !screens_.empty() && screens_.back().id == job.screen;
+    startDownload(job.link, job.title, "", job.tracks, {RemoteSource::Kind::KeptPlaylist, job.id}, {}, "track", {}, !visible);
+}
+
 // OK on a Download item. While that list downloads it says how far it is. A
 // download that failed has been dropped, so OK goes on with what is missing:
 // tracks already whole are skipped and the .part of the failed one continues.
 void App::startDownload(size_t link, const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
                         const RemoteSource& source, const std::function<void()>& started, const char* unit,
-                        const std::vector<RemoteChapter>& chapters) {
+                        const std::vector<RemoteChapter>& chapters, bool background) {
     if (download_) {
         sayDownloadBusy(source, link);
         return;
@@ -5283,6 +5440,7 @@ void App::startDownload(size_t link, const std::string& title, const std::string
     CachedList cached = store.load(source);
     std::vector<CachedTrack>& manifest = cached.tracks;
     Download job;
+    job.background = background;
     job.bitrate = serverAt(link).catalogue() == MusicServer::Catalogue::Books ? 0 :
                   std::max(0, config_.getInt(kDownloadBitrate, kOriginalQuality));
     job.link = link;
@@ -5293,13 +5451,25 @@ void App::startDownload(size_t link, const std::string& title, const std::string
     job.chapters = chapters;
     bool pinned = false; // a track the automatic cache kept now belongs to the user
     std::uintmax_t needed = 0;
+    std::map<std::string, std::pair<std::filesystem::path, int>> reusable;
+    std::vector<std::filesystem::path> newLinks;
+    std::vector<std::pair<CachedTrack, std::filesystem::path>> replacedLinks;
+    for (const auto& list : store.lists()) {
+        if (source.kind != RemoteSource::Kind::KeptPlaylist && list.source.kind != RemoteSource::Kind::KeptPlaylist) continue;
+        for (const auto& t : list.tracks) {
+            if (!qualityAtLeast(t.bitrate, job.bitrate)) continue;
+            if (auto file = store.completeFile(list.source, t)) reusable.try_emplace(t.id, *file, t.bitrate);
+        }
+    }
     for (size_t i = 0; i < tracks.size(); ++i) {
+        if (source.kind == RemoteSource::Kind::KeptPlaylist) job.fullOrder.push_back(tracks[i].id);
         // A track listed twice is one file: fetched and counted once.
         if (std::find(job.order.begin(), job.order.end(), tracks[i].id) != job.order.end()) continue;
         job.order.push_back(tracks[i].id);
         auto entry = std::find_if(manifest.begin(), manifest.end(),
                                   [&](const CachedTrack& t) { return t.id == tracks[i].id; });
-        if (entry != manifest.end() && store.completeFile(source, *entry)) {
+        const auto existing = entry != manifest.end() ? store.completeFile(source, *entry) : std::nullopt;
+        if (existing) {
             // The requested download owns even a lower copy while its replacement arrives.
             if (!entry->pinned) entry->pinned = pinned = true;
             if (qualityAtLeast(entry->bitrate, job.bitrate)) {
@@ -5307,53 +5477,88 @@ void App::startDownload(size_t link, const std::string& title, const std::string
                 continue;
             }
         }
+        if (reusable.contains(tracks[i].id)) {
+            const auto& [file, bitrate] = reusable.at(tracks[i].id);
+            const auto dest = store.listFolder(source) / downloadFileName(tracks[i], bitrate);
+            std::error_code ec;
+            std::filesystem::create_directories(store.listFolder(source), ec);
+            if (!ec) std::filesystem::create_hard_link(file, dest, ec);
+            if (ec) {
+                for (const auto& path : newLinks) { std::error_code ignored; std::filesystem::remove(path, ignored); }
+                if (!background) { earcons_.play(Earcon::Error); say("Cannot write the download."); }
+                return;
+            }
+            newLinks.push_back(dest);
+            CachedTrack shared{tracks[i].id, dest.filename().string(), tracks[i].title, tracks[i].duration,
+                               kPartialMark, true, entry == manifest.end() ? 0 : entry->lastPlayed, bitrate};
+            if (entry == manifest.end()) manifest.push_back(std::move(shared));
+            else {
+                if (existing && *existing != dest) replacedLinks.emplace_back(*entry, dest);
+                *entry = std::move(shared);
+            }
+            pinned = true;
+            ++job.finished;
+            continue;
+        }
         job.todo.push_back({tracks[i], i + 1});
         const auto bytes = downloadBytes(tracks[i], job.bitrate);
         const auto maximum = std::numeric_limits<std::uintmax_t>::max();
         needed = bytes >= maximum - needed ? maximum : needed + bytes;
     }
     job.total = job.order.size();
-    if (source.kind == RemoteSource::Kind::Playlist) {
-        job.playlistVersion = state_.getInt(stalePlaylistKey({link, source.id, title, 0, false}), 0);
-        job.playlistUnique = job.order.size() == tracks.size();
+    if (source.kind == RemoteSource::Kind::Playlist || source.kind == RemoteSource::Kind::KeptPlaylist) {
+        job.playlistVersion = source.kind == RemoteSource::Kind::KeptPlaylist ? state_.getInt(keptRevisionKey(link, source.id), 0)
+            : state_.getInt(stalePlaylistKey({link, source.id, title, 0, false}), 0);
+        job.playlistUnique = source.kind == RemoteSource::Kind::KeptPlaylist || job.order.size() == tracks.size();
     }
     cached.source = source;
     cached.name = title;
     cached.artist = artist;
-    auto [reordered, dropped] = followServerOrder(cached, job.order);
+    bool reordered = false;
+    std::vector<CachedTrack> dropped;
+    if (source.kind != RemoteSource::Kind::KeptPlaylist || job.todo.empty()) {
+        if (source.kind == RemoteSource::Kind::KeptPlaylist) cached.order = job.fullOrder;
+        auto result = followServerOrder(cached, job.order);
+        reordered = result.first || source.kind == RemoteSource::Kind::KeptPlaylist;
+        dropped = std::move(result.second);
+    }
     // Nothing to fetch: what is here is the whole list, whatever an earlier try left marked.
     if (job.todo.empty()) pinned = markTracks(cached, "") || pinned;
     if ((pinned || reordered || !dropped.empty()) && !store.save(cached)) {
-        earcons_.play(Earcon::Error);
-        say("Cannot write the download.");
+        for (const auto& path : newLinks) { std::error_code ignored; std::filesystem::remove(path, ignored); }
+        if (!background) { earcons_.play(Earcon::Error); say("Cannot write the download."); }
         return;
+    }
+    for (const auto& [old, replacement] : replacedLinks) {
+        replaceCachedPath(store.listFolder(source) / old.file, replacement);
+        deleteDropped(source, {old}, link);
     }
     deleteDropped(source, dropped, link);
     if (job.todo.empty()) {
-        if (source.kind == RemoteSource::Kind::Playlist && job.playlistUnique &&
+        if (source.kind == RemoteSource::Kind::KeptPlaylist && state_.getInt(keptRevisionKey(link, source.id), 0) == job.playlistVersion)
+            state_.setInt(keptReadyKey(link, source.id), job.playlistVersion);
+        else if (source.kind == RemoteSource::Kind::Playlist && job.playlistUnique &&
             state_.getInt(stalePlaylistKey({link, source.id, title, 0, false}), 0) == job.playlistVersion)
             state_.erase(stalePlaylistKey({link, source.id, title, 0, false}));
-        say("Already downloaded.");
+        if (!background) say("Already downloaded.");
         return;
     }
     std::error_code ec;
     std::filesystem::create_directories(cacheRoot_, ec);
     std::optional<std::uintmax_t> room = freeSpace_(cacheRoot_);
     if (needed > 0 && room && *room < needed) {
-        earcons_.play(Earcon::Error);
-        say("Not enough space.");
+        if (!background) { earcons_.play(Earcon::Error); say("Not enough space."); }
         return;
     }
     // From here on the manifest says the list is not whole until the last track is in.
-    if (markTracks(cached, kPartialMark) && !store.save(cached)) {
-        earcons_.play(Earcon::Error);
-        say("Cannot write the download.");
+    if (source.kind != RemoteSource::Kind::KeptPlaylist && markTracks(cached, kPartialMark) && !store.save(cached)) {
+        if (!background) { earcons_.play(Earcon::Error); say("Cannot write the download."); }
         return;
     }
     pauseAutoCache(); // an explicit download goes first
     download_ = std::move(job);
     if (started) started(); // before the words: the screen it leaves would speak over them
-    say(downloadProgress() + ".");
+    if (!background) say(downloadProgress() + ".");
     fetchNextTrack();
 }
 
@@ -5394,7 +5599,9 @@ void App::failDownload(const RemoteTrack& track, size_t number, const std::strin
         failedPart_ = trackDestination(download_->source, track, download_->link, download_->bitrate) + ".part";
         unit = download_->unit;
     }
+    const bool background = download_ && download_->background;
     download_.reset();
+    if (background) return;
     if (sleeping_) return;
     earcons_.play(Earcon::Error);
     std::string name = track.title.empty() ? unit + " " + std::to_string(number) : track.title;
@@ -5404,14 +5611,26 @@ void App::failDownload(const RemoteTrack& track, size_t number, const std::strin
 // Over something that plays an earcon is enough; otherwise it is said.
 void App::finishDownload() {
     std::string title = download_->title;
+    const bool background = download_->background;
     const TrackCache& store = trackCacheOf(download_->link);
     CachedList cached = store.load(download_->source);
-    const bool saved = !markTracks(cached, "") || store.save(cached); // if unsaved, the list stays partial
-    if (saved && download_->source.kind == RemoteSource::Kind::Playlist && download_->playlistUnique) {
+    bool changed = markTracks(cached, "");
+    if (download_->source.kind == RemoteSource::Kind::KeptPlaylist &&
+        state_.getInt(keptRevisionKey(download_->link, download_->source.id), 0) == download_->playlistVersion) {
+        cached.order = download_->fullOrder;
+        followServerOrder(cached, download_->order);
+        changed = true;
+    }
+    const bool saved = !changed || store.save(cached); // if unsaved, the list stays partial
+    if (saved && download_->source.kind == RemoteSource::Kind::KeptPlaylist &&
+        state_.getInt(keptRevisionKey(download_->link, download_->source.id), 0) == download_->playlistVersion)
+        state_.setInt(keptReadyKey(download_->link, download_->source.id), download_->playlistVersion);
+    else if (saved && download_->source.kind == RemoteSource::Kind::Playlist && download_->playlistUnique) {
         PlaylistEntry p{download_->link, download_->source.id, title, 0, false};
         if (state_.getInt(stalePlaylistKey(p), 0) == download_->playlistVersion) state_.erase(stalePlaylistKey(p));
     }
     download_.reset();
+    if (background) return;
     if (sleeping_) return;
     if (player_.playing()) earcons_.play(Earcon::Open);
     else say("Download finished, " + title + ".");

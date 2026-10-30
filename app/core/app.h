@@ -417,6 +417,7 @@ private:
     // manifest gets the track (pinned) once it is whole. Nothing here belongs to a
     // screen: leaving the menu, Home or playing something does not stop it.
     struct Download {
+        bool background = false;
         int bitrate = 0; // captured Download quality; books remain original
         int playlistVersion = 0; // invalidate only the snapshot this download saw
         bool playlistUnique = true;
@@ -428,6 +429,7 @@ private:
         RemoteSource source;
         std::string title, artist; // of the list, kept in its manifest
         std::vector<std::string> order; // the ids of the list as the server has it, without repeats
+        std::vector<std::string> fullOrder; // kept playlist order including repeated entries
         std::vector<Item> todo; // what is left to fetch, in list order
         size_t next = 0;        // the item being fetched
         size_t total = 0;       // tracks in the list (a track listed twice counts once)
@@ -438,7 +440,7 @@ private:
     };
     void startDownload(size_t link, const std::string& title, const std::string& artist, const std::vector<RemoteTrack>& tracks,
                        const RemoteSource& source, const std::function<void()>& started = {}, const char* unit = "track",
-                       const std::vector<RemoteChapter>& chapters = {}); // `started`: once the job is going
+                       const std::vector<RemoteChapter>& chapters = {}, bool background = false); // `started`: once the job is going
     void sayDownloadBusy(const RemoteSource& source, size_t link);
     bool downloading(const RemoteSource& source, size_t link) const; // that list of that server is the download that runs
     void fetchNextTrack();
@@ -446,6 +448,12 @@ private:
     void deleteDropped(const RemoteSource& source, const std::vector<CachedTrack>& dropped, size_t link); // their files, after the manifest was saved
     void failDownload(const RemoteTrack& track, size_t number, const std::string& reason);
     void finishDownload();
+    std::string keptPlaylistKey(size_t link, const std::string& id) const;
+    std::string keptRevisionKey(size_t link, const std::string& id) const;
+    std::string keptReadyKey(size_t link, const std::string& id) const;
+    bool setPlaylistKept(size_t link, const std::string& id, const std::string& title, bool keep);
+    void scheduleKeptPlaylist(size_t link, const std::string& id, const std::string& title);
+    void pumpKeptPlaylists();
     std::string downloadProgress() const; // "Downloading, 3 of 9 tracks", empty when none runs
     std::vector<MenuItem> downloadedMenu(size_t link);                               // Streaming > Downloaded of servers_[link]
     std::vector<MenuItem> downloadedListMenu(const RemoteSource& source, size_t link); // one downloaded album or playlist of that server
@@ -777,6 +785,12 @@ private:
     Loading loading_;
     Saving saving_;
     std::optional<Download> download_;
+    struct KeptJob { size_t link; std::string id, title; std::vector<RemoteTrack> tracks; bool fetched = false; std::uint64_t screen = 0; int version = 0; std::uint64_t generation = 0; };
+    std::vector<KeptJob> keptJobs_;
+    std::map<std::string, std::uint64_t> keptGenerations_;
+    MusicServer::RequestId keptRequest_ = 0;
+    size_t keptRequestLink_ = 0;
+    std::string keptRequestPlaylist_;
     std::deque<AutoCache> autoQueue_;
     std::optional<AutoCache> autoJob_; // the transfer in flight, if autoRequest_ != 0
     Downloader::RequestId autoRequest_ = 0;

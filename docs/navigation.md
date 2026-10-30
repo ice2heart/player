@@ -646,12 +646,12 @@ server alone. All the rules below hold for every server.
 
 ## Playlist editing and planned sync changes (streaming phase 5)
 
-Playlist editing is built in step 5.4; Keep offline and queue sync below are planned.
+Playlist editing and Keep offline are built; queue sync below is planned.
 Music → Playlists combines local, downloaded and server playlists. Create playlist selects "On the
 device" or a configured playlist-capable server and uses a generated timestamp name;
 renaming waits for [input-methods.md](input-methods.md). Each playlist opens with Play
-playlist, tracks and Delete playlist. Keep offline / Stop keeping offline for server
-playlists is planned for step 5.5. Options on a track offers Remove from playlist; for a server playlist
+playlist, tracks, Keep offline / Stop keeping offline for server playlists, and Delete playlist.
+Options on a track offers Remove from playlist; for a server playlist
 it first loads the current ordered tracks for the user to select the occurrence to remove.
 A fetch error uses the usual server error feedback. Delete confirms with
 Cancel first. The music Player menu offers Add to playlist and opens that list on the
@@ -663,7 +663,9 @@ cancelling says "Cancelled." Server writes say "Saving." and use existing server
 feedback on failure. An unavailable action says "Not available." and a failed local
 write says "Could not save playlist." Offline star and server-playlist edits are not
 queued in this phase. Keep offline owns a pin for each track; deleting the playlist or
-stopping offline keeping releases only its own pins. Book progress follows the existing
+stopping offline keeping releases only its own pins. It fetches the playlist when enabled,
+and checks for changes at start-up and Refresh library; a failed fetch or download retains
+the last complete order and pins and retries on the next refresh. Book progress follows the existing
 Audiobookshelf interaction; it is independent of playlist editing. Queue sync compares
 server and local timestamps, keeps the newer version and does not interrupt playback;
 [streaming.md](streaming.md#phase-5-design) specifies the remaining rules.

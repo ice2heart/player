@@ -11,7 +11,7 @@ namespace oap {
 // The album or playlist on a server that a remote Book was made from, so that
 // it can be loaded again after a restart (state.tsv `last_stream.*`).
 struct RemoteSource {
-    enum class Kind { Album, Playlist };
+    enum class Kind { Album, Playlist, KeptPlaylist };
     Kind kind = Kind::Album;
     std::string id; // the server's album or playlist id
 };
