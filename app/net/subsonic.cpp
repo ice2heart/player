@@ -86,6 +86,62 @@ void Subsonic::finish(std::chrono::milliseconds deadline) {
 
 bool Subsonic::configured() const { return !config_.url.empty(); }
 
+MusicServer::RequestId Subsonic::playQueue(std::function<void(Error, std::optional<RemoteQueue>)> done) {
+    const RequestId id = ++lastId_;
+    progressChildren_[id] = request("getOpenSubsonicExtensions", {}, [](const std::string& body) {
+        auto parsed = subsonic::parseExtensions(body);
+        return Reply{parsed.error, std::move(parsed.items), false};
+    }, [this, id, done = std::move(done)](Reply reply) mutable {
+        if (!progressChildren_.contains(id)) return;
+        if (reply.error == Error::Unreachable || reply.error == Error::NotConfigured || reply.error == Error::BadLogin) {
+            progressChildren_.erase(id); done(reply.error, std::nullopt); return;
+        }
+        auto names = std::get_if<std::vector<std::string>>(&reply.data);
+        bool indexed = reply.error == Error::None && names && std::find(names->begin(), names->end(), "indexBasedQueue") != names->end();
+        progressChildren_[id] = request(indexed ? "getPlayQueueByIndex" : "getPlayQueue", {}, [indexed](const std::string& body) {
+            auto parsed = subsonic::parsePlayQueue(body, indexed);
+            return Reply{parsed.error, std::move(parsed.queue), false};
+        }, [this, id, done = std::move(done)](Reply answer) mutable {
+            if (!progressChildren_.erase(id)) return;
+            auto* queue = std::get_if<std::optional<RemoteQueue>>(&answer.data);
+            done(answer.error == Error::None && !queue ? Error::Server : answer.error, queue ? std::move(*queue) : std::nullopt);
+        });
+    });
+    return id;
+}
+
+MusicServer::RequestId Subsonic::savePlayQueue(RemoteQueue queue, std::function<void(Error)> done) {
+    const RequestId id = ++lastId_;
+    progressChildren_[id] = request("getOpenSubsonicExtensions", {}, [](const std::string& body) {
+        auto parsed = subsonic::parseExtensions(body);
+        return Reply{parsed.error, std::move(parsed.items), false};
+    }, [this, id, queue = std::move(queue), done = std::move(done)](Reply reply) mutable {
+        if (!progressChildren_.contains(id)) return;
+        if (reply.error == Error::Unreachable || reply.error == Error::NotConfigured || reply.error == Error::BadLogin) {
+            progressChildren_.erase(id); done(reply.error); return;
+        }
+        auto names = std::get_if<std::vector<std::string>>(&reply.data);
+        bool indexed = reply.error == Error::None && names && std::find(names->begin(), names->end(), "indexBasedQueue") != names->end();
+        if ((!queue.tracks.empty() && queue.current >= queue.tracks.size()) || queue.position < 0 ||
+            std::any_of(queue.tracks.begin(), queue.tracks.end(), [](const RemoteTrack& t) { return t.id.empty(); })) {
+            progressChildren_.erase(id); done(Error::Server); return;
+        }
+        if (!indexed && !queue.tracks.empty() && std::count_if(queue.tracks.begin(), queue.tracks.end(), [&](const RemoteTrack& t) {
+            return t.id == queue.tracks[queue.current].id;
+        }) != 1) { progressChildren_.erase(id); done(Error::Server); return; }
+        Params params;
+        for (const auto& track : queue.tracks) params.emplace_back("id", track.id);
+        if (!queue.tracks.empty()) {
+            params.emplace_back(indexed ? "currentIndex" : "current", indexed ? std::to_string(queue.current) : queue.tracks[queue.current].id);
+            params.emplace_back("position", std::to_string(queue.position));
+        }
+        progressChildren_[id] = request(indexed ? "savePlayQueueByIndex" : "savePlayQueue", params,
+            [](const std::string& body) { return Reply{subsonic::parseStatus(body), {}, false}; },
+            [this, id, done = std::move(done)](Reply answer) mutable { if (progressChildren_.erase(id)) done(answer.error); });
+    });
+    return id;
+}
+
 std::string Subsonic::buildUrl(const Config& config, const std::string& salt, const std::string& method,
                                const Params& params) {
     std::string out = config.url + "/rest/" + method + "?u=" + percentEncode(config.user) +

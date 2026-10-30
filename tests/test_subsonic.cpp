@@ -118,6 +118,113 @@ const std::string kAuth = "?u=ice&t=26719a1196d2a940705a59634eb18eab&s=c19b2d&v=
 
 } // namespace
 
+TEST(Subsonic, IndexedQueueReadsAndSavesDuplicateOccurrences) {
+    Server server;
+    std::optional<oap::RemoteQueue> result;
+    Error error = Error::Server;
+    server.subsonic->playQueue([&](Error e, std::optional<oap::RemoteQueue> q) { error = e; result = std::move(q); });
+    server.http->answer(0, 200, R"({"subsonic-response":{"status":"ok","openSubsonicExtensions":[{"name":"indexBasedQueue","versions":[1]}]}})");
+    server.subsonic->poll();
+    ASSERT_EQ(server.http->calls.size(), 2u);
+    EXPECT_EQ(server.http->url(1), kBase + "getPlayQueueByIndex" + kAuth);
+    server.http->answer(1, 200, R"({"subsonic-response":{"status":"ok","playQueueByIndex":{"changed":"2023-11-14T22:13:20.123Z","currentIndex":1,"position":12000,"entry":[{"id":"a","title":"A"},{"id":"a","title":"A"},{"id":"b","title":"B"}]}}})");
+    server.subsonic->poll();
+    ASSERT_EQ(error, Error::None);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->changed, 1700000000123LL);
+    EXPECT_EQ(result->current, 1u);
+    EXPECT_EQ(result->position, 12000);
+    ASSERT_EQ(result->tracks.size(), 3u);
+    EXPECT_EQ(result->tracks[2].title, "B");
+    server.subsonic->savePlayQueue(*result, [&](Error e) { error = e; });
+    server.http->answer(2, 200, R"({"subsonic-response":{"status":"ok","openSubsonicExtensions":[{"name":"indexBasedQueue","versions":[1]}]}})");
+    server.subsonic->poll();
+    ASSERT_EQ(server.http->calls.size(), 4u);
+    EXPECT_EQ(server.http->url(3), kBase + "savePlayQueueByIndex" + kAuth + "&id=a&id=a&id=b&currentIndex=1&position=12000");
+    server.http->answer(3, 200, R"({"subsonic-response":{"status":"ok"}})");
+    server.subsonic->poll();
+    EXPECT_EQ(error, Error::None);
+}
+
+TEST(Subsonic, LegacyQueueRejectsAmbiguousCurrentAndCancels) {
+    Server server;
+    oap::RemoteQueue q;
+    oap::RemoteTrack track; track.id = "a";
+    q.tracks = {track, track}; q.current = 1;
+    Error error = Error::None;
+    server.subsonic->savePlayQueue(q, [&](Error e) { error = e; });
+    server.http->answer(0, 200, R"({"subsonic-response":{"status":"ok","openSubsonicExtensions":[]}})");
+    server.subsonic->poll();
+    EXPECT_EQ(error, Error::Server);
+    EXPECT_EQ(server.http->calls.size(), 1u);
+    auto id = server.subsonic->playQueue([&](Error, std::optional<oap::RemoteQueue>) { ADD_FAILURE() << "cancelled"; });
+    server.subsonic->cancel(id);
+    EXPECT_EQ(server.http->cancelled.size(), 1u);
+    server.http->answer(1, 200, R"({"subsonic-response":{"status":"ok"}})");
+    server.subsonic->poll();
+}
+
+TEST(Subsonic, LegacyQueueUsesTrackIdAndRejectsInvalidResponses) {
+    Server server;
+    Error error = Error::Server;
+    std::optional<oap::RemoteQueue> queue;
+    server.subsonic->playQueue([&](Error e, std::optional<oap::RemoteQueue> q) { error = e; queue = std::move(q); });
+    server.http->answer(0, 200, R"({"subsonic-response":{"status":"ok","openSubsonicExtensions":[]}})");
+    server.subsonic->poll();
+    EXPECT_EQ(server.http->url(1), kBase + "getPlayQueue" + kAuth);
+    server.http->answer(1, 200, R"({"subsonic-response":{"status":"ok","playQueue":{"changed":"2023-11-14T22:13:20Z","current":"b","position":5000,"entry":[{"id":"a"},{"id":"b"}]}}})");
+    server.subsonic->poll();
+    ASSERT_EQ(error, Error::None);
+    ASSERT_TRUE(queue);
+    EXPECT_EQ(queue->current, 1u);
+    EXPECT_EQ(queue->position, 5000);
+    server.subsonic->savePlayQueue(*queue, [&](Error e) { error = e; });
+    server.http->answer(2, 200, R"({"subsonic-response":{"status":"ok","openSubsonicExtensions":[]}})");
+    server.subsonic->poll();
+    EXPECT_EQ(server.http->url(3), kBase + "savePlayQueue" + kAuth + "&id=a&id=b&current=b&position=5000");
+    server.http->answer(3, 200, R"({"subsonic-response":{"status":"failed","error":{"code":40}}})");
+    server.subsonic->poll();
+    EXPECT_EQ(error, Error::BadLogin);
+    server.subsonic->playQueue([&](Error e, std::optional<oap::RemoteQueue>) { error = e; });
+    server.http->answer(4, 200, R"({"subsonic-response":{"status":"ok","openSubsonicExtensions":[{"name":"indexBasedQueue","versions":[1]}]}})");
+    server.subsonic->poll();
+    server.http->answer(5, 200, R"({"subsonic-response":{"status":"ok","playQueueByIndex":{"changed":"2023-02-30T12:00:00Z","currentIndex":8,"entry":[{"id":"a"}]}}})");
+    server.subsonic->poll();
+    EXPECT_EQ(error, Error::Server);
+}
+
+TEST(Subsonic, AnEmptyUntimestampedQueueDoesNotAcquireAnInventedVersion) {
+    Server server;
+    Error error = Error::Server;
+    std::optional<oap::RemoteQueue> result;
+    server.subsonic->playQueue([&](Error e, std::optional<oap::RemoteQueue> q) { error = e; result = std::move(q); });
+    server.http->answer(0, 200, R"({"subsonic-response":{"status":"ok","openSubsonicExtensions":[{"name":"indexBasedQueue","versions":[1]}]}})");
+    server.subsonic->poll();
+    server.http->answer(1, 200, R"({"subsonic-response":{"status":"ok","playQueueByIndex":{"username":"ann","changed":"0001-01-01T00:00:00Z"}}})");
+    server.subsonic->poll();
+    ASSERT_EQ(error, Error::None);
+    ASSERT_TRUE(result);
+    EXPECT_TRUE(result->tracks.empty());
+    EXPECT_EQ(result->changed, 0);
+}
+
+TEST(Subsonic, InvalidQueueIndexesAndEntriesAreRejected) {
+    Server server;
+    Error error = Error::None;
+    auto ask = [&](const std::string& body) {
+        const auto first = server.http->calls.size();
+        server.subsonic->playQueue([&](Error e, std::optional<oap::RemoteQueue>) { error = e; });
+        server.http->answer(first, 200, R"({"subsonic-response":{"status":"ok","openSubsonicExtensions":[{"name":"indexBasedQueue","versions":[1]}]}})");
+        server.subsonic->poll();
+        server.http->answer(first + 1, 200, body);
+        server.subsonic->poll();
+    };
+    ask(R"({"subsonic-response":{"status":"ok","playQueueByIndex":{"changed":"2023-11-14T22:13:20Z","currentIndex":2,"entry":[{"id":"a"}]}}})");
+    EXPECT_EQ(error, Error::Server);
+    ask(R"({"subsonic-response":{"status":"ok","playQueueByIndex":{"changed":"2023-11-14T22:13:20Z","entry":"invalid"}}})");
+    EXPECT_EQ(error, Error::Server);
+}
+
 TEST(Subsonic, UrlCarriesTokenAndSaltNotThePassword) {
     Server server;
     server.subsonic->ping([](Error, ServerInfo) {});

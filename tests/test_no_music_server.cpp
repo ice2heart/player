@@ -171,3 +171,15 @@ TEST(NoMusicServer, PlaylistEditsAreNotConfiguredAndCancellable) {
     server.poll();
     EXPECT_EQ(got, std::vector<Error>(2, Error::NotConfigured));
 }
+
+TEST(NoMusicServer, QueueSyncIsNotConfiguredAndCancellable) {
+    NoMusicServer server;
+    EXPECT_FALSE(server.syncsQueue());
+    std::vector<Error> errors;
+    server.playQueue([&](Error e, std::optional<RemoteQueue> q) { EXPECT_FALSE(q); errors.push_back(e); });
+    server.savePlayQueue({}, [&](Error e) { errors.push_back(e); });
+    auto id = server.playQueue([&](Error, std::optional<RemoteQueue>) { ADD_FAILURE() << "cancelled"; });
+    server.cancel(id);
+    EXPECT_TRUE(errors.empty()); server.poll();
+    EXPECT_EQ(errors, std::vector<Error>(2, Error::NotConfigured));
+}

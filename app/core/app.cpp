@@ -28,6 +28,8 @@ constexpr size_t kSpeechLogSize = 100;
 constexpr std::chrono::seconds kProgressInterval{60};
 constexpr double kProgressMovement = 5;
 constexpr std::int64_t kProgressMillisPerSecond = 1000;
+constexpr auto kQueueSyncInterval = std::chrono::seconds(30);
+constexpr double kMaxQueuePositionSeconds = static_cast<double>(std::numeric_limits<std::int64_t>::max() / 2000);
 
 // Setting keys
 constexpr const char* kSpeechRate = "speech.rate";
@@ -331,10 +333,16 @@ void App::start() {
     // The music queue of queue.tsv is in the music player now, closed. Whichever player was used last has
     // "Now playing" on Home; a book that was last is opened below, which parks the music queue.
     restoreQueue();
+    queueSyncInitialized_ = true;
+    queueSyncLink_ = 0;
+    queueSyncRound_ = true;
+    queueObservedRevision_ = book_ && music_ ? queue_.revision() : 0;
+    queueObservedPlace_ = book_ && music_ ? place() : 0;
+    queueSyncNext_ = clock_.now();
+    queuePlaceRecorded_ = clock_.now();
 
     // The music player used last: "Now playing" on Home plays its queue (or, from an older version, loads
-    // the stream saved as `last_stream`). Nothing is asked of the server now, and nothing plays until the
-    // user chooses it.
+    // the stream saved as `last_stream`). Queue sync runs in the background; nothing plays until the user chooses it.
     // A server book played last (`last_book` is its item id, `<server key>:album:<id>`, which no local
     // book is, as a local path is absolute) is resumed from Home the same way, and is not looked for on disk.
     // Whichever player was used first is the one listed as "Now playing"; the other is "Continue".
@@ -753,7 +761,9 @@ void App::shutdown() {
         if (list.request) serverAt(list.link).cancel(list.request);
     remoteLists_.clear();
     shutDown_ = true;
+    observeQueueSync();
     saveOnExit();
+    if (queueSyncRequest_ && queueSyncLink_ < servers_.size()) serverAt(queueSyncLink_).cancel(std::exchange(queueSyncRequest_, 0));
     for (auto [link, request] : progressRetries_) serverAt(link).cancel(request);
     progressRetries_.clear();
     cancelResume();
@@ -904,6 +914,8 @@ void App::tick() {
     }
     scanner_.poll();    // a finished scan updates the index
     if (shutDown_) return; // exit acknowledgements above still clear saved outboxes
+    observeQueueSync();
+    pumpQueueSync();
     if (pendingOpen_ && !player_.opening()) finishPendingOpen();
     else if (pendingOpen_ && now - pendingOpen_->since > kStreamOpenGiveUp) giveUpPendingOpen();
 
@@ -1286,6 +1298,7 @@ void App::saveConfig() {
 // Written once here instead of on every pause, book change and 30 s of playback,
 // to spare the flash. A crash or power loss loses the place since the last exit.
 void App::saveOnExit() {
+    observeQueueSync(true);
     rememberPosition();
     pushProgress();
     if (volumeChanged_) saveConfig();
@@ -1301,8 +1314,13 @@ void App::saveOnExit() {
 void App::saveQueue() {
     if (queueFile_.empty() || !textFiles_) return;
     std::string text;
-    if (book_ && music_) text = formatQueue(SavedQueue{book_->title, queue_, place()});
-    else if (parked_ && parked_->music) text = formatQueue(SavedQueue{parked_->book.title, parked_->queue, parked_->position});
+    SavedQueue saved;
+    if (book_ && music_) saved = SavedQueue{book_->title, queue_, place()};
+    else if (parked_ && parked_->music) saved = SavedQueue{parked_->book.title, parked_->queue, parked_->position};
+    saved.changed = queueChanged_;
+    saved.pendingServers.assign(queuePending_.begin(), queuePending_.end());
+    saved.acknowledgedServers.assign(queueAcknowledged_.begin(), queueAcknowledged_.end());
+    text = formatQueue(saved);
     if (text == queueText_) return;
     if (textFiles_->writeAtomically(queueFile_, text)) queueText_ = text; // else the next exit tries again
 }
@@ -1325,6 +1343,10 @@ void App::restoreQueue() {
     queueText_ = *text;
     std::optional<SavedQueue> saved = parseQueue(*text);
     if (!saved) return;
+    queueChanged_ = saved->changed;
+    queuePending_ = {saved->pendingServers.begin(), saved->pendingServers.end()};
+    queueAcknowledged_ = {saved->acknowledgedServers.begin(), saved->acknowledgedServers.end()};
+    if (saved->queue.empty()) return;
     retitleDownloads(saved->queue);
     state_.clearPrefix(kLastStreamPrefix); // the older way of keeping a stream; the queue says more
     Book list;
@@ -1335,6 +1357,175 @@ void App::restoreQueue() {
     fileIndex_ = queue_.position();
     reopenAt_ = saved->position; // closed: Play, or Now playing on Home, opens it there
     restoredQueue_ = true;
+}
+
+void App::observeQueueSync(bool forcePlace) {
+    if (!queueSyncInitialized_) return;
+    if (std::none_of(servers_.begin(), servers_.end(), [](const ServerLink& s) { return s.server.syncsQueue(); })) return;
+    const Queue* queue = book_ && music_ ? &queue_ : parked_ && parked_->music ? &parked_->queue : nullptr;
+    const auto revision = queue ? queue->revision() : 0;
+    double position = book_ && music_ ? place() : parked_ && parked_->music ? parked_->position : 0;
+    if (!std::isfinite(position) || position < 0 || position > kMaxQueuePositionSeconds) position = 0;
+    // Record place at one-second resolution; live playback is synchronized at most once per round.
+    if (revision == queueObservedRevision_) {
+        if (forcePlace ? position == queueObservedPlace_ : int64_t(position) == int64_t(queueObservedPlace_)) return;
+        if (!forcePlace && book_ && music_ && player_.playing() && clock_.now() - queuePlaceRecorded_ < kQueueSyncInterval) return;
+    }
+    queueObservedRevision_ = revision;
+    queueObservedPlace_ = position;
+    queuePlaceRecorded_ = clock_.now();
+    markQueueSyncChanged();
+}
+
+void App::markQueueSyncChanged() {
+    if (!queueSyncInitialized_) return;
+    if (std::none_of(servers_.begin(), servers_.end(), [](const ServerLink& s) { return s.server.syncsQueue(); })) return;
+    ++queueSyncGeneration_;
+    pendingRemoteQueue_.reset();
+    const auto now = static_cast<std::int64_t>(clock_.wallTime());
+    queueChanged_ = now >= kEarliestPlayTime && now <= std::numeric_limits<std::int64_t>::max() / kProgressMillisPerSecond ? now * kProgressMillisPerSecond : 0;
+    for (const auto& server : servers_) if (server.server.syncsQueue() && !server.key.empty()) queuePending_.insert(server.key);
+}
+
+std::optional<RemoteQueue> App::queueForServer(size_t link) const {
+    if (book_ && music_ && (pendingOpen_ || seeking_)) return std::nullopt;
+    const Queue* queue = book_ && music_ ? &queue_ : parked_ && parked_->music ? &parked_->queue : nullptr;
+    RemoteQueue result;
+    if (!queue || queue->empty()) {
+        if (!queueAcknowledged_.contains(servers_[link].key)) return std::nullopt;
+        return result;
+    }
+    bool hasCurrent = false;
+    for (size_t i = 0; i < queue->size(); ++i) {
+        const auto& entry = queue->at(i);
+        std::optional<std::string> id;
+        if (entry.kind == QueueEntry::Kind::Remote) {
+            if (linkOf(entry) == link && !entry.trackId.empty()) id = entry.trackId;
+        } else {
+            auto hit = index_.findByLocation(entry.path);
+            if (hit.track) {
+                auto prefix = LibraryIndex::seenRef(servers_[link].key, SeenKind::Track, "");
+                for (const auto& ref : hit.track->seenOn)
+                    if (ref.starts_with(prefix) && ref.size() > prefix.size()) { id = ref.substr(prefix.size()); break; }
+            }
+        }
+        if (!id) continue;
+        if (i == queue->position()) { result.current = result.tracks.size(); hasCurrent = true; }
+        RemoteTrack track;
+        track.id = *id; track.title = entry.title; track.album = entry.album; track.artist = entry.artist;
+        track.albumId = entry.albumId; track.duration = entry.duration;
+        result.tracks.push_back(std::move(track));
+    }
+    if (!hasCurrent) return std::nullopt; // the current local or other-server track cannot be represented
+    double position = book_ && music_ ? place() : parked_->position;
+    if (!std::isfinite(position) || position < 0 || position > kMaxQueuePositionSeconds) return std::nullopt;
+    result.position = static_cast<std::int64_t>(position * kProgressMillisPerSecond);
+    return result;
+}
+
+void App::applyRemoteQueue(size_t link, const RemoteQueue& remote) {
+    std::vector<QueueEntry> entries;
+    for (const auto& track : remote.tracks) {
+        QueueEntry entry;
+        entry.kind = QueueEntry::Kind::Remote;
+        entry.serverUrl = servers_[link].config.url; entry.user = servers_[link].config.user;
+        entry.trackId = track.id; entry.albumId = track.albumId; entry.title = track.title;
+        entry.album = track.album; entry.artist = track.artist; entry.duration = track.duration;
+        entries.push_back(std::move(entry));
+    }
+    Queue replacement;
+    replacement.replace(std::move(entries), remote.current);
+    Book list; list.title = "Music";
+    if (book_ && !music_) {
+        if (replacement.empty()) {
+            if (parked_ && parked_->music) parked_.reset();
+        } else parked_ = Parked{list, true, replacement.position(), remote.position / 1000.0, replacement};
+    }
+    else {
+        player_.close();
+        if (replacement.empty()) { book_.reset(); music_ = false; queue_ = Queue{}; reopenAt_.reset(); }
+        else { book_ = list; music_ = true; queue_ = std::move(replacement); fileIndex_ = queue_.position(); reopenAt_ = remote.position / 1000.0; restoredQueue_ = true; }
+    }
+    queueChanged_ = remote.changed;
+    queuePending_.clear();
+    queueAcknowledged_[servers_[link].key] = remote.changed;
+    const Queue* current = book_ && music_ ? &queue_ : parked_ && parked_->music ? &parked_->queue : nullptr;
+    queueObservedRevision_ = current ? current->revision() : 0;
+    queueObservedPlace_ = book_ && music_ ? place() : parked_ && parked_->music ? parked_->position : 0;
+    ++queueSyncGeneration_;
+    for (auto& screen : screens_) if (screen.title == "Home" && screen.build) {
+        screen.items = screen.build();
+        if (!screen.items.empty()) screen.index = std::min(screen.index, screen.items.size() - 1);
+    }
+}
+
+void App::pumpQueueSync() {
+    if (pendingRemoteQueue_ && !(book_ && music_ && (player_.playing() || pendingOpen_ || seeking_ || (playerScreenIndex() && mode() != Mode::Player) ||
+                                                       (pendingRemoteQueue_->value.tracks.empty() && playerScreenIndex())))) {
+        auto pending = std::move(*pendingRemoteQueue_);
+        pendingRemoteQueue_.reset();
+        if (pending.generation == queueSyncGeneration_ && pending.value.changed > queueChanged_)
+            applyRemoteQueue(pending.link, pending.value);
+    }
+    if (queueSyncRequest_ || clock_.now() < queueSyncNext_) return;
+    if (!queueSyncRound_) { queueSyncRound_ = true; queueSyncLink_ = 0; }
+    while (queueSyncLink_ < servers_.size() && (!servers_[queueSyncLink_].server.configured() || !servers_[queueSyncLink_].server.syncsQueue())) ++queueSyncLink_;
+    if (queueSyncLink_ >= servers_.size()) {
+        queueSyncRound_ = false;
+        queueSyncNext_ = clock_.now() + kQueueSyncInterval;
+        return;
+    }
+    const size_t link = queueSyncLink_;
+    const auto generation = queueSyncGeneration_;
+    queueSyncRequest_ = serverAt(link).playQueue([this, link, generation](MusicServer::Error error, std::optional<RemoteQueue> remote) {
+        queueSyncRequest_ = 0;
+        ++queueSyncLink_;
+        observeQueueSync();
+        if (error != MusicServer::Error::None || !remote || generation != queueSyncGeneration_) return;
+        if (remote->position < 0 || remote->tracks.size() > kMaxSavedEntries ||
+            (!remote->tracks.empty() && remote->current >= remote->tracks.size()) ||
+            std::any_of(remote->tracks.begin(), remote->tracks.end(), [](const RemoteTrack& t) { return t.id.empty(); })) return;
+        if (remote->tracks.empty() && remote->changed <= 0) return; // an untimestamped empty queue may be a newer clear
+        auto local = queueForServer(link);
+        bool same = local && local->current == remote->current && local->position == remote->position && local->tracks.size() == remote->tracks.size();
+        if (same) for (size_t i = 0; i < local->tracks.size(); ++i) if (local->tracks[i].id != remote->tracks[i].id) { same = false; break; }
+        auto acknowledged = queueAcknowledged_.find(servers_[link].key);
+        const auto lastAcknowledged = acknowledged == queueAcknowledged_.end() ? 0 : acknowledged->second;
+        if (remote->changed > queueChanged_ && remote->changed > lastAcknowledged) {
+            if (book_ && music_ && (player_.playing() || pendingOpen_ || seeking_ || (playerScreenIndex() && mode() != Mode::Player) ||
+                                    (remote->tracks.empty() && playerScreenIndex()))) {
+                if (!pendingRemoteQueue_ || remote->changed > pendingRemoteQueue_->value.changed)
+                    pendingRemoteQueue_ = PendingRemoteQueue{link, *remote, generation};
+            }
+            else applyRemoteQueue(link, *remote);
+            return;
+        }
+        if (same) {
+            queueAcknowledged_[servers_[link].key] = remote->changed;
+            queuePending_.erase(servers_[link].key);
+            return;
+        }
+        const bool knownEcho = acknowledged != queueAcknowledged_.end() && remote->changed == acknowledged->second;
+        if (!local || !queueChanged_ || !queuePending_.contains(servers_[link].key) || (!knownEcho && remote->changed >= queueChanged_)) return;
+        queueSyncLink_ = link;
+        auto sent = *local;
+        queueSyncRequest_ = serverAt(link).savePlayQueue(std::move(*local), [this, link, generation, sent = std::move(sent)](MusicServer::Error saved) {
+            queueSyncRequest_ = 0;
+            observeQueueSync();
+            if (saved != MusicServer::Error::None) { ++queueSyncLink_; return; }
+            queueSyncRequest_ = serverAt(link).playQueue([this, link, generation, sent = std::move(sent)](MusicServer::Error error, std::optional<RemoteQueue> echoed) {
+                queueSyncRequest_ = 0;
+                ++queueSyncLink_;
+                if (error != MusicServer::Error::None || !echoed) return;
+                bool same = sent.current == echoed->current && sent.position == echoed->position && sent.tracks.size() == echoed->tracks.size();
+                if (same) for (size_t i = 0; i < sent.tracks.size(); ++i) if (sent.tracks[i].id != echoed->tracks[i].id) { same = false; break; }
+                if (!same) return;
+                queueAcknowledged_[servers_[link].key] = echoed->changed;
+                observeQueueSync();
+                if (generation == queueSyncGeneration_) queuePending_.erase(servers_[link].key);
+            });
+        });
+    });
 }
 
 // An older Play all named a downloaded track by its file name, which is the server's track id, and a queue
@@ -4820,7 +5011,10 @@ void App::seekStep() {
     const bool edge = seek.target <= 0 || seekAtEnd_;
     if (edge && !seek.edgeHeard) earcons_.play(Earcon::Edge);
     seek.edgeHeard = edge;
-    if (seek.target != previous) player_.seek(seek.target);
+    if (seek.target != previous) {
+        if (music_) markQueueSyncChanged();
+        player_.seek(seek.target);
+    }
 }
 
 void App::repeatSeeking(TimePoint now) {
@@ -6267,6 +6461,13 @@ void App::powerOff() {
 
 void App::restart(bool saveFirst) {
     if (saveFirst) saveOnExit();
+    if (queueSyncRequest_ && queueSyncLink_ < servers_.size()) serverAt(queueSyncLink_).cancel(std::exchange(queueSyncRequest_, 0));
+    queueSyncInitialized_ = false;
+    ++queueSyncGeneration_;
+    pendingRemoteQueue_.reset();
+    queueChanged_ = 0;
+    queuePending_.clear();
+    queueAcknowledged_.clear();
     for (auto [link, request] : progressRetries_) serverAt(link).cancel(request);
     progressRetries_.clear();
     // Ordinary restart keeps the live transport: retain save ordering until
@@ -6307,6 +6508,9 @@ void App::factoryReset() {
     queue_ = Queue{};
     parked_.reset();
     music_ = false;
+    queueChanged_ = 0;
+    queuePending_.clear();
+    queueAcknowledged_.clear();
     saveQueue();
     say("Settings erased.");
     restart(false); // saving first would put the position straight back

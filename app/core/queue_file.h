@@ -20,6 +20,9 @@ struct SavedQueue {
     std::string title; // what the queue is called (the album or playlist it came from)
     Queue queue;
     double position = 0; // seconds into the current entry
+    std::int64_t changed = 0; // last local queue or place change, wall milliseconds
+    std::vector<std::string> pendingServers;
+    std::vector<std::pair<std::string, std::int64_t>> acknowledgedServers;
 };
 
 // "" for an empty queue. Cuts the queue to kMaxSavedEntries around the current entry.

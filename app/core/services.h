@@ -353,6 +353,13 @@ struct RemotePlaylist {
     std::string changed; // ISO 8601, when the server last changed it; empty if it does not say
 };
 
+struct RemoteQueue {
+    std::vector<RemoteTrack> tracks;
+    std::size_t current = 0;
+    std::int64_t position = 0; // milliseconds in current track
+    std::int64_t changed = 0;  // wall milliseconds
+};
+
 // A server to browse and stream from (Subsonic first, implemented in app/net/).
 // Requests never block: each one is queued and returns its id at once. The
 // callback runs later, on the UI thread, from poll(). Once cancel(id) is called
@@ -377,6 +384,9 @@ public:
 
     virtual ~MusicServer() = default;
     virtual bool configured() const = 0;
+    virtual bool syncsQueue() const { return false; }
+    virtual RequestId playQueue(std::function<void(Error, std::optional<RemoteQueue>)> done) = 0;
+    virtual RequestId savePlayQueue(RemoteQueue queue, std::function<void(Error)> done) = 0;
     virtual RequestId ping(std::function<void(Error, ServerInfo)> done) = 0;
     // A token that changes when the server's catalogue changes (Subsonic: `lastModified` of
     // getArtists, as text). Empty when the server does not say. On an error it is empty too.

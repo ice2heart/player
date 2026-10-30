@@ -650,7 +650,7 @@ server alone. All the rules below hold for every server.
 
 ## Playlist editing and planned sync changes (streaming phase 5)
 
-Playlist editing and Keep offline are built; queue sync below is planned.
+Playlist editing, Keep offline and queue sync are built.
 Music → Playlists combines local, downloaded and server playlists. Create playlist selects "On the
 device" or a configured playlist-capable server and uses a generated timestamp name;
 renaming waits for [input-methods.md](input-methods.md). Each playlist opens with Play
@@ -673,6 +673,10 @@ the last complete order and pins and retries on the next refresh. Book progress 
 Audiobookshelf interaction; it is independent of playlist editing. Queue sync compares
 server and local timestamps, keeps the newer version and does not interrupt playback;
 [streaming.md](streaming.md#phase-5-design) specifies the remaining rules.
+If the current track has no reference on a server, its queue save waits until a
+track eligible for that server is current.
+An empty server queue without a usable timestamp leaves an upload pending, since it
+could represent a newer clear on another client.
 
 ## Music and Library
 

@@ -47,6 +47,9 @@ public:
     Subsonic& operator=(const Subsonic&) = delete;
 
     bool configured() const override;
+    bool syncsQueue() const override { return true; }
+    RequestId playQueue(std::function<void(Error, std::optional<RemoteQueue>)> done) override;
+    RequestId savePlayQueue(RemoteQueue queue, std::function<void(Error)> done) override;
     RequestId ping(std::function<void(Error, ServerInfo)> done) override;
     RequestId catalogueVersion(std::function<void(Error, std::string)> done) override;
     RequestId albums(std::string listType, int offset, int size, Done<RemoteAlbum> done,
@@ -102,7 +105,7 @@ private:
         Error error = Error::None;
         std::variant<std::monostate, ServerInfo, std::vector<RemoteAlbum>, std::vector<RemoteArtist>,
                      std::vector<RemoteTrack>, std::vector<RemotePlaylist>, std::vector<RemoteFolder>,
-                     std::vector<std::string>, std::string, std::optional<RemoteProgress>>
+                     std::vector<std::string>, std::string, std::optional<RemoteProgress>, std::optional<RemoteQueue>>
             data;
         bool more = false;
     };

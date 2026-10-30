@@ -169,6 +169,11 @@ private:
     void saveQueue();
     // start(): the music queue of queue.tsv waits in the music player, closed, at its place; nothing plays.
     void restoreQueue();
+    void observeQueueSync(bool forcePlace = false);
+    void markQueueSyncChanged();
+    void pumpQueueSync();
+    void applyRemoteQueue(size_t link, const RemoteQueue& remote);
+    std::optional<RemoteQueue> queueForServer(size_t link) const;
     void retitleDownloads(Queue& queue) const;
     void markPlayed(const std::string& itemId); // the album plays from Music: in memory until exit or sleep
     std::vector<MenuItem> homeMenu();
@@ -811,6 +816,19 @@ private:
     std::optional<Book> book_;
     bool music_ = false; // the music player, else the book player
     Queue queue_;        // the music player's queue; empty for the book player (the parked one is in parked_)
+    std::int64_t queueChanged_ = 0;
+    std::set<std::string> queuePending_;
+    std::map<std::string, std::int64_t> queueAcknowledged_;
+    std::uint64_t queueObservedRevision_ = 0, queueSyncGeneration_ = 0;
+    double queueObservedPlace_ = 0;
+    bool queueSyncInitialized_ = false;
+    size_t queueSyncLink_ = 0;
+    MusicServer::RequestId queueSyncRequest_ = 0;
+    Clock::TimePoint queueSyncNext_{};
+    Clock::TimePoint queuePlaceRecorded_{};
+    bool queueSyncRound_ = true;
+    struct PendingRemoteQueue { size_t link; RemoteQueue value; std::uint64_t generation; };
+    std::optional<PendingRemoteQueue> pendingRemoteQueue_;
     size_t fileIndex_ = 0;
     // The other player's book, paused where it stopped (a remote one opens again on Continue). It
     // is of the other kind than book_ (when one is loaded); none until the other player has been used.

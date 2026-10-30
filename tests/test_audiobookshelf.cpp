@@ -918,3 +918,16 @@ TEST(Audiobookshelf, PlaylistEditsAreUnsupportedAndCancellable) {
     EXPECT_EQ(got, std::vector<Error>(2, Error::Server));
     EXPECT_TRUE(s.http->calls.empty());
 }
+
+TEST(Audiobookshelf, QueueSyncIsUnsupportedAndCancellable) {
+    Server s;
+    EXPECT_FALSE(s.abs->syncsQueue());
+    std::vector<Error> errors;
+    s.abs->playQueue([&](Error e, std::optional<oap::RemoteQueue> q) { EXPECT_FALSE(q); errors.push_back(e); });
+    s.abs->savePlayQueue({}, [&](Error e) { errors.push_back(e); });
+    auto id = s.abs->playQueue([&](Error, std::optional<oap::RemoteQueue>) { ADD_FAILURE() << "cancelled"; });
+    s.abs->cancel(id);
+    EXPECT_TRUE(errors.empty()); s.abs->poll();
+    EXPECT_EQ(errors, std::vector<Error>(2, Error::Server));
+    EXPECT_TRUE(s.http->calls.empty());
+}

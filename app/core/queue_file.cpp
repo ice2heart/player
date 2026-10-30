@@ -1,6 +1,7 @@
 #include "core/queue_file.h"
 
 #include <cmath>
+#include <charconv>
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
@@ -68,6 +69,13 @@ std::optional<std::size_t> parseIndex(const std::string& s) {
     return static_cast<std::size_t>(std::stoul(s));
 }
 
+std::optional<std::int64_t> parseTimestamp(const std::string& s) {
+    std::int64_t value = 0;
+    const auto [end, error] = std::from_chars(s.data(), s.data() + s.size(), value);
+    if (error != std::errc{} || end != s.data() + s.size() || value < 0) return std::nullopt;
+    return value;
+}
+
 const char* shuffleName(QueueShuffle s) { return s == QueueShuffle::Tracks ? "tracks" : s == QueueShuffle::Albums ? "albums" : "off"; }
 const char* repeatName(QueueRepeat r) {
     return r == QueueRepeat::All ? "all" : r == QueueRepeat::Album ? "album" : r == QueueRepeat::Track ? "track" : "off";
@@ -76,7 +84,7 @@ const char* repeatName(QueueRepeat r) {
 } // namespace
 
 std::string formatQueue(const SavedQueue& saved) {
-    if (saved.queue.empty()) return {};
+    if (saved.queue.empty() && saved.changed == 0 && saved.pendingServers.empty()) return {};
     const Queue queue = saved.queue.around(kMaxSavedEntries);
     std::string out = std::string(kMagic) + '\t' + kVersion + '\n';
     out += "title\t" + escape(saved.title) + '\n';
@@ -85,6 +93,9 @@ std::string formatQueue(const SavedQueue& saved) {
     out += std::string("edited\t") + (queue.edited() ? "1" : "0") + '\n';
     out += "position\t" + std::to_string(queue.position()) + '\n';
     out += "seconds\t" + seconds(saved.position) + '\n';
+    if (saved.changed > 0) out += "changed\t" + std::to_string(saved.changed) + '\n';
+    for (const auto& key : saved.pendingServers) out += "pending\t" + escape(key) + '\n';
+    for (const auto& [key, stamp] : saved.acknowledgedServers) out += "ack\t" + escape(key) + '\t' + std::to_string(stamp) + '\n';
     out += "order";
     for (std::size_t i : queue.playOrder()) out += '\t' + std::to_string(i);
     out += '\n';
@@ -143,12 +154,22 @@ std::optional<SavedQueue> parseQueue(const std::string& text) {
             position = parseIndex(f[1]).value_or(std::size_t(-1)); // not a number: no entry is current
         } else if (key == "seconds" && f.size() == 2) {
             saved.position = parseSeconds(f[1]);
+        } else if (key == "changed" && f.size() == 2) {
+            auto stamp = parseTimestamp(f[1]);
+            if (!stamp) return std::nullopt;
+            saved.changed = *stamp;
+        } else if (key == "pending" && f.size() == 2) {
+            saved.pendingServers.push_back(unescape(f[1]));
+        } else if (key == "ack" && f.size() == 3) {
+            auto stamp = parseTimestamp(f[2]);
+            if (!stamp) return std::nullopt;
+            saved.acknowledgedServers.emplace_back(unescape(f[1]), *stamp);
         } else if (key == "order") {
             for (std::size_t i = 1; i < f.size() && order.size() <= kMaxSavedEntries; ++i)
                 order.push_back(parseIndex(f[i]).value_or(kMaxSavedEntries + 1)); // out of range: repaired below
         }
     }
-    if (entries.empty()) return std::nullopt;
+    if (entries.empty()) return saved.changed > 0 || !saved.pendingServers.empty() ? std::optional<SavedQueue>(std::move(saved)) : std::nullopt;
     const bool kept = saved.queue.restore(std::move(entries), std::move(order), position, shuffle, repeat, edited);
     if (!kept || saved.queue.position() != position) saved.position = 0; // another entry is current: the seconds were not its own
     return saved;

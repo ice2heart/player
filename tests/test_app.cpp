@@ -11312,6 +11312,322 @@ protected:
     }
 };
 
+class QueueSyncTest : public MusicQueueTest {
+protected:
+    void begin() { server.queueSync = true; start(); }
+    FakeMusicServer::RequestId queueRequest() const {
+        for (auto it = server.requests.rbegin(); it != server.requests.rend(); ++it)
+            if (it->kind == FakeMusicServer::Kind::PlayQueue) return it->id;
+        return 0;
+    }
+    RemoteQueue phone(std::int64_t changed = 1700000001000LL) {
+        RemoteQueue q;
+        RemoteTrack a; a.id = "one"; a.title = "First"; a.duration = 100;
+        RemoteTrack b; b.id = "two"; b.title = "Second"; b.duration = 100;
+        q.tracks = {a, b, a}; q.current = 2; q.position = 12000; q.changed = changed;
+        return q;
+    }
+};
+
+TEST_F(QueueSyncTest, PhoneQueueLoadsPausedAndRestoresItsDuplicatePosition) {
+    begin();
+    ASSERT_NE(queueRequest(), 0u);
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone())); app->tick();
+    EXPECT_FALSE(player.playing());
+    ASSERT_TRUE(hasLabel("Now playing"));
+    open("Now playing");
+    EXPECT_EQ(player.file, "fake://stream/one");
+    EXPECT_NEAR(player.pos, 12, .01);
+    app->shutdown();
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    EXPECT_EQ(saved->queue.position(), 2u);
+    EXPECT_EQ(saved->queue.size(), 3u);
+}
+
+TEST_F(QueueSyncTest, NewLocalQueueIsSentAndMixedCurrentIsDeferred) {
+    begin();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Local"), remoteEntry("one", "First"), remoteEntry("one", "Again")}, 0));
+    app->tick();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone(1699999999000LL))); app->tick();
+    clock.advance(31s); app->tick();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone(1699999999000LL))); app->tick();
+    EXPECT_TRUE(server.queueSaves.empty());
+    press(Button::Forward);
+    clock.advance(31s); app->tick();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone(1699999999000LL))); app->tick();
+    ASSERT_EQ(server.queueSaves.size(), 1u);
+    EXPECT_EQ(server.queueSaves[0].tracks.size(), 2u);
+    EXPECT_EQ(server.queueSaves[0].current, 0u);
+    EXPECT_EQ(server.queueSaves[0].tracks[0].id, "one");
+    EXPECT_EQ(server.queueSaves[0].tracks[1].id, "one");
+}
+
+TEST_F(QueueSyncTest, OfflineQueueRetainsPendingWorkAcrossRestart) {
+    begin();
+    ASSERT_TRUE(app->playQueue("Remote", {remoteEntry("one", "First")}));
+    app->tick();
+    ASSERT_TRUE(server.fail(queueRequest(), MusicServer::Error::Unreachable)); app->tick();
+    app->shutdown();
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    EXPECT_EQ(saved->queue.size(), 1u);
+    EXPECT_FALSE(saved->pendingServers.empty());
+    app.reset();
+    start();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone(1699999999000LL))); app->tick();
+    ASSERT_EQ(server.queueSaves.size(), 1u);
+    EXPECT_EQ(server.queueSaves[0].tracks[0].id, "one");
+}
+
+TEST_F(QueueSyncTest, LatePhoneReplyCannotReplaceANewerLocalSelection) {
+    begin();
+    const auto request = queueRequest();
+    ASSERT_TRUE(app->playQueue("Local", {localEntry(alphaFile(1), "Local")}));
+    press(Button::PlayPause);
+    hold(Button::Home);
+    ASSERT_TRUE(server.replyQueue(request, phone())); app->tick();
+    app->shutdown();
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    ASSERT_TRUE(saved->queue.current());
+    EXPECT_EQ(saved->queue.current()->path, alphaFile(1));
+}
+
+TEST_F(QueueSyncTest, APhoneQueueDoesNotInterruptABook) {
+    begin();
+    open("Library"); open("Alpha");
+    ASSERT_TRUE(player.playing());
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone())); app->tick();
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(player.file, alphaFile(1));
+    app->shutdown();
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    EXPECT_EQ(saved->queue.position(), 2u);
+    EXPECT_EQ(saved->queue.current()->trackId, "one");
+}
+
+TEST_F(QueueSyncTest, AnAcknowledgedServerSubsetDoesNotReplaceTheMixedQueue) {
+    begin();
+    auto initial = queueRequest();
+    ASSERT_TRUE(app->playQueue("Mixed", {localEntry(alphaFile(1), "Local"), remoteEntry("one", "First")}, 1));
+    app->tick();
+    ASSERT_TRUE(server.replyQueue(initial, phone(1699999999000LL))); app->tick();
+    clock.advance(31s); app->tick();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone(1699999999000LL))); app->tick();
+    ASSERT_EQ(server.queueSaves.size(), 1u);
+    auto echo = server.queueSaves.back(); echo.changed = 1700000002000LL;
+    ASSERT_TRUE(server.replyCreated(server.lastRequest().id)); app->tick();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), echo)); app->tick();
+    app->shutdown();
+    auto beforeRestart = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(beforeRestart);
+    ASSERT_EQ(beforeRestart->acknowledgedServers.size(), 1u);
+    EXPECT_EQ(beforeRestart->acknowledgedServers[0].second, echo.changed);
+    app.reset();
+    start();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), echo)); app->tick();
+    app->shutdown();
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    EXPECT_EQ(saved->queue.size(), 2u);
+    EXPECT_EQ(saved->queue.at(0).path, alphaFile(1));
+    EXPECT_EQ(saved->queue.at(1).trackId, "one");
+}
+
+TEST_F(QueueSyncTest, NewerMatchingPhoneSubsetStillReplacesTheMixedQueue) {
+    Queue q; q.replace({localEntry(alphaFile(1), "Local"), remoteEntry("one", "First")}, 1);
+    SavedQueue seed{"Mixed", q, 0};
+    seed.changed = 1700000000000LL;
+    seed.acknowledgedServers = {{TrackCache::serverKey("https://music.example", "ann"), 1699999999000LL}};
+    ASSERT_TRUE(diskFiles().writeAtomically(queueFile, formatQueue(seed)));
+    begin();
+    RemoteQueue newer; RemoteTrack track; track.id = "one"; track.title = "First";
+    newer.tracks = {track}; newer.changed = 1700000001000LL;
+    ASSERT_TRUE(server.replyQueue(queueRequest(), newer)); app->tick();
+    app->shutdown();
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    ASSERT_EQ(saved->queue.size(), 1u);
+    EXPECT_EQ(saved->queue.current()->trackId, "one");
+}
+
+TEST_F(QueueSyncTest, ANewerPhoneQueueWaitsForTheMusicPlayerToBeLeft) {
+    begin();
+    auto initial = queueRequest();
+    ASSERT_TRUE(app->playQueue("Remote", {remoteEntry("local", "Local")}));
+    app->tick();
+    ASSERT_TRUE(server.replyQueue(initial, phone(1699999999000LL))); app->tick();
+    clock.advance(31s); app->tick();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone(1700000010000LL))); app->tick();
+    EXPECT_EQ(player.file, "fake://stream/local");
+    EXPECT_TRUE(player.playing());
+    press(Button::PlayPause);
+    app->tick();
+    EXPECT_FALSE(player.isOpen()) << "the newer queue is ready, paused";
+    hold(Button::Home);
+    app->tick();
+    ASSERT_TRUE(hasLabel("Now playing"));
+    open("Now playing");
+    EXPECT_EQ(player.file, "fake://stream/one");
+}
+
+TEST_F(QueueSyncTest, UnsupportedServerDoesNotRequestQueueSync) {
+    start();
+    ASSERT_TRUE(app->playQueue("Remote", {remoteEntry("local", "Local")}));
+    app->tick();
+    EXPECT_EQ(queueRequest(), 0u);
+    EXPECT_TRUE(server.queueSaves.empty());
+}
+
+TEST_F(QueueSyncTest, LocalSelectionDiscardsADeferredPhoneQueue) {
+    begin();
+    auto initial = queueRequest();
+    ASSERT_TRUE(app->playQueue("Remote", {remoteEntry("one", "First")}));
+    app->tick();
+    ASSERT_TRUE(server.replyQueue(initial, phone(1699999999000LL))); app->tick();
+    clock.advance(31s); app->tick();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone(1700000010000LL))); app->tick();
+    ASSERT_TRUE(app->playQueue("New", {localEntry(alphaFile(2), "New")}));
+    press(Button::PlayPause);
+    hold(Button::Home); app->tick();
+    app->shutdown();
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    ASSERT_TRUE(saved->queue.current());
+    EXPECT_EQ(saved->queue.current()->path, alphaFile(2));
+}
+
+TEST_F(QueueSyncTest, UnsetClockDefersLocalUpload) {
+    clock.setWallTime(0);
+    begin();
+    auto initial = queueRequest();
+    ASSERT_TRUE(app->playQueue("Remote", {remoteEntry("one", "First")}));
+    app->tick();
+    ASSERT_TRUE(server.replyQueue(initial, phone(1699999999000LL))); app->tick();
+    clock.advance(31s); app->tick();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone(1699999999000LL))); app->tick();
+    EXPECT_TRUE(server.queueSaves.empty());
+}
+
+TEST_F(QueueSyncTest, UntimestampedEmptyServerQueueDefersUploadAcrossRestart) {
+    begin();
+    auto initial = queueRequest();
+    ASSERT_TRUE(app->playQueue("Remote", {remoteEntry("one", "First")}));
+    app->tick();
+    RemoteQueue unknown;
+    ASSERT_TRUE(server.replyQueue(initial, unknown)); app->tick();
+    clock.advance(31s); app->tick();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), unknown)); app->tick();
+    EXPECT_TRUE(server.queueSaves.empty());
+    app->shutdown();
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    EXPECT_FALSE(saved->pendingServers.empty());
+    app.reset();
+    start();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), unknown)); app->tick();
+    EXPECT_TRUE(server.queueSaves.empty());
+    app->shutdown();
+    saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    EXPECT_FALSE(saved->pendingServers.empty());
+    EXPECT_EQ(saved->queue.current()->trackId, "one");
+}
+
+TEST_F(QueueSyncTest, FactoryResetCancelsTheOldSyncAndErasesPendingQueue) {
+    begin();
+    auto request = queueRequest();
+    ASSERT_TRUE(app->playQueue("Remote", {remoteEntry("one", "First")}));
+    app->tick();
+    hold(Button::Home);
+    open("System"); open("Factory reset"); open("Erase all settings");
+    EXPECT_FALSE(server.replyQueue(request, phone()));
+    auto text = diskFiles().read(queueFile).value_or("");
+    EXPECT_FALSE(parseQueue(text));
+}
+
+TEST_F(QueueSyncTest, TimestampedRemoteClearRemovesParkedMusicWithoutStoppingBook) {
+    begin();
+    open("Library"); open("Alpha");
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone())); app->tick();
+    clock.advance(31s); app->tick();
+    RemoteQueue cleared; cleared.changed = 1700000002000LL;
+    ASSERT_TRUE(server.replyQueue(queueRequest(), cleared)); app->tick();
+    EXPECT_TRUE(player.playing());
+    EXPECT_EQ(player.file, alphaFile(1));
+    app->shutdown();
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    EXPECT_TRUE(saved->queue.empty());
+}
+
+TEST_F(QueueSyncTest, RecentMusicPositionIsPendingAtShutdown) {
+    Queue q; q.replace({remoteEntry("one", "First")});
+    SavedQueue seed{"Remote", q, 0};
+    seed.changed = 1700000000000LL;
+    const auto key = TrackCache::serverKey("https://music.example", "ann");
+    seed.acknowledgedServers = {{key, 1700000000000LL}};
+    ASSERT_TRUE(diskFiles().writeAtomically(queueFile, formatQueue(seed)));
+    begin();
+    RemoteQueue echo; RemoteTrack track; track.id = "one"; track.title = "First";
+    echo.tracks = {track}; echo.changed = 1700000000000LL;
+    ASSERT_TRUE(server.replyQueue(queueRequest(), echo)); app->tick();
+    open("Now playing");
+    app->tick(); // record the queue change before advancing its place
+    player.pos = 12;
+    clock.setWallTime(1700000008);
+    app->shutdown();
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    EXPECT_DOUBLE_EQ(saved->position, 12);
+    EXPECT_EQ(saved->changed, 1700000008000LL);
+    EXPECT_EQ(saved->pendingServers, std::vector<std::string>{key});
+}
+
+TEST_F(QueueSyncTest, SleepPersistsThePendingPosition) {
+    begin();
+    ASSERT_TRUE(app->playQueue("Remote", {remoteEntry("one", "First")}));
+    player.pos = 9;
+    press(Button::Power);
+    auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved);
+    EXPECT_DOUBLE_EQ(saved->position, 9);
+    EXPECT_FALSE(saved->pendingServers.empty());
+}
+
+TEST_F(QueueSyncTest, ClearingALocalOnlyQueueDoesNotClearTheServerQueue) {
+    begin();
+    auto initial = queueRequest();
+    ASSERT_TRUE(app->playQueue("Local", {localEntry(alphaFile(1), "Local")}));
+    app->tick();
+    ASSERT_TRUE(server.replyQueue(initial, phone(1699999999000LL))); app->tick();
+    clock.advance(31s); app->tick();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone(1699999999000LL))); app->tick();
+    EXPECT_TRUE(server.queueSaves.empty());
+    press(Button::Ok); open("Queue"); open("Clear queue"); open("Clear queue");
+    app->tick();
+    clock.advance(31s); app->tick();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone(1699999999000LL))); app->tick();
+    EXPECT_TRUE(server.queueSaves.empty());
+}
+
+TEST_F(QueueSyncTest, ASeekInProgressDoesNotSendAnOldPosition) {
+    begin();
+    auto initial = queueRequest();
+    ASSERT_TRUE(app->playQueue("Remote", {remoteEntry("one", "First")}));
+    app->tick();
+    ASSERT_TRUE(server.replyQueue(initial, phone(1699999999000LL))); app->tick();
+    player.pos = 5;
+    player.deferSeeks = true;
+    app->keyDown(Button::Back); clock.advance(700ms); app->tick();
+    clock.advance(31s); app->tick();
+    ASSERT_TRUE(server.replyQueue(queueRequest(), phone(1699999999000LL))); app->tick();
+    EXPECT_TRUE(server.queueSaves.empty());
+    app->keyUp(Button::Back);
+}
+
 TEST_F(MusicQueueTest, AMixedQueuePlaysLocalRemoteLocalInOrder) {
     playMixed();
     EXPECT_EQ(player.file, alphaFile(1));
@@ -14580,6 +14896,34 @@ protected:
     FakeMusicServer second;
     FakeDownloader secondDownloader;
 };
+
+TEST_F(TwoServerPlayTest, QueueSyncSendsOnlyCurrentServersTracksAndDefersTheOtherServer) {
+    server.queueSync = true;
+    second.queueSync = true;
+    auto lastQueue = [](const FakeMusicServer& fake) {
+        for (auto it = fake.requests.rbegin(); it != fake.requests.rend(); ++it)
+            if (it->kind == FakeMusicServer::Kind::PlayQueue) return it->id;
+        return FakeMusicServer::RequestId{};
+    };
+    start();
+    auto initial = lastQueue(server);
+    ASSERT_NE(initial, 0u);
+    ASSERT_TRUE(app->playQueue("Mixed", {onFirst("a", "A"), onSecond("b", "B"), onFirst("a", "A again")}, 0));
+    app->tick();
+    RemoteQueue old; old.changed = (kNow - 1) * 1000;
+    ASSERT_TRUE(server.replyQueue(initial, old)); app->tick();
+    ASSERT_NE(lastQueue(second), 0u);
+    ASSERT_TRUE(second.replyQueue(lastQueue(second), old)); app->tick();
+    EXPECT_TRUE(second.queueSaves.empty());
+    clock.advance(31s); app->tick();
+    ASSERT_TRUE(server.replyQueue(lastQueue(server), old)); app->tick();
+    ASSERT_EQ(server.queueSaves.size(), 1u);
+    ASSERT_EQ(server.queueSaves[0].tracks.size(), 2u);
+    EXPECT_EQ(server.queueSaves[0].tracks[0].id, "a");
+    EXPECT_EQ(server.queueSaves[0].tracks[1].id, "a");
+    EXPECT_EQ(server.queueSaves[0].current, 0u);
+    EXPECT_TRUE(second.queueSaves.empty());
+}
 
 TEST_F(TwoServerPlayTest, ATrackFromEachServerOpensItsStreamFromItsOwnServer) {
     start_();

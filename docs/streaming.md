@@ -723,7 +723,7 @@ Audiobookshelf behaviour in navigation.md and SPEC §6.3.
 | ✅ 5.4 | **Playlist editing menus.** Expose create, remove and delete for supported playlists and add the current track from the Player menu, reopening the last playlist used. Delete requires a Cancel-first confirmation. | App tests exercise each action and its feedback, last-used selection, confirmation cancellation, server errors and local versus server track eligibility. |
 | ✅ 5.5 | **Keep playlists offline.** Persist the keep-offline choice, pin playlist tracks in the cache and reconcile them with later server changes without removing pins needed by other downloads. | Tests cover enabling and disabling, restart, added and removed tracks, overlapping pins, failed refresh and insufficient space. |
 | ✅ 5.6 | **Subsonic book progress.** Implement the existing `MusicServer` progress interface with Subsonic bookmarks per track, applying the agreed timestamp and chapter mapping. Reuse the existing book-player offer and progress persistence. | Net tests cover bookmark requests, timestamps, missing and malformed data and errors; App tests cover local and newer server positions, chapters, pause, stale callbacks and offline retry. |
-| 5.7 | **Play queue sync.** Add asynchronous `savePlayQueue` and `getPlayQueue` support with `indexBasedQueue`, and integrate it with the music queue using the agreed conflict and mixed-source rules. | Net tests cover request and response mapping including duplicate tracks and position; App tests cover a phone queue, a device queue, restart, offline and errors, and unsupported or local-only tracks. |
+| ✅ 5.7 | **Play queue sync.** Add asynchronous `savePlayQueue` and `getPlayQueue` support with `indexBasedQueue`, and integrate it with the music queue using the agreed conflict and mixed-source rules. | Net tests cover request and response mapping including duplicate tracks and position; App tests cover a phone queue, a device queue, restart, offline and errors, and unsupported or local-only tracks. |
 | 5.8 | **Docs for phase 5 as built.** Update architecture.md, navigation.md, SPEC and this plan to describe the implementation and its limits. | – |
 
 **Device check (manual):** With a configured test server and a second client, create
@@ -797,6 +797,10 @@ server. Check the corresponding spoken feedback and Cancel on delete.
   [indexBasedQueue](https://opensubsonic.netlify.app/docs/extensions/indexbasedqueue/)
   `getPlayQueueByIndex` and `savePlayQueueByIndex` when supported; without the
   extension use ordinary queue calls only when the current track is unambiguous.
+  If filtering removes the current track, postpone that server's save until an
+  eligible track is current; do not choose a different track on the user's behalf.
+  An empty server queue without a usable `changed` timestamp may be a newer clear;
+  preserve the local queue and defer upload until the server gives a usable version.
 - General offline replay for stars and playlist edits is deferred. Their existing
   online actions keep their existing failure feedback; they do not claim success
   or save an offline edit. The existing scrobble outbox and book progress retry

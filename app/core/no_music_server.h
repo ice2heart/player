@@ -15,6 +15,8 @@ namespace oap {
 class NoMusicServer : public MusicServer {
 public:
     bool configured() const override { return false; }
+    RequestId playQueue(std::function<void(Error, std::optional<RemoteQueue>)> done) override;
+    RequestId savePlayQueue(RemoteQueue queue, std::function<void(Error)> done) override;
     RequestId ping(std::function<void(Error, ServerInfo)> done) override;
     RequestId catalogueVersion(std::function<void(Error, std::string)> done) override;
     RequestId albums(std::string listType, int offset, int size, Done<RemoteAlbum> done,

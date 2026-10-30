@@ -50,6 +50,30 @@ Queue mixed() {
 
 } // namespace
 
+TEST(QueueFile, KeepsQueueSyncMetadataAndEmptyPendingQueue) {
+    SavedQueue saved{"Mixed", mixed(), 4};
+    saved.changed = 1700000000000LL;
+    saved.pendingServers = {"server-a", "server-b"};
+    saved.acknowledgedServers = {{"server-a", 1700000001234LL}};
+    auto restored = parseQueue(formatQueue(saved));
+    ASSERT_TRUE(restored);
+    EXPECT_EQ(restored->changed, saved.changed);
+    EXPECT_EQ(restored->pendingServers, saved.pendingServers);
+    EXPECT_EQ(restored->acknowledgedServers, saved.acknowledgedServers);
+    saved.queue = Queue{};
+    restored = parseQueue(formatQueue(saved));
+    ASSERT_TRUE(restored);
+    EXPECT_TRUE(restored->queue.empty());
+    EXPECT_EQ(restored->pendingServers, saved.pendingServers);
+}
+
+TEST(QueueFile, RejectsMalformedQueueSyncTimestamps) {
+    const std::string base = formatQueue({"Mixed", mixed(), 0});
+    EXPECT_FALSE(parseQueue(base + "changed\t123junk\n"));
+    EXPECT_FALSE(parseQueue(base + "ack\tserver\t-1\n"));
+    EXPECT_FALSE(parseQueue(base + "ack\tserver\t99999999999999999999\n"));
+}
+
 TEST(QueueFile, RoundTripsAMixedShuffledQueue) {
     Queue q = mixed();
     auto back = parseQueue(formatQueue({"Weather", q, 42.5}));

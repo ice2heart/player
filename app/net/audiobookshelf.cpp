@@ -302,6 +302,12 @@ MusicServer::RequestId Audiobookshelf::playlistTracks(std::string, Done<RemoteTr
            Reply{configured() ? Error::Server : Error::NotConfigured, {}, false});
     return id;
 }
+MusicServer::RequestId Audiobookshelf::playQueue(std::function<void(Error, std::optional<RemoteQueue>)> done) {
+    return playlistTracks({}, [done = std::move(done)](Error error, std::vector<RemoteTrack>, bool) { done(error, std::nullopt); });
+}
+MusicServer::RequestId Audiobookshelf::savePlayQueue(RemoteQueue, std::function<void(Error)> done) {
+    return addPlaylistTrack({}, {}, std::move(done));
+}
 
 MusicServer::RequestId Audiobookshelf::createPlaylist(std::string, std::vector<std::string>,
                                                       std::function<void(Error, std::string)> done) {

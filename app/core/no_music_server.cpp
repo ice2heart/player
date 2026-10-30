@@ -12,6 +12,12 @@ MusicServer::RequestId NoMusicServer::add(std::function<void()> run) {
 MusicServer::RequestId NoMusicServer::ping(std::function<void(Error, ServerInfo)> done) {
     return add([done = std::move(done)] { done(Error::NotConfigured, {}); });
 }
+MusicServer::RequestId NoMusicServer::playQueue(std::function<void(Error, std::optional<RemoteQueue>)> done) {
+    return add([done = std::move(done)] { done(Error::NotConfigured, std::nullopt); });
+}
+MusicServer::RequestId NoMusicServer::savePlayQueue(RemoteQueue, std::function<void(Error)> done) {
+    return add([done = std::move(done)] { done(Error::NotConfigured); });
+}
 MusicServer::RequestId NoMusicServer::catalogueVersion(std::function<void(Error, std::string)> done) {
     return add([done = std::move(done)] { done(Error::NotConfigured, {}); });
 }

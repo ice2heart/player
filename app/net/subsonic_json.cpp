@@ -208,6 +208,83 @@ PingResult parsePing(std::string_view body) {
 
 Error parseStatus(std::string_view body) { return open(body).error; }
 
+QueueResult parsePlayQueue(std::string_view body, bool byIndex) {
+    QueueResult result;
+    auto envelope = open(body);
+    result.error = envelope.error;
+    if (result.error != Error::None) return result;
+    try {
+        auto node = child(envelope.response, byIndex ? "playQueueByIndex" : "playQueue");
+        if (!node.IsMap()) { result.error = Error::Server; return result; }
+        RemoteQueue queue;
+        auto entries = child(node, "entry");
+        if (!entries.IsNull() && !entries.IsSequence() && !entries.IsMap()) { result.error = Error::Server; return result; }
+        forEach(entries, [&](const YAML::Node& item) { queue.tracks.push_back(track(item)); });
+        for (const auto& item : queue.tracks) if (item.id.empty()) { result.error = Error::Server; return result; }
+        auto stamp = text(node, "changed");
+        // Navidrome returns the Go zero time for both a never-created and a cleared queue.
+        // Preserve that uncertainty: the caller must not treat it as an old queue.
+        if (queue.tracks.empty() && (stamp.empty() || stamp == "0001-01-01T00:00:00Z")) {
+            result.queue = std::move(queue); return result;
+        }
+        if (stamp.size() < 20 || stamp[4] != '-' || stamp[7] != '-' || stamp[10] != 'T' || stamp[13] != ':' || stamp[16] != ':') {
+            result.error = Error::Server; return result;
+        }
+        for (auto i : {0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18})
+            if (!std::isdigit(static_cast<unsigned char>(stamp[std::size_t(i)]))) { result.error = Error::Server; return result; }
+        if (!std::chrono::year_month_day{std::chrono::year{std::stoi(stamp.substr(0, 4))},
+                std::chrono::month{unsigned(std::stoi(stamp.substr(5, 2)))}, std::chrono::day{unsigned(std::stoi(stamp.substr(8, 2)))}}.ok()) {
+            result.error = Error::Server; return result;
+        }
+        size_t zone = 19;
+        if (stamp[zone] == '.') {
+            auto start = ++zone;
+            while (zone < stamp.size() && std::isdigit(static_cast<unsigned char>(stamp[zone]))) ++zone;
+            if (zone == start) { result.error = Error::Server; return result; }
+        }
+        if (zone >= stamp.size()) { result.error = Error::Server; return result; }
+        if (stamp[zone] == 'Z') {
+            if (zone + 1 != stamp.size()) { result.error = Error::Server; return result; }
+        } else {
+            if ((stamp[zone] != '+' && stamp[zone] != '-') || stamp.size() != zone + 6 || stamp[zone + 3] != ':' ||
+                !std::isdigit(static_cast<unsigned char>(stamp[zone + 1])) || !std::isdigit(static_cast<unsigned char>(stamp[zone + 2])) ||
+                !std::isdigit(static_cast<unsigned char>(stamp[zone + 4])) || !std::isdigit(static_cast<unsigned char>(stamp[zone + 5])) ||
+                std::stoi(stamp.substr(zone + 1, 2)) > 23 || std::stoi(stamp.substr(zone + 4, 2)) > 59) {
+                result.error = Error::Server; return result;
+            }
+        }
+        auto seconds = parseIsoTime(stamp);
+        if (seconds <= 0 || seconds > std::numeric_limits<std::int64_t>::max() / 1000) {
+            result.error = Error::Server; return result;
+        }
+        queue.changed = seconds * 1000;
+        auto dot = stamp.find('.');
+        if (dot != std::string::npos) {
+            int scale = 100;
+            for (auto i = dot + 1; i < stamp.size() && scale && std::isdigit(static_cast<unsigned char>(stamp[i])); ++i, scale /= 10)
+                queue.changed += (stamp[i] - '0') * scale;
+        }
+        auto position = child(node, "position");
+        queue.position = position.IsScalar() ? position.as<std::int64_t>() : 0;
+        if (queue.position < 0) { result.error = Error::Server; return result; }
+        if (!queue.tracks.empty()) {
+            if (byIndex) {
+                auto current = child(node, "currentIndex").as<std::int64_t>();
+                if (current < 0 || static_cast<std::size_t>(current) >= queue.tracks.size()) { result.error = Error::Server; return result; }
+                queue.current = static_cast<std::size_t>(current);
+            } else {
+                auto current = text(node, "current");
+                std::size_t matches = 0;
+                for (std::size_t i = 0; i < queue.tracks.size(); ++i)
+                    if (queue.tracks[i].id == current) { queue.current = i; ++matches; }
+                if (matches != 1) { result.error = Error::Server; return result; }
+            }
+        }
+        result.queue = std::move(queue);
+    } catch (const YAML::Exception&) { result.error = Error::Server; }
+    return result;
+}
+
 Parsed<Bookmark> parseBookmarks(std::string_view body) {
     Parsed<Bookmark> parsed;
     auto envelope = open(body);

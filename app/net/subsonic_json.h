@@ -43,6 +43,11 @@ struct Bookmark {
     std::int64_t changed = 0; // wall milliseconds
 };
 Parsed<Bookmark> parseBookmarks(std::string_view body);
+struct QueueResult {
+    Error error = Error::None;
+    std::optional<RemoteQueue> queue;
+};
+QueueResult parsePlayQueue(std::string_view body, bool byIndex);
 
 PingResult parsePing(std::string_view body);
 // An answer that carries nothing but its status, such as scrobble's.

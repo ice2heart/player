@@ -39,6 +39,8 @@ public:
     Audiobookshelf& operator=(const Audiobookshelf&) = delete;
 
     bool configured() const override;
+    RequestId playQueue(std::function<void(Error, std::optional<RemoteQueue>)> done) override;
+    RequestId savePlayQueue(RemoteQueue queue, std::function<void(Error)> done) override;
     // GET /status (type "Audiobookshelf", `serverVersion`), then GET /api/me (401: BadLogin).
     RequestId ping(std::function<void(Error, ServerInfo)> done) override;
     // There is no cheap "changed?" check: the version is always empty, so a sync always fetches.
