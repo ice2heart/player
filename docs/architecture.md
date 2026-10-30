@@ -1351,6 +1351,11 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 
 ## 10. Simulator (`app/sim/main.cpp`)
 
+The generated HAL registry currently has no part factories: each `OAP_HAL_*`
+selection accepts `none` only. Both front ends construct a `HalContext` and
+pass its event queue to `App`; their existing input and audio paths remain active.
+The `sim-macos` and `sim-linux` CMake presets configure simulator builds.
+
 - **Window:** SDL2 plus Dear ImGui (v1.91.8, downloaded by CMake into `build/_deps`).
   - Left: the **menu stack as columns**. The selected item is highlighted, `>`
     marks a submenu. On the player screen it

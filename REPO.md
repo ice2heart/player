@@ -26,6 +26,10 @@ library, the library index store (`oaplibrary`) and the tests, without FFmpeg, e
 comes from the system, or CMake downloads it like GoogleTest. SQLite (`oaplibrary`) likewise: `libsqlite3-dev`
 from the system, else CMake fetches the amalgamation, so no option or package is needed.
 
+The `sim-macos` and `sim-linux` CMake presets configure simulator builds. HAL part
+selection currently accepts only `none`; unavailable and unknown names fail at
+configure time. Existing input and audio paths remain in use.
+
 `OAP_BUILD_NET` (streaming: `oapnet`, `oap-net-tests`) needs libcurl and is `ON` by
 default when a front end is built, `OFF` for the core-only build. Add `-DOAP_BUILD_NET=ON`
 to a core-only build to test the network code; `-DOAP_BUILD_NET=OFF` builds the front ends

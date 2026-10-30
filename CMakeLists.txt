@@ -58,6 +58,8 @@ add_library(oapcore STATIC
 target_include_directories(oapcore PUBLIC app)
 target_compile_options(oapcore PRIVATE -Wall -Wextra)
 
+include(cmake/hal/selection.cmake)
+
 # ---- config: config.yaml (yaml-cpp) and state.tsv files behind core's SettingsStore.
 # yaml-cpp comes from the system if found, else it is fetched and built like GoogleTest.
 set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -231,7 +233,7 @@ if(OAP_BUILD_SIM)
     target_link_libraries(imgui PUBLIC PkgConfig::SDL2)
 
     add_executable(oap-sim app/sim/main.cpp)
-    target_link_libraries(oap-sim PRIVATE oapmusicserver oapconfig oaplibrary oapmedia oapaudio imgui)
+    target_link_libraries(oap-sim PRIVATE oapmusicserver oapconfig oaplibrary oapmedia oapaudio oaphal imgui)
     target_compile_options(oap-sim PRIVATE -Wall -Wextra)
 endif()
 
@@ -245,7 +247,7 @@ if(OAP_BUILD_HEADLESS)
         app/headless/main.cpp
         app/headless/evdev_input.cpp
     )
-    target_link_libraries(oap-headless PRIVATE oapmusicserver oapconfig oaplibrary oapmedia oapaudio)
+    target_link_libraries(oap-headless PRIVATE oapmusicserver oapconfig oaplibrary oapmedia oapaudio oaphal)
     target_compile_options(oap-headless PRIVATE -Wall -Wextra)
     # Inputs when stdin is a terminal and --input is not given. A desktop would see each
     # key twice from evdev and the terminal; the Pi toolchains add evdev for its gamepad and buttons.
@@ -265,6 +267,10 @@ if(OAP_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
 
     enable_testing()
+    add_test(NAME HalBackendSelection COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/hal-selection-test
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_hal_selection.cmake)
     add_executable(oap-tests
         tests/test_app.cpp
         tests/test_audio_output.cpp

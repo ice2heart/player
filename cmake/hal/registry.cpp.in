@@ -1,0 +1,8 @@
+#include "hal/registry.h"
+
+namespace oap {
+HalParts makeHal(HalContext& context) {
+    (void)context;
+    return {};
+}
+} // namespace oap

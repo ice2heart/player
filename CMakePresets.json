@@ -1,0 +1,33 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "sim-macos",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-sim-macos",
+      "cacheVariables": {
+        "OAP_BUILD_SIM": "ON",
+        "OAP_BUILD_HEADLESS": "OFF"
+      }
+    },
+    {
+      "name": "sim-linux",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-sim-linux",
+      "cacheVariables": {
+        "OAP_BUILD_SIM": "ON",
+        "OAP_BUILD_HEADLESS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "sim-macos",
+      "configurePreset": "sim-macos"
+    },
+    {
+      "name": "sim-linux",
+      "configurePreset": "sim-linux"
+    }
+  ]
+}
