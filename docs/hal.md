@@ -507,7 +507,7 @@ existing playback and input still work. The Wi-Fi placeholder remains until phas
 
 | # | Step | Tests (each checked with a sabotage, as REPO.md requires) |
 |---|------|------|
-| 1.1 | **Navigation contract first.** Update [navigation.md](navigation.md) for the planned input, text entry, capability-dependent menus and output-loss behaviour; retain its as-built status and identify the phases that implement each change. Align the editor with [input-methods.md](input-methods.md). | Manual walkthrough of the proposed keys, menus and secret handling against both plans; record unresolved choices before code. |
+| ✅ 1.1 | **Navigation contract first.** Update [navigation.md](navigation.md) for the planned input, text entry, capability-dependent menus and output-loss behaviour; retain its as-built status and identify the phases that implement each change. Align the editor with [input-methods.md](input-methods.md). | Manual walkthrough of the proposed keys, menus and secret handling against both plans; record unresolved choices before code. |
 | 1.2 | **Service grouping.** Add `Services` to `app/core/services.h`, preserving every existing App dependency and lifetime; migrate both front ends and test fixtures. Existing behaviour stays the same. | Existing App, front-end and core tests pass with the grouped services, including server playback and saved state. |
 | 1.3 | **Event queue.** Add `app/core/hal.h` and `HalEvents` with thread-safe post, drain and wake; drain in `App::tick()`. Keep direct key calls working. Make the test clock safe across threads. | Posted events arrive in order on tick, wake is called, and concurrent posting loses no events; direct key tests still pass. |
 | 1.4 | **Backend selection.** Add `HalContext`, per-part CMake selection, generated registry and `sim-macos`/`sim-linux` presets. Initially only compile available sim and none backends; retain current input and audio paths until their migration steps. Reject unknown selections. | Core-only and simulator configurations build; none omits the part; an unknown backend fails configuration; selected factories alone are linked. |
@@ -679,3 +679,6 @@ choosing a production implementation.
    policy before they can be scheduled. USB mass storage needs an ownership/unmount and
    failure-recovery design; AP and USB configuration import need separate provisioning
    designs. None is implemented by the phases above.
+8. Before secret button entry: how can a user select a character from spoken lists
+   without revealing the secret? The editor's secret-feedback rule and spoken character
+   lists need a compatible interaction in [input-methods.md](input-methods.md).

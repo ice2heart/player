@@ -127,8 +127,8 @@ cannot cause a late short action or restart seeking on a new screen.
 | Power | sleep / wake; held opens the Power menu |
 | Hold switch | locks every key except Power |
 
-Text (playlist names, search, Wi-Fi passwords) comes from STT or a keyboard later.
-Until then names are made by the device.
+Text entry is not built yet; until then names are made by the device. The planned
+button editor and keyboard adapter are described below.
 
 ## Key table
 
@@ -148,6 +148,79 @@ Until then names are made by the device.
 
 In Help → Key describer, keys describe their actions rather than performing them;
 held Esc leaves the mode. Normal Hold locking and wake behavior remain unchanged.
+
+## Planned input and hardware navigation
+
+This section is a proposed contract, not a description of the current build. The
+button editor is planned in [input-methods.md](input-methods.md) phase 1; the HAL
+steps below are in [hal.md](hal.md). Ordinary menus and players keep the keys above.
+
+### Text entry
+
+The planned TextEntry program keeps a draft in memory. Its list is Characters,
+Cursor, Delete previous character, Read text, Clear text, Done and Cancel. Back /
+Forward navigate as in any list; OK activates. Short Esc in a character group or
+group list goes back one level; at the editor it cancels and returns. Held Esc
+discards the draft and goes Home. Leaving never commits. Clear text asks
+“Clear text?” with Cancel selected first. Done validates: an error is spoken and
+the draft remains in the editor; only successful Done changes the caller's value.
+There is no editor or confirmation timeout.
+
+Characters offers lowercase, uppercase, digits, all printable ASCII punctuation,
+and space. OK opens a group; OK on a character inserts at the cursor and stays in
+the group. Cursor lists insertion positions including Start and End, described by
+adjacent character and ordinal; selecting one returns to the editor. Delete removes
+the previous Unicode code point; at Start it plays Edge and says “Start of text.”
+Initial button insertion is ASCII and imported UTF-8 must remain valid. A request
+provides a field label, initial value, secret flag, byte limit and validation; the
+editor ceiling is 4096 UTF-8 bytes and callers may set a smaller limit. Oversize
+input says “Text too long.”
+
+Play/Pause and Volume retain their global jobs. Held Play describes the editor,
+field and cursor; held OK / Options says “No options”. Up and Down remain inactive.
+For a secret, insertion says “Character added”, readback says “Hidden, N characters.”,
+and cursor descriptions and other feedback use positions and counts rather than
+characters or values. Secrets must not appear in speech,
+logs, debug widgets or snapshots. The keyboard and future voice input use this same
+draft, validation, confirmation and secret handling; they never commit implicitly.
+How a user selects a secret character from a spoken button list without revealing
+it remains open; resolve that interaction before implementing secret button entry.
+
+HAL phase 2 routes button events with their timestamps and maps keyboard controls
+to the existing button actions, ignoring mapped-key autorepeat. Both Shift keys
+retain the staged Back / Forward lifecycle. In TextEntry, keyboard text and
+Backspace, Delete, Left / Right, Home / End, Enter and Escape edit, confirm or
+cancel the same draft. Disconnect does not commit. Keyboard connection and
+disconnection are announced at low priority. Linux keyboard layouts follow in HAL
+phase 4; Android native keyboard input is planned for phase 9. Talk remains
+inactive until its separate capture and recognition contract is implemented.
+
+HAL phase 2 also trials completed touch gestures: swipe left / right for short Back /
+Forward, two-finger swipe left / right for menu jumps, double tap for OK, two-finger
+double tap for Play/Pause, touch and hold for Options, two-finger swipe down for
+Home, and three-finger tap for held Play. Swipe up / down is unassigned; unknown
+gestures play Edge. Player touch seeking remains unavailable pending a bounded seek
+or a start/change/release lifecycle. TalkBack conflicts and the production gesture
+contract require the phase 8 trial.
+
+### Hardware-dependent menus and output loss
+
+HAL phase 1 replaces simulated battery and storage status with available snapshots;
+missing parts are omitted and the existing Wi-Fi placeholder remains until phase 5.
+Phase 3 adds Audio output when selection is supported, with Automatic, Speaker,
+Headphones and available Bluetooth outputs; each output retains its own volume.
+Losing headphones or Bluetooth while playing pauses and saves position, says
+“Headphones unplugged, paused.” or “Bluetooth disconnected, paused.”, and does
+not resume automatically on the speaker.
+
+Phase 5 plans capability-dependent Wi-Fi status, toggle, networks and confirmed
+forget actions; phase 6 plans Bluetooth discovery, pairing and device actions if
+Bluetooth is in scope. Unsupported parts and actions are omitted, including on
+Android. Live scan lists refresh without unnecessarily changing the selection.
+Exact Wi-Fi prompts, errors and forget confirmation remain open before step 5.3;
+Bluetooth scope, prompts and pairing policy remain open before phase 6. Maximum
+volume, pause-on-unplug settings and USB file transfer need their own decisions and
+are not scheduled. These open choices must be resolved before their affected code.
 
 ### Volume
 
