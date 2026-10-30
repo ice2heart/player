@@ -4,7 +4,7 @@
 > streaming from a Subsonic server, with a local cache and downloads, and one library of local files and server albums: phases 1 to 4 of [streaming.md](streaming.md)),
 > plus phases 1 and 2 of [queue.md](queue.md): volume and Options buttons, separate music and book players,
 > and the music queue (local and server tracks mixed, skipped when unavailable, a server that fails checked until it answers), Options (Play now, Play next, Add to queue, Go to album, Album info),
-> Shuffle and Repeat (off, all, album, track; Add to queue mixed into a shuffled queue), the Queue list, the queue kept in `queue.tsv` and Save as playlist, and, from [fixes.md](fixes.md) phase 2, playlists in `library.db` and in Music, Download in Options and the player's name in "where am I?". Download quality, caching at the opened stream quality and optional cached-copy upgrades with local fallback are built (fixes.md phase 5); real-server listening checks remain pending. Star is not built (streaming.md 2a.1). Several servers, Audiobookshelf books, progress sync and Continue listening (audiobookshelf.md phases 1–3) are implemented; phase 3 real-server and device checks are pending. Last updated: 2026-10-30.
+> Shuffle and Repeat (off, all, album, track; Add to queue mixed into a shuffled queue), the Queue list, the queue kept in `queue.tsv` and Save as playlist, and, from [fixes.md](fixes.md) phase 2, playlists in `library.db` and in Music, Download in Options and the player's name in "where am I?". Download quality, caching at the opened stream quality and optional cached-copy upgrades with local fallback are built (fixes.md phase 5); real-server listening checks remain pending. Star / Unstar and Streaming → Starred are built (streaming.md 2a.1); real-server listening checks remain pending. Several servers, Audiobookshelf books, progress sync and Continue listening (audiobookshelf.md phases 1–3) are implemented; phase 3 real-server and device checks are pending. Last updated: 2026-10-30.
 > Button remapping, shared staged keyboard input, deep-hold scripts and updated help are built
 > ([button-remap.md](button-remap.md) phase 1); listening/device checks remain pending.
 > For product goals, hardware and the overall plan see [../SPEC.md](../SPEC.md).
@@ -586,6 +586,7 @@ Home
 │   ├── Albums A to Z → <albums>   (pages of 500, the next one fetched while the server has more)
 │   ├── Artists → <artist> → <albums>
 │   ├── Random albums → <albums>   (one page of 50)
+│   ├── Starred → <tracks>          (supported music servers; OK plays from that track in a queue)
 │   ├── Downloaded                 (only with a cache folder; built from the manifests, not the server: <name> → Play album|Play playlist · Delete download → [Cancel, Yes, delete] · <tracks>)
 │   └── Server status              ("Checking the server.", then "Connected to Navidrome 0.64.2." or the error; the item says "not reachable" while the server is marked down)
 │       <album> → Play album · Download album · <tracks>   (Download only with a cache folder and a downloader; OK plays from that track to the end, via playRemote())
@@ -643,7 +644,21 @@ Player menu of the music player (`musicPlayerMenu()`)
 
 Options in the music player (`playerOptionsMenu()`, "Options, <track>")
 ├── Go to album            (local: the index item of the file; remote: the album id of the entry; opens on the playing track)
-└── Album info             (title, number of tracks, status)
+├── Album info             (title, number of tracks, status)
+└── Star / Unstar          (configured music servers supporting stars; state loaded from the server)
+
+**Stars (streaming.md 2a.1).** `MusicServer::supportsStars()` gates both the player action and
+Streaming → Starred. Subsonic implements `trackDetails` with `getSong`, `starredTracks` with
+`getStarred2` (songs only), and `setStarred` with `star` / `unstar`. `RemoteTrack::starred`
+is read from the timestamp in the server answer; it is never persisted as queue state.
+Opening player Options retains Go to album and Album info and loads a third action through
+the existing `RemoteList` machinery, with Loading / error / Try again feedback. The screen
+owns both the metadata and mutation requests. OK says "Saving."; success closes Options and
+says "Starred." / "Unstarred.", while an error stays for retry. Opening another screen, track changes, sleep, power
+off and shutdown close these Options and cancel outstanding callbacks. A background result
+is silent. Starred tracks play as an ordinary queue with no album/playlist source: their
+album ids remain on the entries for Go to album and `queue.tsv` restart. Local tracks and
+unsupported providers (including Audiobookshelf) have no star actions.
 
 The Options of a server album or playlist (Music and Streaming) have Download album / Download playlist after
 Add to queue (`optionsMenu()`), where `offersDownload()`: `canDownloadFrom(pick.link)` and the list is not already whole on the
@@ -1467,14 +1482,13 @@ ctest --test-dir build --output-on-failure    # or ./build/oap-tests
 - Bookmarks and podcasts (RSS). Audiobookshelf books, chapters, downloads and listening-progress
   sync are implemented ([audiobookshelf.md](audiobookshelf.md)); phase 3 still needs real-server
   and device listening checks, including the later-place notice and offline retry.
-- Streaming phases 2a and 5 in [streaming.md](streaming.md): star / unstar and a Starred
-  list, and sync. The limits of phase 4 (one library) are listed under "Known limits after
+- Streaming phase 5 in [streaming.md](streaming.md): sync. Phase 2a stars are built, with real-server listening checks pending. The limits of phase 4 (one library) are listed under "Known limits after
   phase 4" there.
 - STT (Talk button): push-to-talk capture plus sherpa-onnx, Vosk or whisper.cpp.
 - Localisation of spoken strings; a choice of TTS voice. Kanji and Han text are read by the `cmn` voice; without it they are only named ("Japanese text", "Chinese text"): there is no reading table. Hebrew and Arabic need their voice, else they are named.
 - Hardware abstraction (battery, headphone jack, Wi-Fi, Bluetooth, suspend): planned in [hal.md](hal.md).
 - Queue: the Previous queue is not kept across a restart; a restored queue does not cache tracks
-  automatically until another list plays; Star / Unstar in the player's Options (streaming.md 2a.1);
+  automatically until another list plays;
   Save as playlist saves at most 150 tracks (a GET request) and has no renaming until STT or a keyboard;
   play queue sync with the server and offline playlists are later (queue.md "Later").
 - The `AudioStream` mutex in the audio callback could become a lock-free ring.

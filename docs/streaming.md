@@ -3,12 +3,12 @@
 > Status: **phases 1 to 4 built** (stream and play, see [What phase 1 built differently](#what-phase-1-built-differently);
 > robust streaming, see [Phase 2](#phase-2-robust-streaming); local cache and downloads, see
 > [Phase 3 as built](#phase-3-as-built); one library of files and server, see
-> [Phase 4 as built](#phase-4-as-built)). Phases 2a and 5 are a plan. The code is described in [architecture.md](architecture.md), and the
+> [Phase 4 as built](#phase-4-as-built)). Phase 2a stars are built (manual listening checks pending); phase 5 is a plan. The code is described in [architecture.md](architecture.md), and the
 > rules for lists from the server are in [navigation.md](navigation.md#lists-from-the-server).
 > The music queue ([queue.md](queue.md) phase 2) changed some of it: tracks from any source play in one
 > queue, `queue.tsv` replaced `last_stream`, and a track that cannot play is skipped.
 > Download quality and cache replacement are built in [fixes.md phase 5](fixes.md#phase-5-download-quality-and-the-cache); real-server listening checks remain pending.
-> Last updated: 2026-10-29.
+> Last updated: 2026-10-30.
 > Target server: Navidrome 0.64 (Subsonic API 1.16.1, OpenSubsonic). Test server:
 > `https://navidrome.microserver`. The credentials are kept in `.env` (git ignores it) only so
 > they are at hand during development; the program does not read it.
@@ -390,12 +390,27 @@ Known limits after phase 2: nothing plays offline, and stars are not built (phas
 
 ## Phase 2a: stars
 
-Moved out of phase 2: the Player menu and the Streaming lists need a new interface
-first. Break it into steps once that interface is decided.
+Goal: star or unstar the playing remote music track from Options, and browse and play
+starred tracks from Streaming. The queue interface built in queue.md supplies playback
+and restart persistence.
 
 | # | Step | Tests (each checked with a sabotage, as CLAUDE.md requires) |
 |---|------|------|
-| 2a.1 | **Star / unstar** in `App::playerOptionsMenu()` (the Options of the music player, "Options, <track>", next to Go to album and Album info; queue.md step 2.5 built that menu and left Star out; the Player menu never gets it), for a remote track of the server set up now, and a **Starred** list in Streaming. A track played from Starred is a queue entry like any other (it needs its album id only for Go to album), so it is saved in `queue.tsv` and nothing else is needed to resume it. | Star and unstar call the server. Starred loads like the other lists (Loading, filled, error). An error is spoken. Options in the player lists Star or Unstar for a remote track and neither for a local one. |
+| ✅ 2a.1 | **Star / unstar** in `App::playerOptionsMenu()` (the Options of the music player, "Options, <track>", next to Go to album and Album info; queue.md step 2.5 built that menu and left Star out; the Player menu never gets it), for a remote track of the server set up now, and a **Starred** list in Streaming. A track played from Starred is a queue entry like any other (it needs its album id only for Go to album), so it is saved in `queue.tsv` and nothing else is needed to resume it. | Star and unstar call the server. Starred loads like the other lists (Loading, filled, error). An error is spoken. Options in the player lists Star or Unstar for a remote track and neither for a local one. |
+
+**As built:** Subsonic uses [getSong](https://opensubsonic.netlify.app/docs/endpoints/getsong/)
+for the current star state, [getStarred2](https://opensubsonic.netlify.app/docs/endpoints/getstarred2/)
+for songs, and [star](https://opensubsonic.netlify.app/docs/endpoints/star/) / unstar to change it.
+Options keeps Go to album and Album info usable while the state loads. Success says
+"Starred." / "Unstarred." and returns to the player; errors stay for retry. Requests are
+cancelled when Options closes, the track changes, or the device sleeps or exits. Starred
+plays through the normal queue and keeps each track's album id; no new persisted state.
+Stars are per configured music server; book providers and local tracks do not offer them.
+
+**Device check (manual):** play a server track, open Options and star it. Streaming → Starred
+must include it and play it. Unstar it from the player's Options and reopen Starred: it is
+gone. With the server unreachable, an error is spoken and Home still responds. Restart
+while a track from Starred is saved: Now playing resumes its track and place.
 
 ## Phase 3: local cache and downloads
 

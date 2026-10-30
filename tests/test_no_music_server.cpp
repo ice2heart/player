@@ -145,3 +145,16 @@ TEST(NoMusicServer, InProgressIsNotConfiguredAndCancellableFromPoll) {
     server.poll();
     EXPECT_EQ(calls, 1);
 }
+
+TEST(NoMusicServer, StarsAreUnsupportedAndAllRequestsFailFromPoll) {
+    NoMusicServer server;
+    EXPECT_FALSE(server.supportsStars());
+    int calls = 0;
+    auto done = [&](Error e, std::vector<RemoteTrack> tracks, bool more) {
+        EXPECT_EQ(e, Error::NotConfigured); EXPECT_TRUE(tracks.empty()); EXPECT_FALSE(more); ++calls;
+    };
+    server.trackDetails("x", done); server.starredTracks(done);
+    server.setStarred("x", true, [&](Error e) { EXPECT_EQ(e, Error::NotConfigured); ++calls; });
+    auto id = server.setStarred("x", false, [&](Error) { ADD_FAILURE(); }); server.cancel(id);
+    EXPECT_EQ(calls, 0); server.poll(); EXPECT_EQ(calls, 3);
+}

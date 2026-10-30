@@ -4,8 +4,8 @@
 > menus that jump, separate music and book players; phase 2, steps 2.1 to 2.10: the queue, Options, Shuffle and
 > Repeat, the Queue list, `queue.tsv`, Save as playlist). The rules are in [navigation.md](navigation.md), the code is
 > described in [architecture.md](architecture.md), streaming is in [streaming.md](streaming.md). Where the build
-> differs from the plan, see [Phase 2 as built](#phase-2-as-built). Star / Unstar is not built (streaming.md 2a.1).
-> Last updated: 2026-10-28.
+> differs from the plan, see [Phase 2 as built](#phase-2-as-built). Star / Unstar is built in streaming.md 2a.1 (real-server listening checks pending).
+> Last updated: 2026-10-30.
 
 Before this plan the device had no queue. `App` held one `book_`: the book, the local album or
 "Play all" list, or the album or playlist from the server. Choosing a track replaced it. Music and books
@@ -95,8 +95,8 @@ menus then **jump in long lists**:
   about the player (Queue, Shuffle, Repeat, Sleep timer). Options is about the
   playing track: Go to album, Album info, and Star / Unstar for a remote track. Album
   info moves to Options from the Player menu and from the end of an album's list (an
-  album in a list has it in its Options). Star is not built yet: streaming.md
-  [phase 2a](streaming.md#phase-2a-stars) builds it in Options, so it has one key. Go to artist comes later.
+  album in a list has it in its Options). Star / Unstar is built in streaming.md
+  [phase 2a](streaming.md#phase-2a-stars), in Options, so it has one key. Go to artist comes later.
 - An item with no actions plays the edge sound and says "No options" (rule 9: every
   press of a key is heard).
 - An action that finishes a task (Play next, Add to queue) goes back by itself and
@@ -329,8 +329,8 @@ says how many were left out.
 Phase 2 is built as planned, with these differences. The code is described in
 [architecture.md](architecture.md), the rules in [navigation.md](navigation.md).
 
-- **Star is not built.** The music player's Options (`playerOptionsMenu()`) is Go to album and Album
-  info. streaming.md 2a.1 builds Star / Unstar there.
+- **Star / Unstar is built** in streaming.md 2a.1. The music player's Options keeps Go to album
+  and Album info, then loads Star / Unstar for tracks of supported configured music servers.
 - **`last_stream.*` is not migrated at start.** It is still read when there is no `queue.tsv`: "Now
   playing" on Home and OK or Play run `resumeStream()` as before, and the queue that plays is saved in
   `queue.tsv`. Any music queue that plays, and reading a `queue.tsv`, remove the old keys.

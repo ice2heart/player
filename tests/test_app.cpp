@@ -3163,7 +3163,7 @@ TEST_F(StreamingTest, StreamingIsOnHomeUnderTheServerName) {
     const size_t asked = server.requests.size(); // the catalogue sync of a server that is set up
     open("Home server");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists",
-                                                  "Random albums", "Server status"}));
+                                                  "Random albums", "Starred", "Server status"}));
     EXPECT_EQ(server.requests.size(), asked) << "nothing is asked before a list is opened";
 }
 
@@ -3478,7 +3478,7 @@ TEST_F(TwoServersTest, HomeSpeaksTheNameOfEachLink) {
 TEST_F(TwoServersTest, EachEntryOpensTheStreamingMenuOfItsServer) {
     openLink("Audiobooks");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Random albums",
-                                                  "Server status"}));
+                                                  "Starred", "Server status"}));
     EXPECT_EQ(level().title, "Audiobooks");
 }
 
@@ -3568,16 +3568,16 @@ TEST_F(TwoServersTest, TheSecondServersStatusIsNotMarkedDownWithTheFirstAndItsAn
     ASSERT_TRUE(speech.heard("Cannot play Storm Front. Server not reachable."));
     press(Button::Home);
     open("Audiobooks");
-    for (int i = 0; i < 4; ++i) press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Server status, 5 of 5");
+    for (int i = 0; i < 5; ++i) press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Server status, 6 of 6");
     press(Button::Ok);
     ASSERT_TRUE(second.replyPing(second.lastRequest().id, {"audiobookshelf", "2.37.2"}));
     app->tick();
     press(Button::Home);
     hold(Button::Home);
     open("Navidrome");
-    for (int i = 0; i < 4; ++i) press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Server status, not reachable, 5 of 5");
+    for (int i = 0; i < 5; ++i) press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Server status, not reachable, 6 of 6");
 }
 
 TEST_F(TwoServersTest, LeavingAListOfTheSecondServerCancelsOnlyItsRequest) {
@@ -3732,15 +3732,15 @@ TEST_F(StreamingTest, ServerStatusSaysNotReachableWhileTheServerIsMarkedDownAndA
     press(Button::Home);
     open("Server");
     ASSERT_EQ(level().title, "Server");
-    for (int i = 0; i < 4; ++i) press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Server status, not reachable, 5 of 5");
+    for (int i = 0; i < 5; ++i) press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Server status, not reachable, 6 of 6");
     press(Button::Ok);
     ASSERT_TRUE(server.replyPing(server.lastRequest().id, {"navidrome", "0.64.2"}));
     app->tick();
     EXPECT_EQ(speech.last(), "Connected to Navidrome 0.64.2.");
     press(Button::Back);
     press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Server status, 5 of 5") << "the answer cleared the mark";
+    EXPECT_EQ(speech.last(), "Server status, 6 of 6") << "the answer cleared the mark";
 }
 
 TEST_F(StreamingTest, ServerStatusStaysNotReachableWhenThePingDoesNotAnswer) {
@@ -3749,20 +3749,20 @@ TEST_F(StreamingTest, ServerStatusStaysNotReachableWhenThePingDoesNotAnswer) {
     EXPECT_FALSE(app->playRemote("Weather", weather(), 0));
     press(Button::Home);
     open("Server");
-    for (int i = 0; i < 4; ++i) press(Button::Forward);
+    for (int i = 0; i < 5; ++i) press(Button::Forward);
     press(Button::Ok);
     ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable));
     app->tick();
     EXPECT_EQ(speech.last(), "Server not reachable.");
     press(Button::Back);
     press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Server status, not reachable, 5 of 5");
+    EXPECT_EQ(speech.last(), "Server status, not reachable, 6 of 6");
 }
 
 TEST_F(StreamingTest, ServerStatusSaysNothingExtraWhileTheServerIsNotMarkedDown) {
     openServer();
-    for (int i = 0; i < 4; ++i) press(Button::Forward);
-    EXPECT_EQ(speech.last(), "Server status, 5 of 5");
+    for (int i = 0; i < 5; ++i) press(Button::Forward);
+    EXPECT_EQ(speech.last(), "Server status, 6 of 6");
 }
 
 TEST_F(StreamingTest, ChoosingATrackPlaysFromItToTheEndOfTheAlbum) {
@@ -6680,7 +6680,7 @@ TEST_F(DownloadedTest, ASecondServerShowsNoneOfTheFirstServersDownloadsAndAsksIt
     start();
     open("Audiobooks");
     EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Random albums",
-                                                  "Downloaded", "Server status"}));
+                                                  "Starred", "Downloaded", "Server status"}));
     open("Downloaded");
     EXPECT_EQ(labels(), (std::vector<std::string>{"No downloads"}));
     hold(Button::Home);
@@ -6712,7 +6712,7 @@ TEST_F(DownloadedTest, AListThatFailedOnASecondServerOffersNoDownloaded) {
 TEST_F(DownloadedTest, TheServerMenuOffersDownloadedOnlyWithACacheFolder) {
     openServer();
     EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists",
-                                                  "Random albums", "Downloaded", "Server status"}));
+                                                  "Random albums", "Starred", "Downloaded", "Server status"}));
     EXPECT_EQ(listRequests(), 0u) << "it is not a list from the server";
 }
 
@@ -15419,10 +15419,10 @@ TEST_F(TwoServerDownloadTest, ALinkWithNoCacheOfItsOwnHasNoDownloadedWhileTheFir
     moreLinks.push_back(ServerLink{ServerConfig{}, "other-1", "Server 2", second, secondDownloader}); // no url: its cache stores nothing
     start();
     open("Server 2");
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Random albums", "Server status"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Random albums", "Starred", "Server status"}));
     hold(Button::Home);
     open("Server");
-    EXPECT_EQ(labels().at(4), "Downloaded");
+    EXPECT_EQ(labels().at(5), "Downloaded");
 }
 
 TEST_F(TwoServerDownloadTest, TheOptionsOfASecondServersAlbumOfferNoDownloadWithoutItsDownloader) {
@@ -15991,7 +15991,7 @@ TEST_F(BooksMenuTest, WithoutACacheFolderThereIsNoDownloaded) {
 TEST_F(BooksMenuTest, AMusicServerStillOpensStreaming) {
     server.catalogueKind = MusicServer::Catalogue::Music;
     openServer();
-    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Random albums", "Downloaded", "Server status"}));
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Recently added", "Albums A to Z", "Artists", "Random albums", "Starred", "Downloaded", "Server status"}));
 }
 
 TEST_F(BooksMenuTest, RecentlyAddedIsOnePageOf500NewestBooksSpokenWithTheirAuthor) {
@@ -17946,4 +17946,149 @@ TEST_F(AsyncOpenTest, ALightPressDuringAnOpenCannotSkipWhenReleasedAfterCompleti
     EXPECT_EQ(player.pos, 100);
     EXPECT_EQ(player.file, "fake://stream/t2");
     EXPECT_EQ(speech.said.size(), said);
+}
+
+TEST_F(PlayerOptionsTest, StarsLoadAuthoritativelyAndMutationsReturnToThePlayer) {
+    start(); openWeather(); open("Rain"); finishOpen();
+    for (bool starred : {false, true}) {
+        press(Button::Options);
+        EXPECT_TRUE(hasLabel("Go to album"));
+        EXPECT_TRUE(hasLabel("Loading"));
+        ASSERT_EQ(server.lastRequest().kind, Kind::TrackDetails);
+        EXPECT_EQ(server.lastRequest().arg, "t2");
+        RemoteTrack t = weather()[1]; t.starred = starred;
+        answer(std::vector<RemoteTrack>{t});
+        EXPECT_TRUE(hasLabel(starred ? "Unstar" : "Star"));
+        EXPECT_FALSE(hasLabel(starred ? "Star" : "Unstar"));
+        open(starred ? "Unstar" : "Star");
+        EXPECT_EQ(speech.last(), "Saving.");
+        EXPECT_EQ(server.lastRequest().kind, starred ? Kind::Unstar : Kind::Star);
+        EXPECT_EQ(server.lastRequest().arg, "t2");
+        ASSERT_TRUE(server.replyCreated(server.lastRequest().id)); app->tick();
+        EXPECT_EQ(app->mode(), App::Mode::Player);
+        EXPECT_EQ(speech.last(), starred ? "Unstarred." : "Starred.");
+    }
+    press(Button::Ok);
+    EXPECT_FALSE(hasLabel("Star")); EXPECT_FALSE(hasLabel("Unstar"));
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(PlayerOptionsTest, StarErrorsAreSpokenAndRetriedWithoutOptimisticState) {
+    start(); openWeather(); open("Rain"); finishOpen(); press(Button::Options);
+    ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable)); app->tick();
+    EXPECT_NE(speech.last().find("Server not reachable"), std::string::npos);
+    EXPECT_TRUE(hasLabel("Go to album")); open("Try again");
+    answer(std::vector<RemoteTrack>{weather()[0]}); // wrong track: do not offer a guessed action
+    EXPECT_FALSE(hasLabel("Star")); EXPECT_FALSE(hasLabel("Unstar"));
+    EXPECT_EQ(sounds.last(), Earcon::Error);
+    open("Try again");
+    answer(std::vector<RemoteTrack>{weather()[1]}); open("Star");
+    auto id = server.lastRequest().id;
+    open("Star"); EXPECT_EQ(server.lastRequest().id, id); EXPECT_EQ(speech.last(), "Still saving.");
+    ASSERT_TRUE(server.fail(id, MusicServer::Error::BadLogin)); app->tick();
+    EXPECT_TRUE(hasLabel("Star")); EXPECT_FALSE(hasLabel("Unstar"));
+    EXPECT_EQ(sounds.last(), Earcon::Error); EXPECT_EQ(speech.last(), "Wrong user name or password");
+    open("Star"); ASSERT_TRUE(server.replyCreated(server.lastRequest().id)); app->tick();
+    EXPECT_EQ(speech.last(), "Starred.");
+}
+
+TEST_F(PlayerOptionsTest, LeavingStarOptionsCancelsReadsAndMutationsIncludingQueuedReplies) {
+    start(); openWeather(); open("Rain"); finishOpen();
+    press(Button::Options); auto read = server.lastRequest().id;
+    ASSERT_TRUE(server.reply(read, std::vector<RemoteTrack>{weather()[1]}));
+    app->keyDown(Button::Home); app->keyUp(Button::Home); app->tick(); EXPECT_EQ(app->mode(), App::Mode::Player);
+    EXPECT_NE(std::find(server.cancelled.begin(), server.cancelled.end(), read), server.cancelled.end());
+    press(Button::Options); answer(std::vector<RemoteTrack>{weather()[1]}); open("Star");
+    auto write = server.lastRequest().id; press(Button::Home);
+    EXPECT_FALSE(server.replyCreated(write)); app->tick();
+    EXPECT_FALSE(speech.heard("Starred."));
+}
+
+TEST_F(PlayerOptionsTest, LocalAndUnsupportedTracksOfferNoStars) {
+    playRoadTrip(); press(Button::Options);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Go to album", "Album info"}));
+    press(Button::Home); hold(Button::Home);
+    openWeather(); open("Rain"); finishOpen(); server.starsSupported = false;
+    auto n = server.requests.size(); press(Button::Options);
+    EXPECT_EQ(labels(), (std::vector<std::string>{"Go to album", "Album info"}));
+    EXPECT_EQ(server.requests.size(), n);
+}
+
+TEST_F(StreamingTest, StarredLoadsPlaysAndKeepsAlbumIdentityAcrossRestart) {
+    settings.setString("server.url", "https://music.example");
+    openList("Starred"); EXPECT_EQ(speech.last(), "Starred. Loading, 1 of 1");
+    ASSERT_EQ(server.lastRequest().kind, Kind::StarredTracks);
+    auto tracks = weather(); for (auto& t : tracks) { t.albumId = "al1"; t.album = "Weather"; }
+    answer(tracks); EXPECT_EQ(labels(), (std::vector<std::string>{"Storm Front", "Rain", "Sunshine"}));
+    open("Rain"); EXPECT_EQ(player.file, "fake://stream/t2");
+    player.pos = 42; app->shutdown();
+    const auto saved = parseQueue(diskFiles().read(queueFile).value_or(""));
+    ASSERT_TRUE(saved); ASSERT_EQ(saved->queue.size(), 3u);
+    EXPECT_EQ(saved->queue.at(1).albumId, "al1");
+    EXPECT_EQ(saved->queue.at(1).title, "Rain");
+    start(); open("Now playing"); EXPECT_EQ(player.file, "fake://stream/t2");
+    EXPECT_DOUBLE_EQ(player.pos, 42);
+    press(Button::Options); open("Go to album");
+    EXPECT_EQ(server.lastRequest().kind, Kind::AlbumTracks); EXPECT_EQ(server.lastRequest().arg, "al1");
+    expectNoUrlSpoken(speech);
+}
+
+TEST_F(StreamingTest, StarredErrorsEmptyAndCancellationUseOrdinaryListFeedback) {
+    settings.setString("server.url", "https://music.example");
+    openList("Starred"); ASSERT_TRUE(server.fail(server.lastRequest().id, MusicServer::Error::Unreachable)); app->tick();
+    EXPECT_NE(speech.last().find("Server not reachable"), std::string::npos); open("Try again");
+    answer(std::vector<RemoteTrack>{}); EXPECT_EQ(labels(), (std::vector<std::string>{"No starred tracks"}));
+    open("No starred tracks"); EXPECT_EQ(speech.last(), "Star a track from Options in the music player, then come back.");
+    press(Button::Home); open("Starred"); auto id = server.lastRequest().id; press(Button::Home);
+    EXPECT_FALSE(server.reply(id, weather())); app->tick(); EXPECT_EQ(level().title, "Server");
+}
+
+TEST_F(PlayerOptionsTest, TrackChangeSleepAndShutdownCancelStarCallbacks) {
+    start(); openWeather(); open("Rain"); finishOpen(); press(Button::Options);
+    auto read = server.lastRequest().id;
+    player.atEnd = true; app->tick(); finishOpen();
+    EXPECT_FALSE(server.reply(read, std::vector<RemoteTrack>{weather()[1]}));
+    EXPECT_EQ(app->mode(), App::Mode::Player);
+    press(Button::Options); answer(std::vector<RemoteTrack>{weather()[2]}); open("Star");
+    auto write = server.lastRequest().id;
+    hold(Button::Power); open("Sleep");
+    EXPECT_FALSE(server.replyCreated(write));
+    press(Button::Power); // wake
+    press(Button::Home); // leave Power menu if it remains
+    hold(Button::Home); open("Now playing"); press(Button::Options);
+    auto exitRead = server.lastRequest().id;
+    app->shutdown(); EXPECT_FALSE(server.reply(exitRead, std::vector<RemoteTrack>{weather()[2]}));
+}
+
+TEST_F(TwoServerPlayTest, StarsReadAndWriteOnlyThePlayingTracksServer) {
+    start_(); ASSERT_TRUE(app->playQueue("Mixed", {onSecond("t1", "Dune")})); finishOpen();
+    auto firstRequests = server.requests.size(); press(Button::Options);
+    ASSERT_EQ(second.lastRequest().kind, Kind::TrackDetails); EXPECT_EQ(second.lastRequest().arg, "t1");
+    RemoteTrack track; track.id = "t1"; track.starred = true;
+    ASSERT_TRUE(second.reply(second.lastRequest().id, std::vector<RemoteTrack>{track})); app->tick();
+    open("Unstar"); EXPECT_EQ(second.lastRequest().kind, Kind::Unstar); EXPECT_EQ(second.lastRequest().arg, "t1");
+    ASSERT_TRUE(second.replyCreated(second.lastRequest().id)); app->tick();
+    EXPECT_EQ(speech.last(), "Unstarred."); EXPECT_EQ(server.requests.size(), firstRequests);
+}
+
+TEST_F(PlayerOptionsTest, AnotherScreenCancelsStarOptionsAndReopeningFetchesFreshState) {
+    start(); openWeather(); open("Rain"); finishOpen(); press(Button::Options);
+    answer(std::vector<RemoteTrack>{weather()[1]}); open("Star");
+    auto write = server.lastRequest().id; hold(Button::Power);
+    EXPECT_FALSE(server.replyCreated(write)); app->tick();
+    EXPECT_EQ(level().title, "Power");
+    press(Button::Home); EXPECT_EQ(app->mode(), App::Mode::Player);
+    press(Button::Options); EXPECT_EQ(server.lastRequest().kind, Kind::TrackDetails);
+    RemoteTrack t = weather()[1]; t.starred = true;
+    answer(std::vector<RemoteTrack>{t}); EXPECT_TRUE(hasLabel("Unstar")); EXPECT_FALSE(hasLabel("Star"));
+}
+
+TEST_F(PlayerOptionsTest, AutoSleepCancelsPendingStarMutation) {
+    settings.setInt("power.auto_sleep_min", 1);
+    start(); openWeather(); open("Rain"); finishOpen(); press(Button::Options);
+    answer(std::vector<RemoteTrack>{weather()[1]}); open("Star");
+    auto id = server.lastRequest().id;
+    press(Button::PlayPause); // paused so automatic sleep is allowed
+    idle(2min); ASSERT_EQ(app->mode(), App::Mode::Sleeping);
+    EXPECT_FALSE(server.replyCreated(id)); app->tick(); EXPECT_FALSE(speech.heard("Starred."));
 }

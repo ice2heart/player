@@ -440,7 +440,7 @@ Home
 | Back / Forward held | repeated 5-second seeks every 500 ms; deep: 30 seconds every 500 ms, immediately; release stops and speaks position |
 | Up / Down / Talk      | silent and inactive during normal use |
 | Volume up / down      | content volume, held repeats; earcon pitch indicates level, edge sound at the limits |
-| Options               | Music: actions for the playing track (Go to album, Album info; Star later). Book: when a newer, distant server place is offered, the first action accepts it; otherwise it says "No options". On a list item: Play now, Play next, Add to queue, and for a server album or playlist Download |
+| Options               | Music: actions for the playing track (Go to album, Album info, Star / Unstar for a supported remote track). Book: when a newer, distant server place is offered, the first action accepts it; otherwise it says "No options". On a list item: Play now, Play next, Add to queue, and for a server album or playlist Download |
 | Play long             | "Book player. Dune, by Frank Herbert. Chapter 7 of 22, 'The Storm'. 14 minutes left in chapter, 6 hours 3 minutes left in book." |
 | OK                    | player menu. Music: queue (list, move, remove, save as server playlist, clear), shuffle, repeat (off, all, album, track), go to first track, sleep timer. Book: chapters, sleep timer, info, speed, bookmark add |
 | OK held               | Options for current playback |

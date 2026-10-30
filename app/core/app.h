@@ -304,6 +304,10 @@ private:
         std::vector<RemoteTrack> tracks;
     };
     void openOptions();                              // the Options button
+    std::optional<std::uint64_t> starOptions_; // its screen owns the star read or mutation
+    void cancelStarOptions();
+    void loadPlayerStar();
+    void changeStar(std::uint64_t screen, size_t link, std::string trackId, bool starred);
     std::vector<MenuItem> playerOptionsMenu();       // Options in the music player: for the playing track
     void goToAlbum();                                // opens the playing track's album, on that track
     void sayPlayerInfo();                            // Album info / Book info: title, parts, where it is

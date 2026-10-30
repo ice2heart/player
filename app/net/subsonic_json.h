@@ -47,6 +47,8 @@ VersionResult parseCatalogueVersion(std::string_view body);
 Parsed<RemoteFolder> parseMusicFolders(std::string_view body); // getMusicFolders
 Parsed<RemoteArtist> parseArtists(std::string_view body);   // getArtists, all indexes in order
 Parsed<RemoteAlbum> parseArtist(std::string_view body);     // getArtist: the artist's albums
+Parsed<RemoteTrack> parseStarred(std::string_view body); // getStarred2: songs only
+Parsed<RemoteTrack> parseSong(std::string_view body); // getSong: exactly one valid song
 Parsed<RemoteTrack> parseAlbum(std::string_view body);      // getAlbum: its songs
 Parsed<RemotePlaylist> parsePlaylists(std::string_view body);
 struct CreatedPlaylist {

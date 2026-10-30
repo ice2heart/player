@@ -356,7 +356,7 @@ inline std::vector<ServerLink> linkTo(const Settings& settings, MusicServer& ser
 // A fake that is not configured does not record a scrobble (like Subsonic).
 class FakeMusicServer : public MusicServer {
 public:
-    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Book, Progress, InProgress, Playlists, PlaylistTracks, CreatePlaylist };
+    enum class Kind { Ping, CatalogueVersion, Albums, MusicFolders, Artists, ArtistAlbums, AlbumTracks, Book, Progress, InProgress, Playlists, PlaylistTracks, CreatePlaylist, TrackDetails, StarredTracks, Star, Unstar };
     struct Request {
         RequestId id = 0;
         Kind kind = Kind::Ping;
@@ -420,6 +420,14 @@ public:
         return true;
     }
     RequestId inProgress(Done<RemoteAlbum> done) override { return add(std::move(done), Kind::InProgress); }
+    bool supportsStars() const override { return starsSupported && catalogueKind == Catalogue::Music; }
+    bool starsSupported = true;
+    RequestId trackDetails(std::string id, Done<RemoteTrack> done) override { return add(std::move(done), Kind::TrackDetails, std::move(id)); }
+    RequestId starredTracks(Done<RemoteTrack> done) override { return add(std::move(done), Kind::StarredTracks); }
+    RequestId setStarred(std::string id, bool starred, std::function<void(Error)> done) override {
+        return add(CreateDone{[done = std::move(done)](Error e, std::string) { done(e); }},
+                   starred ? Kind::Star : Kind::Unstar, std::move(id));
+    }
     RequestId playlists(Done<RemotePlaylist> done) override { return add(std::move(done), Kind::Playlists); }
     RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) override {
         return add(std::move(done), Kind::PlaylistTracks, std::move(playlistId));

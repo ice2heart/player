@@ -282,6 +282,18 @@ MusicServer::RequestId Audiobookshelf::inProgress(Done<RemoteAlbum> done) {
     return id;
 }
 
+MusicServer::RequestId Audiobookshelf::trackDetails(std::string, Done<RemoteTrack> done) {
+    RequestId id = ++lastId_;
+    answer(id, [done = std::move(done)](Reply reply) { done(reply.error, {}, false); },
+           Reply{configured() ? Error::Server : Error::NotConfigured, {}, false});
+    return id;
+}
+MusicServer::RequestId Audiobookshelf::starredTracks(Done<RemoteTrack> done) {
+    return trackDetails({}, std::move(done));
+}
+MusicServer::RequestId Audiobookshelf::setStarred(std::string, bool, std::function<void(Error)> done) {
+    return trackDetails({}, [done = std::move(done)](Error e, std::vector<RemoteTrack>, bool) { done(e); });
+}
 MusicServer::RequestId Audiobookshelf::playlists(Done<RemotePlaylist> done) { return noItems<RemotePlaylist>(std::move(done)); }
 
 MusicServer::RequestId Audiobookshelf::playlistTracks(std::string, Done<RemoteTrack> done) {

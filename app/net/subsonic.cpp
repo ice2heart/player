@@ -229,6 +229,17 @@ MusicServer::RequestId Subsonic::playlists(Done<RemotePlaylist> done) {
     return list<RemotePlaylist>("getPlaylists", {}, subsonic::parsePlaylists, std::move(done));
 }
 
+MusicServer::RequestId Subsonic::trackDetails(std::string trackId, Done<RemoteTrack> done) {
+    return list<RemoteTrack>("getSong", {{"id", std::move(trackId)}}, subsonic::parseSong, std::move(done));
+}
+MusicServer::RequestId Subsonic::starredTracks(Done<RemoteTrack> done) {
+    return list<RemoteTrack>("getStarred2", {}, subsonic::parseStarred, std::move(done));
+}
+MusicServer::RequestId Subsonic::setStarred(std::string trackId, bool starred, std::function<void(Error)> done) {
+    return request(starred ? "star" : "unstar", {{"id", std::move(trackId)}},
+                   [](const std::string& body) { return Reply{subsonic::parseStatus(body), {}, false}; },
+                   [done = std::move(done)](Reply reply) { done(reply.error); });
+}
 MusicServer::RequestId Subsonic::playlistTracks(std::string playlistId, Done<RemoteTrack> done) {
     return list<RemoteTrack>("getPlaylist", {{"id", std::move(playlistId)}}, subsonic::parsePlaylist, std::move(done));
 }

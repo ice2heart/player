@@ -715,6 +715,7 @@ void App::finishRefresh() {
 }
 
 void App::shutdown() {
+    cancelStarOptions();
     if (shutDown_) return; // the player is closed now: a second save would write its place as 0
     cancelGestures();
     cancelProgressPull();
@@ -1021,6 +1022,7 @@ void App::openMenu(const std::string& title, std::function<std::vector<MenuItem>
 }
 
 void App::pushScreen(Screen screen) {
+    cancelStarOptions(); // a different screen must not hide an outstanding track action
     cancelGestures();
     if (ping_) serverAt(pingLink_).cancel(std::exchange(ping_, 0)); // the user moved on from Server status
     cancelResume(); // likewise from a stream resume (resumeStream()) still loading
@@ -1034,6 +1036,7 @@ void App::closeScreens(size_t keep) {
     if (screens_.size() > keep) cancelGestures();
     while (screens_.size() > keep) {
         std::uint64_t id = screens_.back().id;
+        if (starOptions_ == id) starOptions_.reset();
         if (auto list = remoteLists_.find(id); list != remoteLists_.end()) {
             if (list->second.request) serverAt(list->second.link).cancel(list->second.request);
             remoteLists_.erase(list);
@@ -1872,6 +1875,22 @@ std::vector<MenuItem> App::streamingMenu(size_t link) {
     items.push_back(action("Random albums", [this, link] {
         openAlbumList(link, "Random albums", "random", kRandomAlbums, false);
     }));
+    if (serverAt(link).supportsStars()) items.push_back(action("Starred", [this, link] {
+        openRemoteList(link, "Starred", fetchPages<RemoteTrack>(
+            [this, link](int, MusicServer::Done<RemoteTrack> done) { return serverAt(link).starredTracks(std::move(done)); },
+            [this, link](const std::vector<RemoteTrack>& tracks) {
+                auto list = std::make_shared<const std::vector<RemoteTrack>>(tracks);
+                std::vector<MenuItem> out;
+                for (size_t i = 0; i < list->size(); ++i) {
+                    Pick pick;
+                    pick.make = [this, list, i, link] { return remoteSelection((*list)[i].title, {(*list)[i]}, std::nullopt, "", false, "", link); };
+                    MenuItem item = action((*list)[i].title, [this, list, i, link] { playRemote("Starred", *list, i, {}, 0, "", link); });
+                    item.okHint = "play";
+                    out.push_back(withOptions(std::move(item), std::move(pick)));
+                }
+                return out;
+            }), 0, "No starred tracks", "Star a track from Options in the music player, then come back.");
+    }));
     if (trackCacheOf(link).enabled()) items.push_back(submenu("Downloaded", [this, link] { return downloadedMenu(link); }));
     MenuItem status = action("Server status", [this, link] { checkServer(link); });
     status.value = [this, link] { return serverDown(link) ? std::string("not reachable") : std::string(); };
@@ -2115,6 +2134,7 @@ std::string selectionText(const std::string& title, size_t tracks) {
 void App::openOptions() {
     if (mode() == Mode::Player && music_ && book_ && !queue_.empty()) {
         openMenu("Options, " + trackTitle(fileIndex_), [this] { return playerOptionsMenu(); });
+        loadPlayerStar();
         return;
     }
     if (mode() == Mode::Player && !music_ && book_ && serverPlace_) {
@@ -2140,6 +2160,74 @@ void App::openOptions() {
     }
     earcons_.play(Earcon::Edge);
     say("No options.");
+}
+
+// Keep the ordinary actions usable while the authoritative star state loads. The request
+// belongs to this Options screen, so closeScreens cancels both reads and mutations.
+void App::cancelStarOptions() {
+    if (!starOptions_) return;
+    for (size_t i = 0; i < screens_.size(); ++i)
+        if (screens_[i].id == *starOptions_) { closeScreens(i); return; }
+    starOptions_.reset();
+}
+
+void App::loadPlayerStar() {
+    const QueueEntry* entry = queue_.current();
+    if (!entry) return;
+    auto link = linkOf(*entry);
+    if (!link || !serverAt(*link).configured() || !serverAt(*link).supportsStars()) return;
+    const auto screen = screens_.back().id;
+    starOptions_ = screen;
+    screens_.back().build = {}; // this screen keeps its asynchronously loaded actions
+    const std::string trackId = entry->trackId;
+    RemoteList& list = remoteLists_[screen];
+    list.link = *link;
+    list.loaded = screens_.back().items.size();
+    list.fetch = [this, screen, link = *link, trackId](int, PageDone done) {
+        return serverAt(link).trackDetails(trackId, [this, screen, link, trackId, done](MusicServer::Error error,
+                std::vector<RemoteTrack> tracks, bool) {
+            if (error == MusicServer::Error::None && (tracks.size() != 1 || tracks.front().id != trackId))
+                error = MusicServer::Error::Server;
+            std::vector<MenuItem> items;
+            if (error == MusicServer::Error::None) {
+                const bool starred = tracks.front().starred;
+                items.push_back(action(starred ? "Unstar" : "Star", [this, screen, link, trackId, starred] {
+                    changeStar(screen, link, trackId, !starred);
+                }));
+            }
+            const Screen* target = findScreen(screen);
+            const bool onLoading = target && target->index >= remoteLists_.at(screen).loaded;
+            done(error, std::move(items), false);
+            if (error != MusicServer::Error::None && !onLoading && !screens_.empty() &&
+                screens_.back().id == screen && !sleeping_) {
+                earcons_.play(Earcon::Error);
+                say(errorText(error));
+            }
+        });
+    };
+    requestPage(screen, 0, true);
+    showStatus(screen);
+}
+
+void App::changeStar(std::uint64_t screenId, size_t link, std::string trackId, bool starred) {
+    auto it = remoteLists_.find(screenId);
+    if (it == remoteLists_.end()) return;
+    if (it->second.request) { say("Still saving."); return; }
+    say("Saving.");
+    it->second.request = serverAt(link).setStarred(std::move(trackId), starred, [this, screenId, starred](MusicServer::Error error) {
+        auto found = remoteLists_.find(screenId);
+        if (found == remoteLists_.end()) return;
+        found->second.request = 0;
+        if (screens_.empty() || screens_.back().id != screenId || sleeping_) return;
+        if (error != MusicServer::Error::None) {
+            earcons_.play(Earcon::Error);
+            say(errorText(error));
+            return;
+        }
+        popScreen();
+        earcons_.play(Earcon::Close);
+        say(starred ? "Starred." : "Unstarred.");
+    });
 }
 
 std::vector<MenuItem> App::playerOptionsMenu() {
@@ -3285,6 +3373,7 @@ std::optional<size_t> App::upcomingTrack() const {
 }
 
 void App::setFile(size_t i) {
+    if (i != fileIndex_) cancelStarOptions();
     fileIndex_ = i;
     if (music_) queue_.setCurrent(i);
 }
@@ -5478,6 +5567,7 @@ void App::setSleepTimer(int minutes, bool endOfChapter) {
 }
 
 void App::sleep(const std::string& announcement) {
+    cancelStarOptions();
     cancelGestures();
     cancelProgressPull();
     cancelResume();
@@ -5511,6 +5601,7 @@ void App::wake() {
 }
 
 void App::powerOff() {
+    cancelStarOptions();
     cancelGestures();
     cancelProgressPull();
     cancelResume(); // the front end ticks on while "Goodbye" is spoken

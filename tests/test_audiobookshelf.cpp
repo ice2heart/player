@@ -892,3 +892,15 @@ TEST(Audiobookshelf, InProgressErrorsEmptyAndCancellationFollowTheListContract) 
     EXPECT_EQ(noServer.error, Error::NotConfigured);
     EXPECT_TRUE(none.http->calls.empty());
 }
+
+TEST(AudiobookshelfStars, UnsupportedRequestsFailFromPollWithoutHttp) {
+    Server s;
+    EXPECT_FALSE(s.abs->supportsStars());
+    int calls = 0;
+    s.abs->trackDetails("x", [&](Error e, std::vector<RemoteTrack> tracks, bool more) {
+        EXPECT_EQ(e, Error::Server); EXPECT_TRUE(tracks.empty()); EXPECT_FALSE(more); ++calls;
+    });
+    s.abs->starredTracks([&](Error e, auto, bool) { EXPECT_EQ(e, Error::Server); ++calls; });
+    s.abs->setStarred("x", false, [&](Error e) { EXPECT_EQ(e, Error::Server); ++calls; });
+    EXPECT_EQ(calls, 0); s.abs->poll(); EXPECT_EQ(calls, 3); EXPECT_TRUE(s.http->calls.empty());
+}

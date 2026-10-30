@@ -117,6 +117,7 @@ RemoteTrack track(const YAML::Node& node) {
     track.artist = text(node, "artist");
     track.album = text(node, "album");
     track.albumId = text(node, "albumId");
+    track.starred = !text(node, "starred").empty();
     track.duration = number(node, "duration");
     track.track = integer(node, "track");
     track.suffix = text(node, "suffix");
@@ -240,6 +241,21 @@ Parsed<RemoteFolder> parseMusicFolders(std::string_view body) {
     return parseList<RemoteFolder>(body, "musicFolders", "musicFolder", musicFolder);
 }
 Parsed<RemoteAlbum> parseArtist(std::string_view body) { return parseList<RemoteAlbum>(body, "artist", "album", album); }
+Parsed<RemoteTrack> parseStarred(std::string_view body) {
+    return parseList<RemoteTrack>(body, "starred2", "song", track);
+}
+Parsed<RemoteTrack> parseSong(std::string_view body) {
+    Parsed<RemoteTrack> parsed;
+    Envelope envelope = open(body);
+    parsed.error = envelope.error;
+    if (parsed.error != Error::None) return parsed;
+    try {
+        RemoteTrack song = track(child(envelope.response, "song"));
+        if (song.id.empty()) parsed.error = Error::Server;
+        else parsed.items.push_back(std::move(song));
+    } catch (const YAML::Exception&) { parsed.error = Error::Server; }
+    return parsed;
+}
 Parsed<RemoteTrack> parseAlbum(std::string_view body) { return parseList<RemoteTrack>(body, "album", "song", track); }
 Parsed<RemotePlaylist> parsePlaylists(std::string_view body) {
     return parseList<RemotePlaylist>(body, "playlists", "playlist", playlist);

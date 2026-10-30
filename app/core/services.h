@@ -289,6 +289,7 @@ struct RemoteTrack {
     std::string suffix{}; // file type of the original, e.g. "flac"; empty if unknown
     long long size = 0;   // bytes of the original, 0 if unknown
     std::string albumId{}; // the server's id of its album, empty if it did not say
+    bool starred = false; // current server state; fetched afresh when opening player Options
 };
 struct RemoteAlbum {
     std::string id, name, artist;
@@ -379,6 +380,12 @@ public:
     virtual void saveProgress(std::string albumId, RemoteProgress progress, std::function<void(Error)> done = {}) = 0;
     // Books currently being listened to, only from this server's selected book library.
     virtual RequestId inProgress(Done<RemoteAlbum> done) = 0;
+    // Stars are optional (unsupported providers never offer them). Track details return exactly
+    // one track on success; starredTracks returns songs only, not starred albums or artists.
+    virtual bool supportsStars() const = 0;
+    virtual RequestId trackDetails(std::string trackId, Done<RemoteTrack> done) = 0;
+    virtual RequestId starredTracks(Done<RemoteTrack> done) = 0;
+    virtual RequestId setStarred(std::string trackId, bool starred, std::function<void(Error)> done) = 0;
     virtual RequestId playlists(Done<RemotePlaylist> done) = 0;
     virtual RequestId playlistTracks(std::string playlistId, Done<RemoteTrack> done) = 0;
     // A request carries every track id in its URL, so a server or proxy may refuse a very long one:

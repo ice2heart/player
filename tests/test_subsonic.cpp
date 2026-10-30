@@ -813,3 +813,50 @@ TEST(Subsonic, InProgressIsUnsupportedWithoutNetworkRequests) {
         EXPECT_EQ(result.calls, 1);
     }
 }
+
+TEST(SubsonicStars, SongsStateMutationAndCancellationUseTheRightEndpoints) {
+    Server s;
+    ListResult<RemoteTrack> result;
+    s.subsonic->starredTracks(result.callback());
+    EXPECT_NE(s.http->url(0).find("/getStarred2?"), std::string::npos);
+    s.http->answer(0, 200, R"({"subsonic-response":{"status":"ok","starred2":{"artist":[{"id":"ignore"}],"album":[{"id":"ignore"}],"song":[{"id":"t 1","title":"Rain","albumId":"al1","starred":"2026-01-01"}]}}})");
+    EXPECT_EQ(result.calls, 0); s.subsonic->poll(); ASSERT_EQ(result.items.size(), 1u);
+    EXPECT_EQ(result.items[0].id, "t 1"); EXPECT_EQ(result.items[0].albumId, "al1"); EXPECT_TRUE(result.items[0].starred);
+    s.subsonic->trackDetails("t 1", result.callback());
+    EXPECT_NE(s.http->url(1).find("/getSong?"), std::string::npos); EXPECT_EQ(param(s.http->url(1), "id"), "t%201");
+    s.http->answer(1, 200, R"({"subsonic-response":{"status":"ok","song":{"id":"t 1"}}})");
+    s.subsonic->poll(); ASSERT_EQ(result.items.size(), 1u); EXPECT_FALSE(result.items[0].starred);
+    int calls = 0;
+    for (bool star : {true, false}) {
+        auto at = s.http->calls.size();
+        s.subsonic->setStarred("t 1", star, [&](Error e) { EXPECT_EQ(e, Error::None); ++calls; });
+        EXPECT_NE(s.http->url(at).find(star ? "/star?" : "/unstar?"), std::string::npos);
+        EXPECT_EQ(param(s.http->url(at), "id"), "t%201");
+        s.http->answer(at, 200, R"({"subsonic-response":{"status":"ok"}})");
+        EXPECT_EQ(calls, star ? 0 : 1); s.subsonic->poll();
+    }
+    EXPECT_EQ(calls, 2);
+    auto id = s.subsonic->setStarred("t1", true, [&](Error) { ++calls; });
+    s.http->answer(4, 200, R"({"subsonic-response":{"status":"ok"}})");
+    s.subsonic->cancel(id); s.subsonic->poll(); EXPECT_EQ(calls, 2);
+}
+
+TEST(SubsonicStars, ErrorsMalformedSongAndNotConfiguredStayAsynchronous) {
+    Server s;
+    ListResult<RemoteTrack> result;
+    s.subsonic->trackDetails("t1", result.callback());
+    s.http->answer(0, 200, R"({"subsonic-response":{"status":"ok"}})");
+    s.subsonic->poll(); EXPECT_EQ(result.error, Error::Server); EXPECT_TRUE(result.items.empty());
+    s.subsonic->starredTracks(result.callback()); s.http->unreachable(1); s.subsonic->poll();
+    EXPECT_EQ(result.error, Error::Unreachable);
+    Error mutation = Error::None;
+    s.subsonic->setStarred("t1", true, [&](Error e) { mutation = e; });
+    s.http->answer(2, 200, R"({"subsonic-response":{"status":"failed","error":{"code":40}}})");
+    s.subsonic->poll(); EXPECT_EQ(mutation, Error::BadLogin);
+    Server empty(Subsonic::Config{});
+    int calls = 0;
+    empty.subsonic->trackDetails("t1", [&](Error e, auto, bool) { EXPECT_EQ(e, Error::NotConfigured); ++calls; });
+    empty.subsonic->starredTracks([&](Error e, auto, bool) { EXPECT_EQ(e, Error::NotConfigured); ++calls; });
+    empty.subsonic->setStarred("t1", false, [&](Error e) { EXPECT_EQ(e, Error::NotConfigured); ++calls; });
+    EXPECT_EQ(calls, 0); empty.subsonic->poll(); EXPECT_EQ(calls, 3); EXPECT_TRUE(empty.http->calls.empty());
+}
