@@ -466,10 +466,32 @@ struct ServerLink {
     Downloader& downloader;
 };
 
+struct BatteryState { int percent = 0; bool charging = false; bool charger = false; bool full = false; };
+class Power {
+public:
+    struct Caps { bool suspend = false, powerOff = false, reboot = false, wakeAlarm = false; };
+    virtual ~Power() = default;
+    virtual Caps caps() const = 0;
+    virtual BatteryState battery() const = 0;
+    virtual void requestSuspend() = 0;
+    virtual void requestPowerOff() = 0;
+    virtual void requestReboot() = 0;
+    virtual void setWakeAlarm(std::optional<std::time_t> at) = 0;
+};
+struct StorageState { std::uint64_t freeBytes = 0, totalBytes = 0; bool usbHostConnected = false; };
+class Storage {
+public:
+    struct Caps { bool massStorage = false; };
+    virtual ~Storage() = default;
+    virtual Caps caps() const = 0;
+    virtual StorageState state() const = 0;
+    virtual void setMassStorage(bool on) = 0;
+};
+
 class HalEvents;
 
-// Non-owning dependencies of App. The referenced objects, optional events and
-// server targets must outlive App; App takes ownership of the server links.
+// Non-owning dependencies of App. Referenced objects, optional HAL parts and
+// events, and server targets must outlive App; App owns the server links.
 struct Services {
     Speech& speech;
     MediaPlayer& player;
@@ -483,6 +505,8 @@ struct Services {
     Clock& clock;
     TextFiles* files = nullptr;
     HalEvents* events = nullptr;
+    Power* power = nullptr;
+    Storage* storage = nullptr;
 };
 
 } // namespace oap

@@ -30,6 +30,24 @@ inline TextFiles& diskFiles() {
     return files;
 }
 
+class FakePower : public Power {
+public:
+    Caps caps() const override { return {}; }
+    BatteryState battery() const override { return snapshot; }
+    void requestSuspend() override {}
+    void requestPowerOff() override {}
+    void requestReboot() override {}
+    void setWakeAlarm(std::optional<std::time_t>) override {}
+    BatteryState snapshot{};
+};
+class FakeStorage : public Storage {
+public:
+    Caps caps() const override { return {}; }
+    StorageState state() const override { return snapshot; }
+    void setMassStorage(bool) override {}
+    StorageState snapshot{};
+};
+
 class FakeClock : public Clock {
 public:
     TimePoint now() const override { std::lock_guard lock(mutex_); return now_; }

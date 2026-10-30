@@ -300,7 +300,7 @@ App::App(Services services, std::filesystem::path libraryRoot, std::filesystem::
     : tts_(services.speech), player_(services.player), earcons_(services.sounds), volume_(services.volume),
       servers_(std::move(services.servers)), index_(services.libraryStore), scanner_(services.scanner),
       config_(services.config), state_(services.state), savedState_(services.state.values()),
-      queueFile_(std::move(queueFile)), clock_(services.clock), halEvents_(services.events), libraryRoot_(std::move(libraryRoot)),
+      queueFile_(std::move(queueFile)), clock_(services.clock), halEvents_(services.events), power_(services.power), storage_(services.storage), libraryRoot_(std::move(libraryRoot)),
       musicRoot_(std::move(musicRoot)), cacheRoot_(std::move(cacheRoot)), freeSpace_(spaceOnDisk),
       random_(clockRandom(services.clock)), lastActivity_(services.clock.now()) {
     textFiles_ = services.files;
@@ -5695,10 +5695,9 @@ void App::factoryReset() {
 }
 
 std::string App::statusReport() const {
-    std::string text = "Battery 80 percent, simulated. ";
-    std::error_code ec;
-    auto space = std::filesystem::space(libraryRoot_, ec);
-    if (!ec) text += std::to_string(space.available / (1024 * 1024 * 1024)) + " gigabytes free. ";
+    std::string text;
+    if (power_) text += "Battery " + std::to_string(power_->battery().percent) + " percent. ";
+    if (storage_) text += std::to_string(storage_->state().freeBytes / (1024ULL * 1024 * 1024)) + " gigabytes free. ";
     text += "Wi-Fi connected. ";
     char buf[32];
     std::time_t t = clock_.wallTime();

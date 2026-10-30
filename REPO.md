@@ -27,8 +27,9 @@ comes from the system, or CMake downloads it like GoogleTest. SQLite (`oaplibrar
 from the system, else CMake fetches the amalgamation, so no option or package is needed.
 
 The `sim-macos` and `sim-linux` CMake presets configure simulator builds. HAL part
-selection currently accepts only `none`; unavailable and unknown names fail at
-configure time. Existing input and audio paths remain in use.
+selection accepts `sim` or `none` for power and storage, and `none` for other
+parts; unavailable and unknown names fail at configure time. The simulator presets
+select simulated power and storage. Existing input and audio paths remain in use.
 
 `OAP_BUILD_NET` (streaming: `oapnet`, `oap-net-tests`) needs libcurl and is `ON` by
 default when a front end is built, `OFF` for the core-only build. Add `-DOAP_BUILD_NET=ON`

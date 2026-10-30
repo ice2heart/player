@@ -713,6 +713,8 @@ private:
     bool restoredQueue_ = false;
     Clock& clock_;
     HalEvents* halEvents_;
+    Power* power_;
+    Storage* storage_;
     std::vector<std::string> halErrors_;
     std::filesystem::path libraryRoot_;
     std::filesystem::path musicRoot_;

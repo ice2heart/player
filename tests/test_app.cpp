@@ -18256,3 +18256,35 @@ TEST_F(AppTest, HalEventsAreSpokenOnTickAndIncludedInStatus) {
     EXPECT_NE(speech.last().find("First hardware error."), std::string::npos);
     EXPECT_NE(speech.last().find("Second hardware error."), std::string::npos);
 }
+
+TEST_F(AppTest, StatusUsesCurrentPowerAndStorageSnapshotsAndOmitsMissingParts) {
+    FakePower power;
+    FakeStorage storage;
+    power.snapshot.percent = 73;
+    storage.snapshot.freeBytes = 9ULL * 1024 * 1024 * 1024;
+    auto make = [&](Power* p, Storage* s) {
+        app = std::make_unique<App>(Services{speech, player, sounds, volume, serverLinks(), indexStore,
+            scanner, settings, state, clock, textFiles, nullptr, p, s}, root, music, cache, queueFile, scrobbleFile);
+        app->start();
+        open("System"); open("Status");
+    };
+    make(&power, &storage);
+    EXPECT_NE(speech.last().find("Battery 73 percent."), std::string::npos);
+    EXPECT_NE(speech.last().find("9 gigabytes free."), std::string::npos);
+    EXPECT_NE(speech.last().find("Wi-Fi connected."), std::string::npos);
+    power.snapshot.percent = 24;
+    storage.snapshot.freeBytes = 3ULL * 1024 * 1024 * 1024;
+    press(Button::Ok);
+    EXPECT_NE(speech.last().find("Battery 24 percent."), std::string::npos);
+    EXPECT_NE(speech.last().find("3 gigabytes free."), std::string::npos);
+    make(nullptr, &storage);
+    EXPECT_EQ(speech.last().find("Battery"), std::string::npos);
+    EXPECT_NE(speech.last().find("3 gigabytes free."), std::string::npos);
+    make(&power, nullptr);
+    EXPECT_NE(speech.last().find("Battery 24 percent."), std::string::npos);
+    EXPECT_EQ(speech.last().find("gigabytes free"), std::string::npos);
+    make(nullptr, nullptr);
+    EXPECT_EQ(speech.last().find("Battery"), std::string::npos);
+    EXPECT_EQ(speech.last().find("gigabytes free"), std::string::npos);
+    EXPECT_NE(speech.last().find("Wi-Fi connected."), std::string::npos);
+}

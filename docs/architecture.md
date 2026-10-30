@@ -608,7 +608,7 @@ Home
 │   ├── Replace cached copies off / on (default off; a better stream replaces the cached quality after listening)
 │   └── Sleep timer →    Off · 1 · 15 · 30 · 45 min · 1 hour · End of chapter/track (only when something is loaded; opens on the timer that is set)
 ├── System
-│   ├── Status           battery (simulated), free space, Wi-Fi, time
+│   ├── Status           battery and free space from selected HAL snapshots, Wi-Fi placeholder, time
 │   ├── Time and date
 │   ├── Wi-Fi →          Status · Scan for networks · Turn off   (simulated)
 │   ├── Sync             (not configured)
@@ -1348,6 +1348,12 @@ keys in memory. Core never sees a file: `load()` and `save()` go through a
 - **`library.db`** (`--library-db`, default next to `state.tsv`) is the library index, written by `SqliteLibraryStore` (section 8 and the source table): only what changed, in one transaction, and the play times (`lastPlayed`) only on exit and sleep. It is a cache of what the disk and the server hold (items and playlists), so a lost or damaged file (moved to `library.db.bad`) is rebuilt by the next scan and sync; Factory reset leaves it alone. Its first-seen and last-played history is not fully
   rebuildable; [fixes.md phase 7](fixes.md#phase-7-listening-reliability-and-durable-data)
   plans separating authoritative history/identity from regenerable metadata.
+
+HAL `Power` and `Storage` expose cached snapshots through `Services`. The simulated
+backends start at 80 percent and 10 GiB free, and their setters update the snapshots.
+`none` omits the corresponding Status phrase. Sim backends are separately linked
+only when selected; simulator presets select them. Hardware controls are planned for
+phase 3.
 
 ## 10. Simulator (`app/sim/main.cpp`)
 

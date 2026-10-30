@@ -7,7 +7,9 @@
       "binaryDir": "${sourceDir}/build-sim-macos",
       "cacheVariables": {
         "OAP_BUILD_SIM": "ON",
-        "OAP_BUILD_HEADLESS": "OFF"
+        "OAP_BUILD_HEADLESS": "OFF",
+        "OAP_HAL_POWER": "sim",
+        "OAP_HAL_STORAGE": "sim"
       }
     },
     {
@@ -16,7 +18,9 @@
       "binaryDir": "${sourceDir}/build-sim-linux",
       "cacheVariables": {
         "OAP_BUILD_SIM": "ON",
-        "OAP_BUILD_HEADLESS": "OFF"
+        "OAP_BUILD_HEADLESS": "OFF",
+        "OAP_HAL_POWER": "sim",
+        "OAP_HAL_STORAGE": "sim"
       }
     }
   ],

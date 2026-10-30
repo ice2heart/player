@@ -417,7 +417,7 @@ int main(int argc, char** argv) {
     SystemClock clock;
     HalEvents halEvents;
     HalContext halContext{halEvents, clock};
-    [[maybe_unused]] auto halParts = makeHal(halContext);
+    auto halParts = makeHal(halContext);
     SettingsFiles settings(config, state);
     Servers servers = makeServers(settings.config());
     // The library index (library.db) and the background scan of the local files that keeps it up to date.
@@ -425,7 +425,7 @@ int main(int argc, char** argv) {
     FfmpegTagReader tagReader;
     ThreadedScanner scanner(tagReader);
     DiskTextFiles manifests; // the cache's manifests, written atomically
-    App app(Services{tts, player, earcons, mixer, servers.links(), libraryStore, scanner, settings.config(), settings.state(), clock, &manifests, &halEvents}, library, music, cache, defaultQueueFile(state), defaultScrobbleFile(state));
+    App app(Services{tts, player, earcons, mixer, servers.links(), libraryStore, scanner, settings.config(), settings.state(), clock, &manifests, &halEvents, halParts.power.get(), halParts.storage.get()}, library, music, cache, defaultQueueFile(state), defaultScrobbleFile(state));
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
